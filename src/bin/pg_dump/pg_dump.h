@@ -132,6 +132,7 @@ typedef struct _dumpableObject
 	DumpComponents dump;		/* bitmask of components to dump */
 	DumpComponents dump_contains;	/* as above, but for contained objects */
 	bool		ext_member;		/* true if object is member of extension */
+	bool		depends_on_ext;	/* true if object depends on an extension */
 	DumpId	   *dependencies;	/* dumpIds of objects this one depends on */
 	int			nDeps;			/* number of valid dependencies */
 	int			allocDeps;		/* allocated size of dependencies[] */
@@ -639,8 +640,6 @@ typedef struct _extensionMemberId
 /* placeholders for comment starting and ending delimiters */
 extern char g_comment_start[10];
 extern char g_comment_end[10];
-
-extern char g_opaque_type[10];	/* name for the opaque type */
 
 /*
  *	common utility functions

@@ -674,11 +674,6 @@ _bt_update_posting(BTVacuumPosting vacposting)
 	Assert(_bt_posting_valid(origtuple));
 	Assert(nhtids > 0 && nhtids < BTreeTupleGetNPosting(origtuple));
 
-	if (BTreeTupleIsPosting(origtuple))
-		keysize = BTreeTupleGetPostingOffset(origtuple);
-	else
-		keysize = IndexTupleSize(origtuple);
-
 	/*
 	 * Determine final size of new tuple.
 	 *
@@ -686,11 +681,15 @@ _bt_update_posting(BTVacuumPosting vacposting)
 	 * for new posting list tuples.  We avoid calling _bt_form_posting() here
 	 * to save ourselves a second memory allocation for a htids workspace.
 	 */
+	keysize = BTreeTupleGetPostingOffset(origtuple);
 	if (nhtids > 1)
 		newsize = MAXALIGN(keysize +
 						   nhtids * sizeof(ItemPointerData));
 	else
 		newsize = keysize;
+
+	Assert(newsize <= INDEX_SIZE_MASK);
+	Assert(newsize == MAXALIGN(newsize));
 
 	/* Allocate memory using palloc0() (matches index_form_tuple()) */
 	itup = palloc0(newsize);
@@ -725,6 +724,7 @@ _bt_update_posting(BTVacuumPosting vacposting)
 	Assert(ui == nhtids);
 	Assert(d == vacposting->ndeletedtids);
 	Assert(nhtids == 1 || _bt_posting_valid(itup));
+	Assert(nhtids > 1 || ItemPointerIsValid(&itup->t_tid));
 
 	/* vacposting arg's itup will now point to updated version */
 	vacposting->itup = itup;

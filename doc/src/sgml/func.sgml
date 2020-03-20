@@ -5968,7 +5968,7 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
        </row>
        <row>
         <entry><literal>TM</literal> prefix</entry>
-        <entry>translation mode (print localized day and month names based on
+        <entry>translation mode (use localized day and month names based on
          <xref linkend="guc-lc-time"/>)</entry>
         <entry><literal>TMMonth</literal></entry>
        </row>
@@ -5999,9 +5999,20 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
 
      <listitem>
       <para>
-       <literal>TM</literal> does not include trailing blanks.
-       <function>to_timestamp</function> and <function>to_date</function> ignore
-       the <literal>TM</literal> modifier.
+       <literal>TM</literal> suppresses trailing blanks whether or
+       not <literal>FM</literal> is specified.
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       <function>to_timestamp</function> and <function>to_date</function>
+       ignore letter case in the input; so for
+       example <literal>MON</literal>, <literal>Mon</literal>,
+       and <literal>mon</literal> all accept the same strings.  When using
+       the <literal>TM</literal> modifier, case-folding is done according to
+       the rules of the function's input collation (see
+       <xref linkend="collation"/>).
       </para>
      </listitem>
 
@@ -12824,12 +12835,12 @@ table2-mapping
      <para>
       The <literal>datetime()</literal> and
       <literal>datetime(<replaceable>template</replaceable>)</literal> methods
-      use the same parsing rules as <literal>to_timestamp</literal> SQL
-      function does (see <xref linkend="functions-formatting"/>) with three
-      exceptions.  At first, these methods doesn't allow unmatched template
-      patterns.  At second, only following separators are allowed in the
-      template string: minus sign, period, solidus, comma, apostrophe,
-      semicolon, colon and space.  At third, separators in the template string
+      use the same parsing rules as the <literal>to_timestamp</literal> SQL
+      function does (see <xref linkend="functions-formatting"/>), with three
+      exceptions.  First, these methods don't allow unmatched template
+      patterns.  Second, only the following separators are allowed in the
+      template string: minus sign, period, solidus (slash), comma, apostrophe,
+      semicolon, colon and space.  Third, separators in the template string
       must exactly match the input string.
      </para>
     </note>
@@ -18167,11 +18178,15 @@ SELECT pg_type_is_visible('myschema.widget'::regtype);
    </indexterm>
 
    <indexterm>
-    <primary>to_regproc</primary>
+    <primary>to_regcollation</primary>
    </indexterm>
 
    <indexterm>
-    <primary>to_regprocedure</primary>
+    <primary>to_regnamespace</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>to_regrole</primary>
    </indexterm>
 
    <indexterm>
@@ -18183,15 +18198,15 @@ SELECT pg_type_is_visible('myschema.widget'::regtype);
    </indexterm>
 
    <indexterm>
+    <primary>to_regproc</primary>
+   </indexterm>
+
+   <indexterm>
+    <primary>to_regprocedure</primary>
+   </indexterm>
+
+   <indexterm>
     <primary>to_regtype</primary>
-   </indexterm>
-
-   <indexterm>
-    <primary>to_regnamespace</primary>
-   </indexterm>
-
-   <indexterm>
-    <primary>to_regrole</primary>
    </indexterm>
 
   <para>
@@ -18379,14 +18394,14 @@ SELECT pg_type_is_visible('myschema.widget'::regtype);
        <entry>get the OID of the named relation</entry>
       </row>
       <row>
-       <entry><literal><function>to_regproc(<parameter>func_name</parameter>)</function></literal></entry>
-       <entry><type>regproc</type></entry>
-       <entry>get the OID of the named function</entry>
+       <entry><literal><function>to_regcollation(<parameter>coll_name</parameter>)</function></literal></entry>
+       <entry><type>regcollation</type></entry>
+       <entry>get the OID of the named collation</entry>
       </row>
       <row>
-       <entry><literal><function>to_regprocedure(<parameter>func_name</parameter>)</function></literal></entry>
-       <entry><type>regprocedure</type></entry>
-       <entry>get the OID of the named function</entry>
+       <entry><literal><function>to_regnamespace(<parameter>schema_name</parameter>)</function></literal></entry>
+       <entry><type>regnamespace</type></entry>
+       <entry>get the OID of the named schema</entry>
       </row>
       <row>
        <entry><literal><function>to_regoper(<parameter>operator_name</parameter>)</function></literal></entry>
@@ -18399,19 +18414,24 @@ SELECT pg_type_is_visible('myschema.widget'::regtype);
        <entry>get the OID of the named operator</entry>
       </row>
       <row>
-       <entry><literal><function>to_regtype(<parameter>type_name</parameter>)</function></literal></entry>
-       <entry><type>regtype</type></entry>
-       <entry>get the OID of the named type</entry>
-      </row>
-      <row>
-       <entry><literal><function>to_regnamespace(<parameter>schema_name</parameter>)</function></literal></entry>
-       <entry><type>regnamespace</type></entry>
-       <entry>get the OID of the named schema</entry>
-      </row>
-      <row>
        <entry><literal><function>to_regrole(<parameter>role_name</parameter>)</function></literal></entry>
        <entry><type>regrole</type></entry>
        <entry>get the OID of the named role</entry>
+      </row>
+      <row>
+       <entry><literal><function>to_regproc(<parameter>func_name</parameter>)</function></literal></entry>
+       <entry><type>regproc</type></entry>
+       <entry>get the OID of the named function</entry>
+      </row>
+      <row>
+       <entry><literal><function>to_regprocedure(<parameter>func_name</parameter>)</function></literal></entry>
+       <entry><type>regprocedure</type></entry>
+       <entry>get the OID of the named function</entry>
+      </row>
+      <row>
+       <entry><literal><function>to_regtype(<parameter>type_name</parameter>)</function></literal></entry>
+       <entry><type>regtype</type></entry>
+       <entry>get the OID of the named type</entry>
       </row>
      </tbody>
     </tgroup>
@@ -18709,20 +18729,18 @@ SELECT collation for ('foo' COLLATE "de_DE");
   </para>
 
   <para>
-   The <function>to_regclass</function>, <function>to_regproc</function>,
-   <function>to_regprocedure</function>, <function>to_regoper</function>,
-   <function>to_regoperator</function>, <function>to_regtype</function>,
-   <function>to_regnamespace</function>, and <function>to_regrole</function>
-   functions translate relation, function, operator, type, schema, and role
-   names (given as <type>text</type>) to objects of
-   type <type>regclass</type>, <type>regproc</type>, <type>regprocedure</type>,
-   <type>regoper</type>, <type>regoperator</type>, <type>regtype</type>,
-   <type>regnamespace</type>, and <type>regrole</type>
-   respectively.  These functions differ from a cast from
-   text in that they don't accept a numeric OID, and that they return null
-   rather than throwing an error if the name is not found (or, for
-   <function>to_regproc</function> and <function>to_regoper</function>, if
-   the given name matches multiple objects).
+   The functions <function>to_regclass</function>, <function>to_regcollation</function>,
+   <function>to_regnamespace</function>, <function>to_regoper</function>,
+   <function>to_regoperator</function>, <function>to_regrole</function>,
+   <function>to_regproc</function>, <function>to_regprocedure</function>, and
+   <function>to_regtype</function>, functions translate relation, collation, schema,
+   operator, role, function, and type names (given as <type>text</type>) to
+   objects of the corresponding <type>reg*</type> type (see <xref
+   linkend="datatype-oid"/> about the types).  These functions differ from a
+   cast from text in that they don't accept a numeric OID, and that they
+   return null rather than throwing an error if the name is not found (or, for
+   <function>to_regproc</function> and <function>to_regoper</function>, if the
+   given name matches multiple objects).
   </para>
 
    <indexterm>
@@ -21439,6 +21457,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
     (mtime) of each file in the log directory. By default, only superusers
     and members of the <literal>pg_monitor</literal> role can use this function.
     Access may be granted to others using <command>GRANT</command>.
+    Filenames beginning with a dot, directories, and other special files are not shown.
    </para>
 
    <indexterm>
@@ -21450,6 +21469,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
     default only superusers and members of the <literal>pg_monitor</literal> role
     can use this function. Access may be granted to others using
     <command>GRANT</command>.
+    Filenames beginning with a dot, directories, and other special files are not shown.
    </para>
 
    <indexterm>
@@ -21462,6 +21482,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
     superusers and members of the <literal>pg_monitor</literal> role can
     use this function. Access may be granted to others using
     <command>GRANT</command>.
+    Filenames beginning with a dot, directories, and other special files are not shown.
    </para>
 
    <indexterm>
@@ -21475,6 +21496,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
     default only superusers and members of the <literal>pg_monitor</literal>
     role can use this function.  Access may be granted to others using
     <command>GRANT</command>.
+    Filenames beginning with a dot, directories, and other special files are not shown.
    </para>
 
    <indexterm>

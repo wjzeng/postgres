@@ -176,6 +176,7 @@ typedef struct AlteredTableInfo
 	List	   *changedConstraintDefs;	/* string definitions of same */
 	List	   *changedIndexOids;	/* OIDs of indexes to rebuild */
 	List	   *changedIndexDefs;	/* string definitions of same */
+	char	   *replicaIdentityIndex;	/* index to reset as REPLICA IDENTITY */
 } AlteredTableInfo;
 
 /* Struct describing one new constraint to check in Phase 3 scan */
@@ -2030,14 +2031,14 @@ storage_name(char c)
 {
 	switch (c)
 	{
-		case 'p':
+		case TYPSTORAGE_PLAIN:
 			return "PLAIN";
-		case 'm':
-			return "MAIN";
-		case 'x':
-			return "EXTENDED";
-		case 'e':
+		case TYPSTORAGE_EXTERNAL:
 			return "EXTERNAL";
+		case TYPSTORAGE_EXTENDED:
+			return "EXTENDED";
+		case TYPSTORAGE_MAIN:
+			return "MAIN";
 		default:
 			return "???";
 	}
@@ -7388,13 +7389,13 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 	storagemode = strVal(newValue);
 
 	if (pg_strcasecmp(storagemode, "plain") == 0)
-		newstorage = 'p';
+		newstorage = TYPSTORAGE_PLAIN;
 	else if (pg_strcasecmp(storagemode, "external") == 0)
-		newstorage = 'e';
+		newstorage = TYPSTORAGE_EXTERNAL;
 	else if (pg_strcasecmp(storagemode, "extended") == 0)
-		newstorage = 'x';
+		newstorage = TYPSTORAGE_EXTENDED;
 	else if (pg_strcasecmp(storagemode, "main") == 0)
-		newstorage = 'm';
+		newstorage = TYPSTORAGE_MAIN;
 	else
 	{
 		ereport(ERROR,
@@ -7426,7 +7427,7 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 	 * safety check: do not allow toasted storage modes unless column datatype
 	 * is TOAST-aware.
 	 */
-	if (newstorage == 'p' || TypeIsToastable(attrtuple->atttypid))
+	if (newstorage == TYPSTORAGE_PLAIN || TypeIsToastable(attrtuple->atttypid))
 		attrtuple->attstorage = newstorage;
 	else
 		ereport(ERROR,
@@ -10264,7 +10265,7 @@ validateForeignKeyConstraint(char *conname,
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		LOCAL_FCINFO(fcinfo, 0);
-		TriggerData trigdata;
+		TriggerData trigdata = {0};
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -10283,8 +10284,6 @@ validateForeignKeyConstraint(char *conname,
 		trigdata.tg_relation = rel;
 		trigdata.tg_trigtuple = ExecFetchSlotHeapTuple(slot, false, NULL);
 		trigdata.tg_trigslot = slot;
-		trigdata.tg_newtuple = NULL;
-		trigdata.tg_newslot = NULL;
 		trigdata.tg_trigger = &trig;
 
 		fcinfo->context = (Node *) &trigdata;
@@ -11565,6 +11564,22 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 }
 
 /*
+ * Subroutine for ATExecAlterColumnType: remember that a replica identity
+ * needs to be reset.
+ */
+static void
+RememberReplicaIdentityForRebuilding(Oid indoid, AlteredTableInfo *tab)
+{
+	if (!get_index_isreplident(indoid))
+		return;
+
+	if (tab->replicaIdentityIndex)
+		elog(ERROR, "relation %u has multiple indexes marked as replica identity", tab->relid);
+
+	tab->replicaIdentityIndex = get_rel_name(indoid);
+}
+
+/*
  * Subroutine for ATExecAlterColumnType: remember that a constraint needs
  * to be rebuilt (which we might already know).
  */
@@ -11582,11 +11597,16 @@ RememberConstraintForRebuilding(Oid conoid, AlteredTableInfo *tab)
 	{
 		/* OK, capture the constraint's existing definition string */
 		char	   *defstring = pg_get_constraintdef_command(conoid);
+		Oid			indoid;
 
 		tab->changedConstraintOids = lappend_oid(tab->changedConstraintOids,
 												 conoid);
 		tab->changedConstraintDefs = lappend(tab->changedConstraintDefs,
 											 defstring);
+
+		indoid = get_constraint_index(conoid);
+		if (OidIsValid(indoid))
+			RememberReplicaIdentityForRebuilding(indoid, tab);
 	}
 }
 
@@ -11629,6 +11649,8 @@ RememberIndexForRebuilding(Oid indoid, AlteredTableInfo *tab)
 												indoid);
 			tab->changedIndexDefs = lappend(tab->changedIndexDefs,
 											defstring);
+
+			RememberReplicaIdentityForRebuilding(indoid, tab);
 		}
 	}
 }
@@ -11735,6 +11757,24 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 
 		ObjectAddressSet(obj, RelationRelationId, oldId);
 		add_exact_object_address(&obj, objects);
+	}
+
+	/*
+	 * Queue up command to restore replica identity index marking
+	 */
+	if (tab->replicaIdentityIndex)
+	{
+		AlterTableCmd *cmd = makeNode(AlterTableCmd);
+		ReplicaIdentityStmt *subcmd = makeNode(ReplicaIdentityStmt);
+
+		subcmd->identity_type = REPLICA_IDENTITY_INDEX;
+		subcmd->name = tab->replicaIdentityIndex;
+		cmd->subtype = AT_ReplicaIdentity;
+		cmd->def = (Node *) subcmd;
+
+		/* do it after indexes and constraints */
+		tab->subcmds[AT_PASS_OLD_CONSTR] =
+			lappend(tab->subcmds[AT_PASS_OLD_CONSTR], cmd);
 	}
 
 	/*
@@ -16506,7 +16546,8 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 		/*
 		 * Complain if we find an unexpected trigger type.
 		 */
-		if (!TRIGGER_FOR_AFTER(trigForm->tgtype))
+		if (!TRIGGER_FOR_BEFORE(trigForm->tgtype) &&
+			!TRIGGER_FOR_AFTER(trigForm->tgtype))
 			elog(ERROR, "unexpected trigger \"%s\" found",
 				 NameStr(trigForm->tgname));
 
