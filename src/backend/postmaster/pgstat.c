@@ -3682,6 +3682,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 
 	switch (w)
 	{
+		case WAIT_EVENT_BACKUP_WAIT_WAL_ARCHIVE:
+			event_name = "BackupWaitWalArchive";
+			break;
 		case WAIT_EVENT_BGWORKER_SHUTDOWN:
 			event_name = "BgWorkerShutdown";
 			break;
@@ -3781,6 +3784,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_PROMOTE:
 			event_name = "Promote";
 			break;
+		case WAIT_EVENT_RECOVERY_PAUSE:
+			event_name = "RecoveryPause";
+			break;
 		case WAIT_EVENT_REPLICATION_ORIGIN_DROP:
 			event_name = "ReplicationOriginDrop";
 			break;
@@ -3823,6 +3829,9 @@ pgstat_get_wait_timeout(WaitEventTimeout w)
 			break;
 		case WAIT_EVENT_RECOVERY_RETRIEVE_RETRY_INTERVAL:
 			event_name = "RecoveryRetrieveRetryInterval";
+			break;
+		case WAIT_EVENT_VACUUM_DELAY:
+			event_name = "VacuumDelay";
 			break;
 			/* no default case, so that compiler will warn */
 	}

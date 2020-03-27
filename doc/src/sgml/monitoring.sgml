@@ -1339,7 +1339,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting in an extension.</entry>
         </row>
         <row>
-         <entry morerows="36"><literal>IPC</literal></entry>
+         <entry morerows="38"><literal>IPC</literal></entry>
+         <entry><literal>BackupWaitWalArchive</literal></entry>
+         <entry>Waiting for WAL files required for the backup to be successfully archived.</entry>
+        </row>
+        <row>
          <entry><literal>BgWorkerShutdown</literal></entry>
          <entry>Waiting for background worker to shut down.</entry>
         </row>
@@ -1472,6 +1476,10 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting for standby promotion.</entry>
         </row>
         <row>
+         <entry><literal>RecoveryPause</literal></entry>
+         <entry>Waiting for recovery to be resumed.</entry>
+        </row>
+        <row>
          <entry><literal>ReplicationOriginDrop</literal></entry>
          <entry>Waiting for a replication origin to become inactive to be dropped.</entry>
         </row>
@@ -1488,7 +1496,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
          <entry>Waiting for confirmation from remote server during synchronous replication.</entry>
         </row>
         <row>
-         <entry morerows="3"><literal>Timeout</literal></entry>
+         <entry morerows="4"><literal>Timeout</literal></entry>
          <entry><literal>BaseBackupThrottle</literal></entry>
          <entry>Waiting during base backup when throttling activity.</entry>
         </row>
@@ -1507,6 +1515,10 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
           (<filename>pg_wal</filename>, archive or stream) before trying
           again to retrieve WAL data, at recovery.
          </entry>
+        </row>
+        <row>
+         <entry><literal>VacuumDelay</literal></entry>
+         <entry>Waiting in a cost-based vacuum delay point.</entry>
         </row>
         <row>
          <entry morerows="68"><literal>IO</literal></entry>
@@ -4403,7 +4415,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
       total size. If the estimation is disabled in
       <application>pg_basebackup</application>
       (i.e., <literal>--no-estimate-size</literal> option is specified),
-      this is <literal>0</literal>.
+      this is <literal>NULL</literal>.
      </entry>
     </row>
     <row>
