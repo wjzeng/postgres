@@ -177,6 +177,7 @@ typedef struct RelationData
 	Oid		   *rd_exclprocs;	/* OIDs of exclusion ops' procs, if any */
 	uint16	   *rd_exclstrats;	/* exclusion ops' strategy numbers, if any */
 	Oid		   *rd_indcollation;	/* OIDs of index collations */
+	bytea	  **rd_opcoptions;	/* parsed opclass-specific options */
 
 	/*
 	 * rd_amcache is available for index and table AMs to cache private data
@@ -257,6 +258,7 @@ typedef struct AutoVacOpts
 {
 	bool		enabled;
 	int			vacuum_threshold;
+	int			vacuum_ins_threshold;
 	int			analyze_threshold;
 	int			vacuum_cost_limit;
 	int			freeze_min_age;
@@ -268,6 +270,7 @@ typedef struct AutoVacOpts
 	int			log_min_duration;
 	float8		vacuum_cost_delay;
 	float8		vacuum_scale_factor;
+	float8		vacuum_ins_scale_factor;
 	float8		analyze_scale_factor;
 } AutoVacOpts;
 

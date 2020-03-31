@@ -191,7 +191,7 @@ INSERT INTO ndistinct (a, b, c, filler1)
             cash_words(mod(i,33)::int::money)
        FROM generate_series(1,5000) s(i);
 
-ANALYZE ndistinct;
+VACUUM (ANALYZE) ndistinct;
 
 SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
@@ -245,7 +245,7 @@ CREATE INDEX fdeps_abc_idx ON functional_dependencies (a, b, c);
 INSERT INTO functional_dependencies (a, b, c, filler1)
      SELECT mod(i, 23), mod(i, 29), mod(i, 31), i FROM generate_series(1,5000) s(i);
 
-ANALYZE functional_dependencies;
+VACUUM (ANALYZE) functional_dependencies;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a = 1 AND b = ''1''');
 
@@ -267,7 +267,7 @@ DROP STATISTICS func_deps_stat;
 INSERT INTO functional_dependencies (a, b, c, filler1)
      SELECT mod(i,100), mod(i,50), mod(i,25), i FROM generate_series(1,5000) s(i);
 
-ANALYZE functional_dependencies;
+VACUUM (ANALYZE) functional_dependencies;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a = 1 AND b = ''1''');
 
@@ -279,6 +279,8 @@ SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 51) AND b IN (''1'', ''2'')');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 2, 51, 52) AND b IN (''1'', ''2'')');
+
+SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 2, 51, 52) AND b = ''1''');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 26, 51, 76) AND b IN (''1'', ''26'') AND c = 1');
 
@@ -342,6 +344,8 @@ SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE 
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 2, 51, 52) AND b IN (''1'', ''2'')');
 
+SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 2, 51, 52) AND b = ''1''');
+
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 26, 51, 76) AND b IN (''1'', ''26'') AND c = 1');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 26, 51, 76) AND b IN (''1'', ''26'') AND c IN (1)');
@@ -385,12 +389,14 @@ SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE 
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a IN (1, 2, 51, 52) AND b = ALL (ARRAY[''1'', ''2''])');
 
--- check change of column type doesn't break it
+-- changing the type of column c causes its single-column stats to be dropped,
+-- giving a default estimate of 0.005 * 5000 = 25 for (c = 1); check multiple
+-- clauses estimated with functional dependencies does not exceed this
 ALTER TABLE functional_dependencies ALTER COLUMN c TYPE numeric;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a = 1 AND b = ''1'' AND c = 1');
 
-ANALYZE functional_dependencies;
+VACUUM (ANALYZE) functional_dependencies;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a = 1 AND b = ''1'' AND c = 1');
 
@@ -448,7 +454,7 @@ CREATE TABLE mcv_lists (
 INSERT INTO mcv_lists (a, b, c, filler1)
      SELECT mod(i,37), mod(i,41), mod(i,43), mod(i,47) FROM generate_series(1,5000) s(i);
 
-ANALYZE mcv_lists;
+VACUUM (ANALYZE) mcv_lists;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
 
@@ -470,7 +476,7 @@ DROP STATISTICS mcv_lists_stats;
 INSERT INTO mcv_lists (a, b, c, filler1)
      SELECT mod(i,100), mod(i,50), mod(i,25), i FROM generate_series(1,5000) s(i);
 
-ANALYZE mcv_lists;
+VACUUM (ANALYZE) mcv_lists;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
 
@@ -583,7 +589,7 @@ ALTER TABLE mcv_lists ALTER COLUMN c TYPE numeric;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
 
-ANALYZE mcv_lists;
+VACUUM (ANALYZE) mcv_lists;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = ''1''');
 
@@ -599,7 +605,7 @@ INSERT INTO mcv_lists (a, b, c, filler1)
          i
      FROM generate_series(1,5000) s(i);
 
-ANALYZE mcv_lists;
+VACUUM (ANALYZE) mcv_lists;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NULL');
 
@@ -629,8 +635,7 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a IN (0, 1) AN
 -- test pg_mcv_list_items with a very simple (single item) MCV list
 TRUNCATE mcv_lists;
 INSERT INTO mcv_lists (a, b, c) SELECT 1, 2, 3 FROM generate_series(1,1000) s(i);
-ANALYZE mcv_lists;
-
+VACUUM (ANALYZE) mcv_lists;
 SELECT m.*
   FROM pg_statistic_ext s, pg_statistic_ext_data d,
        pg_mcv_list_items(d.stxdmcv) m
@@ -649,7 +654,7 @@ INSERT INTO mcv_lists (a, b, c, d)
          (CASE WHEN mod(i,2) = 0 THEN NULL ELSE 'x' END)
      FROM generate_series(1,5000) s(i);
 
-ANALYZE mcv_lists;
+VACUUM (ANALYZE) mcv_lists;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE b = ''x'' OR d = ''x''');
 
@@ -737,7 +742,7 @@ INSERT INTO mcv_lists_bool (a, b, c)
          (mod(i,2) = 0), (mod(i,4) = 0), (mod(i,8) = 0)
      FROM generate_series(1,10000) s(i);
 
-ANALYZE mcv_lists_bool;
+VACUUM (ANALYZE) mcv_lists_bool;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_bool WHERE a AND b AND c');
 

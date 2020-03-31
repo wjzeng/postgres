@@ -2054,7 +2054,7 @@ static struct config_bool ConfigureNamesBool[] =
 			gettext_noop("Sets whether a WAL receiver should create a temporary replication slot if no permanent slot is configured."),
 		},
 		&wal_receiver_create_temp_slot,
-		true,
+		false,
 		NULL, NULL, NULL
 	},
 
@@ -3103,6 +3103,15 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"autovacuum_vacuum_insert_threshold", PGC_SIGHUP, AUTOVACUUM,
+			gettext_noop("Minimum number of tuple inserts prior to vacuum, or -1 to disable insert vacuums"),
+			NULL
+		},
+		&autovacuum_vac_ins_thresh,
+		1000, -1, INT_MAX,
+		NULL, NULL, NULL
+	},
+	{
 		{"autovacuum_analyze_threshold", PGC_SIGHUP, AUTOVACUUM,
 			gettext_noop("Minimum number of tuple inserts, updates, or deletes prior to analyze."),
 			NULL
@@ -3549,6 +3558,17 @@ static struct config_real ConfigureNamesReal[] =
 		0.2, 0.0, 100.0,
 		NULL, NULL, NULL
 	},
+
+	{
+		{"autovacuum_vacuum_insert_scale_factor", PGC_SIGHUP, AUTOVACUUM,
+			gettext_noop("Number of tuple inserts prior to vacuum as a fraction of reltuples."),
+			NULL
+		},
+		&autovacuum_vac_ins_scale,
+		0.2, 0.0, 100.0,
+		NULL, NULL, NULL
+	},
+
 	{
 		{"autovacuum_analyze_scale_factor", PGC_SIGHUP, AUTOVACUUM,
 			gettext_noop("Number of tuple inserts, updates, or deletes prior to analyze as a fraction of reltuples."),
@@ -3717,7 +3737,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"primary_conninfo", PGC_POSTMASTER, REPLICATION_STANDBY,
+		{"primary_conninfo", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Sets the connection string to be used to connect to the sending server."),
 			NULL,
 			GUC_SUPERUSER_ONLY
@@ -3728,7 +3748,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"primary_slot_name", PGC_POSTMASTER, REPLICATION_STANDBY,
+		{"primary_slot_name", PGC_SIGHUP, REPLICATION_STANDBY,
 			gettext_noop("Sets the name of the replication slot to use on the sending server."),
 			NULL
 		},
