@@ -106,9 +106,6 @@ extern bool have_join_order_restriction(PlannerInfo *root,
 extern bool have_dangerous_phv(PlannerInfo *root,
 							   Relids outer_relids, Relids inner_params);
 extern void mark_dummy_rel(RelOptInfo *rel);
-extern bool have_partkey_equi_join(RelOptInfo *joinrel,
-								   RelOptInfo *rel1, RelOptInfo *rel2,
-								   JoinType jointype, List *restrictlist);
 
 /*
  * equivclass.c
@@ -188,6 +185,7 @@ typedef enum
 
 extern PathKeysComparison compare_pathkeys(List *keys1, List *keys2);
 extern bool pathkeys_contained_in(List *keys1, List *keys2);
+extern bool pathkeys_count_contained_in(List *keys1, List *keys2, int *n_common);
 extern Path *get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 											Relids required_outer,
 											CostSelector cost_criterion,

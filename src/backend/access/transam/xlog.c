@@ -33,6 +33,7 @@
 #include "access/twophase.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#include "access/xlogarchive.h"
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "access/xlogutils.h"
@@ -42,6 +43,7 @@
 #include "commands/progress.h"
 #include "commands/tablespace.h"
 #include "common/controldata_utils.h"
+#include "executor/instrument.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
@@ -263,8 +265,6 @@ bool		InArchiveRecovery = false;
 
 static bool standby_signal_file_found = false;
 static bool recovery_signal_file_found = false;
-
-static bool need_restart_for_parameter_values = false;
 
 /* Was the last xlog file restored from archive, or local? */
 static bool restoredFromArchive = false;
@@ -884,7 +884,7 @@ static void validateRecoveryParameters(void);
 static void exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog);
 static bool recoveryStopsBefore(XLogReaderState *record);
 static bool recoveryStopsAfter(XLogReaderState *record);
-static void recoveryPausesHere(void);
+static void recoveryPausesHere(bool endOfRecovery);
 static bool recoveryApplyDelay(XLogReaderState *record);
 static void SetLatestXTime(TimestampTz xtime);
 static void SetCurrentChunkStartTime(TimestampTz xtime);
@@ -995,7 +995,8 @@ static void WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt);
 XLogRecPtr
 XLogInsertRecord(XLogRecData *rdata,
 				 XLogRecPtr fpw_lsn,
-				 uint8 flags)
+				 uint8 flags,
+				 int num_fpw)
 {
 	XLogCtlInsert *Insert = &XLogCtl->Insert;
 	pg_crc32c	rdata_crc;
@@ -1250,6 +1251,14 @@ XLogInsertRecord(XLogRecData *rdata,
 	 */
 	ProcLastRecPtr = StartPos;
 	XactLastRecEnd = EndPos;
+
+	/* Report WAL traffic to the instrumentation. */
+	if (inserted)
+	{
+		pgWalUsage.wal_bytes += rechdr->xl_tot_len;
+		pgWalUsage.wal_records++;
+		pgWalUsage.wal_num_fpw += num_fpw;
+	}
 
 	return EndPos;
 }
@@ -5950,12 +5959,16 @@ recoveryStopsAfter(XLogReaderState *record)
 /*
  * Wait until shared recoveryPause flag is cleared.
  *
+ * endOfRecovery is true if the recovery target is reached and
+ * the paused state starts at the end of recovery because of
+ * recovery_target_action=pause, and false otherwise.
+ *
  * XXX Could also be done with shared latch, avoiding the pg_usleep loop.
  * Probably not worth the trouble though.  This state shouldn't be one that
  * anyone cares about server power consumption in.
  */
 static void
-recoveryPausesHere(void)
+recoveryPausesHere(bool endOfRecovery)
 {
 	/* Don't pause unless users can connect! */
 	if (!LocalHotStandbyActive)
@@ -5965,9 +5978,14 @@ recoveryPausesHere(void)
 	if (LocalPromoteIsTriggered)
 		return;
 
-	ereport(LOG,
-			(errmsg("recovery has paused"),
-			 errhint("Execute pg_wal_replay_resume() to continue.")));
+	if (endOfRecovery)
+		ereport(LOG,
+				(errmsg("pausing at the end of recovery"),
+				 errhint("Execute pg_wal_replay_resume() to promote.")));
+	else
+		ereport(LOG,
+				(errmsg("recovery has paused"),
+				 errhint("Execute pg_wal_replay_resume() to continue.")));
 
 	while (RecoveryIsPaused())
 	{
@@ -5998,54 +6016,6 @@ SetRecoveryPause(bool recoveryPause)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->recoveryPause = recoveryPause;
 	SpinLockRelease(&XLogCtl->info_lck);
-}
-
-/*
- * If in hot standby, pause recovery because of a parameter conflict.
- *
- * Similar to recoveryPausesHere() but with a different messaging.  The user
- * is expected to make the parameter change and restart the server.  If they
- * just unpause recovery, they will then run into whatever error is after this
- * function call for the non-hot-standby case.
- *
- * We intentionally do not give advice about specific parameters or values
- * here because it might be misleading.  For example, if we run out of lock
- * space, then in the single-server case we would recommend raising
- * max_locks_per_transaction, but in recovery it could equally be the case
- * that max_connections is out of sync with the primary.  If we get here, we
- * have already logged any parameter discrepancies in
- * RecoveryRequiresIntParameter(), so users can go back to that and get
- * concrete and accurate information.
- */
-void
-StandbyParamErrorPauseRecovery(void)
-{
-	TimestampTz last_warning = 0;
-
-	if (!AmStartupProcess() || !need_restart_for_parameter_values)
-		return;
-
-	SetRecoveryPause(true);
-
-	do
-	{
-		TimestampTz now = GetCurrentTimestamp();
-
-		if (TimestampDifferenceExceeds(last_warning, now, 60000))
-		{
-			ereport(WARNING,
-					(errmsg("recovery paused because of insufficient parameter settings"),
-					 errdetail("See earlier in the log about which settings are insufficient."),
-					 errhint("Recovery cannot continue unless the configuration is changed and the server restarted.")));
-			last_warning = now;
-		}
-
-		pgstat_report_wait_start(WAIT_EVENT_RECOVERY_PAUSE);
-		pg_usleep(1000000L);    /* 1000 ms */
-		pgstat_report_wait_end();
-		HandleStartupProcInterrupts();
-	}
-	while (RecoveryIsPaused());
 }
 
 /*
@@ -6227,20 +6197,16 @@ GetXLogReceiptTime(TimestampTz *rtime, bool *fromStream)
  * Note that text field supplied is a parameter name and does not require
  * translation
  */
-static void
-RecoveryRequiresIntParameter(const char *param_name, int currValue, int minValue)
-{
-	if (currValue < minValue)
-	{
-		ereport(WARNING,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("insufficient setting for parameter %s", param_name),
-				 errdetail("%s = %d is a lower setting than on the master server (where its value was %d).",
-						   param_name, currValue, minValue),
-				 errhint("Change parameters and restart the server, or there may be resource exhaustion errors sooner or later.")));
-		need_restart_for_parameter_values = true;
-	}
-}
+#define RecoveryRequiresIntParameter(param_name, currValue, minValue) \
+do { \
+	if ((currValue) < (minValue)) \
+		ereport(ERROR, \
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE), \
+				 errmsg("hot standby is not possible because %s = %d is a lower setting than on the master server (its value was %d)", \
+						param_name, \
+						currValue, \
+						minValue))); \
+} while(0)
 
 /*
  * Check to see if required parameters are set high enough on this server
@@ -7200,7 +7166,7 @@ StartupXLOG(void)
 				 * adding another spinlock cycle to prevent that.
 				 */
 				if (((volatile XLogCtlData *) XLogCtl)->recoveryPause)
-					recoveryPausesHere();
+					recoveryPausesHere(false);
 
 				/*
 				 * Have we reached our recovery target?
@@ -7225,7 +7191,7 @@ StartupXLOG(void)
 					 * work.
 					 */
 					if (((volatile XLogCtlData *) XLogCtl)->recoveryPause)
-						recoveryPausesHere();
+						recoveryPausesHere(false);
 				}
 
 				/* Setup error traceback support for ereport() */
@@ -7399,7 +7365,7 @@ StartupXLOG(void)
 
 					case RECOVERY_TARGET_ACTION_PAUSE:
 						SetRecoveryPause(true);
-						recoveryPausesHere();
+						recoveryPausesHere(true);
 
 						/* drop into promote */
 
@@ -10632,7 +10598,8 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			ti->oid = pstrdup(de->d_name);
 			ti->path = pstrdup(buflinkpath.data);
 			ti->rpath = relpath ? pstrdup(relpath) : NULL;
-			ti->size = infotbssize ? sendTablespace(fullpath, true) : -1;
+			ti->size = infotbssize ?
+				sendTablespace(fullpath, ti->oid, true, NULL) : -1;
 
 			if (tablespaces)
 				*tablespaces = lappend(*tablespaces, ti);
