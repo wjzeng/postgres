@@ -109,7 +109,7 @@ begin
     for group_key in select unnest(array['Full-sort Groups', 'Presorted Groups']::text[]) t loop
       for space_key in select unnest(array['Sort Space Memory', 'Sort Space Disk']::text[]) t loop
         node := jsonb_set(node, array[group_key, space_key, 'Average Sort Space Used'], '"NN"', false);
-        node := jsonb_set(node, array[group_key, space_key, 'Maximum Sort Space Used'], '"NN"', false);
+        node := jsonb_set(node, array[group_key, space_key, 'Peak Sort Space Used'], '"NN"', false);
       end loop;
     end loop;
     nodes := nodes || node;
@@ -131,7 +131,7 @@ begin
     for group_key in select unnest(array['Full-sort Groups', 'Presorted Groups']::text[]) t loop
       group_stats := node->group_key;
       for space_key in select unnest(array['Sort Space Memory', 'Sort Space Disk']::text[]) t loop
-        if (group_stats->space_key->'Maximum Sort Space Used')::bigint < (group_stats->space_key->'Maximum Sort Space Used')::bigint then
+        if (group_stats->space_key->'Peak Sort Space Used')::bigint < (group_stats->space_key->'Peak Sort Space Used')::bigint then
           raise exception '% has invalid max space < average space', group_key;
         end if;
       end loop;
@@ -141,7 +141,8 @@ begin
 end;
 $$;
 -- A single large group tested around each mode transition point.
-insert into t(a, b) select 1, i from generate_series(1, 100) n(i);
+insert into t(a, b) select i/100 + 1, i + 1 from generate_series(0, 999) n(i);
+analyze t;
 explain (costs off) select * from (select * from t order by a) s order by a, b limit 31;
            QUERY PLAN            
 ---------------------------------
@@ -456,7 +457,8 @@ select * from (select * from t order by a) s order by a, b limit 66;
 
 delete from t;
 -- An initial large group followed by a small group.
-insert into t(a, b) select (case when i < 50 then 1 else 2 end), i from generate_series(1, 100) n(i);
+insert into t(a, b) select i/50 + 1, i + 1 from generate_series(0, 999) n(i);
+analyze t;
 explain (costs off) select * from (select * from t order by a) s order by a, b limit 55;
            QUERY PLAN            
 ---------------------------------
@@ -521,7 +523,7 @@ select * from (select * from t order by a) s order by a, b limit 55;
  1 | 47
  1 | 48
  1 | 49
- 2 | 50
+ 1 | 50
  2 | 51
  2 | 52
  2 | 53
@@ -538,41 +540,41 @@ select explain_analyze_without_memory('select * from (select * from t order by a
          Sort Key: t.a, t.b
          Presorted Key: t.a
          Full-sort Groups: 2 Sort Methods: top-N heapsort, quicksort Memory: avg=NNkB peak=NNkB
-         ->  Sort (actual rows=100 loops=1)
+         ->  Sort (actual rows=101 loops=1)
                Sort Key: t.a
                Sort Method: quicksort  Memory: NNkB
-               ->  Seq Scan on t (actual rows=100 loops=1)
+               ->  Seq Scan on t (actual rows=1000 loops=1)
 (9 rows)
 
 select jsonb_pretty(explain_analyze_inc_sort_nodes_without_memory('select * from (select * from t order by a) s order by a, b limit 55'));
-                   jsonb_pretty                   
---------------------------------------------------
- [                                               +
-     {                                           +
-         "Sort Key": [                           +
-             "t.a",                              +
-             "t.b"                               +
-         ],                                      +
-         "Node Type": "Incremental Sort",        +
-         "Actual Rows": 55,                      +
-         "Actual Loops": 1,                      +
-         "Presorted Key": [                      +
-             "t.a"                               +
-         ],                                      +
-         "Parallel Aware": false,                +
-         "Full-sort Groups": {                   +
-             "Group Count": 2,                   +
-             "Sort Methods Used": [              +
-                 "top-N heapsort",               +
-                 "quicksort"                     +
-             ],                                  +
-             "Sort Space Memory": {              +
-                 "Average Sort Space Used": "NN",+
-                 "Maximum Sort Space Used": "NN" +
-             }                                   +
-         },                                      +
-         "Parent Relationship": "Outer"          +
-     }                                           +
+                  jsonb_pretty                   
+-------------------------------------------------
+ [                                              +
+     {                                          +
+         "Sort Key": [                          +
+             "t.a",                             +
+             "t.b"                              +
+         ],                                     +
+         "Node Type": "Incremental Sort",       +
+         "Actual Rows": 55,                     +
+         "Actual Loops": 1,                     +
+         "Presorted Key": [                     +
+             "t.a"                              +
+         ],                                     +
+         "Parallel Aware": false,               +
+         "Full-sort Groups": {                  +
+             "Group Count": 2,                  +
+             "Sort Methods Used": [             +
+                 "top-N heapsort",              +
+                 "quicksort"                    +
+             ],                                 +
+             "Sort Space Memory": {             +
+                 "Peak Sort Space Used": "NN",  +
+                 "Average Sort Space Used": "NN"+
+             }                                  +
+         },                                     +
+         "Parent Relationship": "Outer"         +
+     }                                          +
  ]
 (1 row)
 
@@ -584,7 +586,8 @@ select explain_analyze_inc_sort_nodes_verify_invariants('select * from (select *
 
 delete from t;
 -- An initial small group followed by a large group.
-insert into t(a, b) select (case when i < 5 then i else 9 end), i from generate_series(1, 100) n(i);
+insert into t(a, b) select (case when i < 5 then i else 9 end), i from generate_series(1, 1000) n(i);
+analyze t;
 explain (costs off) select * from (select * from t order by a) s order by a, b limit 70;
            QUERY PLAN            
 ---------------------------------
@@ -705,57 +708,58 @@ select * from t left join (select * from (select * from t order by a) v order by
 rollback;
 -- Test EXPLAIN ANALYZE with both fullsort and presorted groups.
 select explain_analyze_without_memory('select * from (select * from t order by a) s order by a, b limit 70');
-                                                           explain_analyze_without_memory                                                            
------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                    explain_analyze_without_memory                                                                    
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Limit (actual rows=70 loops=1)
    ->  Incremental Sort (actual rows=70 loops=1)
          Sort Key: t.a, t.b
          Presorted Key: t.a
-         Full-sort Groups: 1 Sort Method: quicksort Memory: avg=NNkB peak=NNkB Presorted Groups: 5 Sort Method: quicksort Memory: avg=NNkB peak=NNkB
-         ->  Sort (actual rows=100 loops=1)
+         Full-sort Groups: 1 Sort Method: quicksort Memory: avg=NNkB peak=NNkB Presorted Groups: 5 Sort Methods: top-N heapsort, quicksort Memory: avg=NNkB peak=NNkB
+         ->  Sort (actual rows=1000 loops=1)
                Sort Key: t.a
                Sort Method: quicksort  Memory: NNkB
-               ->  Seq Scan on t (actual rows=100 loops=1)
+               ->  Seq Scan on t (actual rows=1000 loops=1)
 (9 rows)
 
 select jsonb_pretty(explain_analyze_inc_sort_nodes_without_memory('select * from (select * from t order by a) s order by a, b limit 70'));
-                   jsonb_pretty                   
---------------------------------------------------
- [                                               +
-     {                                           +
-         "Sort Key": [                           +
-             "t.a",                              +
-             "t.b"                               +
-         ],                                      +
-         "Node Type": "Incremental Sort",        +
-         "Actual Rows": 70,                      +
-         "Actual Loops": 1,                      +
-         "Presorted Key": [                      +
-             "t.a"                               +
-         ],                                      +
-         "Parallel Aware": false,                +
-         "Full-sort Groups": {                   +
-             "Group Count": 1,                   +
-             "Sort Methods Used": [              +
-                 "quicksort"                     +
-             ],                                  +
-             "Sort Space Memory": {              +
-                 "Average Sort Space Used": "NN",+
-                 "Maximum Sort Space Used": "NN" +
-             }                                   +
-         },                                      +
-         "Presorted Groups": {                   +
-             "Group Count": 5,                   +
-             "Sort Methods Used": [              +
-                 "quicksort"                     +
-             ],                                  +
-             "Sort Space Memory": {              +
-                 "Average Sort Space Used": "NN",+
-                 "Maximum Sort Space Used": "NN" +
-             }                                   +
-         },                                      +
-         "Parent Relationship": "Outer"          +
-     }                                           +
+                  jsonb_pretty                   
+-------------------------------------------------
+ [                                              +
+     {                                          +
+         "Sort Key": [                          +
+             "t.a",                             +
+             "t.b"                              +
+         ],                                     +
+         "Node Type": "Incremental Sort",       +
+         "Actual Rows": 70,                     +
+         "Actual Loops": 1,                     +
+         "Presorted Key": [                     +
+             "t.a"                              +
+         ],                                     +
+         "Parallel Aware": false,               +
+         "Full-sort Groups": {                  +
+             "Group Count": 1,                  +
+             "Sort Methods Used": [             +
+                 "quicksort"                    +
+             ],                                 +
+             "Sort Space Memory": {             +
+                 "Peak Sort Space Used": "NN",  +
+                 "Average Sort Space Used": "NN"+
+             }                                  +
+         },                                     +
+         "Presorted Groups": {                  +
+             "Group Count": 5,                  +
+             "Sort Methods Used": [             +
+                 "top-N heapsort",              +
+                 "quicksort"                    +
+             ],                                 +
+             "Sort Space Memory": {             +
+                 "Peak Sort Space Used": "NN",  +
+                 "Average Sort Space Used": "NN"+
+             }                                  +
+         },                                     +
+         "Parent Relationship": "Outer"         +
+     }                                          +
  ]
 (1 row)
 
@@ -767,7 +771,8 @@ select explain_analyze_inc_sort_nodes_verify_invariants('select * from (select *
 
 delete from t;
 -- Small groups of 10 tuples each tested around each mode transition point.
-insert into t(a, b) select i / 10, i from generate_series(1, 70) n(i);
+insert into t(a, b) select i / 10, i from generate_series(1, 1000) n(i);
+analyze t;
 explain (costs off) select * from (select * from t order by a) s order by a, b limit 31;
            QUERY PLAN            
 ---------------------------------
@@ -1082,7 +1087,8 @@ select * from (select * from t order by a) s order by a, b limit 66;
 
 delete from t;
 -- Small groups of only 1 tuple each tested around each mode transition point.
-insert into t(a, b) select i, i from generate_series(1, 70) n(i);
+insert into t(a, b) select i, i from generate_series(1, 1000) n(i);
+analyze t;
 explain (costs off) select * from (select * from t order by a) s order by a, b limit 31;
            QUERY PLAN            
 ---------------------------------
@@ -1425,18 +1431,20 @@ explain (costs off) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1
 
 set enable_incrementalsort = on;
 explain (costs off) select a,b,sum(c) from t group by 1,2 order by 1,2,3 limit 1;
-                      QUERY PLAN                      
-------------------------------------------------------
+                              QUERY PLAN                              
+----------------------------------------------------------------------
  Limit
-   ->  Sort
+   ->  Incremental Sort
          Sort Key: a, b, (sum(c))
-         ->  Finalize HashAggregate
+         Presorted Key: a, b
+         ->  GroupAggregate
                Group Key: a, b
-               ->  Gather
+               ->  Gather Merge
                      Workers Planned: 2
-                     ->  Partial HashAggregate
-                           Group Key: a, b
-                           ->  Parallel Seq Scan on t
-(10 rows)
+                     ->  Incremental Sort
+                           Sort Key: a, b
+                           Presorted Key: a
+                           ->  Parallel Index Scan using t_a_idx on t
+(12 rows)
 
 drop table t;

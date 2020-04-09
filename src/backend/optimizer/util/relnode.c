@@ -17,6 +17,7 @@
 #include <limits.h>
 
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -249,10 +250,12 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptInfo *parent)
 	rel->has_eclass_joins = false;
 	rel->consider_partitionwise_join = false;	/* might get changed later */
 	rel->part_scheme = NULL;
-	rel->nparts = 0;
+	rel->nparts = -1;
 	rel->boundinfo = NULL;
+	rel->partbounds_merged = false;
 	rel->partition_qual = NIL;
 	rel->part_rels = NULL;
+	rel->all_partrels = NULL;
 	rel->partexprs = NULL;
 	rel->nullable_partexprs = NULL;
 	rel->partitioned_child_rels = NIL;
@@ -662,10 +665,12 @@ build_join_rel(PlannerInfo *root,
 	joinrel->consider_partitionwise_join = false;	/* might get changed later */
 	joinrel->top_parent_relids = NULL;
 	joinrel->part_scheme = NULL;
-	joinrel->nparts = 0;
+	joinrel->nparts = -1;
 	joinrel->boundinfo = NULL;
+	joinrel->partbounds_merged = false;
 	joinrel->partition_qual = NIL;
 	joinrel->part_rels = NULL;
+	joinrel->all_partrels = NULL;
 	joinrel->partexprs = NULL;
 	joinrel->nullable_partexprs = NULL;
 	joinrel->partitioned_child_rels = NIL;
@@ -838,10 +843,12 @@ build_child_join_rel(PlannerInfo *root, RelOptInfo *outer_rel,
 	joinrel->consider_partitionwise_join = false;	/* might get changed later */
 	joinrel->top_parent_relids = NULL;
 	joinrel->part_scheme = NULL;
-	joinrel->nparts = 0;
+	joinrel->nparts = -1;
 	joinrel->boundinfo = NULL;
+	joinrel->partbounds_merged = false;
 	joinrel->partition_qual = NIL;
 	joinrel->part_rels = NULL;
+	joinrel->all_partrels = NULL;
 	joinrel->partexprs = NULL;
 	joinrel->nullable_partexprs = NULL;
 	joinrel->partitioned_child_rels = NIL;
@@ -1645,7 +1652,7 @@ build_joinrel_partition_info(RelOptInfo *joinrel, RelOptInfo *outer_rel,
 	 * of the way the query planner deduces implied equalities and reorders
 	 * the joins.  Please see optimizer/README for details.
 	 */
-	if (!IS_PARTITIONED_REL(outer_rel) || !IS_PARTITIONED_REL(inner_rel) ||
+	if (outer_rel->part_scheme == NULL || inner_rel->part_scheme == NULL ||
 		!outer_rel->consider_partitionwise_join ||
 		!inner_rel->consider_partitionwise_join ||
 		outer_rel->part_scheme != inner_rel->part_scheme ||
@@ -1658,24 +1665,6 @@ build_joinrel_partition_info(RelOptInfo *joinrel, RelOptInfo *outer_rel,
 
 	part_scheme = outer_rel->part_scheme;
 
-	Assert(REL_HAS_ALL_PART_PROPS(outer_rel) &&
-		   REL_HAS_ALL_PART_PROPS(inner_rel));
-
-	/*
-	 * For now, our partition matching algorithm can match partitions only
-	 * when the partition bounds of the joining relations are exactly same.
-	 * So, bail out otherwise.
-	 */
-	if (outer_rel->nparts != inner_rel->nparts ||
-		!partition_bounds_equal(part_scheme->partnatts,
-								part_scheme->parttyplen,
-								part_scheme->parttypbyval,
-								outer_rel->boundinfo, inner_rel->boundinfo))
-	{
-		Assert(!IS_PARTITIONED_REL(joinrel));
-		return;
-	}
-
 	/*
 	 * This function will be called only once for each joinrel, hence it
 	 * should not have partitioning fields filled yet.
@@ -1685,17 +1674,14 @@ build_joinrel_partition_info(RelOptInfo *joinrel, RelOptInfo *outer_rel,
 		   !joinrel->boundinfo);
 
 	/*
-	 * Join relation is partitioned using the same partitioning scheme as the
-	 * joining relations and has same bounds.
+	 * If the join relation is partitioned, it uses the same partitioning
+	 * scheme as the joining relations.
+	 *
+	 * Note: we calculate the partition bounds, number of partitions, and
+	 * child-join relations of the join relation in try_partitionwise_join().
 	 */
 	joinrel->part_scheme = part_scheme;
-	joinrel->boundinfo = outer_rel->boundinfo;
-	joinrel->nparts = outer_rel->nparts;
 	set_joinrel_partition_key_exprs(joinrel, outer_rel, inner_rel, jointype);
-
-	/* part_rels[] will be filled later, but allocate it now */
-	joinrel->part_rels =
-		(RelOptInfo **) palloc0(sizeof(RelOptInfo *) * joinrel->nparts);
 
 	/*
 	 * Set the consider_partitionwise_join flag.
@@ -1890,7 +1876,8 @@ set_joinrel_partition_key_exprs(RelOptInfo *joinrel,
 								RelOptInfo *outer_rel, RelOptInfo *inner_rel,
 								JoinType jointype)
 {
-	int			partnatts = joinrel->part_scheme->partnatts;
+	PartitionScheme part_scheme = joinrel->part_scheme;
+	int			partnatts = part_scheme->partnatts;
 
 	joinrel->partexprs = (List **) palloc0(sizeof(List *) * partnatts);
 	joinrel->nullable_partexprs =
@@ -1899,7 +1886,8 @@ set_joinrel_partition_key_exprs(RelOptInfo *joinrel,
 	/*
 	 * The joinrel's partition expressions are the same as those of the input
 	 * rels, but we must properly classify them as nullable or not in the
-	 * joinrel's output.
+	 * joinrel's output.  (Also, we add some more partition expressions if
+	 * it's a FULL JOIN.)
 	 */
 	for (int cnt = 0; cnt < partnatts; cnt++)
 	{
@@ -1910,6 +1898,7 @@ set_joinrel_partition_key_exprs(RelOptInfo *joinrel,
 		const List *inner_null_expr = inner_rel->nullable_partexprs[cnt];
 		List	   *partexpr = NIL;
 		List	   *nullable_partexpr = NIL;
+		ListCell   *lc;
 
 		switch (jointype)
 		{
@@ -1969,6 +1958,43 @@ set_joinrel_partition_key_exprs(RelOptInfo *joinrel,
 												outer_null_expr);
 				nullable_partexpr = list_concat(nullable_partexpr,
 												inner_null_expr);
+
+				/*
+				 * Also add CoalesceExprs corresponding to each possible
+				 * full-join output variable (that is, left side coalesced to
+				 * right side), so that we can match equijoin expressions
+				 * using those variables.  We really only need these for
+				 * columns merged by JOIN USING, and only with the pairs of
+				 * input items that correspond to the data structures that
+				 * parse analysis would build for such variables.  But it's
+				 * hard to tell which those are, so just make all the pairs.
+				 * Extra items in the nullable_partexprs list won't cause big
+				 * problems.  (It's possible that such items will get matched
+				 * to user-written COALESCEs, but it should still be valid to
+				 * partition on those, since they're going to be either the
+				 * partition column or NULL; it's the same argument as for
+				 * partitionwise nesting of any outer join.)  We assume no
+				 * type coercions are needed to make the coalesce expressions,
+				 * since columns of different types won't have gotten
+				 * classified as the same PartitionScheme.
+				 */
+				foreach(lc, list_concat_copy(outer_expr, outer_null_expr))
+				{
+					Node	   *larg = (Node *) lfirst(lc);
+					ListCell   *lc2;
+
+					foreach(lc2, list_concat_copy(inner_expr, inner_null_expr))
+					{
+						Node	   *rarg = (Node *) lfirst(lc2);
+						CoalesceExpr *c = makeNode(CoalesceExpr);
+
+						c->coalescetype = exprType(larg);
+						c->coalescecollid = exprCollation(larg);
+						c->args = list_make2(larg, rarg);
+						c->location = -1;
+						nullable_partexpr = lappend(nullable_partexpr, c);
+					}
+				}
 				break;
 
 			default:

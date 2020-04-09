@@ -597,8 +597,10 @@ typedef struct PartitionSchemeData *PartitionScheme;
  *		part_scheme - Partitioning scheme of the relation
  *		nparts - Number of partitions
  *		boundinfo - Partition bounds
+ *		partbounds_merged - true if partition bounds are merged ones
  *		partition_qual - Partition constraint if not the root
  *		part_rels - RelOptInfos for each partition
+ *		all_partrels - Relids set of all partition relids
  *		partexprs, nullable_partexprs - Partition key expressions
  *		partitioned_child_rels - RT indexes of unpruned partitions of
  *								 this relation that are partitioned tables
@@ -613,6 +615,9 @@ typedef struct PartitionSchemeData *PartitionScheme;
  * that expression goes in the partexprs[i] list if the base relation
  * is not nullable by this join or any lower outer join, or in the
  * nullable_partexprs[i] list if the base relation is nullable.
+ * Furthermore, FULL JOINs add extra nullable_partexprs expressions
+ * corresponding to COALESCE expressions of the left and right join columns,
+ * to simplify matching join clauses to those lists.
  *----------
  */
 typedef enum RelOptKind
@@ -735,11 +740,16 @@ typedef struct RelOptInfo
 
 	/* used for partitioned relations: */
 	PartitionScheme part_scheme;	/* Partitioning scheme */
-	int			nparts;			/* Number of partitions */
+	int			nparts;			/* Number of partitions; -1 if not yet set;
+								 * in case of a join relation 0 means it's
+								 * considered unpartitioned */
 	struct PartitionBoundInfoData *boundinfo;	/* Partition bounds */
+	bool		partbounds_merged;	/* True if partition bounds were created
+									 * by partition_bounds_merge() */
 	List	   *partition_qual; /* Partition constraint, if not the root */
 	struct RelOptInfo **part_rels;	/* Array of RelOptInfos of partitions,
 									 * stored in the same order as bounds */
+	Relids		all_partrels;	/* Relids set of all partition relids */
 	List	  **partexprs;		/* Non-nullable partition key expressions */
 	List	  **nullable_partexprs; /* Nullable partition key expressions */
 	List	   *partitioned_child_rels; /* List of RT indexes */
@@ -1824,6 +1834,7 @@ typedef struct LimitPath
 	Path	   *subpath;		/* path representing input source */
 	Node	   *limitOffset;	/* OFFSET parameter, or NULL if none */
 	Node	   *limitCount;		/* COUNT parameter, or NULL if none */
+	LimitOption limitOption;	/* FETCH FIRST with ties or exact number */
 } LimitPath;
 
 

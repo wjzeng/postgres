@@ -931,6 +931,11 @@ _outLimit(StringInfo str, const Limit *node)
 
 	WRITE_NODE_FIELD(limitOffset);
 	WRITE_NODE_FIELD(limitCount);
+	WRITE_ENUM_FIELD(limitOption, LimitOption);
+	WRITE_INT_FIELD(uniqNumCols);
+	WRITE_ATTRNUMBER_ARRAY(uniqColIdx, node->uniqNumCols);
+	WRITE_OID_ARRAY(uniqOperators, node->uniqNumCols);
+	WRITE_OID_ARRAY(uniqCollations, node->uniqNumCols);
 }
 
 static void
@@ -2304,6 +2309,8 @@ _outRelOptInfo(StringInfo str, const RelOptInfo *node)
 	WRITE_BOOL_FIELD(has_eclass_joins);
 	WRITE_BOOL_FIELD(consider_partitionwise_join);
 	WRITE_BITMAPSET_FIELD(top_parent_relids);
+	WRITE_BOOL_FIELD(partbounds_merged);
+	WRITE_BITMAPSET_FIELD(all_partrels);
 	WRITE_NODE_FIELD(partitioned_child_rels);
 }
 
@@ -2741,6 +2748,7 @@ _outSelectStmt(StringInfo str, const SelectStmt *node)
 	WRITE_NODE_FIELD(sortClause);
 	WRITE_NODE_FIELD(limitOffset);
 	WRITE_NODE_FIELD(limitCount);
+	WRITE_ENUM_FIELD(limitOption, LimitOption);
 	WRITE_NODE_FIELD(lockingClause);
 	WRITE_NODE_FIELD(withClause);
 	WRITE_ENUM_FIELD(op, SetOperation);
@@ -2952,6 +2960,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_NODE_FIELD(sortClause);
 	WRITE_NODE_FIELD(limitOffset);
 	WRITE_NODE_FIELD(limitCount);
+	WRITE_ENUM_FIELD(limitOption, LimitOption);
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_NODE_FIELD(setOperations);
 	WRITE_NODE_FIELD(constraintDeps);
