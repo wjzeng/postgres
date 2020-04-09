@@ -64,6 +64,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/schemapg.h"
 #include "catalog/storage.h"
+#include "catalog/storage_gtt.h"
 #include "commands/policy.h"
 #include "commands/trigger.h"
 #include "miscadmin.h"
@@ -1132,6 +1133,24 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 				relation->rd_islocaltemp = false;
 			}
 			break;
+		case RELPERSISTENCE_GLOBAL_TEMP:
+			{
+				BlockNumber     relpages = 0;
+				double          reltuples = 0;
+				BlockNumber     relallvisible = 0;
+
+				relation->rd_backend = BackendIdForTempRelations();
+				relation->rd_islocaltemp = false;
+				get_gtt_relstats(RelationGetRelid(relation),
+								&relpages,
+								&reltuples,
+								&relallvisible,
+								NULL, NULL);
+				relation->rd_rel->relpages = (int32)relpages;
+				relation->rd_rel->reltuples = (float4)reltuples;
+				relation->rd_rel->relallvisible = (int32)relallvisible;
+			}
+			break;
 		default:
 			elog(ERROR, "invalid relpersistence: %c",
 				 relation->rd_rel->relpersistence);
@@ -1186,6 +1205,7 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 		case RELKIND_PARTITIONED_INDEX:
 			Assert(relation->rd_rel->relam != InvalidOid);
 			RelationInitIndexAccessInfo(relation);
+			gtt_fix_index_state(relation);
 			break;
 		case RELKIND_RELATION:
 		case RELKIND_TOASTVALUE:
@@ -1316,7 +1336,17 @@ RelationInitPhysicalAddr(Relation relation)
 			heap_freetuple(phys_tuple);
 		}
 
-		relation->rd_node.relNode = relation->rd_rel->relfilenode;
+		if (RELATION_IS_GLOBAL_TEMP(relation))
+		{
+			Oid newrelnode = gtt_fetch_current_relfilenode(RelationGetRelid(relation));
+			if (newrelnode != InvalidOid &&
+				newrelnode != relation->rd_rel->relfilenode)
+				relation->rd_node.relNode = newrelnode;
+			else
+				relation->rd_node.relNode = relation->rd_rel->relfilenode;
+		}
+		else
+			relation->rd_node.relNode = relation->rd_rel->relfilenode;
 	}
 	else
 	{
@@ -2245,6 +2275,8 @@ RelationReloadIndexInfo(Relation relation)
 							   HeapTupleHeaderGetXmin(tuple->t_data));
 
 		ReleaseSysCache(tuple);
+
+		gtt_fix_index_state(relation);
 	}
 
 	/* Okay, now it's valid again */
@@ -3471,6 +3503,10 @@ RelationBuildLocalRelation(const char *relname,
 			rel->rd_backend = BackendIdForTempRelations();
 			rel->rd_islocaltemp = true;
 			break;
+		case RELPERSISTENCE_GLOBAL_TEMP:
+			rel->rd_backend = BackendIdForTempRelations();
+			rel->rd_islocaltemp = false;
+			break;
 		default:
 			elog(ERROR, "invalid relpersistence: %c", relpersistence);
 			break;
@@ -3578,28 +3614,34 @@ void
 RelationSetNewRelfilenode(Relation relation, char persistence)
 {
 	Oid			newrelfilenode;
-	Relation	pg_class;
-	HeapTuple	tuple;
+	Relation	pg_class = NULL;
+	HeapTuple	tuple = NULL;
 	Form_pg_class classform;
 	MultiXactId minmulti = InvalidMultiXactId;
 	TransactionId freezeXid = InvalidTransactionId;
 	RelFileNode newrnode;
+	bool		modify_pg_class = !RELATION_IS_GLOBAL_TEMP(relation);
 
 	/* Allocate a new relfilenode */
 	newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace, NULL,
 									   persistence);
 
-	/*
-	 * Get a writable copy of the pg_class tuple for the given relation.
-	 */
-	pg_class = table_open(RelationRelationId, RowExclusiveLock);
+	if (modify_pg_class)
+	{
+		/*
+		 * Get a writable copy of the pg_class tuple for the given relation.
+		 */
+		pg_class = table_open(RelationRelationId, RowExclusiveLock);
 
-	tuple = SearchSysCacheCopy1(RELOID,
-								ObjectIdGetDatum(RelationGetRelid(relation)));
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "could not find tuple for relation %u",
-			 RelationGetRelid(relation));
-	classform = (Form_pg_class) GETSTRUCT(tuple);
+		tuple = SearchSysCacheCopy1(RELOID,
+									ObjectIdGetDatum(RelationGetRelid(relation)));
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "could not find tuple for relation %u",
+				 RelationGetRelid(relation));
+		classform = (Form_pg_class) GETSTRUCT(tuple);
+	}
+	else
+		memset(&classform, 0, sizeof(classform));
 
 	/*
 	 * Schedule unlinking of the old storage at transaction commit.
@@ -3625,7 +3667,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 				/* handle these directly, at least for now */
 				SMgrRelation srel;
 
-				srel = RelationCreateStorage(newrnode, persistence);
+				srel = RelationCreateStorage(newrnode, persistence, relation);
 				smgrclose(srel);
 			}
 			break;
@@ -3645,6 +3687,15 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 			break;
 	}
 
+	if (!modify_pg_class)
+	{
+		Oid relnode = gtt_fetch_current_relfilenode(RelationGetRelid(relation));
+
+		Assert(RELATION_IS_GLOBAL_TEMP(relation));
+		Assert(!RelationIsMapped(relation));
+		relation->rd_node.relNode = relnode;
+		CacheInvalidateRelcache(relation);
+	}
 	/*
 	 * If we're dealing with a mapped index, pg_class.relfilenode doesn't
 	 * change; instead we have to send the update to the relation mapper.
@@ -3654,7 +3705,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 	 * possibly-inaccurate values of relpages etc, but those will be fixed up
 	 * later.
 	 */
-	if (RelationIsMapped(relation))
+	else if (RelationIsMapped(relation))
 	{
 		/* This case is only supported for indexes */
 		Assert(relation->rd_rel->relkind == RELKIND_INDEX);
@@ -3700,9 +3751,12 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 		CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
 	}
 
-	heap_freetuple(tuple);
+	if (modify_pg_class)
+	{
+		heap_freetuple(tuple);
 
-	table_close(pg_class, RowExclusiveLock);
+		table_close(pg_class, RowExclusiveLock);
+	}
 
 	/*
 	 * Make the pg_class row change or relation map change visible.  This will
