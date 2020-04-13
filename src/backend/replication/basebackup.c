@@ -266,6 +266,14 @@ static const struct exclude_list_item excludeFiles[] =
 	{BACKUP_LABEL_FILE, false},
 	{TABLESPACE_MAP, false},
 
+	/*
+	 * If there's a backup_manifest, it belongs to a backup that was used to
+	 * start this server. It is *not* correct for this backup. Our
+	 * backup_manifest is injected into the backup separately if users want
+	 * it.
+	 */
+	{"backup_manifest", false},
+
 	{"postmaster.pid", false},
 	{"postmaster.opts", false},
 
@@ -1149,7 +1157,7 @@ AddFileToManifest(manifest_info *manifest, const char *spcoid,
 	}
 
 	/*
-	 * Each file's entry need to be separated from any entry that follows by a
+	 * Each file's entry needs to be separated from any entry that follows by a
 	 * comma, but there's no comma before the first one or after the last one.
 	 * To make that work, adding a file to the manifest starts by terminating
 	 * the most recently added line, with a comma if appropriate, but does not
