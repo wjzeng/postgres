@@ -2316,22 +2316,29 @@ WalSndLoop(WalSndSendDataCallback send_data)
 		WalSndKeepaliveIfNecessary();
 
 		/*
-		 * Block if we have unsent data.  Let WalSndWaitForWal() handle any
-		 * other blocking; idle receivers need its additional actions.
+		 * Block if we have unsent data.  XXX For logical replication, let
+		 * WalSndWaitForWal() handle any other blocking; idle receivers need
+		 * its additional actions.  For physical replication, also block if
+		 * caught up; its send_data does not block.
 		 */
-		if (pq_is_send_pending())
+		if ((WalSndCaughtUp && send_data != XLogSendLogical &&
+			 !streamingDoneSending) ||
+			pq_is_send_pending())
 		{
 			long		sleeptime;
 			int			wakeEvents;
 
 			wakeEvents = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT |
-				WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE;
+				WL_SOCKET_READABLE;
 
 			/*
 			 * Use fresh timestamp, not last_processing, to reduce the chance
 			 * of reaching wal_sender_timeout before sending a keepalive.
 			 */
 			sleeptime = WalSndComputeSleeptime(GetCurrentTimestamp());
+
+			if (pq_is_send_pending())
+				wakeEvents |= WL_SOCKET_WRITEABLE;
 
 			/* Sleep until something happens or we time out */
 			(void) WaitLatchOrSocket(MyLatch, wakeEvents,
