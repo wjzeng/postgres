@@ -11,7 +11,6 @@
 #ifndef PGSTAT_H
 #define PGSTAT_H
 
-#include "access/slru.h"
 #include "datatype/timestamp.h"
 #include "libpq/pqcomm.h"
 #include "miscadmin.h"
@@ -438,7 +437,7 @@ typedef struct PgStat_MsgBgWriter
 } PgStat_MsgBgWriter;
 
 /* ----------
- * PgStat_MsgSLRU			Sent by the SLRU to update statistics.
+ * PgStat_MsgSLRU			Sent by a backend to update SLRU statistics.
  * ----------
  */
 typedef struct PgStat_MsgSLRU
@@ -851,25 +850,24 @@ typedef enum
 	WAIT_EVENT_BGWORKER_SHUTDOWN,
 	WAIT_EVENT_BGWORKER_STARTUP,
 	WAIT_EVENT_BTREE_PAGE,
-	WAIT_EVENT_CLOG_GROUP_UPDATE,
 	WAIT_EVENT_CHECKPOINT_DONE,
 	WAIT_EVENT_CHECKPOINT_START,
 	WAIT_EVENT_EXECUTE_GATHER,
-	WAIT_EVENT_HASH_BATCH_ALLOCATING,
-	WAIT_EVENT_HASH_BATCH_ELECTING,
-	WAIT_EVENT_HASH_BATCH_LOADING,
-	WAIT_EVENT_HASH_BUILD_ALLOCATING,
-	WAIT_EVENT_HASH_BUILD_ELECTING,
-	WAIT_EVENT_HASH_BUILD_HASHING_INNER,
-	WAIT_EVENT_HASH_BUILD_HASHING_OUTER,
-	WAIT_EVENT_HASH_GROW_BATCHES_ALLOCATING,
-	WAIT_EVENT_HASH_GROW_BATCHES_DECIDING,
-	WAIT_EVENT_HASH_GROW_BATCHES_ELECTING,
-	WAIT_EVENT_HASH_GROW_BATCHES_FINISHING,
-	WAIT_EVENT_HASH_GROW_BATCHES_REPARTITIONING,
-	WAIT_EVENT_HASH_GROW_BUCKETS_ALLOCATING,
-	WAIT_EVENT_HASH_GROW_BUCKETS_ELECTING,
-	WAIT_EVENT_HASH_GROW_BUCKETS_REINSERTING,
+	WAIT_EVENT_HASH_BATCH_ALLOCATE,
+	WAIT_EVENT_HASH_BATCH_ELECT,
+	WAIT_EVENT_HASH_BATCH_LOAD,
+	WAIT_EVENT_HASH_BUILD_ALLOCATE,
+	WAIT_EVENT_HASH_BUILD_ELECT,
+	WAIT_EVENT_HASH_BUILD_HASH_INNER,
+	WAIT_EVENT_HASH_BUILD_HASH_OUTER,
+	WAIT_EVENT_HASH_GROW_BATCHES_ALLOCATE,
+	WAIT_EVENT_HASH_GROW_BATCHES_DECIDE,
+	WAIT_EVENT_HASH_GROW_BATCHES_ELECT,
+	WAIT_EVENT_HASH_GROW_BATCHES_FINISH,
+	WAIT_EVENT_HASH_GROW_BATCHES_REPARTITION,
+	WAIT_EVENT_HASH_GROW_BUCKETS_ALLOCATE,
+	WAIT_EVENT_HASH_GROW_BUCKETS_ELECT,
+	WAIT_EVENT_HASH_GROW_BUCKETS_REINSERT,
 	WAIT_EVENT_LOGICAL_SYNC_DATA,
 	WAIT_EVENT_LOGICAL_SYNC_STATE_CHANGE,
 	WAIT_EVENT_MQ_INTERNAL,
@@ -880,6 +878,7 @@ typedef enum
 	WAIT_EVENT_PARALLEL_CREATE_INDEX_SCAN,
 	WAIT_EVENT_PARALLEL_FINISH,
 	WAIT_EVENT_PROCARRAY_GROUP_UPDATE,
+	WAIT_EVENT_PROC_SIGNAL_BARRIER,
 	WAIT_EVENT_PROMOTE,
 	WAIT_EVENT_RECOVERY_CONFLICT_SNAPSHOT,
 	WAIT_EVENT_RECOVERY_CONFLICT_TABLESPACE,
@@ -887,7 +886,8 @@ typedef enum
 	WAIT_EVENT_REPLICATION_ORIGIN_DROP,
 	WAIT_EVENT_REPLICATION_SLOT_DROP,
 	WAIT_EVENT_SAFE_SNAPSHOT,
-	WAIT_EVENT_SYNC_REP
+	WAIT_EVENT_SYNC_REP,
+	WAIT_EVENT_XACT_GROUP_UPDATE
 } WaitEventIPC;
 
 /* ----------
@@ -944,7 +944,6 @@ typedef enum
 	WAIT_EVENT_LOGICAL_REWRITE_SYNC,
 	WAIT_EVENT_LOGICAL_REWRITE_TRUNCATE,
 	WAIT_EVENT_LOGICAL_REWRITE_WRITE,
-	WAIT_EVENT_PROC_SIGNAL_BARRIER,
 	WAIT_EVENT_RELATION_MAP_READ,
 	WAIT_EVENT_RELATION_MAP_SYNC,
 	WAIT_EVENT_RELATION_MAP_WRITE,
@@ -1261,11 +1260,6 @@ extern char *pgstat_stat_filename;
 extern PgStat_MsgBgWriter BgWriterStats;
 
 /*
- * SLRU statistics counters are updated directly by slru.
- */
-extern PgStat_MsgSLRU SlruStats[];
-
-/*
  * Updated by pgstat_count_buffer_*_time macros
  */
 extern PgStat_Counter pgStatBlockReadTime;
@@ -1480,14 +1474,14 @@ extern PgStat_ArchiverStats *pgstat_fetch_stat_archiver(void);
 extern PgStat_GlobalStats *pgstat_fetch_global(void);
 extern PgStat_SLRUStats *pgstat_fetch_slru(void);
 
-extern void pgstat_count_slru_page_zeroed(SlruCtl ctl);
-extern void pgstat_count_slru_page_hit(SlruCtl ctl);
-extern void pgstat_count_slru_page_read(SlruCtl ctl);
-extern void pgstat_count_slru_page_written(SlruCtl ctl);
-extern void pgstat_count_slru_page_exists(SlruCtl ctl);
-extern void pgstat_count_slru_flush(SlruCtl ctl);
-extern void pgstat_count_slru_truncate(SlruCtl ctl);
-extern char *pgstat_slru_name(int idx);
-extern int pgstat_slru_index(const char *name);
+extern void pgstat_count_slru_page_zeroed(int slru_idx);
+extern void pgstat_count_slru_page_hit(int slru_idx);
+extern void pgstat_count_slru_page_read(int slru_idx);
+extern void pgstat_count_slru_page_written(int slru_idx);
+extern void pgstat_count_slru_page_exists(int slru_idx);
+extern void pgstat_count_slru_flush(int slru_idx);
+extern void pgstat_count_slru_truncate(int slru_idx);
+extern const char *pgstat_slru_name(int slru_idx);
+extern int	pgstat_slru_index(const char *name);
 
 #endif							/* PGSTAT_H */
