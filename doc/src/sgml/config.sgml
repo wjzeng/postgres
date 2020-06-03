@@ -2820,6 +2820,41 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-wal-init-zero" xreflabel="wal_init_zero">
+      <term><varname>wal_init_zero</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_init_zero</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If set to <literal>on</literal> (the default), this option causes new
+        WAL files to be filled with zeroes.  On some file systems, this ensures
+        that space is allocated before we need to write WAL records.  However,
+        <firstterm>Copy-On-Write</firstterm> (COW) file systems may not benefit
+        from this technique, so the option is given to skip the unnecessary
+        work.  If set to <literal>off</literal>, only the final byte is written
+        when the file is created so that it has the expected size.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-wal-recycle" xreflabel="wal_recycle">
+      <term><varname>wal_recycle</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_recycle</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If set to <literal>on</literal> (the default), this option causes WAL
+        files to be recycled by renaming them, avoiding the need to create new
+        ones.  On COW file systems, it may be faster to create new ones, so the
+        option is given to disable this behavior.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-wal-buffers" xreflabel="wal_buffers">
       <term><varname>wal_buffers</varname> (<type>integer</type>)
       <indexterm>
@@ -3752,41 +3787,6 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
        </listitem>
       </varlistentry>
 
-     <varlistentry id="guc-wal-init-zero" xreflabel="wal_init_zero">
-      <term><varname>wal_init_zero</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>wal_init_zero</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        If set to <literal>on</literal> (the default), this option causes new
-        WAL files to be filled with zeroes.  On some file systems, this ensures
-        that space is allocated before we need to write WAL records.  However,
-        <firstterm>Copy-On-Write</firstterm> (COW) file systems may not benefit
-        from this technique, so the option is given to skip the unnecessary
-        work.  If set to <literal>off</literal>, only the final byte is written
-        when the file is created so that it has the expected size.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-wal-recycle" xreflabel="wal_recycle">
-      <term><varname>wal_recycle</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>wal_recycle</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        If set to <literal>on</literal> (the default), this option causes WAL
-        files to be recycled by renaming them, avoiding the need to create new
-        ones.  On COW file systems, it may be faster to create new ones, so the
-        option is given to disable this behavior.
-       </para>
-      </listitem>
-     </varlistentry>
-
       <varlistentry id="guc-max-slot-wal-keep-size" xreflabel="max_slot_wal_keep_size">
        <term><varname>max_slot_wal_keep_size</varname> (<type>integer</type>)
        <indexterm>
@@ -3889,9 +3889,9 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         The synchronous standbys will be those whose names appear
         in this list, and
         that are both currently connected and streaming data in real-time
-        (as shown by a state of <literal>streaming</literal> in the <link
-        linkend="pg-stat-replication-view"><literal>pg_stat_replication</literal></link>
-        view).
+        (as shown by a state of <literal>streaming</literal> in the
+        <link linkend="monitoring-pg-stat-replication-view">
+        <structname>pg_stat_replication</structname></link> view).
         Specifying more than one synchronous standby can allow for very high
         availability and protection against data loss.
        </para>
@@ -4244,8 +4244,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        Specifies the minimum frequency for the WAL receiver
        process on the standby to send information about replication progress
        to the primary or upstream standby, where it can be seen using the
-       <link
-       linkend="pg-stat-replication-view"><literal>pg_stat_replication</literal></link>
+       <link linkend="monitoring-pg-stat-replication-view">
+       <structname>pg_stat_replication</structname></link>
        view.  The standby will report
        the last write-ahead log location it has written, the last position it
        has flushed to disk, and the last position it has applied.
@@ -4925,7 +4925,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         the database is smaller than the total server memory, decreasing
         random_page_cost can be appropriate.  Storage that has a low random
         read cost relative to sequential, e.g. solid-state drives, might
-        also be better modeled with a lower value for random_page_cost.
+        also be better modeled with a lower value for random_page_cost,
+        e.g., <literal>1.1</literal>.
        </para>
 
        <tip>
@@ -6693,8 +6694,10 @@ local0.*    /var/log/postgresql
 
          <para>
           The backend type corresponds to the column
-          <structfield>backend_type</structfield> in the view <xref
-          linkend="pg-stat-activity-view"/>, but additional types can appear
+          <structfield>backend_type</structfield> in the view
+          <link linkend="monitoring-pg-stat-activity-view">
+          <structname>pg_stat_activity</structname></link>,
+          but additional types can appear
           in the log that don't show in that view.
          </para>
 
@@ -7190,7 +7193,8 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         platforms.  You can use the <xref linkend="pgtesttiming"/> tool to
         measure the overhead of timing on your system.
         I/O timing information is
-        displayed in <xref linkend="pg-stat-database-view"/>, in the output of
+        displayed in <link linkend="monitoring-pg-stat-database-view">
+        <structname>pg_stat_database</structname></link>, in the output of
         <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option is
         used, and by <xref linkend="pgstatstatements"/>.  Only superusers can
         change this setting.

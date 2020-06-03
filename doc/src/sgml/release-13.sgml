@@ -645,7 +645,7 @@ Author: Jeff Davis <jdavis@postgresql.org>
        <para>
         Previously, hash aggregation was avoided if it was expected to use
         more than <xref linkend="guc-work-mem"/> memory.  This is controlled
-        by <xref linkend="guc-enable-hashagg-disk"/>.
+        by <xref linkend="guc-enable-groupingsets-hash-disk"/>.
        </para>
       </listitem>
 
@@ -1376,7 +1376,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
       <para>
-       Allow <link linkend="sql-fetch"><command>FETCH FIRST</command></link>
+       Allow <link linkend="sql-limit"><command>FETCH FIRST</command></link>
        to use <literal>WITH TIES</literal> to return any additional rows
        that match the last result row (Surafel Temesgen)
       </para>
@@ -2890,9 +2890,10 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
       <para>
-       Add extension <application>bool_plperl</application> which transforms
-       <acronym>SQL</acronym> booleans to/from PL/Perl booleans (Ivan
-       Panchenko) WHERE IS THIS DOCUMENTED?
+       Add extension <link
+       linkend="plperl"><application>bool_plperl</application></link>
+       which transforms <acronym>SQL</acronym> booleans to/from PL/Perl
+       booleans (Ivan Panchenko)
       </para>
      </listitem>
 
