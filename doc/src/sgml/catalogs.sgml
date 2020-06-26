@@ -897,7 +897,7 @@
 
   <para>
    An entry's <structfield>amopmethod</structfield> must match the
-   <structname>opfmethod</structname> of its containing operator family (including
+   <structfield>opfmethod</structfield> of its containing operator family (including
    <structfield>amopmethod</structfield> here is an intentional denormalization of the
    catalog structure for performance reasons).  Also,
    <structfield>amoplefttype</structfield> and <structfield>amoprighttype</structfield> must match
@@ -5064,10 +5064,10 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
 
   <para>
    An operator class's <structfield>opcmethod</structfield> must match the
-   <structname>opfmethod</structname> of its containing operator family.
+   <structfield>opfmethod</structfield> of its containing operator family.
    Also, there must be no more than one <structname>pg_opclass</structname>
-   row having <structname>opcdefault</structname> true for any given combination of
-   <structname>opcmethod</structname> and <structname>opcintype</structname>.
+   row having <structfield>opcdefault</structfield> true for any given combination of
+   <structfield>opcmethod</structfield> and <structfield>opcintype</structfield>.
   </para>
 
  </sect1>
@@ -11239,19 +11239,29 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
        Possible values are:
        <itemizedlist>
         <listitem>
-         <para><literal>normal</literal> means that the claimed files
+         <para><literal>reserved</literal> means that the claimed files
           are within <varname>max_wal_size</varname>.</para>
         </listitem>
         <listitem>
-         <para><literal>reserved</literal> means
+         <para><literal>extended</literal> means
           that <varname>max_wal_size</varname> is exceeded but the files are
-          still held, either by some replication slot or
-          by <varname>wal_keep_segments</varname>.</para>
+          still retained, either by the replication slot or
+          by <varname>wal_keep_segments</varname>.
+         </para>
         </listitem>
         <listitem>
-         <para><literal>lost</literal> means that some WAL files are
-          definitely lost and this slot cannot be used to resume replication
-          anymore.</para>
+         <para>
+          <literal>unreserved</literal> means that the slot no longer
+          retains the required WAL files and some of them are to be removed at
+          the next checkpoint.  This state can return
+          to <literal>reserved</literal> or <literal>extended</literal>.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>lost</literal> means that some required WAL files have
+          been removed and this slot is no longer usable.
+         </para>
         </listitem>
        </itemizedlist>
        The last two states are seen only when

@@ -170,7 +170,7 @@ typedef struct LogicalTape
 	 * numbers first).
 	 */
 	long	   *prealloc;
-	int		 	nprealloc;		/* number of elements in list */
+	int			nprealloc;		/* number of elements in list */
 	int			prealloc_size;	/* number of elements list can hold */
 } LogicalTape;
 
@@ -262,12 +262,12 @@ ltsWriteBlock(LogicalTapeSet *lts, long blocknum, void *buffer)
 	}
 
 	/* Write the requested block */
-	if (BufFileSeekBlock(lts->pfile, blocknum) != 0 ||
-		BufFileWrite(lts->pfile, buffer, BLCKSZ) != BLCKSZ)
+	if (BufFileSeekBlock(lts->pfile, blocknum) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not write block %ld of temporary file: %m",
+				 errmsg("could not seek to block %ld of temporary file",
 						blocknum)));
+	BufFileWrite(lts->pfile, buffer, BLCKSZ);
 
 	/* Update nBlocksWritten, if we extended the file */
 	if (blocknum == lts->nBlocksWritten)
@@ -283,12 +283,19 @@ ltsWriteBlock(LogicalTapeSet *lts, long blocknum, void *buffer)
 static void
 ltsReadBlock(LogicalTapeSet *lts, long blocknum, void *buffer)
 {
-	if (BufFileSeekBlock(lts->pfile, blocknum) != 0 ||
-		BufFileRead(lts->pfile, buffer, BLCKSZ) != BLCKSZ)
+	size_t		nread;
+
+	if (BufFileSeekBlock(lts->pfile, blocknum) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not read block %ld of temporary file: %m",
+				 errmsg("could not seek to block %ld of temporary file",
 						blocknum)));
+	nread = BufFileRead(lts->pfile, buffer, BLCKSZ);
+	if (nread != BLCKSZ)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not read block %ld of temporary file: read only %zu of %zu bytes",
+						blocknum, nread, (size_t) BLCKSZ)));
 }
 
 /*
@@ -782,7 +789,7 @@ LogicalTapeWrite(LogicalTapeSet *lts, int tapenum,
 	Assert(lt->buffer_size == BLCKSZ);
 	while (size > 0)
 	{
-		if (lt->pos >= TapeBlockPayloadSize)
+		if (lt->pos >= (int) TapeBlockPayloadSize)
 		{
 			/* Buffer full, dump it out */
 			long		nextBlockNumber;

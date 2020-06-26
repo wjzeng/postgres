@@ -290,7 +290,7 @@ typedef struct TableAmRoutine
 	 *
 	 * *call_again is false on the first call to index_fetch_tuple for a tid.
 	 * If there potentially is another tuple matching the tid, *call_again
-	 * needs be set to true by index_fetch_tuple, signalling to the caller
+	 * needs to be set to true by index_fetch_tuple, signaling to the caller
 	 * that index_fetch_tuple should be called again for the same tid.
 	 *
 	 * *all_dead, if all_dead is not NULL, should be set to true by
@@ -989,11 +989,13 @@ table_index_fetch_end(struct IndexFetchTableData *scan)
 /*
  * Fetches, as part of an index scan, tuple at `tid` into `slot`, after doing
  * a visibility test according to `snapshot`. If a tuple was found and passed
- * the visibility test, returns true, false otherwise.
+ * the visibility test, returns true, false otherwise. Note that *tid may be
+ * modified when we return true (see later remarks on multiple row versions
+ * reachable via a single index entry).
  *
  * *call_again needs to be false on the first call to table_index_fetch_tuple() for
  * a tid. If there potentially is another tuple matching the tid, *call_again
- * will be set to true, signalling that table_index_fetch_tuple() should be called
+ * will be set to true, signaling that table_index_fetch_tuple() should be called
  * again for the same tid.
  *
  * *all_dead, if all_dead is not NULL, will be set to true by
@@ -1546,7 +1548,7 @@ table_index_build_scan(Relation table_rel,
 /*
  * As table_index_build_scan(), except that instead of scanning the complete
  * table, only the given number of blocks are scanned.  Scan to end-of-rel can
- * be signalled by passing InvalidBlockNumber as numblocks.  Note that
+ * be signaled by passing InvalidBlockNumber as numblocks.  Note that
  * restricting the range to scan cannot be done when requesting syncscan.
  *
  * When "anyvisible" mode is requested, all tuples visible to any transaction

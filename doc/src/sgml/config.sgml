@@ -1013,11 +1013,11 @@ include_dir 'conf.d'
       <listitem>
        <para>
         When a password is specified in <xref linkend="sql-createrole"/> or
-        <xref linkend="sql-alterrole"/>, this parameter determines the algorithm
-        to use to encrypt the password. The default value is <literal>md5</literal>,
-        which stores the password as an MD5 hash (<literal>on</literal> is also
-        accepted, as alias for <literal>md5</literal>). Setting this parameter to
-        <literal>scram-sha-256</literal> will encrypt the password with SCRAM-SHA-256.
+        <xref linkend="sql-alterrole"/>, this parameter determines the
+        algorithm to use to encrypt the password.  Possible values are
+        <literal>scram-sha-256</literal>, which will encrypt the password with
+        SCRAM-SHA-256, and <literal>md5</literal>, which stores the password
+        as an MD5 hash.  The default is <literal>scram-sha-256</literal>.
        </para>
        <para>
         Note that older clients might lack support for the SCRAM authentication
@@ -4083,7 +4083,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
           This parameter can only be set in the <filename>postgresql.conf</filename>
           file or on the server command line.
           If this parameter is changed while the WAL receiver process is
-          running, that process is signalled to shut down and expected to
+          running, that process is signaled to shut down and expected to
           restart with the new setting (except if <varname>primary_conninfo</varname>
           is an empty string).
           This setting has no effect if the server is not in standby mode.
@@ -4105,7 +4105,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
           This parameter can only be set in the <filename>postgresql.conf</filename>
           file or on the server command line.
           If this parameter is changed while the WAL receiver process is running,
-          that process is signalled to shut down and expected to restart with the
+          that process is signaled to shut down and expected to restart with the
           new setting.
           This setting has no effect if <varname>primary_conninfo</varname> is not
           set or the server is not in standby mode.
@@ -4227,7 +4227,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         The default is off.  This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
         If this parameter is changed while the WAL receiver process is running,
-        that process is signalled to shut down and expected to restart with
+        that process is signaled to shut down and expected to restart with
         the new setting.
        </para>
       </listitem>
@@ -4546,23 +4546,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-enable-groupingsets-hash-disk" xreflabel="enable_groupingsets_hash_disk">
-      <term><varname>enable_groupingsets_hash_disk</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>enable_groupingsets_hash_disk</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Enables or disables the query planner's use of hashed aggregation plan
-        types for grouping sets when the total size of the hash tables is
-        expected to exceed <varname>work_mem</varname>.  See <xref
-        linkend="queries-grouping-sets"/>.  The default is
-        <literal>off</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-enable-hashagg" xreflabel="enable_hashagg">
       <term><varname>enable_hashagg</varname> (<type>boolean</type>)
       <indexterm>
@@ -4573,21 +4556,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of hashed
         aggregation plan types. The default is <literal>on</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-enable-hashagg-disk" xreflabel="enable_hashagg_disk">
-      <term><varname>enable_hashagg_disk</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>enable_hashagg_disk</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Enables or disables the query planner's use of hashed aggregation plan
-        types when the memory usage is expected to exceed
-        <varname>work_mem</varname>.  The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -4834,6 +4802,23 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of <acronym>TID</acronym>
         scan plan types. The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-hashagg-avoid-disk-plan" xreflabel="hashagg_avoid_disk_plan">
+      <term><varname>hashagg_avoid_disk_plan</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>hashagg_avoid_disk_plan</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If set to <literal>on</literal>, causes the planner to avoid choosing
+        hashed aggregation plans that are expected to use the disk. If hashed
+        aggregation is chosen, it may still require the use of disk at
+        execution time, even if this parameter is enabled. The default is
+        <literal>off</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -8062,7 +8047,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         treated the timeout as applying to the whole query string.)
         In extended query protocol, the timeout starts running when any
         query-related message (Parse, Bind, Execute, Describe) arrives, and
-        it is cancelled by completion of an Execute or Sync message.
+        it is canceled by completion of an Execute or Sync message.
        </para>
 
        <para>

@@ -123,6 +123,8 @@ sub installcheck_internal
 sub installcheck
 {
 	my $schedule = shift || 'serial';
+
+	CleanupTablespaceDirectory();
 	installcheck_internal($schedule);
 	return;
 }
@@ -143,6 +145,7 @@ sub check
 		"--temp-instance=./tmp_check");
 	push(@args, $maxconn)     if $maxconn;
 	push(@args, $temp_config) if $temp_config;
+	CleanupTablespaceDirectory();
 	system(@args);
 	my $status = $? >> 8;
 	exit $status if $status;
@@ -198,7 +201,7 @@ sub tap_check
 	  unless $config->{tap_tests};
 
 	my @flags;
-	foreach my $arg (0 .. scalar(@_))
+	foreach my $arg (0 .. scalar(@_) - 1)
 	{
 		next unless $_[$arg] =~ /^PROVE_FLAGS=(.*)/;
 		@flags = split(/\s+/, $1);
@@ -570,10 +573,8 @@ sub upgradecheck
 	$ENV{PGDATA} = "$data.old";
 	my $outputdir          = "$tmp_root/regress";
 	my @EXTRA_REGRESS_OPTS = ("--outputdir=$outputdir");
-	mkdir "$outputdir"                || die $!;
-	mkdir "$outputdir/sql"            || die $!;
-	mkdir "$outputdir/expected"       || die $!;
-	mkdir "$outputdir/testtablespace" || die $!;
+	mkdir "$outputdir" || die $!;
+	CleanupTablespaceDirectory($outputdir);
 
 	my $logdir = "$topdir/src/bin/pg_upgrade/log";
 	rmtree($logdir);
@@ -737,6 +738,16 @@ sub InstallTemp
 	}
 	$ENV{PATH} = "$tmp_installdir/bin;$ENV{PATH}";
 	return;
+}
+
+sub CleanupTablespaceDirectory
+{
+	my $testdir = shift || getcwd();
+
+	my $testtablespace = "$testdir/testtablespace";
+
+	rmtree($testtablespace) if (-d $testtablespace);
+	mkdir($testtablespace);
 }
 
 sub usage
