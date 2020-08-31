@@ -19,6 +19,7 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_publication.h"
+#include "catalog/pg_am_d.h"
 #include "nodes/bitmapset.h"
 #include "partitioning/partdefs.h"
 #include "rewrite/prs2lock.h"
@@ -305,6 +306,7 @@ typedef struct StdRdOptions
 	int			parallel_workers;	/* max number of parallel workers */
 	bool		vacuum_index_cleanup;	/* enables index vacuuming and cleanup */
 	bool		vacuum_truncate;	/* enables vacuum to truncate a relation */
+	int			relstorage_offset;	/* see RELSTORAGE_xxx constants below */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
@@ -359,6 +361,20 @@ typedef struct StdRdOptions
 #define RelationGetParallelWorkers(relation, defaultpw) \
 	((relation)->rd_options ? \
 	 ((StdRdOptions *) (relation)->rd_options)->parallel_workers : (defaultpw))
+
+
+/*
+ * RelationStorageIsZHeap
+ *  TRUE if relation stored in a zheap format
+ */
+#define RelationStorageIsZHeap(relation) \
+	(relation &&	\
+	((relation)->rd_rel->relkind == RELKIND_RELATION ||	\
+	 (relation)->rd_rel->relkind == RELKIND_MATVIEW ||	\
+	 (relation)->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||	\
+	 (relation)->rd_rel->relkind == RELKIND_TOASTVALUE) &&	\
+	 (relation)->rd_rel->relam == ZHEAP_TABLE_AM_OID)
+
 
 /* ViewOptions->check_option values */
 typedef enum ViewOptCheckOption

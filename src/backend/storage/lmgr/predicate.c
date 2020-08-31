@@ -209,6 +209,7 @@
 #include "storage/procarray.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/ztqual.h"
 
 /* Uncomment the next line to test the graceful degradation code. */
 /* #define TEST_SUMMARIZE_SERIAL */
@@ -476,7 +477,6 @@ static void SetNewSxactGlobalXmin(void);
 static void ClearOldPredicateLocks(void);
 static void ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
 									   bool summarize);
-static bool XidIsConcurrent(TransactionId xid);
 static void CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag);
 static void FlagRWConflict(SERIALIZABLEXACT *reader, SERIALIZABLEXACT *writer);
 static void OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
@@ -1065,6 +1065,12 @@ CheckPointPredicate(void)
 }
 
 /*------------------------------------------------------------------------*/
+
+bool
+IsSerializableXact()
+{
+	return (MySerializableXact != InvalidSerializableXact);
+}
 
 /*
  * InitPredicateLocks -- Initialize the predicate locking data structures.
@@ -3990,7 +3996,7 @@ ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
  * that to this function to save the overhead of checking the snapshot's
  * subxip array.
  */
-static bool
+bool
 XidIsConcurrent(TransactionId xid)
 {
 	Snapshot	snap;

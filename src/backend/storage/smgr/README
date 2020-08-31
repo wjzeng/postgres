@@ -31,7 +31,17 @@ The files in this directory, and their contents, are
     md.c	The "magnetic disk" storage manager, which is really just
 		an interface to the kernel's filesystem operations.
 
+
+    undo_file.c The undo log storage manager.  This supports
+		buffer-pool based access to the contents of undo log
+		segment files.  It supports a limited subset of the
+		smgr interface: it can only read and write blocks of
+		existing files.
+
 Note that md.c in turn relies on src/backend/storage/file/fd.c.
+undo_file.c also uses fd.c to read and write blocks, but it expects
+src/backend/access/undo/undolog.c to manage the files holding those
+blocks.
 
 
 Relation Forks

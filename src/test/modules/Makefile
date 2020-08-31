@@ -23,6 +23,8 @@ SUBDIRS = \
 		  test_rls_hooks \
 		  test_shm_mq \
 		  unsafe_tests \
+		  test_undo \
+		  test_alter_tablespace_zheap \
 		  worker_spi
 
 ifeq ($(with_openssl),yes)

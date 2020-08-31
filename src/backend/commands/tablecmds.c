@@ -23,6 +23,7 @@
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
+#include "access/undodiscard.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -5310,16 +5311,15 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		 */
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
-
-		/*
-		 * Switch to per-tuple memory context and reset it for each tuple
-		 * produced, so we don't leak memory.
-		 */
-		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-
 		while (table_scan_getnextslot(scan, ForwardScanDirection, oldslot))
 		{
 			TupleTableSlot *insertslot;
+
+			/*
+			 * Switch to per-tuple memory context and reset it for each tuple
+			 * produced, so we don't leak memory.
+			 */
+			oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
 			if (tab->rewrite > 0)
 			{
@@ -5463,11 +5463,9 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 								   ti_options, bistate);
 
 			ResetExprContext(econtext);
-
+			MemoryContextSwitchTo(oldCxt);
 			CHECK_FOR_INTERRUPTS();
 		}
-
-		MemoryContextSwitchTo(oldCxt);
 		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 
@@ -9802,6 +9800,87 @@ ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd,
 }
 
 /*
+ * Scan the existing rows in a table to verify they meet a proposed
+ * CHECK constraint.
+ *
+ * The caller must have opened and locked the relation appropriately.
+ */
+static void
+validateCheckConstraint(Relation rel, HeapTuple constrtup)
+{
+	EState	   *estate;
+	Datum		val;
+	char	   *conbin;
+	Expr	   *origexpr;
+	ExprState  *exprstate;
+	TableScanDesc scan;
+	ExprContext *econtext;
+	MemoryContext oldcxt;
+	TupleTableSlot *slot;
+	Form_pg_constraint constrForm;
+	bool		isnull;
+	Snapshot	snapshot;
+
+	/*
+	 * VALIDATE CONSTRAINT is a no-op for foreign tables and partitioned
+	 * tables.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE ||
+		rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		return;
+
+	constrForm = (Form_pg_constraint) GETSTRUCT(constrtup);
+
+	estate = CreateExecutorState();
+
+	/*
+	 * XXX this tuple doesn't really come from a syscache, but this doesn't
+	 * matter to SysCacheGetAttr, because it only wants to be able to fetch
+	 * the tupdesc
+	 */
+	val = SysCacheGetAttr(CONSTROID, constrtup, Anum_pg_constraint_conbin,
+						  &isnull);
+	if (isnull)
+		elog(ERROR, "null conbin for constraint %u",
+			 constrForm->oid);
+	conbin = TextDatumGetCString(val);
+	origexpr = (Expr *) stringToNode(conbin);
+	exprstate = ExecPrepareExpr(origexpr, estate);
+
+	econtext = GetPerTupleExprContext(estate);
+	slot = table_slot_create(rel, NULL);
+	econtext->ecxt_scantuple = slot;
+
+	snapshot = RegisterSnapshot(GetLatestSnapshot());
+	scan = table_beginscan(rel, snapshot, 0, NULL);
+
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		/*
+		 * Switch to per-tuple memory context and reset it for each tuple
+		 * produced, so we don't leak memory.
+		 */
+		oldcxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
+
+		if (!ExecCheck(exprstate, econtext))
+			ereport(ERROR,
+					(errcode(ERRCODE_CHECK_VIOLATION),
+					 errmsg("check constraint \"%s\" of relation \"%s\" is violated by some row",
+							NameStr(constrForm->conname),
+							RelationGetRelationName(rel)),
+					 errtableconstraint(rel, NameStr(constrForm->conname))));
+
+		ResetExprContext(econtext);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	table_endscan(scan);
+	UnregisterSnapshot(snapshot);
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+}
+
+/*
  * ALTER TABLE VALIDATE CONSTRAINT
  *
  * XXX The reason we handle recursion here rather than at Phase 1 is because
@@ -9895,10 +9974,6 @@ ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
 		{
 			List	   *children = NIL;
 			ListCell   *child;
-			NewConstraint *newcon;
-			bool		isnull;
-			Datum		val;
-			char	   *conbin;
 
 			/*
 			 * If we're recursing, the parent has already done this, so skip
@@ -9943,26 +10018,8 @@ ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
 				table_close(childrel, NoLock);
 			}
 
-			/* Queue validation for phase 3 */
-			newcon = (NewConstraint *) palloc0(sizeof(NewConstraint));
-			newcon->name = constrName;
-			newcon->contype = CONSTR_CHECK;
-			newcon->refrelid = InvalidOid;
-			newcon->refindid = InvalidOid;
-			newcon->conid = con->oid;
-
-			val = SysCacheGetAttr(CONSTROID, tuple,
-								  Anum_pg_constraint_conbin, &isnull);
-			if (isnull)
-				elog(ERROR, "null conbin for constraint %u", con->oid);
-
-			conbin = TextDatumGetCString(val);
-			newcon->qual = (Node *) stringToNode(conbin);
-
-			/* Find or create work queue entry for this table */
-			tab = ATGetQueueEntry(wqueue, rel);
-			tab->constraints = lappend(tab->constraints, newcon);
-
+			/* TODO:TODO check this. */
+			validateCheckConstraint(rel, tuple);
 			/*
 			 * Invalidate relcache so that others see the new validated
 			 * constraint.
@@ -10392,13 +10449,11 @@ validateForeignKeyConstraint(char *conname,
 	perTupCxt = AllocSetContextCreate(CurrentMemoryContext,
 									  "validateForeignKeyConstraint",
 									  ALLOCSET_SMALL_SIZES);
-	oldcxt = MemoryContextSwitchTo(perTupCxt);
-
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		LOCAL_FCINFO(fcinfo, 0);
 		TriggerData trigdata = {0};
-
+		oldcxt = MemoryContextSwitchTo(perTupCxt);
 		CHECK_FOR_INTERRUPTS();
 
 		/*
@@ -10423,9 +10478,8 @@ validateForeignKeyConstraint(char *conname,
 		RI_FKey_check_ins(fcinfo);
 
 		MemoryContextReset(perTupCxt);
+		MemoryContextSwitchTo(oldcxt);
 	}
-
-	MemoryContextSwitchTo(oldcxt);
 	MemoryContextDelete(perTupCxt);
 	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
@@ -15356,6 +15410,10 @@ PreCommit_on_commit_actions(void)
 				break;
 			case ONCOMMIT_DROP:
 				oids_to_drop = lappend_oid(oids_to_drop, oc->relid);
+				break;
+			case ONCOMMIT_TEMP_DISCARD:
+				/* Discard temp table undo logs for temp tables. */
+				TempUndoDiscard(oc->relid);
 				break;
 		}
 	}

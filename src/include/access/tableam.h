@@ -19,6 +19,7 @@
 
 #include "access/relscan.h"
 #include "access/sdir.h"
+#include "storage/bufmgr.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
@@ -119,12 +120,18 @@ typedef enum TM_Result
  * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
  * transactions.)
  */
+/* in_place_updated_or_locked indicates whether the tuple is updated or locked.
+ * We need to re-verify the tuple even if it is just marked as locked, because
+ * previously someone could have updated it in place.
+ */
+
 typedef struct TM_FailureData
 {
 	ItemPointerData ctid;
 	TransactionId xmax;
 	CommandId	cmax;
 	bool		traversed;
+	bool		in_place_updated_or_locked;
 } TM_FailureData;
 
 /* "options" flag bits for table_tuple_insert */
@@ -1003,12 +1010,12 @@ table_index_fetch_end(struct IndexFetchTableData *scan)
  * that tuple. Index AMs can use that to avoid returning that tid in future
  * searches.
  *
- * The difference between this function and table_tuple_fetch_row_version()
- * is that this function returns the currently visible version of a row if
- * the AM supports storing multiple row versions reachable via a single index
- * entry (like heap's HOT). Whereas table_tuple_fetch_row_version() only
- * evaluates the tuple exactly at `tid`. Outside of index entry ->table tuple
- * lookups, table_tuple_fetch_row_version() is what's usually needed.
+ * The difference between this function and table_fetch_row_version is that
+ * this function returns the currently visible version of a row if the AM
+ * supports storing multiple row versions reachable via a single index entry
+ * (like heap's HOT). Whereas table_fetch_row_version only evaluates the
+ * tuple exactly at `tid`. Outside of index entry ->table tuple lookups,
+ * table_tuple_fetch_row_version is what's usually needed.
  */
 static inline bool
 table_index_fetch_tuple(struct IndexFetchTableData *scan,
@@ -1062,9 +1069,8 @@ table_tuple_fetch_row_version(Relation rel,
 /*
  * Verify that `tid` is a potentially valid tuple identifier. That doesn't
  * mean that the pointed to row needs to exist or be visible, but that
- * attempting to fetch the row (e.g. with table_tuple_get_latest_tid() or
- * table_tuple_fetch_row_version()) should not error out if called with that
- * tid.
+ * attempting to fetch the row (e.g. with table_get_latest_tid() or
+ * table_fetch_row_version()) should not error out if called with that tid.
  *
  * `scan` needs to have been started via table_beginscan().
  */
@@ -1193,8 +1199,8 @@ table_tuple_complete_speculative(Relation rel, TupleTableSlot *slot,
 /*
  * Insert multiple tuples into a table.
  *
- * This is like table_tuple_insert(), but inserts multiple tuples in one
- * operation. That's often faster than calling table_tuple_insert() in a loop,
+ * This is like table_insert(), but inserts multiple tuples in one
+ * operation. That's often faster than calling table_insert() in a loop,
  * because e.g. the AM can reduce WAL logging and page locking overhead.
  *
  * Except for taking `nslots` tuples as input, and an array of TupleTableSlots
@@ -1821,5 +1827,21 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
 extern bool check_default_table_access_method(char **newval, void **extra,
 											  GucSource source);
+
+/* ----------------------------------------------------------------------------
+ * Functions common to heap and zheap
+ * ----------------------------------------------------------------------------
+ */
+typedef struct BulkInsertStateData *BulkInsertState;
+
+extern bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
+								 LockTupleMode mode, LockWaitPolicy wait_policy,
+								 bool *have_tuple_lock);
+extern void GetVisibilityMapPins(Relation relation, Buffer buffer1,
+								 Buffer buffer2, BlockNumber block1, BlockNumber block2,
+								 Buffer *vmbuffer1, Buffer *vmbuffer2);
+extern void RelationAddExtraBlocks(Relation relation, BulkInsertState bistate);
+extern Buffer ReadBufferBI(Relation relation, BlockNumber targetBlock,
+						   ReadBufferMode mode, BulkInsertState bistate);
 
 #endif							/* TABLEAM_H */

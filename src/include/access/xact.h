@@ -15,12 +15,14 @@
 #define XACT_H
 
 #include "access/transam.h"
+#include "access/undolog.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
 #include "storage/relfilenode.h"
 #include "storage/sinval.h"
 #include "utils/datetime.h"
+#include "utils/resowner.h"
 
 /*
  * Maximum size of Global Transaction ID (including '\0').
@@ -308,6 +310,16 @@ typedef struct xl_xact_prepare
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+
+	/*
+	 * We need the locations of start and end undo record pointers when
+	 * rollbacks are to be performed for prepared transactions using zheap
+	 * relations. We need to store these information in file as user might
+	 * rollback the prepared transaction after recovery and for that we need
+	 * it's start and end undo locations.
+	 */
+	UndoRecPtr	start_urec_ptr[UndoPersistenceLevels];
+	UndoRecPtr	end_urec_ptr[UndoPersistenceLevels];
 } xl_xact_prepare;
 
 /*
@@ -376,14 +388,18 @@ extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);
 extern TransactionId GetCurrentTransactionIdIfAny(void);
 extern TransactionId GetStableLatestTransactionId(void);
+extern void SetCurrentSubTransactionLocked(void);
+extern bool HasCurrentSubTransactionLock(void);
 extern SubTransactionId GetCurrentSubTransactionId(void);
 extern FullTransactionId GetTopFullTransactionId(void);
 extern FullTransactionId GetTopFullTransactionIdIfAny(void);
 extern FullTransactionId GetCurrentFullTransactionId(void);
 extern FullTransactionId GetCurrentFullTransactionIdIfAny(void);
+extern ResourceOwner GetCurrentTransactionResOwner(void);
 extern void MarkCurrentTransactionIdLoggedIfAny(void);
 extern bool SubTransactionIsActive(SubTransactionId subxid);
 extern CommandId GetCurrentCommandId(bool used);
+extern bool GetCurrentCommandIdUsed(void);
 extern void SetParallelStartTimestamps(TimestampTz xact_ts, TimestampTz stmt_ts);
 extern TimestampTz GetCurrentTransactionStartTimestamp(void);
 extern TimestampTz GetCurrentStatementStartTimestamp(void);
@@ -446,6 +462,11 @@ extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
 									 const char *twophase_gid);
 extern void xact_redo(XLogReaderState *record);
 
+extern void ApplyUndoActions(void);
+extern void SetUndoActionsInfo(void);
+extern void ResetUndoActionsInfo(void);
+extern bool CanPerformUndoActions(void);
+
 /* xactdesc.c */
 extern void xact_desc(StringInfo buf, XLogReaderState *record);
 extern const char *xact_identify(uint8 info);
@@ -458,5 +479,7 @@ extern void ParsePrepareRecord(uint8 info, xl_xact_prepare *xlrec, xl_xact_parse
 extern void EnterParallelMode(void);
 extern void ExitParallelMode(void);
 extern bool IsInParallelMode(void);
+extern void SetCurrentUndoLocation(UndoRecPtr urec_ptr);
+extern bool XidIsConcurrent(TransactionId xid);
 
 #endif							/* XACT_H */

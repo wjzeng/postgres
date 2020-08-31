@@ -572,8 +572,7 @@ ExecInsert(ModifyTableState *mtstate,
 			 * if we're going to go ahead with the insertion, instead of
 			 * waiting for the whole transaction to complete.
 			 */
-			specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
-
+			specToken = SpeculativeInsertionLockAcquire(GetTopTransactionId());
 			/* insert the tuple, with the speculative token */
 			table_tuple_insert_speculative(resultRelationDesc, slot,
 										   estate->es_output_cid,
@@ -597,8 +596,7 @@ ExecInsert(ModifyTableState *mtstate,
 			 * we killed the tuple, they will see it's dead, and proceed as if
 			 * the tuple never existed.
 			 */
-			SpeculativeInsertionLockRelease(GetCurrentTransactionId());
-
+			SpeculativeInsertionLockRelease(GetTopTransactionId());
 			/*
 			 * If there was a conflict, start from the beginning.  We'll do
 			 * the pre-check again, which will now find the conflicting tuple
@@ -867,7 +865,7 @@ ldelete:;
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  LockTupleExclusive, LockWaitBlock,
-											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 											  &tmfd);
 
 					switch (result)
@@ -1407,7 +1405,7 @@ lreplace:;
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  lockmode, LockWaitBlock,
-											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION,
+											  TUPLE_LOCK_FLAG_FIND_LAST_VERSION | TUPLE_LOCK_FLAG_WEIRD,
 											  &tmfd);
 
 					switch (result)
@@ -1554,7 +1552,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	test = table_tuple_lock(relation, conflictTid,
 							estate->es_snapshot,
 							existing, estate->es_output_cid,
-							lockmode, LockWaitBlock, 0,
+							lockmode, LockWaitBlock, TUPLE_LOCK_FLAG_WEIRD,
 							&tmfd);
 	switch (test)
 	{

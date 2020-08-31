@@ -79,9 +79,6 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 static Bitmapset *HeapDetermineModifiedColumns(Relation relation,
 											   Bitmapset *interesting_cols,
 											   HeapTuple oldtup, HeapTuple newtup);
-static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
-								 LockTupleMode mode, LockWaitPolicy wait_policy,
-								 bool *have_tuple_lock);
 static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
 									  uint16 old_infomask2, TransactionId add_to_xmax,
 									  LockTupleMode mode, bool is_update,
@@ -4630,7 +4627,7 @@ out_unlocked:
  * Returns false if it was unable to obtain the lock; this can only happen if
  * wait_policy is Skip.
  */
-static bool
+bool
 heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
 					 LockWaitPolicy wait_policy, bool *have_tuple_lock)
 {

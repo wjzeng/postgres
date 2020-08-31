@@ -20,6 +20,7 @@
 #include "access/skey.h"
 #include "access/table.h"		/* for backward compatibility */
 #include "access/tableam.h"
+#include "commands/vacuum.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
@@ -28,7 +29,6 @@
 #include "storage/shm_toc.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
-
 
 /* "options" flag bits for heap_insert */
 #define HEAP_INSERT_SKIP_FSM	TABLE_INSERT_SKIP_FSM
@@ -206,6 +206,9 @@ extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
 extern bool HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple);
 extern bool XidInMVCCSnapshot(TransactionId xid, Snapshot snapshot);
 extern bool HeapTupleIsSurelyDead(HeapTuple htup, TransactionId OldestXmin);
+extern bool HeapTupleHasSerializableConflictOut(bool visible,
+												HeapTuple htup, Buffer buffer,
+												TransactionId *xid);
 
 /*
  * To avoid leaking too much knowledge about reorderbuffer implementation
