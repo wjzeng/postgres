@@ -1948,6 +1948,11 @@ zheapam_relation_size(Relation rel, ForkNumber forkNumber)
 	return nblocks * BLCKSZ;
 }
 
+/* ------------------------------------------------------------------------
+ * Miscellaneous callbacks for the heap AM
+ * ------------------------------------------------------------------------
+ */
+
 /*
  * Check to see whether the table needs a TOAST table.  It does only if
  * (1) there are any toastable attributes, and (2) the maximum length
@@ -1999,6 +2004,14 @@ zheapam_relation_needs_toast_table(Relation rel)
 	return (tuple_length > TOAST_TUPLE_THRESHOLD);
 }
 
+/*
+ * TOAST tables for heap relations are just heap relations.
+ */
+static Oid
+zheapam_relation_toast_am(Relation rel)
+{
+	return rel->rd_rel->relam;
+}
 
 static void
 zheapam_estimate_rel_size(Relation rel, int32 *attr_widths,
@@ -2154,6 +2167,9 @@ static const TableAmRoutine zheapam_methods = {
 
 	.relation_size = zheapam_relation_size,
 	.relation_needs_toast_table = zheapam_relation_needs_toast_table,
+	.relation_toast_am = zheapam_relation_toast_am,
+	/* We directly use heap_fetch_toast_slice() for heap. */
+	.relation_fetch_toast_slice = heap_fetch_toast_slice,
 
 	.scan_bitmap_next_block = zheap_scan_bitmap_next_block,
 	.scan_bitmap_next_tuple = zheap_scan_bitmap_next_tuple,

@@ -290,12 +290,12 @@ raw_zheap_insert(RewriteZheapState state, ZHeapTuple tup)
 		 * as frozen.
 		 */
 		/*
-		 * TABLE_INSERT_SKIP_WAL is removed in version 13. And, in zheap, 
+		 * TABLE_INSERT_SKIP_WAL is removed in version 13. And, in zheap,
 		 * it has not been supported from the beginning.
 		 */
-		heaptup = ztoast_insert_or_update(state->rs_new_rel, tup, NULL,
-										  ZHEAP_INSERT_FROZEN | ZHEAP_INSERT_SKIP_FSM,
-										  0);
+		heaptup = zheap_toast_insert_or_update(state->rs_new_rel, tup, NULL,
+											   ZHEAP_INSERT_FROZEN | ZHEAP_INSERT_SKIP_FSM,
+											   0);
 	}
 	else
 		heaptup = tup;

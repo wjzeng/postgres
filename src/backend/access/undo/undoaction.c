@@ -117,7 +117,7 @@ UndoRecordBulkFetch(UndoRecPtr *from_urecptr, UndoRecPtr to_urecptr,
 	 * interleaved undo records.  So it does not make sense to do any prefetch
 	 * in that case.
 	 */
-	
+
 	/*
 	 * Allocate initial memory to hold the undo record info, we can expand it
 	 * if needed.

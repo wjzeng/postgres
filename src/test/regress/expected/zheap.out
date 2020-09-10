@@ -154,7 +154,7 @@ CREATE TABLE pkey_test_zheap
 INSERT INTO pkey_test_zheap VALUES (10, 30);
 -- should error out, primary key doesn't allow NULL value.
 INSERT INTO pkey_test_zheap(b) VALUES (30);
-ERROR:  null value in column "a" violates not-null constraint
+ERROR:  null value in column "a" of relation "pkey_test_zheap" violates not-null constraint
 DETAIL:  Failing row contains (null, 30).
 -- should error out, primary key doesn't allow duplicate value.
 INSERT INTO pkey_test_zheap VALUES (10, 30);

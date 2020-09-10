@@ -268,7 +268,7 @@ zheap_prepare_insert(Relation relation, ZHeapTuple tup, int options,
 		return tup;
 	}
 	else if (ZHeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
-		return ztoast_insert_or_update(relation, tup, NULL, options, specToken);
+		return zheap_toast_insert_or_update(relation, tup, NULL, options, specToken);
 	else
 		return tup;
 }
@@ -953,7 +953,7 @@ check_tup_satisfies_update:
 		Assert(!ZHeapTupleHasExternal(&zheaptup));
 	}
 	else if (ZHeapTupleHasExternal(&zheaptup))
-		ztoast_delete(relation, &zheaptup, false);
+		zheap_toast_delete(relation, &zheaptup, false);
 
 	/* now we can release the buffer */
 	ReleaseBuffer(buffer);
@@ -1743,8 +1743,8 @@ check_tup_satisfies_update:
 		 */
 		if (need_toast)
 		{
-			zheaptup = ztoast_insert_or_update(relation, newtup, &oldtup, 0,
-											   0);
+			zheaptup = zheap_toast_insert_or_update(relation, newtup, &oldtup, 0,
+													0);
 			newtupsize = SHORTALIGN(zheaptup->t_len);	/* short aligned */
 		}
 		else
@@ -4831,7 +4831,7 @@ zheap_abort_speculative(Relation relation, ItemPointer tid)
 	if (ZHeapTupleHasExternal(&tp))
 	{
 		Assert(!IsToastRelation(relation));
-		ztoast_delete(relation, &tp, true);
+		zheap_toast_delete(relation, &tp, true);
 	}
 
 	/*

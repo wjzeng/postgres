@@ -869,6 +869,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		(blkno == nblocks - 1 && should_attempt_truncation(params, vacrelstats))
 
 		pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_SCANNED, blkno);
+
 		update_vacuum_error_info(vacrelstats, NULL, VACUUM_ERRCB_PHASE_SCAN_HEAP,
 								 blkno);
 		if (blkno == next_unskippable_block)
@@ -1568,6 +1569,9 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 	/* report that everything is scanned and vacuumed */
 	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_SCANNED, blkno);
 
+	/* Clear the block number information */
+	vacrelstats->blkno = InvalidBlockNumber;
+
 	pfree(frozen);
 
 	/* save stats for use later */
@@ -1784,6 +1788,9 @@ lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats)
 		RecordPageWithFreeSpace(onerel, tblk, freespace);
 		npages++;
 	}
+
+	/* Clear the block number information */
+	vacrelstats->blkno = InvalidBlockNumber;
 
 	if (BufferIsValid(vmbuffer))
 	{
@@ -3025,12 +3032,18 @@ vacuum_error_callback(void *arg)
 			if (BlockNumberIsValid(errinfo->blkno))
 				errcontext("while scanning block %u of relation \"%s.%s\"",
 						   errinfo->blkno, errinfo->relnamespace, errinfo->relname);
+			else
+				errcontext("while scanning relation \"%s.%s\"",
+						   errinfo->relnamespace, errinfo->relname);
 			break;
 
 		case VACUUM_ERRCB_PHASE_VACUUM_HEAP:
 			if (BlockNumberIsValid(errinfo->blkno))
 				errcontext("while vacuuming block %u of relation \"%s.%s\"",
 						   errinfo->blkno, errinfo->relnamespace, errinfo->relname);
+			else
+				errcontext("while vacuuming relation \"%s.%s\"",
+						   errinfo->relnamespace, errinfo->relname);
 			break;
 
 		case VACUUM_ERRCB_PHASE_VACUUM_INDEX:

@@ -3,31 +3,28 @@
 This is a *TEMPORAL WORKING* repository for ZHEAP upgrading, which developing branch is `REL_13_ZHEAP`.
 
 
-The original ZHEAP repository doesn't consider version upgrades.
-Therefore, upgrade work will be done in this temporary repository.
+The original ZHEAP repository doesn't consider version upgrades. Therefore, upgrade work will be done in this temporary repository.
 
-In the future, we plan to merge it with the ZHEAP repository.
+In the future, I plan to merge it with the ZHEAP repository.
 
 
 ## Current status and Branch
 
-This is based on PG version 13 beta 3.
+This is based on PG version 13 beta 3 (2020.9.9 version).
 
 
 The developing branch is `REL_13_ZHEAP`.
 
-
-pgbench can be done.
-
-No other tests or checks have been done.
-
++ pgbench can be done.
++ Passed regression test (make check).
++ Passed tests (make check-world) without `eval-plan-qual-trigger`.
 
 ## Compile
 
 ```
 $ cd postgresql_zheap
 $ git checkout REL_13_ZHEAP
-$ ../configure --prefix=/some/where/dir
+$ ./configure --prefix=/some/where/dir
 $ make && make install
 ```
 
@@ -56,12 +53,12 @@ Type "help" for help.
 
 zheap=# \d+ pgbench_accounts
                                   Table "public.pgbench_accounts"
-  Column  |     Type      | Collation | Nullable | Default | Storage  | Stats target | Description 
+  Column  |     Type      | Collation | Nullable | Default | Storage  | Stats target | Description
 ----------+---------------+-----------+----------+---------+----------+--------------+-------------
- aid      | integer       |           | not null |         | plain    |              | 
- bid      | integer       |           |          |         | plain    |              | 
- abalance | integer       |           |          |         | plain    |              | 
- filler   | character(84) |           |          |         | extended |              | 
+ aid      | integer       |           | not null |         | plain    |              |
+ bid      | integer       |           |          |         | plain    |              |
+ abalance | integer       |           |          |         | plain    |              |
+ filler   | character(84) |           |          |         | extended |              |
 Indexes:
     "pgbench_accounts_pkey" PRIMARY KEY, btree (aid)
 Access method: zheap
@@ -86,10 +83,17 @@ tps = 516.027931 (including connections establishing)
 tps = 661.774871 (excluding connections establishing)
 ```
 
+## How to do regression test
+
+Delete the line "test: eval-plan-qual-trigger" test from  `~/src/test/isonation/isolation_schedule` file, and do:
+
+```
+$ make check-world
+```
+
 ## TODO
 
- + Check Serializable isolation level.
- + Porting TOAST feature.
+ + Check trigger feature to pass the `eval-plan-qual-trigger` test.
  + Porting PREFETCH feature.
- + Porting constraint feature.
- + Porting regression tests and do all tests.
+ + Check recovery feature and replication feature.
+ + Check *ALL ZHEAP FEATURES* since the native regression tests are not enough to check them.

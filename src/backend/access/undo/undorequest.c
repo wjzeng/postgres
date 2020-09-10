@@ -924,7 +924,7 @@ PendingUndoShmemInit(void)
 	info.keysize = sizeof(TransactionId);
 	info.entrysize = sizeof(RollbackHashEntry);
 	info.hash = tag_hash;
-	
+
 	RollbackHT = ShmemInitHash("Undo Actions Lookup Table",
 							   UndoRollbackHashTableSize(),
 							   UndoRollbackHashTableSize(), &info,

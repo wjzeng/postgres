@@ -757,7 +757,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 								  vacrelstats,
 								  vac_strategy,
 								  elevel);
- 
+
 			pgstat_progress_update_param(PROGRESS_VACUUM_NUM_INDEX_VACUUMS,
 										 vacrelstats->num_index_scans + 1);
 
@@ -1217,7 +1217,7 @@ lazy_scan_zheap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 						   vacrelstats,
 						   vac_strategy,
 						   elevel);
-	
+
 	/*
 	 * This is pretty messy, but we split it up so that we can skip emitting
 	 * individual parts of the message when not applicable.

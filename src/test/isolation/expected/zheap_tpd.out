@@ -126,3 +126,5 @@ panther        33
 tiger          55             
 step c1: COMMIT;
 step c4: COMMIT;
+unused step name: t1
+unused step name: w4

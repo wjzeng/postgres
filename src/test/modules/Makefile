@@ -27,6 +27,7 @@ SUBDIRS = \
 		  test_alter_tablespace_zheap \
 		  worker_spi
 
+
 ifeq ($(with_openssl),yes)
 SUBDIRS += ssl_passphrase_callback
 else

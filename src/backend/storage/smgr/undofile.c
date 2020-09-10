@@ -125,7 +125,7 @@ undofile_open(SMgrRelation reln)
 		reln->md_seg_fds[forknum] = NULL;
 	}
 
-	reln->private_data = NULL;	
+	reln->private_data = NULL;
 }
 
 void

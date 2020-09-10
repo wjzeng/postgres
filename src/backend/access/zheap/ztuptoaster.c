@@ -21,11 +21,11 @@
  *
  *
  * INTERFACE ROUTINES
- *		ztoast_insert_or_update -
+ *		zheap_toast_insert_or_update -
  *			Try to make a given tuple fit into one page by compressing
  *			or moving off attributes
  *
- *		ztoast_delete -
+ *		zheap_toast_delete -
  *			Reclaim toast storage when a tuple is deleted
  *
  *
@@ -58,7 +58,6 @@
 static void ztoast_delete_datum(Relation rel, Datum value, bool is_speculative);
 static Datum ztoast_save_datum(Relation rel, Datum value,
 							   struct varlena *oldexternal, int options, uint32 specToken);
-
 
 /*
  * Move an attribute to external storage.
@@ -101,7 +100,7 @@ ztoast_tuple_externalize(ToastTupleContext *ttc, int attribute, int options, uin
  */
 static int
 ztoast_tuple_find_biggest_attribute(ToastTupleContext *ttc,
-								   bool for_compression, bool check_main)
+									bool for_compression, bool check_main)
 {
 	TupleDesc	tupleDesc = ttc->ttc_rel->rd_att;
 	int			numAttrs = tupleDesc->natts;
@@ -187,8 +186,8 @@ ztoast_tuple_cleanup(ToastTupleContext *ttc)
  *		Just like toast_insert_or_update but for zheap relations.
  */
 ZHeapTuple
-ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
-						int options, uint32 specToken)
+zheap_toast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
+							 int options, uint32 specToken)
 {
 	ZHeapTuple	result_tuple;
 	TupleDesc	tupleDesc;
@@ -268,7 +267,7 @@ ztoast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	hoff = SizeofZHeapTupleHeader;
 	if ((ttc.ttc_flags & TOAST_HAS_NULLS) != 0)
 		hoff += BITMAPLEN(numAttrs);
-	/* TODO: check whether MAXALIGN is needed. */
+	/* TODO-TODO: check whether MAXALIGN is needed. */
 	//hoff = MAXALIGN(hoff);
 	/* now convert to a limit on the tuple data size */
 	maxDataLen = RelationGetToastTupleTarget(rel, TOAST_TUPLE_TARGET) - hoff;
@@ -769,11 +768,11 @@ ztoast_delete_datum(Relation rel, Datum value, bool is_speculative)
 }
 
 /*
- * ztoast_delete
+ * zheap_toast_delete
  *		Cascaded delete toast-entries on DELETE
  */
 void
-ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative)
+zheap_toast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative)
 {
 	TupleDesc	tupleDesc;
 	int			numAttrs;

@@ -3351,7 +3351,7 @@ AbortCurrentTransaction(void)
 				 * which can generate undo.
 				 */
 				Assert(!s->performUndoActions);
-			if (s->state == TRANS_START)
+				if (s->state == TRANS_START)
 					s->state = TRANS_INPROGRESS;
 				AbortTransaction();
 				CleanupTransaction();

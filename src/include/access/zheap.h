@@ -345,9 +345,9 @@ extern bool zheap_undo_actions(UndoRecInfo *urp_array, int first_idx, int last_i
 							   bool blk_chain_complete);
 
 /* in zheap/ztuptoaster.c */
-extern ZHeapTuple ztoast_insert_or_update(Relation rel,
-										  ZHeapTuple newtup, ZHeapTuple oldtup,
-										  int options, uint32 specToken);
-extern void ztoast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
+extern ZHeapTuple zheap_toast_insert_or_update(Relation rel,
+											   ZHeapTuple newtup, ZHeapTuple oldtup,
+											   int options, uint32 specToken);
+extern void zheap_toast_delete(Relation rel, ZHeapTuple oldtup, bool is_speculative);
 
 #endif							/* ZHEAP_H */
