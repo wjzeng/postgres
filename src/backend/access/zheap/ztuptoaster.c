@@ -209,9 +209,7 @@ zheap_toast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	 * easiest to deal with that here, instead on, potentially, multiple
 	 * callers.
 	 */
-
-	/* TODO: check whether it is needed. */
-//	options &= ~HEAP_INSERT_SPECULATIVE;
+	options &= ~ZHEAP_INSERT_SPECULATIVE;
 
 	/*
 	 * We should only ever be called for tuples of plain relations or
@@ -267,8 +265,8 @@ zheap_toast_insert_or_update(Relation rel, ZHeapTuple newtup, ZHeapTuple oldtup,
 	hoff = SizeofZHeapTupleHeader;
 	if ((ttc.ttc_flags & TOAST_HAS_NULLS) != 0)
 		hoff += BITMAPLEN(numAttrs);
-	/* TODO-TODO: check whether MAXALIGN is needed. */
-	//hoff = MAXALIGN(hoff);
+	hoff = MAXALIGN(hoff);
+
 	/* now convert to a limit on the tuple data size */
 	maxDataLen = RelationGetToastTupleTarget(rel, TOAST_TUPLE_TARGET) - hoff;
 
