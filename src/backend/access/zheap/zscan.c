@@ -480,8 +480,8 @@ zheapgetpage(TableScanDesc sscan, BlockNumber page)
 			 * we're seeing some prior version of that. We handle that case in
 			 * ZHeapTupleHasSerializableConflictOut.
 			 */
-			HeapCheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
-												buffer, snapshot);
+			ZHeapCheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
+												 buffer, snapshot);
 
 			if (valid)
 				scan->rs_visztuples[ntup++] = resulttup;
@@ -942,8 +942,8 @@ get_next_tuple:
 			 * we're seeing some prior version of that. We handle that case in
 			 * ZHeapTupleHasSerializableConflictOut.
 			 */
-			HeapCheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tuple->t_self,
-												scan->rs_cbuf, snapshot);
+			ZHeapCheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tuple->t_self,
+												 scan->rs_cbuf, snapshot);
 
 			if (valid)
 			{
@@ -1258,8 +1258,8 @@ zheap_scan_bitmap_next_block(TableScanDesc sscan,
 			 * we're seeing some prior version of that. We handle that case in
 			 * ZHeapTupleHasSerializableConflictOut.
 			 */
-			HeapCheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
-												buffer, snapshot);
+			ZHeapCheckForSerializableConflictOut(valid, scan->rs_base.rs_rd, (void *) &tid,
+												 buffer, snapshot);
 
 			if (valid)
 				scan->rs_visztuples[ntup++] = resulttup;
@@ -1380,8 +1380,8 @@ zheap_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	 * seeing some prior version of that. We handle that case in
 	 * ZHeapTupleHasSerializableConflictOut.
 	 */
-	HeapCheckForSerializableConflictOut((resulttup != NULL), relation, (void *) tid,
-										buffer, snapshot);
+	ZHeapCheckForSerializableConflictOut((resulttup != NULL), relation, (void *) tid,
+										 buffer, snapshot);
 
 	if (resulttup)
 	{
@@ -1503,8 +1503,8 @@ zheap_fetch(Relation relation,
 	 * seeing some prior version of that. We handle that case in
 	 * ZHeapTupleHasSerializableConflictOut.
 	 */
-	HeapCheckForSerializableConflictOut(valid, relation, (void *) tid,
-										buffer, snapshot);
+	ZHeapCheckForSerializableConflictOut(valid, relation, (void *) tid,
+										 buffer, snapshot);
 
 	/*
 	 * Pass back the ctid if the tuple is invisible because it was updated.

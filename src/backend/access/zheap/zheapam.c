@@ -8335,9 +8335,9 @@ zheap_get_latest_tid(TableScanDesc sscan,
 		 * seeing some prior version of that. We handle that case in
 		 * ZHeapTupleHasSerializableConflictOut.
 		 */
-		HeapCheckForSerializableConflictOut((resulttup != NULL), relation,
-											(void *) &ctid,
-											buffer, snapshot);
+		ZHeapCheckForSerializableConflictOut((resulttup != NULL), relation,
+											 (void *) &ctid,
+											 buffer, snapshot);
 
 		/* Pass back the tuple ctid if it's visible */
 		if (resulttup != NULL)

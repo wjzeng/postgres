@@ -4194,6 +4194,165 @@ CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot s
 }
 
 /*
+ * ZHEAPCheckForSerializableConflictOut
+ *		We are reading a tuple which has been modified.  If it is visible to
+ *		us but has been deleted, that indicates a rw-conflict out.  If it's
+ *		not visible and was created by a concurrent (overlapping)
+ *		serializable transaction, that is also a rw-conflict out,
+ *
+ * We will determine the top level xid of the writing transaction with which
+ * we may be in conflict, and check for overlap with our own transaction.
+ * If the transactions overlap (i.e., they cannot see each other's writes),
+ * then we have a conflict out.
+ *
+ * This function should be called just about anywhere in heapam.c where a
+ * tuple has been read. The caller must hold at least a shared lock on the
+ * buffer, because this function might set hint bits on the tuple. There is
+ * currently no known reason to call this function from an index AM.
+ */
+void
+ZHeapCheckForSerializableConflictOut(bool visible, Relation relation,
+									 void *stup, Buffer buffer,
+									 Snapshot snapshot)
+{
+	TransactionId xid;
+	SERIALIZABLEXIDTAG sxidtag;
+	SERIALIZABLEXID *sxid;
+	SERIALIZABLEXACT *sxact;
+
+	if (!SerializationNeededForRead(relation, snapshot))
+		return;
+
+	/* Check if someone else has already decided that we need to die */
+	if (SxactIsDoomed(MySerializableXact))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("could not serialize access due to read/write dependencies among transactions"),
+				 errdetail_internal("Reason code: Canceled on identification as a pivot, during conflict out checking."),
+				 errhint("The transaction might succeed if retried.")));
+	}
+
+	if (!ZHeapTupleHasSerializableConflictOut(visible, relation,
+											  (ItemPointer) stup, buffer, &xid))
+		return;
+
+	/*
+	 * Find sxact or summarized info for the top level xid.
+	 */
+	sxidtag.xid = xid;
+	LWLockAcquire(SerializableXactHashLock, LW_EXCLUSIVE);
+	sxid = (SERIALIZABLEXID *)
+		hash_search(SerializableXidHash, &sxidtag, HASH_FIND, NULL);
+	if (!sxid)
+	{
+		/*
+		 * Transaction not found in "normal" SSI structures.  Check whether it
+		 * got pushed out to SLRU storage for "old committed" transactions.
+		 */
+		SerCommitSeqNo conflictCommitSeqNo;
+
+		conflictCommitSeqNo = SerialGetMinConflictCommitSeqNo(xid);
+		if (conflictCommitSeqNo != 0)
+		{
+			if (conflictCommitSeqNo != InvalidSerCommitSeqNo
+				&& (!SxactIsReadOnly(MySerializableXact)
+					|| conflictCommitSeqNo
+					<= MySerializableXact->SeqNo.lastCommitBeforeSnapshot))
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+						 errmsg("could not serialize access due to read/write dependencies among transactions"),
+						 errdetail_internal("Reason code: Canceled on conflict out to old pivot %u.", xid),
+						 errhint("The transaction might succeed if retried.")));
+
+			if (SxactHasSummaryConflictIn(MySerializableXact)
+				|| !SHMQueueEmpty(&MySerializableXact->inConflicts))
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+						 errmsg("could not serialize access due to read/write dependencies among transactions"),
+						 errdetail_internal("Reason code: Canceled on identification as a pivot, with conflict out to old committed transaction %u.", xid),
+						 errhint("The transaction might succeed if retried.")));
+
+			MySerializableXact->flags |= SXACT_FLAG_SUMMARY_CONFLICT_OUT;
+		}
+
+		/* It's not serializable or otherwise not important. */
+		LWLockRelease(SerializableXactHashLock);
+		return;
+	}
+	sxact = sxid->myXact;
+	Assert(TransactionIdEquals(sxact->topXid, xid));
+	if (sxact == MySerializableXact || SxactIsDoomed(sxact))
+	{
+		/* Can't conflict with ourself or a transaction that will roll back. */
+		LWLockRelease(SerializableXactHashLock);
+		return;
+	}
+
+	/*
+	 * We have a conflict out to a transaction which has a conflict out to a
+	 * summarized transaction.  That summarized transaction must have
+	 * committed first, and we can't tell when it committed in relation to our
+	 * snapshot acquisition, so something needs to be canceled.
+	 */
+	if (SxactHasSummaryConflictOut(sxact))
+	{
+		if (!SxactIsPrepared(sxact))
+		{
+			sxact->flags |= SXACT_FLAG_DOOMED;
+			LWLockRelease(SerializableXactHashLock);
+			return;
+		}
+		else
+		{
+			LWLockRelease(SerializableXactHashLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					 errmsg("could not serialize access due to read/write dependencies among transactions"),
+					 errdetail_internal("Reason code: Canceled on conflict out to old pivot."),
+					 errhint("The transaction might succeed if retried.")));
+		}
+	}
+
+	/*
+	 * If this is a read-only transaction and the writing transaction has
+	 * committed, and it doesn't have a rw-conflict to a transaction which
+	 * committed before it, no conflict.
+	 */
+	if (SxactIsReadOnly(MySerializableXact)
+		&& SxactIsCommitted(sxact)
+		&& !SxactHasSummaryConflictOut(sxact)
+		&& (!SxactHasConflictOut(sxact)
+			|| MySerializableXact->SeqNo.lastCommitBeforeSnapshot < sxact->SeqNo.earliestOutConflictCommit))
+	{
+		/* Read-only transaction will appear to run first.  No conflict. */
+		LWLockRelease(SerializableXactHashLock);
+		return;
+	}
+
+	if (!XidIsConcurrent(xid))
+	{
+		/* This write was already in our snapshot; no conflict. */
+		LWLockRelease(SerializableXactHashLock);
+		return;
+	}
+
+	if (RWConflictExists(MySerializableXact, sxact))
+	{
+		/* We don't want duplicate conflict records in the list. */
+		LWLockRelease(SerializableXactHashLock);
+		return;
+	}
+
+	/*
+	 * Flag the conflict.  But first, if this conflict creates a dangerous
+	 * structure, ereport an error.
+	 */
+	FlagRWConflict(MySerializableXact, sxact);
+	LWLockRelease(SerializableXactHashLock);
+}
+
+/*
  * Check a particular target for rw-dependency conflict in. A subroutine of
  * CheckForSerializableConflictIn().
  */

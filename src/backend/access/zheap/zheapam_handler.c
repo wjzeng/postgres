@@ -1605,8 +1605,8 @@ zheap_scan_sample_next_tuple(TableScanDesc sscan, struct SampleScanState *scanst
 				 * we're seeing some prior version of that. We handle that
 				 * case in ZHeapTupleHasSerializableConflictOut.
 				 */
-				HeapCheckForSerializableConflictOut(visible, scan->rs_base.rs_rd, (void *) &tid,
-													scan->rs_cbuf, scan->rs_base.rs_snapshot);
+				ZHeapCheckForSerializableConflictOut(visible, scan->rs_base.rs_rd, (void *) &tid,
+													 scan->rs_cbuf, scan->rs_base.rs_snapshot);
 
 				/* Try next tuple from same page. */
 				if (!visible)

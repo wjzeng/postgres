@@ -69,6 +69,9 @@ extern bool CheckForSerializableConflictOutNeeded(Relation relation, Snapshot sn
 extern void CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot snapshot);
 extern void CheckForSerializableConflictIn(Relation relation, ItemPointer tid, BlockNumber blkno);
 extern void CheckTableForSerializableConflictIn(Relation relation);
+extern void ZHeapCheckForSerializableConflictOut(bool visible, Relation relation,
+												 void *stup, Buffer buffer,
+												 Snapshot snapshot);
 
 /* final rollback checking */
 extern void PreCommit_CheckForSerializationFailure(void);
