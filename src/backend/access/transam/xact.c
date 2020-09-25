@@ -935,8 +935,22 @@ TransactionIdIsCurrentTransactionId(TransactionId xid)
 	if (!TransactionIdIsNormal(xid))
 		return false;
 
+	/*
+	 * This IF statement has been added by the commit
+	 * 695c5977c8bc115029a85dcc1821d7b0136b4e4c to optimize this function.
+	 *
+	 * However, due to this effect, when CREATE or ALTER TABLE statement is
+	 * issued in a transaction block and then ROLLBACK is issued, the postgres
+	 * server is crushed.
+	 * The reason is that ROLLBACK statement invokes HeapTupleSatisfiesMVCC()
+	 * and it calls HeapTupleHeaderGetCmin() and  GetRealCmin(), then
+	 * Segmentation fault is occurred.
+	 * To avoid this issue, we comment out this IF statement.
+	 */
+	/*
 	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
 		return true;
+	*/
 
 	/*
 	 * In parallel workers, the XIDs we must consider as current are stored in
