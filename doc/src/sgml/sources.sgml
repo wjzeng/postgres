@@ -373,7 +373,7 @@ ereport(ERROR,
      specify suppression of the <literal>CONTEXT:</literal> portion of a message in
      the postmaster log.  This should only be used for verbose debugging
      messages where the repeated inclusion of context would bloat the log
-     volume too much.
+     too much.
     </para>
    </listitem>
   </itemizedlist>
@@ -518,7 +518,7 @@ Hint:       the addendum
    <title>Use of Quotes</title>
 
    <para>
-    Use quotes always to delimit file names, user-supplied identifiers, and
+    Always use quotes to delimit file names, user-supplied identifiers, and
     other variables that might contain words.  Do not use them to mark up
     variables that will not contain words (for example, operator names).
    </para>
