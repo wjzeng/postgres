@@ -855,7 +855,7 @@ check_tup_satisfies_update:
 	if (TransactionIdPrecedes(zinfo.xid, oldestXidHavingUndo))
 		zinfo.xid = FrozenTransactionId;
 
-	CheckForSerializableConflictIn(relation, &(zheaptup.t_self), buffer);
+	CheckForSerializableConflictIn(relation, &(zheaptup.t_self), BufferGetBlockNumber(buffer));
 
 	/* Prepare an undo record for this operation. */
 	zh_undo_info.reloid = relation->rd_id;
@@ -1932,7 +1932,7 @@ reacquire_buffer:
 		zheaptup = newtup;
 	}
 
-	CheckForSerializableConflictIn(relation, &(oldtup.t_self), buffer);
+	CheckForSerializableConflictIn(relation, &(oldtup.t_self), BufferGetBlockNumber(buffer));
 
 	/* Prepare an undo record for this operation. */
 	gen_undo_info.reloid = relation->rd_id;
