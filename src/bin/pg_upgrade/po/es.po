@@ -10,7 +10,7 @@ msgstr ""
 "Project-Id-Version: pg_upgrade (PostgreSQL) 12\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@lists.postgresql.org\n"
 "POT-Creation-Date: 2020-09-13 10:45+0000\n"
-"PO-Revision-Date: 2020-09-18 18:34-0300\n"
+"PO-Revision-Date: 2019-09-29 22:26-0300\n"
 "Last-Translator: Álvaro Herrera <alvherre@alvh.no-ip.org>\n"
 "Language-Team: PgSQL-es-Ayuda <pgsql-es-ayuda@lists.postgresql.org>\n"
 "Language: es\n"
@@ -292,12 +292,10 @@ msgid ""
 "    %s\n"
 "\n"
 msgstr ""
-"Su instalación contiene funciones de «contrib/isn» que usan el tip de dato\n"
-"bigint.  Sus clústers nuevo y antiguo pasar el tipo bigint de distinta forma,\n"
-"por lo que este clúster no puede ser actualizado.\n"
-"Puede hacer un volcado (dump) de las bases de datos que usan «contrib/isn»,\n"
-"eliminarlas, hacer el upgrade, y luego restaurarlas.\n"
-"Un listado de funciones problemáticas está en el archivo:\n"
+"Su instalación contiene el tipo «unknown» en tablas de usuario. Este tipo\n"
+"ya no es permitido en tablas, por lo que este clúster no puede ser actualizado.\n"
+"Puede elimiar las tablas y reiniciar la actualización.\n"
+"Un listado de columnas problemáticas está en el archivo:\n"
 "    %s\n"
 "\n"
 
@@ -316,12 +314,6 @@ msgid ""
 "    %s\n"
 "\n"
 msgstr ""
-"Su instalación contiene tablas declaradas WITH OIDS, que ya no está\n"
-"soportado. Considere eliminar la columna oid usando\n"
-"    ALTER TABLE ... SET WITHOUT OIDS;\n"
-"Una lista de tablas con este problema aparece en el archivo:\n"
-"    %s\n"
-"\n"
 
 #: check.c:996
 #, c-format
@@ -346,10 +338,9 @@ msgid ""
 "    %s\n"
 "\n"
 msgstr ""
-"Su instalación contiene uno de los tipos reg* en tablas de usuario. Estos tipos\n"
-"de dato hacen referencia a OIDs de sistema que no son preservados por pg_upgrade,\n"
-"por lo que este clúster no puede ser actualizado.\n"
-"Puede eliminar las tablas y reiniciar la actualización.\n"
+"Su instalación contiene el tipo «unknown» en tablas de usuario. Este tipo\n"
+"ya no es permitido en tablas, por lo que este clúster no puede ser actualizado.\n"
+"Puede elimiar las tablas y reiniciar la actualización.\n"
 "Un listado de columnas problemáticas está en el archivo:\n"
 "    %s\n"
 "\n"
@@ -377,10 +368,9 @@ msgid ""
 "    %s\n"
 "\n"
 msgstr ""
-"Su instalación contiene el tipo «jsonb» en tablas de usuario. Este tipo\n"
-"El formato interno de «jsonb» cambió durante 9.4 beta, por lo que este clúster\n"
-"no puede ser actualizado.\n"
-"Puede eliminar las tablas y reiniciar la actualización.\n"
+"Su instalación contiene el tipo «unknown» en tablas de usuario. Este tipo\n"
+"ya no es permitido en tablas, por lo que este clúster no puede ser actualizado.\n"
+"Puede elimiar las tablas y reiniciar la actualización.\n"
 "Un listado de columnas problemáticas está en el archivo:\n"
 "    %s\n"
 "\n"
@@ -1140,8 +1130,6 @@ msgid ""
 "  -B, --new-bindir=BINDIR       new cluster executable directory (default\n"
 "                                same directory as pg_upgrade)\n"
 msgstr ""
-"  -B, --new-bindir=BINDIR    directorio de ejecutables del clúster nuevo\n"
-"                             (por omisión el mismo directorio que pg_upgrade)\n"
 
 #: option.c:295
 #, c-format
@@ -1159,7 +1147,7 @@ msgid "  -D, --new-datadir=DATADIR     new cluster data directory\n"
 msgstr "  -D, --new-datadir=DATADIR     directorio de datos del clúster nuevo\n"
 
 #: option.c:298
-#, c-format
+#, fuzzy, c-format
 #| msgid "  -j, --jobs=NUM               use this many parallel jobs to restore\n"
 msgid "  -j, --jobs=NUM                number of simultaneous processes or threads to use\n"
 msgstr "  -j, --jobs=NUM               máximo de procesos paralelos para restaurar\n"
@@ -1569,16 +1557,16 @@ msgstr ""
 "%s"
 
 #: server.c:167
-#, c-format
+#, fuzzy, c-format
 #| msgid "could not open server file \"%s\": %m"
 msgid "could not open version file \"%s\": %m\n"
-msgstr "no se pudo abrir el archivo de versión «%s»: %m\n"
+msgstr "no se pudo abrir el archivo de servidor «%s»: %m"
 
 #: server.c:171
-#, c-format
+#, fuzzy, c-format
 #| msgid "could not parse contents of file \"%s\""
 msgid "could not parse version file \"%s\"\n"
-msgstr "no se pudo interpretar el archivo de versión «%s»\n"
+msgstr "no se pudo interpretar el contenido del archivo «%s»"
 
 #: server.c:297
 #, c-format

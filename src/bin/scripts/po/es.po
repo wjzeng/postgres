@@ -12,8 +12,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: pgscripts (PostgreSQL) 10\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@lists.postgresql.org\n"
-"POT-Creation-Date: 2020-09-18 17:46+0000\n"
-"PO-Revision-Date: 2020-09-18 18:16-0300\n"
+"POT-Creation-Date: 2020-09-13 10:46+0000\n"
+"PO-Revision-Date: 2019-09-29 22:24-0300\n"
 "Last-Translator: Carlos Chapi <carlos.chapi@2ndquadrant.com>\n"
 "Language-Team: PgSQL-es-Ayuda <pgsql-es-ayuda@lists.postgresql.org>\n"
 "Language: es\n"
@@ -68,8 +68,9 @@ msgid "Cancel request sent\n"
 msgstr "Petición de cancelación enviada\n"
 
 #: ../../fe_utils/cancel.c:165
+#, fuzzy
 msgid "Could not send cancel request: "
-msgstr "No se pudo enviar el paquete de cancelación: "
+msgstr "No se pudo enviar el paquete de cancelación: %s"
 
 #: ../../fe_utils/cancel.c:210
 #, c-format
@@ -976,7 +977,7 @@ msgstr ""
 #: scripts_parallel.c:234
 #, c-format
 msgid "too many jobs for this platform -- try %d"
-msgstr "demasiados procesos para esta plataforma -- intente con %d"
+msgstr ""
 
 #: vacuumdb.c:194
 #, c-format
