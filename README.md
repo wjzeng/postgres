@@ -52,6 +52,8 @@ $ make check-zheap
 ```
 
 It will be currently returned 3 errors (trigger.sql, transactions.sql, rowsecrity.sql).
+If you find other errors, check	`src/regress/regression.diffs` file. In almost cases, there is no problem even if errors are returned.
+
 
 ### isolation
 
@@ -61,6 +63,7 @@ $ make check-zheap
 ```
 
 It will be currently returned 3 errors (eval-plan-qual, update-conflict-out, tuplelock-upgrade-no-deadlock).
+If you find other errors, check	`src/test/isolation/output_iso/regression.diffs` file. In almost cases, there is no problem even if errors are returned.
 
 Note:
  1. eval-plan-qual.spec returns error, however, the cause comes from ctid. Therefore, there is no problem with zheap.
