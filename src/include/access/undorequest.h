@@ -27,9 +27,6 @@ typedef enum
 
 #define InvalidUndoWorkerQueue -1
 
-/* Remembers the last seen RecentGlobalXmin */
-TransactionId latestRecentGlobalXmin;
-
 /* This is the data structure for each hash table entry for rollbacks. */
 typedef struct RollbackHashEntry
 {
