@@ -4,7 +4,7 @@
  *	  vacuum for SP-GiST
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -501,9 +501,13 @@ vacuumRedirectAndPlaceholder(Relation index, Buffer buffer)
 	OffsetNumber itemToPlaceholder[MaxIndexTuplesPerPage];
 	OffsetNumber itemnos[MaxIndexTuplesPerPage];
 	spgxlogVacuumRedirect xlrec;
+	GlobalVisState *vistest;
 
 	xlrec.nToPlaceholder = 0;
 	xlrec.newestRedirectXid = InvalidTransactionId;
+
+	/* XXX: providing heap relation would allow more pruning */
+	vistest = GlobalVisTestFor(NULL);
 
 	START_CRIT_SECTION();
 
@@ -521,7 +525,7 @@ vacuumRedirectAndPlaceholder(Relation index, Buffer buffer)
 		dt = (SpGistDeadTuple) PageGetItem(page, PageGetItemId(page, i));
 
 		if (dt->tupstate == SPGIST_REDIRECT &&
-			TransactionIdPrecedes(dt->xid, RecentGlobalXmin))
+			GlobalVisTestIsRemovableXid(vistest, dt->xid))
 		{
 			dt->tupstate = SPGIST_PLACEHOLDER;
 			Assert(opaque->nRedirection > 0);
@@ -887,6 +891,7 @@ spgvacuumscan(spgBulkDeleteState *bds)
 
 	/* Report final stats */
 	bds->stats->num_pages = num_pages;
+	bds->stats->pages_newly_deleted = bds->stats->pages_deleted;
 	bds->stats->pages_free = bds->stats->pages_deleted;
 }
 

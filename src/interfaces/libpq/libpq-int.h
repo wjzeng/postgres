@@ -9,7 +9,7 @@
  *	  more likely to break across PostgreSQL releases than code that uses
  *	  only the official API.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/interfaces/libpq/libpq-int.h
@@ -232,21 +232,25 @@ typedef enum
 	PGQUERY_DESCRIBE			/* Describe Statement or Portal */
 } PGQueryClass;
 
-/* PGSetenvStatusType defines the state of the pqSetenv state machine */
-
-/* (this is used only for 2.0-protocol connections) */
+/* Target server type (decoded value of target_session_attrs) */
 typedef enum
 {
-	SETENV_STATE_CLIENT_ENCODING_SEND,	/* About to send an Environment Option */
-	SETENV_STATE_CLIENT_ENCODING_WAIT,	/* Waiting for above send to complete */
-	SETENV_STATE_OPTION_SEND,	/* About to send an Environment Option */
-	SETENV_STATE_OPTION_WAIT,	/* Waiting for above send to complete */
-	SETENV_STATE_QUERY1_SEND,	/* About to send a status query */
-	SETENV_STATE_QUERY1_WAIT,	/* Waiting for query to complete */
-	SETENV_STATE_QUERY2_SEND,	/* About to send a status query */
-	SETENV_STATE_QUERY2_WAIT,	/* Waiting for query to complete */
-	SETENV_STATE_IDLE
-} PGSetenvStatusType;
+	SERVER_TYPE_ANY = 0,		/* Any server (default) */
+	SERVER_TYPE_READ_WRITE,		/* Read-write server */
+	SERVER_TYPE_READ_ONLY,		/* Read-only server */
+	SERVER_TYPE_PRIMARY,		/* Primary server */
+	SERVER_TYPE_STANDBY,		/* Standby server */
+	SERVER_TYPE_PREFER_STANDBY, /* Prefer standby server */
+	SERVER_TYPE_PREFER_STANDBY_PASS2	/* second pass - behaves same as ANY */
+} PGTargetServerType;
+
+/* Boolean value plus a not-known state, for GUCs we might have to fetch */
+typedef enum
+{
+	PG_BOOL_UNKNOWN = 0,		/* Currently unknown */
+	PG_BOOL_YES,				/* Yes (true) */
+	PG_BOOL_NO					/* No (false) */
+} PGTernaryBool;
 
 /* Typedef for the EnvironmentOptions[] array */
 typedef struct PQEnvironmentOption
@@ -362,6 +366,7 @@ struct pg_conn
 	char	   *sslpassword;	/* client key file password */
 	char	   *sslrootcert;	/* root certificate filename */
 	char	   *sslcrl;			/* certificate revocation list filename */
+	char	   *sslcrldir;		/* certificate revocation list directory name */
 	char	   *requirepeer;	/* required peer credentials for local sockets */
 	char	   *gssencmode;		/* GSS mode (require,prefer,disable) */
 	char	   *krbsrvname;		/* Kerberos service name */
@@ -369,9 +374,7 @@ struct pg_conn
 								 * "sspi") */
 	char	   *ssl_min_protocol_version;	/* minimum TLS protocol version */
 	char	   *ssl_max_protocol_version;	/* maximum TLS protocol version */
-
-	/* Type of connection to make.  Possible values: any, read-write. */
-	char	   *target_session_attrs;
+	char	   *target_session_attrs;	/* desired session properties */
 
 	/* Optional file to write trace info to */
 	FILE	   *Pfdebug;
@@ -421,13 +424,12 @@ struct pg_conn
 	char	   *write_err_msg;	/* write error message, or NULL if OOM */
 
 	/* Transient state needed while establishing connection */
+	PGTargetServerType target_server_type;	/* desired session properties */
 	bool		try_next_addr;	/* time to advance to next address/host? */
 	bool		try_next_host;	/* time to advance to next connhost[]? */
 	struct addrinfo *addrlist;	/* list of addresses for current connhost */
 	struct addrinfo *addr_cur;	/* the one currently being tried */
 	int			addrlist_family;	/* needed to know how to free addrlist */
-	PGSetenvStatusType setenv_state;	/* for 2.0 protocol only */
-	const PQEnvironmentOption *next_eo;
 	bool		send_appname;	/* okay to send application_name? */
 
 	/* Miscellaneous stuff */
@@ -436,6 +438,8 @@ struct pg_conn
 	pgParameterStatus *pstatus; /* ParameterStatus data */
 	int			client_encoding;	/* encoding id */
 	bool		std_strings;	/* standard_conforming_strings */
+	PGTernaryBool default_transaction_read_only;	/* default_transaction_read_only */
+	PGTernaryBool in_hot_standby;	/* in_hot_standby */
 	PGVerbosity verbosity;		/* error/notice message verbosity */
 	PGContextVisibility show_context;	/* whether to show CONTEXT field */
 	PGlobjfuncs *lobjfuncs;		/* private state for large-object access fns */
@@ -522,7 +526,11 @@ struct pg_conn
 								 * connection */
 #endif
 
-	/* Buffer for current error message */
+	/*
+	 * Buffer for current error message.  This is cleared at the start of any
+	 * connection attempt or query cycle; after that, all code should append
+	 * messages to it, never overwrite.
+	 */
 	PQExpBufferData errorMessage;	/* expansible string */
 
 	/* Buffer for receiving various parts of messages */
@@ -600,7 +608,6 @@ extern pgthreadlock_t pg_g_threadlock;
 /* === in fe-exec.c === */
 
 extern void pqSetResultError(PGresult *res, const char *msg);
-extern void pqCatenateResultError(PGresult *res, const char *msg);
 extern void *pqResultAlloc(PGresult *res, size_t nBytes, bool isBinary);
 extern char *pqResultStrdup(PGresult *res, const char *str);
 extern void pqClearAsyncResult(PGconn *conn);
@@ -612,22 +619,7 @@ extern void pqSaveMessageField(PGresult *res, char code,
 extern void pqSaveParameterStatus(PGconn *conn, const char *name,
 								  const char *value);
 extern int	pqRowProcessor(PGconn *conn, const char **errmsgp);
-
-/* === in fe-protocol2.c === */
-
-extern PostgresPollingStatusType pqSetenvPoll(PGconn *conn);
-
-extern char *pqBuildStartupPacket2(PGconn *conn, int *packetlen,
-								   const PQEnvironmentOption *options);
-extern void pqParseInput2(PGconn *conn);
-extern int	pqGetCopyData2(PGconn *conn, char **buffer, int async);
-extern int	pqGetline2(PGconn *conn, char *s, int maxlen);
-extern int	pqGetlineAsync2(PGconn *conn, char *buffer, int bufsize);
-extern int	pqEndcopy2(PGconn *conn);
-extern PGresult *pqFunctionCall2(PGconn *conn, Oid fnid,
-								 int *result_buf, int *actual_result_len,
-								 int result_is_int,
-								 const PQArgBlock *args, int nargs);
+extern int	PQsendQueryContinue(PGconn *conn, const char *query);
 
 /* === in fe-protocol3.c === */
 
@@ -665,7 +657,7 @@ extern int	pqSkipnchar(size_t len, PGconn *conn);
 extern int	pqPutnchar(const char *s, size_t len, PGconn *conn);
 extern int	pqGetInt(int *result, size_t bytes, PGconn *conn);
 extern int	pqPutInt(int value, size_t bytes, PGconn *conn);
-extern int	pqPutMsgStart(char msg_type, bool force_len, PGconn *conn);
+extern int	pqPutMsgStart(char msg_type, PGconn *conn);
 extern int	pqPutMsgEnd(PGconn *conn);
 extern int	pqReadData(PGconn *conn);
 extern int	pqFlush(PGconn *conn);
@@ -708,7 +700,7 @@ extern void pgtls_init_library(bool do_ssl, int do_crypto);
  * The conn parameter is only used to be able to pass back an error
  * message - no connection-local setup is made here.
  *
- * Returns 0 if OK, -1 on failure (with a message in conn->errorMessage).
+ * Returns 0 if OK, -1 on failure (adding a message to conn->errorMessage).
  */
 extern int	pgtls_init(PGconn *conn);
 
@@ -725,8 +717,8 @@ extern void pgtls_close(PGconn *conn);
 /*
  *	Read data from a secure connection.
  *
- * On failure, this function is responsible for putting a suitable message
- * into conn->errorMessage.  The caller must still inspect errno, but only
+ * On failure, this function is responsible for appending a suitable message
+ * to conn->errorMessage.  The caller must still inspect errno, but only
  * to determine whether to continue/retry after error.
  */
 extern ssize_t pgtls_read(PGconn *conn, void *ptr, size_t len);
@@ -739,8 +731,8 @@ extern bool pgtls_read_pending(PGconn *conn);
 /*
  *	Write data to a secure connection.
  *
- * On failure, this function is responsible for putting a suitable message
- * into conn->errorMessage.  The caller must still inspect errno, but only
+ * On failure, this function is responsible for appending a suitable message
+ * to conn->errorMessage.  The caller must still inspect errno, but only
  * to determine whether to continue/retry after error.
  */
 extern ssize_t pgtls_write(PGconn *conn, const void *ptr, size_t len);

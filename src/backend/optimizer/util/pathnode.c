@@ -3,7 +3,7 @@
  * pathnode.c
  *	  Routines to manipulate pathlists and create path nodes
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1081,11 +1081,27 @@ create_bitmap_and_path(PlannerInfo *root,
 					   List *bitmapquals)
 {
 	BitmapAndPath *pathnode = makeNode(BitmapAndPath);
+	Relids		required_outer = NULL;
+	ListCell   *lc;
 
 	pathnode->path.pathtype = T_BitmapAnd;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
-	pathnode->path.param_info = NULL;	/* not used in bitmap trees */
+
+	/*
+	 * Identify the required outer rels as the union of what the child paths
+	 * depend on.  (Alternatively, we could insist that the caller pass this
+	 * in, but it's more convenient and reliable to compute it here.)
+	 */
+	foreach(lc, bitmapquals)
+	{
+		Path	   *bitmapqual = (Path *) lfirst(lc);
+
+		required_outer = bms_add_members(required_outer,
+										 PATH_REQ_OUTER(bitmapqual));
+	}
+	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
+														  required_outer);
 
 	/*
 	 * Currently, a BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be
@@ -1117,11 +1133,27 @@ create_bitmap_or_path(PlannerInfo *root,
 					  List *bitmapquals)
 {
 	BitmapOrPath *pathnode = makeNode(BitmapOrPath);
+	Relids		required_outer = NULL;
+	ListCell   *lc;
 
 	pathnode->path.pathtype = T_BitmapOr;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
-	pathnode->path.param_info = NULL;	/* not used in bitmap trees */
+
+	/*
+	 * Identify the required outer rels as the union of what the child paths
+	 * depend on.  (Alternatively, we could insist that the caller pass this
+	 * in, but it's more convenient and reliable to compute it here.)
+	 */
+	foreach(lc, bitmapquals)
+	{
+		Path	   *bitmapqual = (Path *) lfirst(lc);
+
+		required_outer = bms_add_members(required_outer,
+										 PATH_REQ_OUTER(bitmapqual));
+	}
+	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
+														  required_outer);
 
 	/*
 	 * Currently, a BitmapHeapPath, BitmapAndPath, or BitmapOrPath will be
@@ -1172,6 +1204,35 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
 }
 
 /*
+ * create_tidrangescan_path
+ *	  Creates a path corresponding to a scan by a range of TIDs, returning
+ *	  the pathnode.
+ */
+TidRangePath *
+create_tidrangescan_path(PlannerInfo *root, RelOptInfo *rel,
+						 List *tidrangequals, Relids required_outer)
+{
+	TidRangePath *pathnode = makeNode(TidRangePath);
+
+	pathnode->path.pathtype = T_TidRangeScan;
+	pathnode->path.parent = rel;
+	pathnode->path.pathtarget = rel->reltarget;
+	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
+														  required_outer);
+	pathnode->path.parallel_aware = false;
+	pathnode->path.parallel_safe = rel->consider_parallel;
+	pathnode->path.parallel_workers = 0;
+	pathnode->path.pathkeys = NIL;	/* always unordered */
+
+	pathnode->tidrangequals = tidrangequals;
+
+	cost_tidrangescan(&pathnode->path, root, rel, tidrangequals,
+					  pathnode->path.param_info);
+
+	return pathnode;
+}
+
+/*
  * create_append_path
  *	  Creates a path corresponding to an Append plan, returning the
  *	  pathnode.
@@ -1185,7 +1246,7 @@ create_append_path(PlannerInfo *root,
 				   List *subpaths, List *partial_subpaths,
 				   List *pathkeys, Relids required_outer,
 				   int parallel_workers, bool parallel_aware,
-				   List *partitioned_rels, double rows)
+				   double rows)
 {
 	AppendPath *pathnode = makeNode(AppendPath);
 	ListCell   *l;
@@ -1198,15 +1259,14 @@ create_append_path(PlannerInfo *root,
 
 	/*
 	 * When generating an Append path for a partitioned table, there may be
-	 * parameters that are useful so we can eliminate certain partitions
-	 * during execution.  Here we'll go all the way and fully populate the
-	 * parameter info data as we do for normal base relations.  However, we
-	 * need only bother doing this for RELOPT_BASEREL rels, as
-	 * RELOPT_OTHER_MEMBER_REL's Append paths are merged into the base rel's
-	 * Append subpaths.  It would do no harm to do this, we just avoid it to
-	 * save wasting effort.
+	 * parameterized quals that are useful for run-time pruning.  Hence,
+	 * compute path.param_info the same way as for any other baserel, so that
+	 * such quals will be available for make_partition_pruneinfo().  (This
+	 * would not work right for a non-baserel, ie a scan on a non-leaf child
+	 * partition, and it's not necessary anyway in that case.  Must skip it if
+	 * we don't have "root", too.)
 	 */
-	if (partitioned_rels != NIL && root && rel->reloptkind == RELOPT_BASEREL)
+	if (root && rel->reloptkind == RELOPT_BASEREL && IS_PARTITIONED_REL(rel))
 		pathnode->path.param_info = get_baserel_parampathinfo(root,
 															  rel,
 															  required_outer);
@@ -1218,7 +1278,6 @@ create_append_path(PlannerInfo *root,
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = parallel_workers;
 	pathnode->path.pathkeys = pathkeys;
-	pathnode->partitioned_rels = list_copy(partitioned_rels);
 
 	/*
 	 * For parallel append, non-partial paths are sorted by descending total
@@ -1346,8 +1405,7 @@ create_merge_append_path(PlannerInfo *root,
 						 RelOptInfo *rel,
 						 List *subpaths,
 						 List *pathkeys,
-						 Relids required_outer,
-						 List *partitioned_rels)
+						 Relids required_outer)
 {
 	MergeAppendPath *pathnode = makeNode(MergeAppendPath);
 	Cost		input_startup_cost;
@@ -1363,7 +1421,6 @@ create_merge_append_path(PlannerInfo *root,
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = 0;
 	pathnode->path.pathkeys = pathkeys;
-	pathnode->partitioned_rels = list_copy(partitioned_rels);
 	pathnode->subpaths = subpaths;
 
 	/*
@@ -1688,8 +1745,9 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		 * planner.c).
 		 */
 		int			hashentrysize = subpath->pathtarget->width + 64;
+		int			hash_mem = get_hash_mem();
 
-		if (hashentrysize * pathnode->path.rows > work_mem * 1024L)
+		if (hashentrysize * pathnode->path.rows > hash_mem * 1024L)
 		{
 			/*
 			 * We should not try to hash.  Hack the SpecialJoinInfo to
@@ -2765,7 +2823,7 @@ create_set_projection_path(PlannerInfo *root,
  * 'limit_tuples' is the estimated bound on the number of output tuples,
  *		or -1 if no LIMIT or couldn't estimate
  */
-SortPath *
+IncrementalSortPath *
 create_incremental_sort_path(PlannerInfo *root,
 							 RelOptInfo *rel,
 							 Path *subpath,
@@ -2801,7 +2859,7 @@ create_incremental_sort_path(PlannerInfo *root,
 
 	sort->nPresortedCols = presorted_keys;
 
-	return pathnode;
+	return sort;
 }
 
 /*
@@ -3550,15 +3608,18 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 		if (lc == list_head(subpaths))	/* first node? */
 			pathnode->path.startup_cost = subpath->startup_cost;
 		pathnode->path.total_cost += subpath->total_cost;
-		pathnode->path.rows += subpath->rows;
-		total_size += subpath->pathtarget->width * subpath->rows;
+		if (returningLists != NIL)
+		{
+			pathnode->path.rows += subpath->rows;
+			total_size += subpath->pathtarget->width * subpath->rows;
+		}
 	}
 
 	/*
 	 * Set width to the average width of the subpath outputs.  XXX this is
-	 * totally wrong: we should report zero if no RETURNING, else an average
-	 * of the RETURNING tlist widths.  But it's what happened historically,
-	 * and improving it is a task for another day.
+	 * totally wrong: we should return an average of the RETURNING tlist
+	 * widths.  But it's what happened historically, and improving it is a task
+	 * for another day.
 	 */
 	if (pathnode->path.rows > 0)
 		total_size /= pathnode->path.rows;
@@ -3812,7 +3873,6 @@ reparameterize_path(PlannerInfo *root, Path *path,
 									   apath->path.pathkeys, required_outer,
 									   apath->path.parallel_workers,
 									   apath->path.parallel_aware,
-									   apath->partitioned_rels,
 									   -1);
 			}
 		default:
@@ -3885,7 +3945,18 @@ do { \
 		!bms_overlap(PATH_REQ_OUTER(path), child_rel->top_parent_relids))
 		return path;
 
-	/* Reparameterize a copy of given path. */
+	/*
+	 * If possible, reparameterize the given path, making a copy.
+	 *
+	 * This function is currently only applied to the inner side of a nestloop
+	 * join that is being partitioned by the partitionwise-join code.  Hence,
+	 * we need only support path types that plausibly arise in that context.
+	 * (In particular, supporting sorted path types would be a waste of code
+	 * and cycles: even if we translated them here, they'd just lose in
+	 * subsequent cost comparisons.)  If we do see an unsupported path type,
+	 * that just means we won't be able to generate a partitionwise-join plan
+	 * using that path type.
+	 */
 	switch (nodeTag(path))
 	{
 		case T_Path:
@@ -3929,16 +4000,6 @@ do { \
 				FLAT_COPY_PATH(bopath, path, BitmapOrPath);
 				REPARAMETERIZE_CHILD_PATH_LIST(bopath->bitmapquals);
 				new_path = (Path *) bopath;
-			}
-			break;
-
-		case T_TidPath:
-			{
-				TidPath    *tpath;
-
-				FLAT_COPY_PATH(tpath, path, TidPath);
-				ADJUST_CHILD_ATTRS(tpath->tidquals);
-				new_path = (Path *) tpath;
 			}
 			break;
 
@@ -4032,37 +4093,6 @@ do { \
 			}
 			break;
 
-		case T_MergeAppendPath:
-			{
-				MergeAppendPath *mapath;
-
-				FLAT_COPY_PATH(mapath, path, MergeAppendPath);
-				REPARAMETERIZE_CHILD_PATH_LIST(mapath->subpaths);
-				new_path = (Path *) mapath;
-			}
-			break;
-
-		case T_MaterialPath:
-			{
-				MaterialPath *mpath;
-
-				FLAT_COPY_PATH(mpath, path, MaterialPath);
-				REPARAMETERIZE_CHILD_PATH(mpath->subpath);
-				new_path = (Path *) mpath;
-			}
-			break;
-
-		case T_UniquePath:
-			{
-				UniquePath *upath;
-
-				FLAT_COPY_PATH(upath, path, UniquePath);
-				REPARAMETERIZE_CHILD_PATH(upath->subpath);
-				ADJUST_CHILD_ATTRS(upath->uniq_exprs);
-				new_path = (Path *) upath;
-			}
-			break;
-
 		case T_GatherPath:
 			{
 				GatherPath *gpath;
@@ -4070,16 +4100,6 @@ do { \
 				FLAT_COPY_PATH(gpath, path, GatherPath);
 				REPARAMETERIZE_CHILD_PATH(gpath->subpath);
 				new_path = (Path *) gpath;
-			}
-			break;
-
-		case T_GatherMergePath:
-			{
-				GatherMergePath *gmpath;
-
-				FLAT_COPY_PATH(gmpath, path, GatherMergePath);
-				REPARAMETERIZE_CHILD_PATH(gmpath->subpath);
-				new_path = (Path *) gmpath;
 			}
 			break;
 

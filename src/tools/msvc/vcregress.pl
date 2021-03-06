@@ -123,8 +123,6 @@ sub installcheck_internal
 sub installcheck
 {
 	my $schedule = shift || 'serial';
-
-	CleanupTablespaceDirectory();
 	installcheck_internal($schedule);
 	return;
 }
@@ -145,7 +143,6 @@ sub check
 		"--temp-instance=./tmp_check");
 	push(@args, $maxconn)     if $maxconn;
 	push(@args, $temp_config) if $temp_config;
-	CleanupTablespaceDirectory();
 	system(@args);
 	my $status = $? >> 8;
 	exit $status if $status;
@@ -212,7 +209,21 @@ sub tap_check
 	my $dir = shift;
 	chdir $dir;
 
-	my @args = ("prove", @flags, glob("t/*.pl"));
+	# Fetch and adjust PROVE_TESTS, applying glob() to each element
+	# defined to build a list of all the tests matching patterns.
+	my $prove_tests_val   = $ENV{PROVE_TESTS} || "t/*.pl";
+	my @prove_tests_array = split(/\s+/, $prove_tests_val);
+	my @prove_tests       = ();
+	foreach (@prove_tests_array)
+	{
+		push(@prove_tests, glob($_));
+	}
+
+	# Fetch and adjust PROVE_FLAGS, handling multiple arguments.
+	my $prove_flags_val = $ENV{PROVE_FLAGS} || "";
+	my @prove_flags     = split(/\s+/, $prove_flags_val);
+
+	my @args = ("prove", @flags, @prove_tests, @prove_flags);
 
 	# adjust the environment for just this test
 	local %ENV = %ENV;
@@ -573,8 +584,8 @@ sub upgradecheck
 	$ENV{PGDATA} = "$data.old";
 	my $outputdir          = "$tmp_root/regress";
 	my @EXTRA_REGRESS_OPTS = ("--outputdir=$outputdir");
-	mkdir "$outputdir" || die $!;
-	CleanupTablespaceDirectory($outputdir);
+	mkdir "$outputdir"                || die $!;
+	mkdir "$outputdir/testtablespace" || die $!;
 
 	my $logdir = "$topdir/src/bin/pg_upgrade/log";
 	rmtree($logdir);
@@ -609,8 +620,6 @@ sub upgradecheck
 	print "\nStarting new cluster\n\n";
 	@args = ('pg_ctl', '-l', "$logdir/postmaster2.log", 'start');
 	system(@args) == 0 or exit 1;
-	print "\nSetting up stats on new cluster\n\n";
-	system(".\\analyze_new_cluster.bat") == 0 or exit 1;
 	print "\nDumping new cluster\n\n";
 	@args = ('pg_dumpall', '-f', "$tmp_root/dump2.sql");
 	system(@args) == 0 or exit 1;
@@ -738,16 +747,6 @@ sub InstallTemp
 	}
 	$ENV{PATH} = "$tmp_installdir/bin;$ENV{PATH}";
 	return;
-}
-
-sub CleanupTablespaceDirectory
-{
-	my $testdir = shift || getcwd();
-
-	my $testtablespace = "$testdir/testtablespace";
-
-	rmtree($testtablespace) if (-d $testtablespace);
-	mkdir($testtablespace);
 }
 
 sub usage

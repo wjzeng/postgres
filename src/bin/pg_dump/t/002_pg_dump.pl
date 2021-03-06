@@ -524,6 +524,8 @@ my %tests = (
 						 FUNCTION 1 (int4, int4) btint4cmp(int4,int4),
 						 FUNCTION 2 (int4, int4) btint4sortsupport(internal),
 						 FUNCTION 4 (int4, int4) btequalimage(oid);',
+		# note: it's correct that btint8sortsupport and bigint btequalimage
+		# are included here:
 		regexp => qr/^
 			\QALTER OPERATOR FAMILY dump_test.op_family USING btree ADD\E\n\s+
 			\QOPERATOR 1 <(bigint,integer) ,\E\n\s+
@@ -532,7 +534,9 @@ my %tests = (
 			\QOPERATOR 4 >=(bigint,integer) ,\E\n\s+
 			\QOPERATOR 5 >(bigint,integer) ,\E\n\s+
 			\QFUNCTION 1 (integer, integer) btint4cmp(integer,integer) ,\E\n\s+
+			\QFUNCTION 2 (bigint, bigint) btint8sortsupport(internal) ,\E\n\s+
 			\QFUNCTION 2 (integer, integer) btint4sortsupport(internal) ,\E\n\s+
+			\QFUNCTION 4 (bigint, bigint) btequalimage(oid) ,\E\n\s+
 			\QFUNCTION 4 (integer, integer) btequalimage(oid);\E
 			/xm,
 		like =>
@@ -1559,6 +1563,8 @@ my %tests = (
 						 FUNCTION 1 btint8cmp(bigint,bigint),
 						 FUNCTION 2 btint8sortsupport(internal),
 						 FUNCTION 4 btequalimage(oid);',
+		# note: it's correct that btint8sortsupport and btequalimage
+		# are NOT included here (they're optional support functions):
 		regexp => qr/^
 			\QCREATE OPERATOR CLASS dump_test.op_class\E\n\s+
 			\QFOR TYPE bigint USING btree FAMILY dump_test.op_family AS\E\n\s+
@@ -1567,9 +1573,7 @@ my %tests = (
 			\QOPERATOR 3 =(bigint,bigint) ,\E\n\s+
 			\QOPERATOR 4 >=(bigint,bigint) ,\E\n\s+
 			\QOPERATOR 5 >(bigint,bigint) ,\E\n\s+
-			\QFUNCTION 1 (bigint, bigint) btint8cmp(bigint,bigint) ,\E\n\s+
-			\QFUNCTION 2 (bigint, bigint) btint8sortsupport(internal) ,\E\n\s+
-			\QFUNCTION 4 (bigint, bigint) btequalimage(oid);\E
+			\QFUNCTION 1 (bigint, bigint) btint8cmp(bigint,bigint);\E
 			/xm,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
@@ -1597,6 +1601,7 @@ my %tests = (
 			\QOPERATOR 3 dump_test.~~(integer,integer);\E\n.+
 			\QCREATE TYPE dump_test.range_type_custom AS RANGE (\E\n\s+
 			\Qsubtype = integer,\E\n\s+
+			\Qmultirange_type_name = dump_test.multirange_type_custom,\E\n\s+
 			\Qsubtype_opclass = dump_test.op_class_custom\E\n
 			\Q);\E
 			/xms,
@@ -1694,6 +1699,7 @@ my %tests = (
 		regexp => qr/^
 			\QCREATE TYPE dump_test.textrange AS RANGE (\E
 			\n\s+\Qsubtype = text,\E
+			\n\s+\Qmultirange_type_name = dump_test.textmultirange,\E
 			\n\s+\Qcollation = pg_catalog."C"\E
 			\n\);/xm,
 		like =>
@@ -2485,6 +2491,52 @@ my %tests = (
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'CREATE TABLE test_table_generated_child1 (without local columns)' => {
+		create_order => 4,
+		create_sql   => 'CREATE TABLE dump_test.test_table_generated_child1 ()
+						 INHERITS (dump_test.test_table_generated);',
+		regexp => qr/^
+			\QCREATE TABLE dump_test.test_table_generated_child1 (\E\n
+			\)\n
+			\QINHERITS (dump_test.test_table_generated);\E\n
+			/xms,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => {
+			binary_upgrade           => 1,
+			exclude_dump_test_schema => 1,
+		},
+	},
+
+	'ALTER TABLE test_table_generated_child1' => {
+		regexp =>
+		  qr/^\QALTER TABLE ONLY dump_test.test_table_generated_child1 ALTER COLUMN col2 \E/m,
+
+		# should not get emitted
+		like => {},
+	},
+
+	'CREATE TABLE test_table_generated_child2 (with local columns)' => {
+		create_order => 4,
+		create_sql   => 'CREATE TABLE dump_test.test_table_generated_child2 (
+						   col1 int,
+						   col2 int
+						 ) INHERITS (dump_test.test_table_generated);',
+		regexp => qr/^
+			\QCREATE TABLE dump_test.test_table_generated_child2 (\E\n
+			\s+\Qcol1 integer,\E\n
+			\s+\Qcol2 integer\E\n
+			\)\n
+			\QINHERITS (dump_test.test_table_generated);\E\n
+			/xms,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => {
+			binary_upgrade           => 1,
+			exclude_dump_test_schema => 1,
+		},
 	},
 
 	'CREATE TABLE table_with_stats' => {
@@ -3454,7 +3506,7 @@ foreach my $db (sort keys %create_sql)
 
 command_fails_like(
 	[ 'pg_dump', '-p', "$port", 'qqq' ],
-	qr/\Qpg_dump: error: connection to database "qqq" failed: FATAL:  database "qqq" does not exist\E/,
+	qr/pg_dump: error: connection to server .* failed: FATAL:  database "qqq" does not exist/,
 	'connecting to a non-existent database');
 
 #########################################

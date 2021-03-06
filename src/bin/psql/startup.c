@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * src/bin/psql/startup.c
  */
@@ -17,6 +17,7 @@
 #include "command.h"
 #include "common.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "describe.h"
 #include "fe_utils/print.h"
 #include "getopt_long.h"
@@ -119,8 +120,7 @@ main(int argc, char *argv[])
 {
 	struct adhoc_opts options;
 	int			successResult;
-	bool		have_password = false;
-	char		password[100];
+	char	   *password = NULL;
 	bool		new_pass;
 
 	pg_logging_init(argv[0]);
@@ -145,6 +145,7 @@ main(int argc, char *argv[])
 	pset.progname = get_progname(argv[0]);
 
 	pset.db = NULL;
+	pset.dead_conn = NULL;
 	setDecimalLocale();
 	pset.encoding = PQenv2encoding();
 	pset.queryFout = stdout;
@@ -233,8 +234,7 @@ main(int argc, char *argv[])
 		 * offer a potentially wrong one.  Typical uses of this option are
 		 * noninteractive anyway.
 		 */
-		simple_prompt("Password: ", password, sizeof(password), false);
-		have_password = true;
+		password = simple_prompt("Password: ", false);
 	}
 
 	/* loop until we have a password if requested by backend */
@@ -251,7 +251,7 @@ main(int argc, char *argv[])
 		keywords[2] = "user";
 		values[2] = options.username;
 		keywords[3] = "password";
-		values[3] = have_password ? password : NULL;
+		values[3] = password;
 		keywords[4] = "dbname"; /* see do_connect() */
 		values[4] = (options.list_dbs && options.dbname == NULL) ?
 			"postgres" : options.dbname;
@@ -269,7 +269,7 @@ main(int argc, char *argv[])
 
 		if (PQstatus(pset.db) == CONNECTION_BAD &&
 			PQconnectionNeedsPassword(pset.db) &&
-			!have_password &&
+			!password &&
 			pset.getPassword != TRI_NO)
 		{
 			/*
@@ -287,16 +287,15 @@ main(int argc, char *argv[])
 				password_prompt = pg_strdup(_("Password: "));
 			PQfinish(pset.db);
 
-			simple_prompt(password_prompt, password, sizeof(password), false);
+			password = simple_prompt(password_prompt, false);
 			free(password_prompt);
-			have_password = true;
 			new_pass = true;
 		}
 	} while (new_pass);
 
 	if (PQstatus(pset.db) == CONNECTION_BAD)
 	{
-		pg_log_error("could not connect to server: %s", PQerrorMessage(pset.db));
+		pg_log_error("%s", PQerrorMessage(pset.db));
 		PQfinish(pset.db);
 		exit(EXIT_BADCONN);
 	}
@@ -444,7 +443,10 @@ error:
 	/* clean up */
 	if (pset.logfile)
 		fclose(pset.logfile);
-	PQfinish(pset.db);
+	if (pset.db)
+		PQfinish(pset.db);
+	if (pset.dead_conn)
+		PQfinish(pset.dead_conn);
 	setQFout(NULL);
 
 	return successResult;

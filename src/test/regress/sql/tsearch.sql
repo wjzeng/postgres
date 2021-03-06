@@ -61,6 +61,10 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
 
 create index wowidx on test_tsvector using gist (a);
 
@@ -90,6 +94,10 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
 
 SET enable_indexscan=OFF;
 SET enable_bitmapscan=ON;
@@ -116,6 +124,10 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
 
 -- Test siglen parameter of GiST tsvector_ops
 CREATE INDEX wowidx1 ON test_tsvector USING gist (a tsvector_ops(foo=1));
@@ -152,6 +164,10 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
 
 DROP INDEX wowidx2;
 
@@ -181,6 +197,10 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
 
 RESET enable_seqscan;
 RESET enable_indexscan;
@@ -215,6 +235,10 @@ SELECT count(*) FROM test_tsvector WHERE a @@ '!qe <2> qt';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(pl <-> yh)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(yh <-> pl)';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!(qe <2> qt)';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ 'wd:D';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:A';
+SELECT count(*) FROM test_tsvector WHERE a @@ '!wd:D';
 
 -- Test optimization of non-empty GIN_SEARCH_MODE_ALL queries
 EXPLAIN (COSTS OFF)
@@ -530,10 +554,10 @@ to_tsquery('english','Lorem') && phraseto_tsquery('english','ullamcorper urna'),
 CREATE TABLE test_tsquery (txtkeyword TEXT, txtsample TEXT);
 \set ECHO none
 \copy test_tsquery from stdin
-'New York'	new & york | big & apple | nyc
+'New York'	new <-> york | big <-> apple | nyc
 Moscow	moskva | moscow
 'Sanct Peter'	Peterburg | peter | 'Sanct Peterburg'
-'foo bar qq'	foo & (bar | qq) & city
+foo & bar & qq	foo & (bar | qq) & city
 1 & (2 <-> 3)	2 <-> 4
 5 <-> 6	5 <-> 7
 \.
@@ -545,21 +569,21 @@ ALTER TABLE test_tsquery ADD COLUMN sample tsquery;
 UPDATE test_tsquery SET sample = to_tsquery('english', txtsample::text);
 
 
-SELECT COUNT(*) FROM test_tsquery WHERE keyword <  'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword <= 'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword = 'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword >= 'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword >  'new & york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword <  'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword <= 'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword = 'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword >= 'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword >  'new <-> york';
 
 CREATE UNIQUE INDEX bt_tsq ON test_tsquery (keyword);
 
 SET enable_seqscan=OFF;
 
-SELECT COUNT(*) FROM test_tsquery WHERE keyword <  'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword <= 'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword = 'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword >= 'new & york';
-SELECT COUNT(*) FROM test_tsquery WHERE keyword >  'new & york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword <  'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword <= 'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword = 'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword >= 'new <-> york';
+SELECT COUNT(*) FROM test_tsquery WHERE keyword >  'new <-> york';
 
 RESET enable_seqscan;
 
@@ -569,11 +593,11 @@ SELECT ts_rewrite(ts_rewrite('new & !york ', 'york', '!jersey'),
 
 SELECT ts_rewrite('moscow', 'SELECT keyword, sample FROM test_tsquery'::text );
 SELECT ts_rewrite('moscow & hotel', 'SELECT keyword, sample FROM test_tsquery'::text );
-SELECT ts_rewrite('bar & new & qq & foo & york', 'SELECT keyword, sample FROM test_tsquery'::text );
+SELECT ts_rewrite('bar & qq & foo & (new <-> york)', 'SELECT keyword, sample FROM test_tsquery'::text );
 
 SELECT ts_rewrite( 'moscow', 'SELECT keyword, sample FROM test_tsquery');
 SELECT ts_rewrite( 'moscow & hotel', 'SELECT keyword, sample FROM test_tsquery');
-SELECT ts_rewrite( 'bar & new & qq & foo & york', 'SELECT keyword, sample FROM test_tsquery');
+SELECT ts_rewrite( 'bar & qq & foo & (new <-> york)', 'SELECT keyword, sample FROM test_tsquery');
 
 SELECT ts_rewrite('1 & (2 <-> 3)', 'SELECT keyword, sample FROM test_tsquery'::text );
 SELECT ts_rewrite('1 & (2 <2> 3)', 'SELECT keyword, sample FROM test_tsquery'::text );
@@ -590,10 +614,10 @@ SELECT keyword FROM test_tsquery WHERE keyword <@ 'new';
 SELECT keyword FROM test_tsquery WHERE keyword <@ 'moscow';
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow') AS query;
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow & hotel') AS query;
-SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar &  new & qq & foo & york') AS query;
+SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar & qq & foo & (new <-> york)') AS query;
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow') AS query;
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow & hotel') AS query;
-SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar & new & qq & foo & york') AS query;
+SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar & qq & foo & (new <-> york)') AS query;
 
 CREATE INDEX qq ON test_tsquery USING gist (keyword tsquery_ops);
 SET enable_seqscan=OFF;
@@ -604,10 +628,10 @@ SELECT keyword FROM test_tsquery WHERE keyword <@ 'new';
 SELECT keyword FROM test_tsquery WHERE keyword <@ 'moscow';
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow') AS query;
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow & hotel') AS query;
-SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar & new & qq & foo & york') AS query;
+SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar & qq & foo & (new <-> york)') AS query;
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow') AS query;
 SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'moscow & hotel') AS query;
-SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar &  new & qq & foo & york') AS query;
+SELECT ts_rewrite( query, 'SELECT keyword, sample FROM test_tsquery' ) FROM to_tsquery('english', 'bar & qq & foo & (new <-> york)') AS query;
 
 SELECT ts_rewrite(tsquery_phrase('foo', 'foo'), 'foo', 'bar | baz');
 SELECT to_tsvector('foo bar') @@

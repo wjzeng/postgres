@@ -2,9 +2,9 @@
  *
  * partdesc.h
  *
- * Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
- * src/include/utils/partdesc.h
+ * src/include/partitioning/partdesc.h
  *
  *-------------------------------------------------------------------------
  */

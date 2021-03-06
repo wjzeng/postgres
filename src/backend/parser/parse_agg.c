@@ -3,7 +3,7 @@
  * parse_agg.c
  *	  handle aggregates and window functions in parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -545,6 +545,10 @@ check_agglevels_and_constraints(ParseState *pstate, Node *expr)
 
 			break;
 
+		case EXPR_KIND_CYCLE_MARK:
+			errkind = true;
+			break;
+
 			/*
 			 * There is intentionally no default: case here, so that the
 			 * compiler will warn if we add a new ParseExprKind without
@@ -933,6 +937,9 @@ transformWindowFuncCall(ParseState *pstate, WindowFunc *wfunc,
 		case EXPR_KIND_GENERATED_COLUMN:
 			err = _("window functions are not allowed in column generation expressions");
 			break;
+		case EXPR_KIND_CYCLE_MARK:
+			errkind = true;
+			break;
 
 			/*
 			 * There is intentionally no default: case here, so that the
@@ -1083,7 +1090,7 @@ parseCheckAggregates(ParseState *pstate, Query *qry)
 
 		if (gset_common)
 		{
-			for_each_cell(l, gsets, list_second_cell(gsets))
+			for_each_from(l, gsets, 1)
 			{
 				gset_common = list_intersection_int(gset_common, lfirst(l));
 				if (!gset_common)
@@ -1774,7 +1781,7 @@ expand_grouping_sets(List *groupingSets, int limit)
 		result = lappend(result, list_union_int(NIL, (List *) lfirst(lc)));
 	}
 
-	for_each_cell(lc, expanded_groups, list_second_cell(expanded_groups))
+	for_each_from(lc, expanded_groups, 1)
 	{
 		List	   *p = lfirst(lc);
 		List	   *new_result = NIL;

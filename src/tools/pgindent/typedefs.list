@@ -50,7 +50,6 @@ AggStatePerPhase
 AggStatePerTrans
 AggStrategy
 Aggref
-AggrefExprState
 AlenState
 Alias
 AllocBlock
@@ -111,6 +110,7 @@ Append
 AppendPath
 AppendRelInfo
 AppendState
+ApplySubXactData
 Archive
 ArchiveEntryPtrType
 ArchiveFormat
@@ -347,6 +347,7 @@ ClosePortalStmt
 ClosePtrType
 Clump
 ClusterInfo
+ClusterParams
 ClusterStmt
 CmdType
 CoalesceExpr
@@ -395,6 +396,7 @@ CompositeTypeStmt
 CompoundAffixFlag
 CompressionAlgorithm
 CompressorState
+ComputeXidHorizonsResult
 ConditionVariable
 ConditionalStack
 ConfigData
@@ -930,6 +932,7 @@ GistSplitVector
 GistTsVectorOptions
 GistVacState
 GlobalTransaction
+GlobalVisState
 GrantRoleStmt
 GrantStmt
 GrantTargetType
@@ -1017,10 +1020,12 @@ HbaToken
 HeadlineJsonState
 HeadlineParsedText
 HeadlineWordEntry
+HeapCheckContext
 HeapScanDesc
 HeapTuple
 HeapTupleData
 HeapTupleFields
+HeapTupleForceOption
 HeapTupleHeader
 HeapTupleHeaderData
 HeapTupleTableSlot
@@ -1193,6 +1198,7 @@ JsonbIterator
 JsonbIteratorToken
 JsonbPair
 JsonbParseState
+JsonbSubWorkspace
 JsonbTypeCategory
 JsonbValue
 JunkFilter
@@ -1214,6 +1220,7 @@ LLVMJitHandle
 LLVMMemoryBufferRef
 LLVMModuleRef
 LLVMOrcJITStackRef
+LLVMOrcLookupStateRef
 LLVMOrcModuleHandle
 LLVMOrcTargetAddress
 LLVMPassManagerBuilderRef
@@ -1250,6 +1257,7 @@ LUID
 LVDeadTuples
 LVParallelState
 LVRelStats
+LVSavedErrInfo
 LVShared
 LVSharedIndStats
 LWLock
@@ -1309,9 +1317,21 @@ LogStmtLevel
 LogicalDecodeBeginCB
 LogicalDecodeChangeCB
 LogicalDecodeCommitCB
+LogicalDecodeFilterPrepareCB
+LogicalDecodeBeginPrepareCB
+LogicalDecodePrepareCB
+LogicalDecodeCommitPreparedCB
+LogicalDecodeRollbackPreparedCB
 LogicalDecodeFilterByOriginCB
 LogicalDecodeMessageCB
 LogicalDecodeShutdownCB
+LogicalDecodeStreamStartCB
+LogicalDecodeStreamStopCB
+LogicalDecodeStreamAbortCB
+LogicalDecodeStreamPrepareCB
+LogicalDecodeStreamCommitCB
+LogicalDecodeStreamChangeCB
+LogicalDecodeStreamMessageCB
 LogicalDecodeStartupCB
 LogicalDecodeTruncateCB
 LogicalDecodingContext
@@ -1389,6 +1409,9 @@ MultiXactMember
 MultiXactOffset
 MultiXactStateData
 MultiXactStatus
+MultirangeIOData
+MultirangeParseState
+MultirangeType
 NDBOX
 NODE
 NUMCacheEntry
@@ -1511,6 +1534,7 @@ PGEventResultCopy
 PGEventResultCreate
 PGEventResultDestroy
 PGFInfoFunction
+PGFileType
 PGFunction
 PGLZ_HistEntry
 PGLZ_Strategy
@@ -1533,7 +1557,6 @@ PGSetenvStatusType
 PGShmemHeader
 PGTransactionStatusType
 PGVerbosity
-PGXACT
 PG_Locale_Strategy
 PG_Lock_Status
 PG_init_t
@@ -1828,7 +1851,9 @@ PgStat_MsgFuncstat
 PgStat_MsgHdr
 PgStat_MsgInquiry
 PgStat_MsgRecoveryConflict
+PgStat_MsgReplSlot
 PgStat_MsgResetcounter
+PgStat_MsgResetreplslotcounter
 PgStat_MsgResetsharedcounter
 PgStat_MsgResetsinglecounter
 PgStat_MsgResetslrucounter
@@ -1837,6 +1862,8 @@ PgStat_MsgTabpurge
 PgStat_MsgTabstat
 PgStat_MsgTempFile
 PgStat_MsgVacuum
+PgStat_MsgWal
+PgStat_ReplSlotStats
 PgStat_SLRUStats
 PgStat_Shared_Reset_Target
 PgStat_Single_Reset_Type
@@ -1848,6 +1875,7 @@ PgStat_TableCounts
 PgStat_TableEntry
 PgStat_TableStatus
 PgStat_TableXactStatus
+PgStat_WalStats
 PgXmlErrorContext
 PgXmlStrictness
 Pg_finfo_record
@@ -2034,7 +2062,10 @@ RegProcedure
 Regis
 RegisNode
 RegisteredBgWorker
+ReindexErrorInfo
+ReindexIndexInfo
 ReindexObjectType
+ReindexParams
 ReindexStmt
 ReindexType
 RelFileNode
@@ -2177,6 +2208,8 @@ SSLExtensionInfoContext
 SSL_CTX
 STARTUPINFO
 STRLEN
+ST_ELEMENT_TYPE
+ST_POINTER_TYPE
 SV
 SampleScan
 SampleScanGetSampleSize_function
@@ -2280,6 +2313,7 @@ SimpleStringList
 SimpleStringListCell
 SingleBoundSortItem
 Size
+SkipPages
 SlabBlock
 SlabChunk
 SlabContext
@@ -2290,12 +2324,12 @@ SlotNumber
 SlruCtl
 SlruCtlData
 SlruErrorCause
-SlruFlush
-SlruFlushData
 SlruPageStatus
 SlruScanCallback
 SlruShared
 SlruSharedData
+SlruWriteAll
+SlruWriteAllData
 SnapBuild
 SnapBuildOnDisk
 SnapBuildState
@@ -2365,9 +2399,9 @@ StdAnalyzeData
 StdRdOptions
 Step
 StopList
-StopWorkersData
 StrategyNumber
 StreamCtl
+StreamXidHash
 StringInfo
 StringInfoData
 StripnullState
@@ -2375,10 +2409,12 @@ SubLink
 SubLinkType
 SubPlan
 SubPlanState
+SubRemoveRels
 SubTransactionId
 SubXactCallback
 SubXactCallbackItem
 SubXactEvent
+SubXactInfo
 SubplanResultRelHashElem
 SubqueryScan
 SubqueryScanPath
@@ -2397,6 +2433,7 @@ Syn
 SyncOps
 SyncRepConfigData
 SyncRepStandbyData
+SyncRequestHandler
 SyncRequestType
 SysScanDesc
 SyscacheCallbackFunction
@@ -2488,6 +2525,7 @@ Tcl_Obj
 Tcl_Time
 TempNamespaceStatus
 TestDecodingData
+TestDecodingTxnData
 TestSpec
 TextFreq
 TextPositionState
@@ -2778,6 +2816,8 @@ XactCallback
 XactCallbackItem
 XactEvent
 XactLockTableWaitInfo
+XidBoundsViolation
+XidCommitStatus
 XidHorizonPrefetchState
 XidStatus
 XmlExpr
@@ -2896,6 +2936,8 @@ dlist_head
 dlist_iter
 dlist_mutable_iter
 dlist_node
+do_collation_version_check_context
+do_collation_version_update_context
 ds_state
 dsa_area
 dsa_area_control
@@ -2937,9 +2979,11 @@ f_smgr
 fd_set
 fe_scram_state
 fe_scram_state_enum
+fetch_range_request
 file_action_t
 file_entry_t
 file_type_t
+filehash_hash
 filemap_t
 fill_string_relopt
 finalize_primnode_context
@@ -3065,11 +3109,13 @@ lclContext
 lclTocEntry
 leafSegmentInfo
 leaf_item
+libpq_source
 line_t
 lineno_t
 list_sort_comparator
 local_relopt
 local_relopts
+local_source
 locale_t
 locate_agg_of_level_context
 locate_var_of_level_context
@@ -3114,6 +3160,7 @@ mp_small
 mp_usmall
 mp_word
 mpz_t
+multirange_bsearch_comparison
 mxact
 mxtruncinfo
 needs_fmgr_hook_type
@@ -3154,6 +3201,8 @@ pg_conn_host_type
 pg_conv_map
 pg_crc32
 pg_crc32c
+pg_cryptohash_ctx
+pg_cryptohash_type
 pg_ctype_cache
 pg_enc
 pg_enc2gettext
@@ -3164,9 +3213,11 @@ pg_int64
 pg_local_to_utf_combined
 pg_locale_t
 pg_mb_radix_tree
+pg_md5_ctx
 pg_on_exit_callback
 pg_re_flags
 pg_saslprep_rc
+pg_sha1_ctx
 pg_sha224_ctx
 pg_sha256_ctx
 pg_sha384_ctx
@@ -3178,6 +3229,7 @@ pg_tz
 pg_tz_cache
 pg_tzenum
 pg_unicode_decomposition
+pg_unicode_norminfo
 pg_unicode_normprops
 pg_utf_to_local_combined
 pg_uuid_t
@@ -3189,6 +3241,7 @@ pgpid_t
 pgsocket
 pgsql_thing_t
 pgssEntry
+pgssGlobalStats
 pgssHashKey
 pgssJumbleState
 pgssLocationLen
@@ -3292,6 +3345,7 @@ rendezvousHashEntry
 replace_rte_variables_callback
 replace_rte_variables_context
 ret_type
+rewind_source
 rewrite_event
 rijndael_ctx
 rm_detail_t

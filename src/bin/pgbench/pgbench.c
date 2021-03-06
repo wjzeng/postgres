@@ -5,7 +5,7 @@
  * Originally written by Tatsuo Ishii and enhanced by many contributors.
  *
  * src/bin/pgbench/pgbench.c
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * Permission to use, copy, modify, and distribute this software and its
@@ -59,6 +59,7 @@
 
 #include "common/int.h"
 #include "common/logging.h"
+#include "common/string.h"
 #include "fe_utils/cancel.h"
 #include "fe_utils/conditional.h"
 #include "getopt_long.h"
@@ -426,7 +427,6 @@ typedef struct
 
 	/* per client collected stats */
 	int64		cnt;			/* client transaction count, for -t */
-	int			ecnt;			/* error count */
 } CState;
 
 /*
@@ -602,7 +602,6 @@ static void doLog(TState *thread, CState *st,
 				  StatsData *agg, bool skipped, double latency, double lag);
 static void processXactStats(TState *thread, CState *st, instr_time *now,
 							 bool skipped, StatsData *agg);
-static void append_fillfactor(char *opts, int len);
 static void addScript(ParsedScript script);
 static void *threadRun(void *arg);
 static void finishCon(CState *st);
@@ -1174,8 +1173,7 @@ doConnect(void)
 {
 	PGconn	   *conn;
 	bool		new_pass;
-	static bool have_password = false;
-	static char password[100];
+	static char *password = NULL;
 
 	/*
 	 * Start the connection.  Loop until we have a password if requested by
@@ -1195,7 +1193,7 @@ doConnect(void)
 		keywords[2] = "user";
 		values[2] = login;
 		keywords[3] = "password";
-		values[3] = have_password ? password : NULL;
+		values[3] = password;
 		keywords[4] = "dbname";
 		values[4] = dbName;
 		keywords[5] = "fallback_application_name";
@@ -1215,11 +1213,10 @@ doConnect(void)
 
 		if (PQstatus(conn) == CONNECTION_BAD &&
 			PQconnectionNeedsPassword(conn) &&
-			!have_password)
+			!password)
 		{
 			PQfinish(conn);
-			simple_prompt("Password: ", password, sizeof(password), false);
-			have_password = true;
+			password = simple_prompt("Password: ", false);
 			new_pass = true;
 		}
 	} while (new_pass);
@@ -1227,8 +1224,7 @@ doConnect(void)
 	/* check to see that the backend connection was successfully made */
 	if (PQstatus(conn) == CONNECTION_BAD)
 	{
-		pg_log_error("connection to database \"%s\" failed: %s",
-					 dbName, PQerrorMessage(conn));
+		pg_log_error("%s", PQerrorMessage(conn));
 		PQfinish(conn);
 		return NULL;
 	}
@@ -1377,6 +1373,7 @@ makeVariableValue(Variable *var)
  * "src/bin/pgbench/exprscan.l".  Also see parseVariable(), below.
  *
  * Note: this static function is copied from "src/bin/psql/variables.c"
+ * but changed to disallow variable names starting with a digit.
  */
 static bool
 valid_variable_name(const char *name)
@@ -1387,6 +1384,15 @@ valid_variable_name(const char *name)
 	if (*ptr == '\0')
 		return false;
 
+	/* must not start with [0-9] */
+	if (IS_HIGHBIT_SET(*ptr) ||
+		strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"
+			   "_", *ptr) != NULL)
+		ptr++;
+	else
+		return false;
+
+	/* remaining characters can include [0-9] */
 	while (*ptr)
 	{
 		if (IS_HIGHBIT_SET(*ptr) ||
@@ -1507,23 +1513,27 @@ putVariableInt(CState *st, const char *context, char *name, int64 value)
  *
  * "sql" points at a colon.  If what follows it looks like a valid
  * variable name, return a malloc'd string containing the variable name,
- * and set *eaten to the number of characters consumed.
+ * and set *eaten to the number of characters consumed (including the colon).
  * Otherwise, return NULL.
  */
 static char *
 parseVariable(const char *sql, int *eaten)
 {
-	int			i = 0;
+	int			i = 1;			/* starting at 1 skips the colon */
 	char	   *name;
 
-	do
-	{
+	/* keep this logic in sync with valid_variable_name() */
+	if (IS_HIGHBIT_SET(sql[i]) ||
+		strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"
+			   "_", sql[i]) != NULL)
 		i++;
-	} while (IS_HIGHBIT_SET(sql[i]) ||
-			 strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"
-					"_0123456789", sql[i]) != NULL);
-	if (i == 1)
-		return NULL;			/* no valid variable name chars */
+	else
+		return NULL;
+
+	while (IS_HIGHBIT_SET(sql[i]) ||
+		   strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"
+				  "_0123456789", sql[i]) != NULL)
+		i++;
 
 	name = pg_malloc(i);
 	memcpy(name, &sql[1], i - 1);
@@ -2705,7 +2715,6 @@ sendCommand(CState *st, Command *command)
 	if (r == 0)
 	{
 		pg_log_debug("client %d could not send %s", st->id, command->argv[0]);
-		st->ecnt++;
 		return false;
 	}
 	else
@@ -2817,14 +2826,12 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 	if (qrynum == 0)
 	{
 		pg_log_error("client %d command %d: no results", st->id, st->command);
-		st->ecnt++;
 		return false;
 	}
 
 	return true;
 
 error:
-	st->ecnt++;
 	PQclear(res);
 	PQclear(next_res);
 	do
@@ -3631,30 +3638,26 @@ initDropTables(PGconn *con)
 static void
 createPartitions(PGconn *con)
 {
-	char		ff[64];
-
-	ff[0] = '\0';
-
-	/*
-	 * Per ddlinfo in initCreateTables, fillfactor is needed on table
-	 * pgbench_accounts.
-	 */
-	append_fillfactor(ff, sizeof(ff));
+	PQExpBufferData query;
 
 	/* we must have to create some partitions */
 	Assert(partitions > 0);
 
 	fprintf(stderr, "creating %d partitions...\n", partitions);
 
+	initPQExpBuffer(&query);
+
 	for (int p = 1; p <= partitions; p++)
 	{
-		char		query[256];
-
 		if (partition_method == PART_RANGE)
 		{
 			int64		part_size = (naccounts * (int64) scale + partitions - 1) / partitions;
-			char		minvalue[32],
-						maxvalue[32];
+
+			printfPQExpBuffer(&query,
+							  "create%s table pgbench_accounts_%d\n"
+							  "  partition of pgbench_accounts\n"
+							  "  for values from (",
+							  unlogged_tables ? " unlogged" : "", p);
 
 			/*
 			 * For RANGE, we use open-ended partitions at the beginning and
@@ -3663,34 +3666,39 @@ createPartitions(PGconn *con)
 			 * scale, it is more generic and the performance is better.
 			 */
 			if (p == 1)
-				sprintf(minvalue, "minvalue");
+				appendPQExpBufferStr(&query, "minvalue");
 			else
-				sprintf(minvalue, INT64_FORMAT, (p - 1) * part_size + 1);
+				appendPQExpBuffer(&query, INT64_FORMAT, (p - 1) * part_size + 1);
+
+			appendPQExpBufferStr(&query, ") to (");
 
 			if (p < partitions)
-				sprintf(maxvalue, INT64_FORMAT, p * part_size + 1);
+				appendPQExpBuffer(&query, INT64_FORMAT, p * part_size + 1);
 			else
-				sprintf(maxvalue, "maxvalue");
+				appendPQExpBufferStr(&query, "maxvalue");
 
-			snprintf(query, sizeof(query),
-					 "create%s table pgbench_accounts_%d\n"
-					 "  partition of pgbench_accounts\n"
-					 "  for values from (%s) to (%s)%s\n",
-					 unlogged_tables ? " unlogged" : "", p,
-					 minvalue, maxvalue, ff);
+			appendPQExpBufferChar(&query, ')');
 		}
 		else if (partition_method == PART_HASH)
-			snprintf(query, sizeof(query),
-					 "create%s table pgbench_accounts_%d\n"
-					 "  partition of pgbench_accounts\n"
-					 "  for values with (modulus %d, remainder %d)%s\n",
-					 unlogged_tables ? " unlogged" : "", p,
-					 partitions, p - 1, ff);
+			printfPQExpBuffer(&query,
+							  "create%s table pgbench_accounts_%d\n"
+							  "  partition of pgbench_accounts\n"
+							  "  for values with (modulus %d, remainder %d)",
+							  unlogged_tables ? " unlogged" : "", p,
+							  partitions, p - 1);
 		else					/* cannot get there */
 			Assert(0);
 
-		executeStatement(con, query);
+		/*
+		 * Per ddlinfo in initCreateTables, fillfactor is needed on table
+		 * pgbench_accounts.
+		 */
+		appendPQExpBuffer(&query, " with (fillfactor=%d)", fillfactor);
+
+		executeStatement(con, query.data);
 	}
+
+	termPQExpBuffer(&query);
 }
 
 /*
@@ -3744,61 +3752,48 @@ initCreateTables(PGconn *con)
 		}
 	};
 	int			i;
+	PQExpBufferData query;
 
 	fprintf(stderr, "creating tables...\n");
 
+	initPQExpBuffer(&query);
+
 	for (i = 0; i < lengthof(DDLs); i++)
 	{
-		char		opts[256];
-		char		buffer[256];
 		const struct ddlinfo *ddl = &DDLs[i];
-		const char *cols;
 
 		/* Construct new create table statement. */
-		opts[0] = '\0';
+		printfPQExpBuffer(&query, "create%s table %s(%s)",
+						  unlogged_tables ? " unlogged" : "",
+						  ddl->table,
+						  (scale >= SCALE_32BIT_THRESHOLD) ? ddl->bigcols : ddl->smcols);
 
 		/* Partition pgbench_accounts table */
 		if (partition_method != PART_NONE && strcmp(ddl->table, "pgbench_accounts") == 0)
-			snprintf(opts + strlen(opts), sizeof(opts) - strlen(opts),
-					 " partition by %s (aid)", PARTITION_METHOD[partition_method]);
+			appendPQExpBuffer(&query,
+							  " partition by %s (aid)", PARTITION_METHOD[partition_method]);
 		else if (ddl->declare_fillfactor)
+		{
 			/* fillfactor is only expected on actual tables */
-			append_fillfactor(opts, sizeof(opts));
+			appendPQExpBuffer(&query, " with (fillfactor=%d)", fillfactor);
+		}
 
 		if (tablespace != NULL)
 		{
 			char	   *escape_tablespace;
 
-			escape_tablespace = PQescapeIdentifier(con, tablespace,
-												   strlen(tablespace));
-			snprintf(opts + strlen(opts), sizeof(opts) - strlen(opts),
-					 " tablespace %s", escape_tablespace);
+			escape_tablespace = PQescapeIdentifier(con, tablespace, strlen(tablespace));
+			appendPQExpBuffer(&query, " tablespace %s", escape_tablespace);
 			PQfreemem(escape_tablespace);
 		}
 
-		cols = (scale >= SCALE_32BIT_THRESHOLD) ? ddl->bigcols : ddl->smcols;
-
-		snprintf(buffer, sizeof(buffer), "create%s table %s(%s)%s",
-				 unlogged_tables ? " unlogged" : "",
-				 ddl->table, cols, opts);
-
-		executeStatement(con, buffer);
+		executeStatement(con, query.data);
 	}
+
+	termPQExpBuffer(&query);
 
 	if (partition_method != PART_NONE)
 		createPartitions(con);
-}
-
-/*
- * add fillfactor percent option.
- *
- * XXX - As default is 100, it could be removed in this case.
- */
-static void
-append_fillfactor(char *opts, int len)
-{
-	snprintf(opts + strlen(opts), len - strlen(opts),
-			 " with (fillfactor=%d)", fillfactor);
 }
 
 /*
@@ -3820,7 +3815,7 @@ initTruncateTables(PGconn *con)
 static void
 initGenerateDataClientSide(PGconn *con)
 {
-	char		sql[256];
+	PQExpBufferData sql;
 	PGresult   *res;
 	int			i;
 	int64		k;
@@ -3846,6 +3841,8 @@ initGenerateDataClientSide(PGconn *con)
 	/* truncate away any old data */
 	initTruncateTables(con);
 
+	initPQExpBuffer(&sql);
+
 	/*
 	 * fill branches, tellers, accounts in that order in case foreign keys
 	 * already exist
@@ -3853,19 +3850,19 @@ initGenerateDataClientSide(PGconn *con)
 	for (i = 0; i < nbranches * scale; i++)
 	{
 		/* "filler" column defaults to NULL */
-		snprintf(sql, sizeof(sql),
-				 "insert into pgbench_branches(bid,bbalance) values(%d,0)",
-				 i + 1);
-		executeStatement(con, sql);
+		printfPQExpBuffer(&sql,
+						  "insert into pgbench_branches(bid,bbalance) values(%d,0)",
+						  i + 1);
+		executeStatement(con, sql.data);
 	}
 
 	for (i = 0; i < ntellers * scale; i++)
 	{
 		/* "filler" column defaults to NULL */
-		snprintf(sql, sizeof(sql),
-				 "insert into pgbench_tellers(tid,bid,tbalance) values (%d,%d,0)",
-				 i + 1, i / ntellers + 1);
-		executeStatement(con, sql);
+		printfPQExpBuffer(&sql,
+						  "insert into pgbench_tellers(tid,bid,tbalance) values (%d,%d,0)",
+						  i + 1, i / ntellers + 1);
+		executeStatement(con, sql.data);
 	}
 
 	/*
@@ -3886,10 +3883,10 @@ initGenerateDataClientSide(PGconn *con)
 		int64		j = k + 1;
 
 		/* "filler" column defaults to blank padded empty string */
-		snprintf(sql, sizeof(sql),
-				 INT64_FORMAT "\t" INT64_FORMAT "\t%d\t\n",
-				 j, k / naccounts + 1, 0);
-		if (PQputline(con, sql))
+		printfPQExpBuffer(&sql,
+						  INT64_FORMAT "\t" INT64_FORMAT "\t%d\t\n",
+						  j, k / naccounts + 1, 0);
+		if (PQputline(con, sql.data))
 		{
 			pg_log_fatal("PQputline failed");
 			exit(1);
@@ -3951,6 +3948,8 @@ initGenerateDataClientSide(PGconn *con)
 		exit(1);
 	}
 
+	termPQExpBuffer(&sql);
+
 	executeStatement(con, "commit");
 }
 
@@ -3964,7 +3963,7 @@ initGenerateDataClientSide(PGconn *con)
 static void
 initGenerateDataServerSide(PGconn *con)
 {
-	char		sql[256];
+	PQExpBufferData sql;
 
 	fprintf(stderr, "generating data (server-side)...\n");
 
@@ -3977,24 +3976,28 @@ initGenerateDataServerSide(PGconn *con)
 	/* truncate away any old data */
 	initTruncateTables(con);
 
-	snprintf(sql, sizeof(sql),
-			 "insert into pgbench_branches(bid,bbalance) "
-			 "select bid, 0 "
-			 "from generate_series(1, %d) as bid", nbranches * scale);
-	executeStatement(con, sql);
+	initPQExpBuffer(&sql);
 
-	snprintf(sql, sizeof(sql),
-			 "insert into pgbench_tellers(tid,bid,tbalance) "
-			 "select tid, (tid - 1) / %d + 1, 0 "
-			 "from generate_series(1, %d) as tid", ntellers, ntellers * scale);
-	executeStatement(con, sql);
+	printfPQExpBuffer(&sql,
+					  "insert into pgbench_branches(bid,bbalance) "
+					  "select bid, 0 "
+					  "from generate_series(1, %d) as bid", nbranches * scale);
+	executeStatement(con, sql.data);
 
-	snprintf(sql, sizeof(sql),
-			 "insert into pgbench_accounts(aid,bid,abalance,filler) "
-			 "select aid, (aid - 1) / %d + 1, 0, '' "
-			 "from generate_series(1, " INT64_FORMAT ") as aid",
-			 naccounts, (int64) naccounts * scale);
-	executeStatement(con, sql);
+	printfPQExpBuffer(&sql,
+					  "insert into pgbench_tellers(tid,bid,tbalance) "
+					  "select tid, (tid - 1) / %d + 1, 0 "
+					  "from generate_series(1, %d) as tid", ntellers, ntellers * scale);
+	executeStatement(con, sql.data);
+
+	printfPQExpBuffer(&sql,
+					  "insert into pgbench_accounts(aid,bid,abalance,filler) "
+					  "select aid, (aid - 1) / %d + 1, 0, '' "
+					  "from generate_series(1, " INT64_FORMAT ") as aid",
+					  naccounts, (int64) naccounts * scale);
+	executeStatement(con, sql.data);
+
+	termPQExpBuffer(&sql);
 
 	executeStatement(con, "commit");
 }
@@ -4024,13 +4027,15 @@ initCreatePKeys(PGconn *con)
 		"alter table pgbench_accounts add primary key (aid)"
 	};
 	int			i;
+	PQExpBufferData query;
 
 	fprintf(stderr, "creating primary keys...\n");
+	initPQExpBuffer(&query);
+
 	for (i = 0; i < lengthof(DDLINDEXes); i++)
 	{
-		char		buffer[256];
-
-		strlcpy(buffer, DDLINDEXes[i], sizeof(buffer));
+		resetPQExpBuffer(&query);
+		appendPQExpBufferStr(&query, DDLINDEXes[i]);
 
 		if (index_tablespace != NULL)
 		{
@@ -4038,13 +4043,14 @@ initCreatePKeys(PGconn *con)
 
 			escape_tablespace = PQescapeIdentifier(con, index_tablespace,
 												   strlen(index_tablespace));
-			snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
-					 " using index tablespace %s", escape_tablespace);
+			appendPQExpBuffer(&query, " using index tablespace %s", escape_tablespace);
 			PQfreemem(escape_tablespace);
 		}
 
-		executeStatement(con, buffer);
+		executeStatement(con, query.data);
 	}
+
+	termPQExpBuffer(&query);
 }
 
 /*
@@ -4188,7 +4194,7 @@ runInitSteps(const char *initialize_steps)
 }
 
 /*
- * Extract pgbench table informations into global variables scale,
+ * Extract pgbench table information into global variables scale,
  * partition_method and partitions.
  */
 static void
@@ -5523,7 +5529,7 @@ main(int argc, char **argv)
 				pgport = pg_strdup(optarg);
 				break;
 			case 'd':
-				pg_logging_set_level(PG_LOG_DEBUG);
+				pg_logging_increase_verbosity();
 				break;
 			case 'c':
 				benchmarking_option_set = true;
@@ -6030,13 +6036,6 @@ main(int argc, char **argv)
 	if (con == NULL)
 		exit(1);
 
-	if (PQstatus(con) == CONNECTION_BAD)
-	{
-		pg_log_fatal("connection to database \"%s\" failed: %s",
-					 dbName, PQerrorMessage(con));
-		exit(1);
-	}
-
 	if (internal_script_used)
 		GetTableInfo(con, scale_given);
 
@@ -6455,7 +6454,7 @@ threadRun(void *arg)
 
 			/*
 			 * If advanceConnectionState changed client to finished state,
-			 * that's one less client that remains.
+			 * that's one fewer client that remains.
 			 */
 			if (st->state == CSTATE_FINISHED || st->state == CSTATE_ABORTED)
 				remains--;

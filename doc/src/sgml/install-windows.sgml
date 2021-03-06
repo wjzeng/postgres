@@ -11,7 +11,8 @@
  <para>
   It is recommended that most users download the binary distribution for
   Windows, available as a graphical installer package
-  from the <productname>PostgreSQL</productname> website. Building from source
+  from the <productname>PostgreSQL</productname> website at
+  <ulink url="https://www.postgresql.org/download/"></ulink>. Building from source
   is only intended for people developing <productname>PostgreSQL</productname>
   or extensions.
  </para>
@@ -117,7 +118,7 @@
   same purpose.
   From the <application>Visual Studio Command Prompt</application>, you can
   change the targeted CPU architecture, build type, and target OS by using the
-  <command>vcvarsall.bat</command> command, e.g.
+  <command>vcvarsall.bat</command> command, e.g.,
   <command>vcvarsall.bat x64 10.0.10240.0</command> to target Windows 10
   with a 64-bit release build. See <command>-help</command> for the other
   options of <command>vcvarsall.bat</command>. All commands should be run from
@@ -250,13 +251,14 @@ $ENV{MSBFLAGS}="/m";
         installations <filename>C:\Program Files\GnuWin32</filename>.
         Consider installing into <filename>C:\GnuWin32</filename> or use the
         NTFS short name path to GnuWin32 in your PATH environment setting
-        (e.g. <filename>C:\PROGRA~1\GnuWin32</filename>).
+        (e.g., <filename>C:\PROGRA~1\GnuWin32</filename>).
        </para>
      </note>
 
      <note>
        <para>
-       The obsolete <literal>winflex</literal> binaries distributed on the PostgreSQL FTP site
+       The obsolete <literal>winflex</literal> binaries distributed in the
+       downloads section of the PostgreSQL web site
        and referenced in older documentation will fail with <quote>flex: fatal
        internal error, exec failed</quote> on 64-bit Windows hosts. Use Flex from
        MSYS instead.
@@ -287,7 +289,7 @@ $ENV{MSBFLAGS}="/m";
      <listitem><para>
       Required for GSSAPI authentication support. MIT Kerberos can be
       downloaded from
-      <ulink url="http://web.mit.edu/Kerberos/dist/index.html"></ulink>.
+      <ulink url="https://web.mit.edu/Kerberos/dist/index.html"></ulink>.
      </para></listitem>
     </varlistentry>
 
@@ -296,7 +298,7 @@ $ENV{MSBFLAGS}="/m";
       <productname>libxslt</productname></term>
      <listitem><para>
       Required for XML support. Binaries can be downloaded from
-      <ulink url="http://zlatkovic.com/pub/libxml"></ulink> or source from
+      <ulink url="https://zlatkovic.com/pub/libxml"></ulink> or source from
       <ulink url="http://xmlsoft.org"></ulink>. Note that libxml2 requires iconv,
       which is available from the same download location.
      </para></listitem>
@@ -333,7 +335,7 @@ $ENV{MSBFLAGS}="/m";
      <listitem><para>
       Required for compression support in <application>pg_dump</application>
       and <application>pg_restore</application>. Binaries can be downloaded
-      from <ulink url="http://www.zlib.net"></ulink>.
+      from <ulink url="https://www.zlib.net"></ulink>.
      </para></listitem>
     </varlistentry>
 
@@ -493,6 +495,24 @@ $ENV{PERL5LIB}=$ENV{PERL5LIB} . ';c:\IPC-Run-0.94\lib';
      </para></listitem>
     </varlistentry>
    </variablelist>
+  </para>
+
+  <para>
+   The TAP tests run with <command>vcregress</command> support the
+   environment variables <varname>PROVE_TESTS</varname>, that is expanded
+   automatically using the name patterns given, and
+   <varname>PROVE_FLAGS</varname>. These can be set on a Windows terminal,
+   before running <command>vcregress</command>:
+<programlisting>
+set PROVE_FLAGS=--timer --jobs 2
+set PROVE_TESTS=t/020*.pl t/010*.pl
+</programlisting>
+   It is also possible to set up those parameters in
+   <filename>buildenv.pl</filename>:
+<programlisting>
+$ENV{PROVE_FLAGS}='--timer --jobs 2'
+$ENV{PROVE_TESTS}='t/020*.pl t/010*.pl'
+</programlisting>
   </para>
  </sect2>
 

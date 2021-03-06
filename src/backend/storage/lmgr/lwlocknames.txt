@@ -15,7 +15,7 @@ SInvalWriteLock						6
 WALBufMappingLock					7
 WALWriteLock						8
 ControlFileLock						9
-CheckpointLock						10
+# 10 was CheckpointLock
 XactSLRULock						11
 SubtransSLRULock					12
 MultiXactGenLock					13
@@ -50,3 +50,6 @@ MultiXactTruncationLock				41
 OldSnapshotTimeMapLock				42
 LogicalRepWorkerLock				43
 XactTruncationLock					44
+# 45 was XactTruncationLock until removal of BackendRandomLock
+WrapLimitsVacuumLock				46
+NotifyQueueTailLock					47

@@ -27,7 +27,7 @@
    <command>ps</command>, <command>top</command>, <command>iostat</command>, and <command>vmstat</command>.
    Also, once one has identified a
    poorly-performing query, further investigation might be needed using
-   <productname>PostgreSQL</productname>'s <xref linkend="sql-explain"/> command.
+   <productname>PostgreSQL</productname>'s <link linkend="sql-explain"><command>EXPLAIN</command></link> command.
    <xref linkend="using-explain"/> discusses <command>EXPLAIN</command>
    and other methods for understanding the behavior of an individual
    query.
@@ -62,10 +62,10 @@ postgres  15610  0.0  0.0  58772  3056 ?        Ss   18:07   0:00 postgres: tgl 
    (The appropriate invocation of <command>ps</command> varies across different
    platforms, as do the details of what is shown.  This example is from a
    recent Linux system.)  The first process listed here is the
-   master server process.  The command arguments
+   primary server process.  The command arguments
    shown for it are the same ones used when it was launched.  The next five
    processes are background worker processes automatically launched by the
-   master process.  (The <quote>stats collector</quote> process will not be present
+   primary process.  (The <quote>stats collector</quote> process will not be present
    if you have set the system not to start the statistics collector; likewise
    the <quote>autovacuum launcher</quote> process can be disabled.)
    Each of the remaining
@@ -206,7 +206,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
    When the server shuts down cleanly, a permanent copy of the statistics
    data is stored in the <filename>pg_stat</filename> subdirectory, so that
    statistics can be retained across server restarts.  When recovery is
-   performed at server start (e.g. after immediate shutdown, server crash,
+   performed at server start (e.g., after immediate shutdown, server crash,
    and point-in-time recovery), all statistics counters are reset.
   </para>
 
@@ -315,6 +315,15 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
 
      <row>
+      <entry><structname>pg_stat_replication_slots</structname><indexterm><primary>pg_stat_replication_slots</primary></indexterm></entry>
+      <entry>One row per replication slot, showing statistics about
+       the replication slot's usage.
+       See <link linkend="monitoring-pg-stat-replication-slots-view">
+       <structname>pg_stat_replication_slots</structname></link> for details.
+      </entry>
+     </row>
+
+     <row>
       <entry><structname>pg_stat_wal_receiver</structname><indexterm><primary>pg_stat_wal_receiver</primary></indexterm></entry>
       <entry>Only one row, showing statistics about the WAL receiver from
        that receiver's connected server.
@@ -390,6 +399,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       </entry>
      </row>
 
+     <row>
+      <entry><structname>pg_stat_progress_copy</structname><indexterm><primary>pg_stat_progress_copy</primary></indexterm></entry>
+      <entry>One row for each backend running <command>COPY</command>, showing current progress.
+       See <xref linkend='copy-progress-reporting'/>.
+      </entry>
+     </row>
     </tbody>
    </tgroup>
   </table>
@@ -422,6 +437,14 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        <link linkend="monitoring-pg-stat-bgwriter-view">
        <structname>pg_stat_bgwriter</structname></link> for details.
      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_wal</structname><indexterm><primary>pg_stat_wal</primary></indexterm></entry>
+      <entry>One row only, showing statistics about WAL activity. See
+       <link linkend="monitoring-pg-stat-wal-view">
+       <structname>pg_stat_wal</structname></link> for details.
+      </entry>
      </row>
 
      <row>
@@ -687,12 +710,9 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        <structfield>leader_pid</structfield> <type>integer</type>
       </para>
       <para>
-       Process ID of the parallel group leader if this process is or
-       has been involved in parallel query, or null. This field is set
-       when a process wants to cooperate with parallel workers, and
-       remains set as long as the process exists. For a parallel group leader,
-       this field is set to its own process ID. For a parallel worker,
-       this field is set to the process ID of the parallel group leader.
+       Process ID of the parallel group leader, if this process is a
+       parallel query worker.  <literal>NULL</literal> if this process is a
+       parallel group leader or does not participate in parallel query.
       </para></entry>
      </row>
 
@@ -894,7 +914,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        <structfield>state</structfield> is <literal>active</literal> this field shows the
        currently executing query. In all other states, it shows the last query
        that was executed. By default the query text is truncated at 1024
-       characters; this value can be changed via the parameter
+       bytes; this value can be changed via the parameter
        <xref linkend="guc-track-activity-query-size"/>.
       </para></entry>
      </row>
@@ -1206,6 +1226,10 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting for a write to a buffered file.</entry>
      </row>
      <row>
+      <entry><literal>BufFileTruncate</literal></entry>
+      <entry>Waiting for a buffered file to be truncated.</entry>
+     </row>
+     <row>
       <entry><literal>ControlFileRead</literal></entry>
       <entry>Waiting for a read from the <filename>pg_control</filename>
        file.</entry>
@@ -1213,12 +1237,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>ControlFileSync</literal></entry>
       <entry>Waiting for the <filename>pg_control</filename> file to reach
-       stable storage.</entry>
+       durable storage.</entry>
      </row>
      <row>
       <entry><literal>ControlFileSyncUpdate</literal></entry>
       <entry>Waiting for an update to the <filename>pg_control</filename> file
-       to reach stable storage.</entry>
+       to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>ControlFileWrite</literal></entry>
@@ -1249,12 +1273,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>DataFileFlush</literal></entry>
-      <entry>Waiting for a relation data file to reach stable storage.</entry>
+      <entry>Waiting for a relation data file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>DataFileImmediateSync</literal></entry>
       <entry>Waiting for an immediate synchronization of a relation data file to
-       stable storage.</entry>
+       durable storage.</entry>
      </row>
      <row>
       <entry><literal>DataFilePrefetch</literal></entry>
@@ -1267,7 +1291,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>DataFileSync</literal></entry>
-      <entry>Waiting for changes to a relation data file to reach stable storage.</entry>
+      <entry>Waiting for changes to a relation data file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>DataFileTruncate</literal></entry>
@@ -1284,7 +1308,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LockFileAddToDataDirSync</literal></entry>
-      <entry>Waiting for data to reach stable storage while adding a line to the
+      <entry>Waiting for data to reach durable storage while adding a line to the
        data directory lock file.</entry>
      </row>
      <row>
@@ -1299,7 +1323,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LockFileCreateSync</literal></entry>
-      <entry>Waiting for data to reach stable storage while creating the data
+      <entry>Waiting for data to reach durable storage while creating the data
        directory lock file.</entry>
      </row>
      <row>
@@ -1314,12 +1338,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LogicalRewriteCheckpointSync</literal></entry>
-      <entry>Waiting for logical rewrite mappings to reach stable storage
+      <entry>Waiting for logical rewrite mappings to reach durable storage
        during a checkpoint.</entry>
      </row>
      <row>
       <entry><literal>LogicalRewriteMappingSync</literal></entry>
-      <entry>Waiting for mapping data to reach stable storage during a logical
+      <entry>Waiting for mapping data to reach durable storage during a logical
        rewrite.</entry>
      </row>
      <row>
@@ -1329,7 +1353,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>LogicalRewriteSync</literal></entry>
-      <entry>Waiting for logical rewrite mappings to reach stable
+      <entry>Waiting for logical rewrite mappings to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1347,7 +1371,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>RelationMapSync</literal></entry>
-      <entry>Waiting for the relation map file to reach stable storage.</entry>
+      <entry>Waiting for the relation map file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>RelationMapWrite</literal></entry>
@@ -1372,12 +1396,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>ReplicationSlotRestoreSync</literal></entry>
-      <entry>Waiting for a replication slot control file to reach stable storage
+      <entry>Waiting for a replication slot control file to reach durable storage
        while restoring it to memory.</entry>
      </row>
      <row>
       <entry><literal>ReplicationSlotSync</literal></entry>
-      <entry>Waiting for a replication slot control file to reach stable
+      <entry>Waiting for a replication slot control file to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1386,7 +1410,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>SLRUFlushSync</literal></entry>
-      <entry>Waiting for SLRU data to reach stable storage during a checkpoint
+      <entry>Waiting for SLRU data to reach durable storage during a checkpoint
        or database shutdown.</entry>
      </row>
      <row>
@@ -1395,7 +1419,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>SLRUSync</literal></entry>
-      <entry>Waiting for SLRU data to reach stable storage following a page
+      <entry>Waiting for SLRU data to reach durable storage following a page
        write.</entry>
      </row>
      <row>
@@ -1410,7 +1434,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>SnapbuildSync</literal></entry>
       <entry>Waiting for a serialized historical catalog snapshot to reach
-       stable storage.</entry>
+       durable storage.</entry>
      </row>
      <row>
       <entry><literal>SnapbuildWrite</literal></entry>
@@ -1420,7 +1444,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>TimelineHistoryFileSync</literal></entry>
       <entry>Waiting for a timeline history file received via streaming
-       replication to reach stable storage.</entry>
+       replication to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>TimelineHistoryFileWrite</literal></entry>
@@ -1433,7 +1457,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>TimelineHistorySync</literal></entry>
-      <entry>Waiting for a newly created timeline history file to reach stable
+      <entry>Waiting for a newly created timeline history file to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1447,7 +1471,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>TwophaseFileSync</literal></entry>
-      <entry>Waiting for a two phase state file to reach stable storage.</entry>
+      <entry>Waiting for a two phase state file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>TwophaseFileWrite</literal></entry>
@@ -1455,7 +1479,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>WALBootstrapSync</literal></entry>
-      <entry>Waiting for WAL to reach stable storage during
+      <entry>Waiting for WAL to reach durable storage during
        bootstrapping.</entry>
      </row>
      <row>
@@ -1470,7 +1494,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>WALCopySync</literal></entry>
       <entry>Waiting for a new WAL segment created by copying an existing one to
-       reach stable storage.</entry>
+       reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>WALCopyWrite</literal></entry>
@@ -1479,7 +1503,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>WALInitSync</literal></entry>
-      <entry>Waiting for a newly initialized WAL file to reach stable
+      <entry>Waiting for a newly initialized WAL file to reach durable
        storage.</entry>
      </row>
      <row>
@@ -1497,16 +1521,32 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
      <row>
       <entry><literal>WALSync</literal></entry>
-      <entry>Waiting for a WAL file to reach stable storage.</entry>
+      <entry>Waiting for a WAL file to reach durable storage.</entry>
      </row>
      <row>
       <entry><literal>WALSyncMethodAssign</literal></entry>
-      <entry>Waiting for data to reach stable storage while assigning a new
+      <entry>Waiting for data to reach durable storage while assigning a new
        WAL sync method.</entry>
      </row>
      <row>
       <entry><literal>WALWrite</literal></entry>
       <entry>Waiting for a write to a WAL file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalChangesRead</literal></entry>
+      <entry>Waiting for a read from a logical changes file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalChangesWrite</literal></entry>
+      <entry>Waiting for a write to a logical changes file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalSubxactRead</literal></entry>
+      <entry>Waiting for a read from a logical subxact file.</entry>
+     </row>
+     <row>
+      <entry><literal>LogicalSubxactWrite</literal></entry>
+      <entry>Waiting for a write to a logical subxact file.</entry>
      </row>
     </tbody>
    </tgroup>
@@ -1746,6 +1786,12 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting to extend a relation.</entry>
      </row>
      <row>
+      <entry><literal>frozenid</literal></entry>
+      <entry>Waiting to
+       update <structname>pg_database</structname>.<structfield>datfrozenxid</structfield>
+       and <structname>pg_database</structname>.<structfield>datminmxid</structfield>.</entry>
+     </row>
+     <row>
       <entry><literal>object</literal></entry>
       <entry>Waiting to acquire a lock on a non-relation database object.</entry>
      </row>
@@ -1835,10 +1881,6 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
        pool.</entry>
      </row>
      <row>
-      <entry><literal>Checkpoint</literal></entry>
-      <entry>Waiting to begin a checkpoint.</entry>
-     </row>
-     <row>
       <entry><literal>CheckpointerComm</literal></entry>
       <entry>Waiting to manage fsync requests.</entry>
      </row>
@@ -1912,6 +1954,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>NotifyQueue</literal></entry>
       <entry>Waiting to read or update <command>NOTIFY</command> messages.</entry>
+     </row>
+     <row>
+      <entry><literal>NotifyQueueTail</literal></entry>
+      <entry>Waiting to update limit on <command>NOTIFY</command> message
+       storage.</entry>
      </row>
      <row>
       <entry><literal>NotifySLRU</literal></entry>
@@ -2088,6 +2135,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>WALWrite</literal></entry>
       <entry>Waiting for WAL buffers to be written to disk.</entry>
+     </row>
+     <row>
+      <entry><literal>WrapLimitsVacuum</literal></entry>
+      <entry>Waiting to update limits on transaction id and multixact
+       consumption.</entry>
      </row>
      <row>
       <entry><literal>XactBuffer</literal></entry>
@@ -2466,38 +2518,6 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
        Send time of last reply message received from standby server
       </para></entry>
      </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>spill_txns</structfield> <type>bigint</type>
-      </para>
-      <para>
-       Number of transactions spilled to disk after the memory used by
-       logical decoding exceeds <literal>logical_decoding_work_mem</literal>. The
-       counter gets incremented both for toplevel transactions and
-       subtransactions.
-      </para></entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>spill_count</structfield> <type>bigint</type>
-      </para>
-      <para>
-       Number of times transactions were spilled to disk. Transactions
-       may get spilled repeatedly, and this counter gets incremented on every
-       such invocation.
-      </para></entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>spill_bytes</structfield> <type>bigint</type>
-      </para>
-      <para>
-       Amount of decoded transaction data spilled to disk.
-      </para></entry>
-     </row>
     </tbody>
    </tgroup>
   </table>
@@ -2522,12 +2542,6 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
    mechanism will simply display NULL lag.
   </para>
 
-  <para>
-   Tracking of spilled transactions works only for logical replication.  In
-   physical replication, the tracking mechanism will display 0 for spilled
-   statistics.
-  </para>
-
   <note>
    <para>
     The reported lag times are not predictions of how long it will take for
@@ -2546,6 +2560,131 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
     as missing data, zero or continue to display the last known value.
    </para>
   </note>
+
+ </sect2>
+
+ <sect2 id="monitoring-pg-stat-replication-slots-view">
+  <title><structname>pg_stat_replication_slots</structname></title>
+
+  <indexterm>
+   <primary>pg_stat_replication_slots</primary>
+  </indexterm>
+
+  <para>
+   The <structname>pg_stat_replication_slots</structname> view will contain
+   one row per logical replication slot, showing statistics about its usage.
+  </para>
+
+  <table id="pg-stat-replication-slots-view" xreflabel="pg_stat_replication_slots">
+   <title><structname>pg_stat_replication_slots</structname> View</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        Column Type
+       </para>
+       <para>
+        Description
+      </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>slot_name</structfield> <type>text</type>
+       </para>
+       <para>
+        A unique, cluster-wide identifier for the replication slot
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>spill_txns</structfield> <type>bigint</type>
+       </para>
+       <para>
+        Number of transactions spilled to disk once the memory used by
+        logical decoding to decode changes from WAL has exceeded
+        <literal>logical_decoding_work_mem</literal>. The counter gets
+        incremented for both toplevel transactions and subtransactions.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>spill_count</structfield> <type>bigint</type>
+       </para>
+       <para>
+        Number of times transactions were spilled to disk while decoding
+        changes from WAL for this slot. This counter is incremented each time
+        a transaction is spilled, and the same transaction may be spilled
+        multiple times.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>spill_bytes</structfield> <type>bigint</type>
+       </para>
+       <para>
+        Amount of decoded transaction data spilled to disk while performing
+        decoding of changes from WAL for this slot. This and other spill
+        counters can be used to gauge the I/O which occurred during logical
+        decoding and allow tuning <literal>logical_decoding_work_mem</literal>.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>stream_txns</structfield> <type>bigint</type>
+       </para>
+       <para>
+        Number of in-progress transactions streamed to the decoding output
+        plugin after the memory used by logical decoding to decode changes
+        from WAL for this slot has exceeded
+        <literal>logical_decoding_work_mem</literal>. Streaming only
+        works with toplevel transactions (subtransactions can't be streamed
+        independently), so the counter is not incremented for subtransactions.
+       </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>stream_count</structfield><type>bigint</type>
+       </para>
+       <para>
+        Number of times in-progress transactions were streamed to the decoding
+        output plugin while decoding changes from WAL for this slot. This
+        counter is incremented each time a transaction is streamed, and the
+        same transaction may be streamed multiple times.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>stream_bytes</structfield><type>bigint</type>
+       </para>
+       <para>
+        Amount of decoded in-progress transaction data streamed to the decoding
+        output plugin while decoding changes from WAL for this slot. This and other
+        streaming counters for this slot can be used to gauge the network I/O which
+        occurred during logical decoding and allow tuning <literal>logical_decoding_work_mem</literal>.
+       </para>
+      </entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>stats_reset</structfield> <type>timestamp with time zone</type>
+       </para>
+       <para>
+        Time at which these statistics were last reset
+       </para></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
 
  </sect2>
 
@@ -3285,6 +3424,83 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
 
  </sect2>
 
+ <sect2 id="monitoring-pg-stat-wal-view">
+   <title><structname>pg_stat_wal</structname></title>
+
+  <indexterm>
+   <primary>pg_stat_wal</primary>
+  </indexterm>
+
+  <para>
+   The <structname>pg_stat_wal</structname> view will always have a
+   single row, containing data about WAL activity of the cluster.
+  </para>
+
+  <table id="pg-stat-wal-view" xreflabel="pg_stat_wal">
+   <title><structname>pg_stat_wal</structname> View</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       Column Type
+      </para>
+      <para>
+       Description
+      </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>wal_records</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Total number of WAL records generated
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>wal_fpi</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Total number of WAL full page images generated
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>wal_bytes</structfield> <type>numeric</type>
+      </para>
+      <para>
+       Total amount of WAL generated in bytes
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>wal_buffers_full</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of times WAL data was written to disk because WAL buffers became full
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>stats_reset</structfield> <type>timestamp with time zone</type>
+      </para>
+      <para>
+       Time at which these statistics were last reset
+      </para></entry>
+     </row>
+     </tbody>
+   </tgroup>
+  </table>
+
+</sect2>
+
  <sect2 id="monitoring-pg-stat-database-view">
   <title><structname>pg_stat_database</structname></title>
 
@@ -3521,6 +3737,83 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>session_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Time spent by database sessions in this database, in milliseconds
+       (note that statistics are only updated when the state of a session
+       changes, so if sessions have been idle for a long time, this idle time
+       won't be included)
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>active_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Time spent executing SQL statements in this database, in milliseconds
+       (this corresponds to the states <literal>active</literal> and
+       <literal>fastpath function call</literal> in
+       <link linkend="monitoring-pg-stat-activity-view">
+       <structname>pg_stat_activity</structname></link>)
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>idle_in_transaction_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Time spent idling while in a transaction in this database, in milliseconds
+       (this corresponds to the states <literal>idle in transaction</literal> and
+       <literal>idle in transaction (aborted)</literal> in
+       <link linkend="monitoring-pg-stat-activity-view">
+       <structname>pg_stat_activity</structname></link>)
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>sessions</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Total number of sessions established to this database
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>sessions_abandoned</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of database sessions to this database that were terminated
+       because connection to the client was lost
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>sessions_fatal</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of database sessions to this database that were terminated
+       by fatal errors
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>sessions_killed</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of database sessions to this database that were terminated
+       by operator intervention
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>stats_reset</structfield> <type>timestamp with time zone</type>
       </para>
       <para>
@@ -3545,7 +3838,7 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
    one row per database, showing database-wide statistics about
    query cancels occurring due to conflicts with recovery on standby servers.
    This view will only contain information on standby servers, since
-   conflicts do not occur on master servers.
+   conflicts do not occur on primary servers.
   </para>
 
   <table id="pg-stat-database-conflicts-view" xreflabel="pg_stat_database_conflicts">
@@ -4469,7 +4762,7 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
        <structfield>name</structfield> <type>text</type>
       </para>
       <para>
-       name of the SLRU
+       Name of the SLRU
       </para></entry>
      </row>
 
@@ -4673,8 +4966,9 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
         argument.  The argument can be <literal>bgwriter</literal> to reset
         all the counters shown in
         the <structname>pg_stat_bgwriter</structname>
-        view,or <literal>archiver</literal> to reset all the counters shown in
-        the <structname>pg_stat_archiver</structname> view.
+        view, <literal>archiver</literal> to reset all the counters shown in
+        the <structname>pg_stat_archiver</structname> view or <literal>wal</literal>
+        to reset all the counters shown in the <structname>pg_stat_wal</structname> view.
        </para>
        <para>
         This function is restricted to superusers by default, but other users
@@ -4746,6 +5040,25 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
        <para>
         This function is restricted to superusers by default, but other users
         can be granted EXECUTE to run the function.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+          <primary>pg_stat_reset_replication_slot</primary>
+        </indexterm>
+        <function>pg_stat_reset_replication_slot</function> ( <type>text</type> )
+        <returnvalue>void</returnvalue>
+       </para>
+       <para>
+        Resets statistics of the replication slot defined by the argument. If
+        the argument is <literal>NULL</literal>, resets statistics for all
+        the replication slots.
+       </para>
+       <para>
+         This function is restricted to superusers by default, but other users
+         can be granted EXECUTE to run the function.
        </para></entry>
       </row>
      </tbody>
@@ -5013,6 +5326,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
    which support progress reporting are <command>ANALYZE</command>,
    <command>CLUSTER</command>,
    <command>CREATE INDEX</command>, <command>VACUUM</command>,
+   <command>COPY</command>,
    and <xref linkend="protocol-replication-base-backup"/> (i.e., replication
    command that <xref linkend="app-pgbasebackup"/> issues to take
    a base backup).
@@ -5021,6 +5335,10 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
 
  <sect2 id="analyze-progress-reporting">
   <title>ANALYZE Progress Reporting</title>
+
+  <indexterm>
+   <primary>pg_stat_progress_analyze</primary>
+  </indexterm>
 
   <para>
    Whenever <command>ANALYZE</command> is running, the
@@ -5213,8 +5531,8 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
      <row>
       <entry><literal>finalizing analyze</literal></entry>
       <entry>
-       The command is updating pg_class. When this phase is completed,
-       <command>ANALYZE</command> will end.
+       The command is updating <structname>pg_class</structname>. When this
+       phase is completed, <command>ANALYZE</command> will end.
       </entry>
      </row>
     </tbody>
@@ -5224,8 +5542,8 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
   <note>
    <para>
     Note that when <command>ANALYZE</command> is run on a partitioned table,
-    all of its partitions are also recursively analyzed as also mentioned in
-    <xref linkend="sql-analyze"/>.  In that case, <command>ANALYZE</command>
+    all of its partitions are also recursively analyzed.
+    In that case, <command>ANALYZE</command>
     progress is reported first for the parent table, whereby its inheritance
     statistics are collected, followed by that for each partition.
    </para>
@@ -5234,6 +5552,10 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
 
  <sect2 id="create-index-progress-reporting">
   <title>CREATE INDEX Progress Reporting</title>
+
+  <indexterm>
+   <primary>pg_stat_progress_create_index</primary>
+  </indexterm>
 
   <para>
    Whenever <command>CREATE INDEX</command> or <command>REINDEX</command> is running, the
@@ -5394,6 +5716,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
       <para>
        When creating an index on a partitioned table, this column is set to
        the total number of partitions on which the index is to be created.
+       This field is <literal>0</literal> during a <literal>REINDEX</literal>.
       </para></entry>
      </row>
 
@@ -5404,6 +5727,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
       <para>
        When creating an index on a partitioned table, this column is set to
        the number of partitions on which the index has been completed.
+       This field is <literal>0</literal> during a <literal>REINDEX</literal>.
       </para></entry>
      </row>
     </tbody>
@@ -5530,6 +5854,10 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
 
  <sect2 id="vacuum-progress-reporting">
   <title>VACUUM Progress Reporting</title>
+
+  <indexterm>
+   <primary>pg_stat_progress_vacuum</primary>
+  </indexterm>
 
   <para>
    Whenever <command>VACUUM</command> is running, the
@@ -5757,6 +6085,10 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
  <sect2 id="cluster-progress-reporting">
   <title>CLUSTER Progress Reporting</title>
 
+  <indexterm>
+   <primary>pg_stat_progress_cluster</primary>
+  </indexterm>
+
   <para>
    Whenever <command>CLUSTER</command> or <command>VACUUM FULL</command> is
    running, the <structname>pg_stat_progress_cluster</structname> view will
@@ -5975,6 +6307,10 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
  <sect2 id="basebackup-progress-reporting">
   <title>Base Backup Progress Reporting</title>
 
+  <indexterm>
+   <primary>pg_stat_progress_basebackup</primary>
+  </indexterm>
+
   <para>
    Whenever an application like <application>pg_basebackup</application>
    is taking a base backup, the
@@ -6094,8 +6430,8 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
       <entry><literal>waiting for checkpoint to finish</literal></entry>
       <entry>
        The WAL sender process is currently performing
-       <function>pg_start_backup</function> to set up for
-       taking a base backup, and waiting for backup start
+       <function>pg_start_backup</function> to prepare to
+       take a base backup, and waiting for the start-of-backup
        checkpoint to finish.
       </entry>
      </row>
@@ -6142,6 +6478,106 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
   </table>
 
  </sect2>
+
+ <sect2 id="copy-progress-reporting">
+  <title>COPY Progress Reporting</title>
+
+  <indexterm>
+   <primary>pg_stat_progress_copy</primary>
+  </indexterm>
+
+  <para>
+   Whenever <command>COPY</command> is running, the
+   <structname>pg_stat_progress_copy</structname> view will contain one row
+   for each backend that is currently running a <command>COPY</command> command.
+   The table below describes the information that will be reported and provides
+   information about how to interpret it.
+  </para>
+
+  <table id="pg-stat-progress-copy-view" xreflabel="pg_stat_progress_copy">
+   <title><structname>pg_stat_progress_copy</structname> View</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       Column Type
+      </para>
+      <para>
+       Description
+      </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>pid</structfield> <type>integer</type>
+      </para>
+      <para>
+       Process ID of backend.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>datid</structfield> <type>oid</type>
+      </para>
+      <para>
+       OID of the database to which this backend is connected.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>datname</structfield> <type>name</type>
+      </para>
+      <para>
+       Name of the database to which this backend is connected.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>relid</structfield> <type>oid</type>
+      </para>
+      <para>
+       OID of the table on which the <command>COPY</command> command is executed.
+       It is set to 0 if copying from a <command>SELECT</command> query.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>bytes_processed</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of bytes already processed by <command>COPY</command> command.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>bytes_total</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Size of source file for <command>COPY FROM</command> command in bytes.
+       It is set to 0 if not available.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>lines_processed</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of lines already processed by <command>COPY</command> command.
+      </para></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+ </sect2>
+
  </sect1>
 
  <sect1 id="dynamic-trace">
@@ -6171,7 +6607,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
    <ulink url="https://en.wikipedia.org/wiki/DTrace">DTrace</ulink>
    utility is supported, which, at the time of this writing, is available
    on Solaris, macOS, FreeBSD, NetBSD, and Oracle Linux.  The
-   <ulink url="http://sourceware.org/systemtap/">SystemTap</ulink> project
+   <ulink url="https://sourceware.org/systemtap/">SystemTap</ulink> project
    for Linux provides a DTrace equivalent and can also be used.  Supporting other dynamic
    tracing utilities is theoretically possible by changing the definitions for
    the macros in <filename>src/include/utils/probes.h</filename>.
