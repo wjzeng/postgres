@@ -18,6 +18,7 @@ test: two-ids
 test: multiple-row-versions
 test: index-only-scan
 test: predicate-lock-hot-tuple
+test: update-conflict-out
 test: deadlock-simple
 test: deadlock-hard
 test: deadlock-soft
@@ -52,6 +53,7 @@ test: propagate-lock-delete
 test: tuplelock-conflict
 test: tuplelock-update
 test: tuplelock-upgrade-no-deadlock
+test: tuplelock-partition
 test: freeze-the-dead
 test: nowait
 test: nowait-2
@@ -79,6 +81,7 @@ test: vacuum-skip-locked
 test: predicate-hash
 test: predicate-gist
 test: predicate-gin
+test: partition-concurrent-attach
 test: partition-key-update-1
 test: partition-key-update-2
 test: partition-key-update-3

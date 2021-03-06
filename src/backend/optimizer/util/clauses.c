@@ -54,6 +54,9 @@
 #include "utils/typcache.h"
 
 
+/* source-code-compatibility hacks for pull_varnos() API change */
+#define pull_varnos(a,b) pull_varnos_new(a,b)
+
 typedef struct
 {
 	PlannerInfo *root;
@@ -108,6 +111,7 @@ static bool contain_volatile_functions_not_nextval_walker(Node *node, void *cont
 static bool max_parallel_hazard_walker(Node *node,
 									   max_parallel_hazard_context *context);
 static bool contain_nonstrict_functions_walker(Node *node, void *context);
+static bool contain_exec_param_walker(Node *node, List *param_ids);
 static bool contain_context_dependent_node(Node *clause);
 static bool contain_context_dependent_node_walker(Node *node, int *flags);
 static bool contain_leaked_vars_walker(Node *node, void *context);
@@ -119,9 +123,6 @@ static Node *eval_const_expressions_mutator(Node *node,
 static bool contain_non_const_walker(Node *node, void *context);
 static bool ece_function_is_safe(Oid funcid,
 								 eval_const_expressions_context *context);
-static Node *apply_const_relabel(Node *arg, Oid rtype,
-								 int32 rtypmod, Oid rcollid,
-								 CoercionForm rformat, int rlocation);
 static List *simplify_or_arguments(List *args,
 								   eval_const_expressions_context *context,
 								   bool *haveNull, bool *forceTrue);
@@ -1224,6 +1225,40 @@ contain_nonstrict_functions_walker(Node *node, void *context)
 }
 
 /*****************************************************************************
+ *		Check clauses for Params
+ *****************************************************************************/
+
+/*
+ * contain_exec_param
+ *	  Recursively search for PARAM_EXEC Params within a clause.
+ *
+ * Returns true if the clause contains any PARAM_EXEC Param with a paramid
+ * appearing in the given list of Param IDs.  Does not descend into
+ * subqueries!
+ */
+bool
+contain_exec_param(Node *clause, List *param_ids)
+{
+	return contain_exec_param_walker(clause, param_ids);
+}
+
+static bool
+contain_exec_param_walker(Node *node, List *param_ids)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param))
+	{
+		Param	   *p = (Param *) node;
+
+		if (p->paramkind == PARAM_EXEC &&
+			list_member_int(param_ids, p->paramid))
+			return true;
+	}
+	return expression_tree_walker(node, contain_exec_param_walker, param_ids);
+}
+
+/*****************************************************************************
  *		Check clauses for context-dependent nodes
  *****************************************************************************/
 
@@ -1379,7 +1414,6 @@ contain_leaked_vars_walker(Node *node, void *context)
 		case T_ScalarArrayOpExpr:
 		case T_CoerceViaIO:
 		case T_ArrayCoerceExpr:
-		case T_SubscriptingRef:
 
 			/*
 			 * If node contains a leaky function call, and there's any Var
@@ -1389,6 +1423,23 @@ contain_leaked_vars_walker(Node *node, void *context)
 										context) &&
 				contain_var_clause(node))
 				return true;
+			break;
+
+		case T_SubscriptingRef:
+			{
+				SubscriptingRef *sbsref = (SubscriptingRef *) node;
+
+				/*
+				 * subscripting assignment is leaky, but subscripted fetches
+				 * are not
+				 */
+				if (sbsref->refassgnexpr != NULL)
+				{
+					/* Node is leaky, so reject if it contains Vars */
+					if (contain_var_clause(node))
+						return true;
+				}
+			}
 			break;
 
 		case T_RowCompareExpr:
@@ -2134,7 +2185,13 @@ is_pseudo_constant_clause_relids(Node *clause, Relids relids)
 int
 NumRelids(Node *clause)
 {
-	Relids		varnos = pull_varnos(clause);
+	return NumRelids_new(NULL, clause);
+}
+
+int
+NumRelids_new(PlannerInfo *root, Node *clause)
+{
+	Relids		varnos = pull_varnos(root, clause);
 	int			result = bms_num_members(varnos);
 
 	bms_free(varnos);
@@ -2786,12 +2843,13 @@ eval_const_expressions_mutator(Node *node,
 				arg = eval_const_expressions_mutator((Node *) relabel->arg,
 													 context);
 				/* ... and attach a new RelabelType node, if needed */
-				return apply_const_relabel(arg,
-										   relabel->resulttype,
-										   relabel->resulttypmod,
-										   relabel->resultcollid,
-										   relabel->relabelformat,
-										   relabel->location);
+				return applyRelabelType(arg,
+										relabel->resulttype,
+										relabel->resulttypmod,
+										relabel->resultcollid,
+										relabel->relabelformat,
+										relabel->location,
+										true);
 			}
 		case T_CoerceViaIO:
 			{
@@ -2938,12 +2996,13 @@ eval_const_expressions_mutator(Node *node,
 				arg = eval_const_expressions_mutator((Node *) collate->arg,
 													 context);
 				/* ... and attach a new RelabelType node, if needed */
-				return apply_const_relabel(arg,
-										   exprType(arg),
-										   exprTypmod(arg),
-										   collate->collOid,
-										   COERCE_IMPLICIT_CAST,
-										   collate->location);
+				return applyRelabelType(arg,
+										exprType(arg),
+										exprTypmod(arg),
+										collate->collOid,
+										COERCE_IMPLICIT_CAST,
+										collate->location,
+										true);
 			}
 		case T_CaseExpr:
 			{
@@ -3445,12 +3504,13 @@ eval_const_expressions_mutator(Node *node,
 													cdomain->resulttype);
 
 					/* Generate RelabelType to substitute for CoerceToDomain */
-					return apply_const_relabel(arg,
-											   cdomain->resulttype,
-											   cdomain->resulttypmod,
-											   cdomain->resultcollid,
-											   cdomain->coercionformat,
-											   cdomain->location);
+					return applyRelabelType(arg,
+											cdomain->resulttype,
+											cdomain->resulttypmod,
+											cdomain->resultcollid,
+											cdomain->coercionformat,
+											cdomain->location,
+											true);
 				}
 
 				newcdomain = makeNode(CoerceToDomain);
@@ -3581,58 +3641,6 @@ ece_function_is_safe(Oid funcid, eval_const_expressions_context *context)
 	if (context->estimate && provolatile == PROVOLATILE_STABLE)
 		return true;
 	return false;
-}
-
-/*
- * Subroutine for eval_const_expressions: apply RelabelType if needed
- */
-static Node *
-apply_const_relabel(Node *arg, Oid rtype, int32 rtypmod, Oid rcollid,
-					CoercionForm rformat, int rlocation)
-{
-	/*
-	 * If we find stacked RelabelTypes (eg, from foo::int::oid) we can discard
-	 * all but the top one, and must do so to ensure that semantically
-	 * equivalent expressions are equal().
-	 */
-	while (arg && IsA(arg, RelabelType))
-		arg = (Node *) ((RelabelType *) arg)->arg;
-
-	if (arg && IsA(arg, Const))
-	{
-		/*
-		 * If it's a Const, just modify it in-place; since this is part of
-		 * eval_const_expressions, we want to end up with a simple Const not
-		 * an expression tree.  We assume the Const is newly generated and
-		 * hence safe to modify.
-		 */
-		Const	   *con = (Const *) arg;
-
-		con->consttype = rtype;
-		con->consttypmod = rtypmod;
-		con->constcollid = rcollid;
-		return (Node *) con;
-	}
-	else if (exprType(arg) == rtype &&
-			 exprTypmod(arg) == rtypmod &&
-			 exprCollation(arg) == rcollid)
-	{
-		/* Sometimes we find a nest of relabels that net out to nothing. */
-		return arg;
-	}
-	else
-	{
-		/* Nope, gotta have a RelabelType. */
-		RelabelType *newrelabel = makeNode(RelabelType);
-
-		newrelabel->arg = (Expr *) arg;
-		newrelabel->resulttype = rtype;
-		newrelabel->resulttypmod = rtypmod;
-		newrelabel->resultcollid = rcollid;
-		newrelabel->relabelformat = rformat;
-		newrelabel->location = rlocation;
-		return (Node *) newrelabel;
-	}
 }
 
 /*
@@ -4096,9 +4104,9 @@ reorder_function_arguments(List *args, HeapTuple func_tuple)
 	int			i;
 
 	Assert(nargsprovided <= pronargs);
-	if (pronargs > FUNC_MAX_ARGS)
+	if (pronargs < 0 || pronargs > FUNC_MAX_ARGS)
 		elog(ERROR, "too many function arguments");
-	MemSet(argarray, 0, pronargs * sizeof(Node *));
+	memset(argarray, 0, pronargs * sizeof(Node *));
 
 	/* Deconstruct the argument list into an array indexed by argnumber */
 	i = 0;

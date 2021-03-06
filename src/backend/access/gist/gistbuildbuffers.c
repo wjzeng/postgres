@@ -666,7 +666,7 @@ gistRelocateBuildBuffersOnSplit(GISTBuildBuffers *gfbb, GISTSTATE *giststate,
 			zero_penalty = true;
 
 			/* Loop over index attributes. */
-			for (j = 0; j < r->rd_att->natts; j++)
+			for (j = 0; j < IndexRelationGetNumberOfKeyAttributes(r); j++)
 			{
 				float		usize;
 
@@ -692,7 +692,7 @@ gistRelocateBuildBuffersOnSplit(GISTBuildBuffers *gfbb, GISTSTATE *giststate,
 					which = i;
 					best_penalty[j] = usize;
 
-					if (j < r->rd_att->natts - 1)
+					if (j < IndexRelationGetNumberOfKeyAttributes(r) - 1)
 						best_penalty[j + 1] = -1;
 				}
 				else if (best_penalty[j] == usize)
@@ -757,26 +757,20 @@ gistRelocateBuildBuffersOnSplit(GISTBuildBuffers *gfbb, GISTSTATE *giststate,
 static void
 ReadTempFileBlock(BufFile *file, long blknum, void *ptr)
 {
+	size_t		nread;
+
 	if (BufFileSeekBlock(file, blknum) != 0)
-		elog(ERROR, "could not seek temporary file: %m");
-	if (BufFileRead(file, ptr, BLCKSZ) != BLCKSZ)
-		elog(ERROR, "could not read temporary file: %m");
+		elog(ERROR, "could not seek to block %ld in temporary file", blknum);
+	nread = BufFileRead(file, ptr, BLCKSZ);
+	if (nread != BLCKSZ)
+		elog(ERROR, "could not read temporary file: read only %zu of %zu bytes",
+			 nread, (size_t) BLCKSZ);
 }
 
 static void
 WriteTempFileBlock(BufFile *file, long blknum, void *ptr)
 {
 	if (BufFileSeekBlock(file, blknum) != 0)
-		elog(ERROR, "could not seek temporary file: %m");
-	if (BufFileWrite(file, ptr, BLCKSZ) != BLCKSZ)
-	{
-		/*
-		 * the other errors in Read/WriteTempFileBlock shouldn't happen, but
-		 * an error at write can easily happen if you run out of disk space.
-		 */
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not write block %ld of temporary file: %m",
-						blknum)));
-	}
+		elog(ERROR, "could not seek to block %ld in temporary file", blknum);
+	BufFileWrite(file, ptr, BLCKSZ);
 }

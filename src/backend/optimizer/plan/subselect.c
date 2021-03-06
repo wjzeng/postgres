@@ -39,6 +39,9 @@
 #include "utils/syscache.h"
 
 
+/* source-code-compatibility hacks for pull_varnos() API change */
+#define pull_varnos(a,b) pull_varnos_new(a,b)
+
 typedef struct convert_testexpr_context
 {
 	PlannerInfo *root;
@@ -69,7 +72,7 @@ typedef struct inline_cte_walker_context
 static Node *build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 						   List *plan_params,
 						   SubLinkType subLinkType, int subLinkId,
-						   Node *testexpr, bool adjust_testexpr,
+						   Node *testexpr, List *testexpr_paramids,
 						   bool unknownEqFalse);
 static List *generate_subquery_params(PlannerInfo *root, List *tlist,
 									  List **paramIds);
@@ -81,7 +84,8 @@ static Node *convert_testexpr(PlannerInfo *root,
 static Node *convert_testexpr_mutator(Node *node,
 									  convert_testexpr_context *context);
 static bool subplan_is_hashable(Plan *plan);
-static bool testexpr_is_hashable(Node *testexpr);
+static bool testexpr_is_hashable(Node *testexpr, List *param_ids);
+static bool test_opexpr_is_hashable(OpExpr *testexpr, List *param_ids);
 static bool hash_ok_operator(OpExpr *expr);
 static bool contain_dml(Node *node);
 static bool contain_dml_walker(Node *node, void *context);
@@ -237,7 +241,7 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 	/* And convert to SubPlan or InitPlan format. */
 	result = build_subplan(root, plan, subroot, plan_params,
 						   subLinkType, subLinkId,
-						   testexpr, true, isTopQual);
+						   testexpr, NIL, isTopQual);
 
 	/*
 	 * If it's a correlated EXISTS with an unimportant targetlist, we might be
@@ -291,12 +295,11 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 												  plan_params,
 												  ANY_SUBLINK, 0,
 												  newtestexpr,
-												  false, true));
+												  paramIds,
+												  true));
 				/* Check we got what we expected */
 				Assert(hashplan->parParam == NIL);
 				Assert(hashplan->useHashTable);
-				/* build_subplan won't have filled in paramIds */
-				hashplan->paramIds = paramIds;
 
 				/* Leave it to the executor to decide which plan to use */
 				asplan = makeNode(AlternativeSubPlan);
@@ -319,7 +322,7 @@ static Node *
 build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 			  List *plan_params,
 			  SubLinkType subLinkType, int subLinkId,
-			  Node *testexpr, bool adjust_testexpr,
+			  Node *testexpr, List *testexpr_paramids,
 			  bool unknownEqFalse)
 {
 	Node	   *result;
@@ -484,10 +487,10 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 	else
 	{
 		/*
-		 * Adjust the Params in the testexpr, unless caller said it's not
-		 * needed.
+		 * Adjust the Params in the testexpr, unless caller already took care
+		 * of it (as indicated by passing a list of Param IDs).
 		 */
-		if (testexpr && adjust_testexpr)
+		if (testexpr && testexpr_paramids == NIL)
 		{
 			List	   *params;
 
@@ -499,7 +502,10 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 											   params);
 		}
 		else
+		{
 			splan->testexpr = testexpr;
+			splan->paramIds = testexpr_paramids;
+		}
 
 		/*
 		 * We can't convert subplans of ALL_SUBLINK or ANY_SUBLINK types to
@@ -511,7 +517,7 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 		if (subLinkType == ANY_SUBLINK &&
 			splan->parParam == NIL &&
 			subplan_is_hashable(plan) &&
-			testexpr_is_hashable(splan->testexpr))
+			testexpr_is_hashable(splan->testexpr, splan->paramIds))
 			splan->useHashTable = true;
 
 		/*
@@ -733,24 +739,20 @@ subplan_is_hashable(Plan *plan)
 
 /*
  * testexpr_is_hashable: is an ANY SubLink's test expression hashable?
+ *
+ * To identify LHS vs RHS of the hash expression, we must be given the
+ * list of output Param IDs of the SubLink's subquery.
  */
 static bool
-testexpr_is_hashable(Node *testexpr)
+testexpr_is_hashable(Node *testexpr, List *param_ids)
 {
 	/*
 	 * The testexpr must be a single OpExpr, or an AND-clause containing only
-	 * OpExprs.
-	 *
-	 * The combining operators must be hashable and strict. The need for
-	 * hashability is obvious, since we want to use hashing. Without
-	 * strictness, behavior in the presence of nulls is too unpredictable.  We
-	 * actually must assume even more than plain strictness: they can't yield
-	 * NULL for non-null inputs, either (see nodeSubplan.c).  However, hash
-	 * indexes and hash joins assume that too.
+	 * OpExprs, each of which satisfy test_opexpr_is_hashable().
 	 */
 	if (testexpr && IsA(testexpr, OpExpr))
 	{
-		if (hash_ok_operator((OpExpr *) testexpr))
+		if (test_opexpr_is_hashable((OpExpr *) testexpr, param_ids))
 			return true;
 	}
 	else if (is_andclause(testexpr))
@@ -763,13 +765,47 @@ testexpr_is_hashable(Node *testexpr)
 
 			if (!IsA(andarg, OpExpr))
 				return false;
-			if (!hash_ok_operator((OpExpr *) andarg))
+			if (!test_opexpr_is_hashable((OpExpr *) andarg, param_ids))
 				return false;
 		}
 		return true;
 	}
 
 	return false;
+}
+
+static bool
+test_opexpr_is_hashable(OpExpr *testexpr, List *param_ids)
+{
+	/*
+	 * The combining operator must be hashable and strict.  The need for
+	 * hashability is obvious, since we want to use hashing.  Without
+	 * strictness, behavior in the presence of nulls is too unpredictable.  We
+	 * actually must assume even more than plain strictness: it can't yield
+	 * NULL for non-null inputs, either (see nodeSubplan.c).  However, hash
+	 * indexes and hash joins assume that too.
+	 */
+	if (!hash_ok_operator(testexpr))
+		return false;
+
+	/*
+	 * The left and right inputs must belong to the outer and inner queries
+	 * respectively; hence Params that will be supplied by the subquery must
+	 * not appear in the LHS, and Vars of the outer query must not appear in
+	 * the RHS.  (Ordinarily, this must be true because of the way that the
+	 * parser builds an ANY SubLink's testexpr ... but inlining of functions
+	 * could have changed the expression's structure, so we have to check.
+	 * Such cases do not occur often enough to be worth trying to optimize, so
+	 * we don't worry about trying to commute the clause or anything like
+	 * that; we just need to be sure not to build an invalid plan.)
+	 */
+	if (list_length(testexpr->args) != 2)
+		return false;
+	if (contain_exec_param((Node *) linitial(testexpr->args), param_ids))
+		return false;
+	if (contain_var_clause((Node *) lsecond(testexpr->args)))
+		return false;
+	return true;
 }
 
 /*
@@ -1237,7 +1273,7 @@ convert_ANY_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	 * it's not gonna be a join.  (Note that it won't have Vars referring to
 	 * the subquery, rather Params.)
 	 */
-	upper_varnos = pull_varnos(sublink->testexpr);
+	upper_varnos = pull_varnos(root, sublink->testexpr);
 	if (bms_is_empty(upper_varnos))
 		return NULL;
 
@@ -1420,7 +1456,7 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	 * The ones <= rtoffset belong to the upper query; the ones > rtoffset do
 	 * not.
 	 */
-	clause_varnos = pull_varnos(whereClause);
+	clause_varnos = pull_varnos(root, whereClause);
 	upper_varnos = NULL;
 	while ((varno = bms_first_member(clause_varnos)) >= 0)
 	{

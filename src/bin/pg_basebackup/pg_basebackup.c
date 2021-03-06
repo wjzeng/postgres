@@ -143,7 +143,8 @@ static PQExpBuffer recoveryconfcontents = NULL;
 /* Function headers */
 static void usage(void);
 static void verify_dir_is_empty_or_create(char *dirname, bool *created, bool *found);
-static void progress_report(int tablespacenum, const char *filename, bool force);
+static void progress_report(int tablespacenum, const char *filename, bool force,
+							bool finished);
 
 static void ReceiveTarFile(PGconn *conn, PGresult *res, int rownum);
 static void ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum);
@@ -706,11 +707,15 @@ verify_dir_is_empty_or_create(char *dirname, bool *created, bool *found)
  * Print a progress report based on the global variables. If verbose output
  * is enabled, also print the current file name.
  *
- * Progress report is written at maximum once per second, unless the
- * force parameter is set to true.
+ * Progress report is written at maximum once per second, unless the force
+ * parameter is set to true.
+ *
+ * If finished is set to true, this is the last progress report. The cursor
+ * is moved to the next line.
  */
 static void
-progress_report(int tablespacenum, const char *filename, bool force)
+progress_report(int tablespacenum, const char *filename,
+				bool force, bool finished)
 {
 	int			percent;
 	char		totaldone_str[32];
@@ -721,7 +726,7 @@ progress_report(int tablespacenum, const char *filename, bool force)
 		return;
 
 	now = time(NULL);
-	if (now == last_progress_report && !force)
+	if (now == last_progress_report && !force && !finished)
 		return;					/* Max once per second */
 
 	last_progress_report = now;
@@ -792,10 +797,11 @@ progress_report(int tablespacenum, const char *filename, bool force)
 				totaldone_str, totalsize_str, percent,
 				tablespacenum, tablespacecount);
 
-	if (isatty(fileno(stderr)))
-		fprintf(stderr, "\r");
-	else
-		fprintf(stderr, "\n");
+	/*
+	 * Stay on the same line if reporting to a terminal and we're not done
+	 * yet.
+	 */
+	fputc((!finished && isatty(fileno(stderr))) ? '\r' : '\n', stderr);
 }
 
 static int32
@@ -892,8 +898,12 @@ writeTarData(
 #ifdef HAVE_LIBZ
 	if (ztarfile != NULL)
 	{
+		errno = 0;
 		if (gzwrite(ztarfile, buf, r) != r)
 		{
+			/* if write didn't set errno, assume problem is no disk space */
+			if (errno == 0)
+				errno = ENOSPC;
 			pg_log_error("could not write to compressed file \"%s\": %s",
 						 current_file, get_gz_error(ztarfile));
 			exit(1);
@@ -902,8 +912,12 @@ writeTarData(
 	else
 #endif
 	{
+		errno = 0;
 		if (fwrite(buf, r, 1, tarfile) != 1)
 		{
+			/* if write didn't set errno, assume problem is no disk space */
+			if (errno == 0)
+				errno = ENOSPC;
 			pg_log_error("could not write to file \"%s\": %m", current_file);
 			exit(1);
 		}
@@ -1131,7 +1145,12 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 									time(NULL));
 
 					WRITE_TAR_DATA(header, sizeof(header));
-					WRITE_TAR_DATA(zerobuf, 511);
+
+					/*
+					 * we don't need to pad out to a multiple of the tar block
+					 * size here, because the file is zero length, which is a
+					 * multiple of any block size.
+					 */
 				}
 			}
 
@@ -1342,9 +1361,9 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 			}
 		}
 		totaldone += r;
-		progress_report(rownum, filename, false);
+		progress_report(rownum, filename, false, false);
 	}							/* while (1) */
-	progress_report(rownum, filename, true);
+	progress_report(rownum, filename, true, false);
 
 	if (copybuf != NULL)
 		PQfreemem(copybuf);
@@ -1591,13 +1610,17 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 				continue;
 			}
 
+			errno = 0;
 			if (fwrite(copybuf, r, 1, file) != 1)
 			{
+				/* if write didn't set errno, assume problem is no disk space */
+				if (errno == 0)
+					errno = ENOSPC;
 				pg_log_error("could not write to file \"%s\": %m", filename);
 				exit(1);
 			}
 			totaldone += r;
-			progress_report(rownum, filename, false);
+			progress_report(rownum, filename, false, false);
 
 			current_len_left -= r;
 			if (current_len_left == 0 && current_padding == 0)
@@ -1613,7 +1636,7 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 			}
 		}						/* continuing data in existing file */
 	}							/* loop over all data blocks */
-	progress_report(rownum, filename, true);
+	progress_report(rownum, filename, true, false);
 
 	if (file != NULL)
 	{
@@ -1994,11 +2017,7 @@ BaseBackup(void)
 	}							/* Loop over all tablespaces */
 
 	if (showprogress)
-	{
-		progress_report(PQntuples(res), NULL, true);
-		if (isatty(fileno(stderr)))
-			fprintf(stderr, "\n");	/* Need to move to next line */
-	}
+		progress_report(PQntuples(res), NULL, true, true);
 
 	PQclear(res);
 

@@ -61,6 +61,7 @@ main(int argc, char *argv[])
 	char	   *username = NULL;
 	SimpleStringList roles = {NULL, NULL};
 	enum trivalue prompt_password = TRI_DEFAULT;
+	ConnParams	cparams;
 	bool		echo = false;
 	bool		interactive = false;
 	int			conn_limit = -2;	/* less than minimum valid value */
@@ -152,9 +153,8 @@ main(int argc, char *argv[])
 				conn_limit = strtol(optarg, &endptr, 10);
 				if (*endptr != '\0' || conn_limit < -1)	/* minimum valid value */
 				{
-					fprintf(stderr,
-							_("%s: invalid value for --connection-limit: %s\n"),
-							progname, optarg);
+					pg_log_error("invalid value for --connection-limit: %s",
+								 optarg);
 					exit(1);
 				}
 				break;
@@ -262,8 +262,14 @@ main(int argc, char *argv[])
 	if (login == 0)
 		login = TRI_YES;
 
-	conn = connectDatabase("postgres", host, port, username, prompt_password,
-						   progname, echo, false, false);
+	cparams.dbname = NULL;		/* this program lacks any dbname option... */
+	cparams.pghost = host;
+	cparams.pgport = port;
+	cparams.pguser = username;
+	cparams.prompt_password = prompt_password;
+	cparams.override_dbname = NULL;
+
+	conn = connectMaintenanceDatabase(&cparams, progname, echo);
 
 	initPQExpBuffer(&sql);
 

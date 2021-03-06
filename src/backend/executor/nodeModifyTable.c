@@ -311,6 +311,13 @@ ExecComputeStoredGenerated(EState *estate, TupleTableSlot *slot)
 
 			val = ExecEvalExpr(resultRelInfo->ri_GeneratedExprs[i], econtext, &isnull);
 
+			/*
+			 * We must make a copy of val as we have no guarantees about where
+			 * memory for a pass-by-reference Datum is located.
+			 */
+			if (!isnull)
+				val = datumCopy(val, attr->attbyval, attr->attlen);
+
 			values[i] = val;
 			nulls[i] = isnull;
 		}
@@ -460,7 +467,7 @@ ExecInsert(ModifyTableState *mtstate,
 		 * if there's no BR trigger defined on the partition.
 		 */
 		if (resultRelInfo->ri_PartitionCheck &&
-			(resultRelInfo->ri_PartitionRoot == NULL ||
+			(resultRelInfo->ri_RootResultRelInfo == NULL ||
 			 (resultRelInfo->ri_TrigDesc &&
 			  resultRelInfo->ri_TrigDesc->trig_insert_before_row)))
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
@@ -2653,15 +2660,27 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 				TupleTableSlot *junkresslot;
 
 				subplan = mtstate->mt_plans[i]->plan;
-				if (operation == CMD_INSERT || operation == CMD_UPDATE)
-					ExecCheckPlanOutput(resultRelInfo->ri_RelationDesc,
-										subplan->targetlist);
 
 				junkresslot =
 					ExecInitExtraTupleSlot(estate, NULL,
 										   table_slot_callbacks(resultRelInfo->ri_RelationDesc));
-				j = ExecInitJunkFilter(subplan->targetlist,
-									   junkresslot);
+
+				/*
+				 * For an INSERT or UPDATE, the result tuple must always match
+				 * the target table's descriptor.  For a DELETE, it won't
+				 * (indeed, there's probably no non-junk output columns).
+				 */
+				if (operation == CMD_INSERT || operation == CMD_UPDATE)
+				{
+					ExecCheckPlanOutput(resultRelInfo->ri_RelationDesc,
+										subplan->targetlist);
+					j = ExecInitJunkFilterInsertion(subplan->targetlist,
+													RelationGetDescr(resultRelInfo->ri_RelationDesc),
+													junkresslot);
+				}
+				else
+					j = ExecInitJunkFilter(subplan->targetlist,
+										   junkresslot);
 
 				if (operation == CMD_UPDATE || operation == CMD_DELETE)
 				{

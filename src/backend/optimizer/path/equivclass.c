@@ -32,6 +32,10 @@
 #include "utils/lsyscache.h"
 
 
+/* source-code-compatibility hacks for pull_varnos() API change */
+#define pull_varnos(a,b) pull_varnos_new(a,b)
+#define make_restrictinfo(a,b,c,d,e,f,g,h,i) make_restrictinfo_new(a,b,c,d,e,f,g,h,i)
+
 static EquivalenceMember *add_eq_member(EquivalenceClass *ec,
 										Expr *expr, Relids relids, Relids nullable_relids,
 										bool is_child, Oid datatype);
@@ -191,7 +195,8 @@ process_equivalence(PlannerInfo *root,
 			ntest->location = -1;
 
 			*p_restrictinfo =
-				make_restrictinfo((Expr *) ntest,
+				make_restrictinfo(root,
+								  (Expr *) ntest,
 								  restrictinfo->is_pushed_down,
 								  restrictinfo->outerjoin_delayed,
 								  restrictinfo->pseudoconstant,
@@ -485,10 +490,6 @@ process_equivalence(PlannerInfo *root,
  * work to not label the collation at all in EC members, but this is risky
  * since some parts of the system expect exprCollation() to deliver the
  * right answer for a sort key.)
- *
- * Note this code assumes that the expression has already been through
- * eval_const_expressions, so there are no CollateExprs and no redundant
- * RelabelTypes.
  */
 Expr *
 canonicalize_ec_expression(Expr *expr, Oid req_type, Oid req_collation)
@@ -509,29 +510,24 @@ canonicalize_ec_expression(Expr *expr, Oid req_type, Oid req_collation)
 		exprCollation((Node *) expr) != req_collation)
 	{
 		/*
-		 * Strip any existing RelabelType, then add a new one if needed. This
-		 * is to preserve the invariant of no redundant RelabelTypes.
-		 *
-		 * If we have to change the exposed type of the stripped expression,
-		 * set typmod to -1 (since the new type may not have the same typmod
-		 * interpretation).  If we only have to change collation, preserve the
-		 * exposed typmod.
+		 * If we have to change the type of the expression, set typmod to -1,
+		 * since the new type may not have the same typmod interpretation.
+		 * When we only have to change collation, preserve the exposed typmod.
 		 */
-		while (expr && IsA(expr, RelabelType))
-			expr = (Expr *) ((RelabelType *) expr)->arg;
+		int32		req_typmod;
 
-		if (exprType((Node *) expr) != req_type)
-			expr = (Expr *) makeRelabelType(expr,
-											req_type,
-											-1,
-											req_collation,
-											COERCE_IMPLICIT_CAST);
-		else if (exprCollation((Node *) expr) != req_collation)
-			expr = (Expr *) makeRelabelType(expr,
-											req_type,
-											exprTypmod((Node *) expr),
-											req_collation,
-											COERCE_IMPLICIT_CAST);
+		if (expr_type != req_type)
+			req_typmod = -1;
+		else
+			req_typmod = exprTypmod((Node *) expr);
+
+		/*
+		 * Use applyRelabelType so that we preserve const-flatness.  This is
+		 * important since eval_const_expressions has already been applied.
+		 */
+		expr = (Expr *) applyRelabelType((Node *) expr,
+										 req_type, req_typmod, req_collation,
+										 COERCE_IMPLICIT_CAST, -1, false);
 	}
 
 	return expr;
@@ -639,12 +635,6 @@ get_eclass_for_sort_expr(PlannerInfo *root,
 	expr = canonicalize_ec_expression(expr, opcintype, collation);
 
 	/*
-	 * Get the precise set of nullable relids appearing in the expression.
-	 */
-	expr_relids = pull_varnos((Node *) expr);
-	nullable_relids = bms_intersect(nullable_relids, expr_relids);
-
-	/*
 	 * Scan through the existing EquivalenceClasses for a match
 	 */
 	foreach(lc1, root->eq_classes)
@@ -719,6 +709,12 @@ get_eclass_for_sort_expr(PlannerInfo *root,
 
 	if (newec->ec_has_volatile && sortref == 0) /* should not happen */
 		elog(ERROR, "volatile EquivalenceClass has no sortref");
+
+	/*
+	 * Get the precise set of nullable relids appearing in the expression.
+	 */
+	expr_relids = pull_varnos(root, (Node *) expr);
+	nullable_relids = bms_intersect(nullable_relids, expr_relids);
 
 	newem = add_eq_member(newec, copyObject(expr), expr_relids,
 						  nullable_relids, false, opcintype);
@@ -1458,7 +1454,8 @@ create_join_clause(PlannerInfo *root,
 	 */
 	oldcontext = MemoryContextSwitchTo(root->planner_cxt);
 
-	rinfo = build_implied_join_equality(opno,
+	rinfo = build_implied_join_equality(root,
+										opno,
 										ec->ec_collation,
 										leftem->em_expr,
 										rightem->em_expr,
@@ -1772,7 +1769,8 @@ reconsider_outer_join_clause(PlannerInfo *root, RestrictInfo *rinfo,
 											 cur_em->em_datatype);
 			if (!OidIsValid(eq_op))
 				continue;		/* can't generate equality */
-			newrinfo = build_implied_join_equality(eq_op,
+			newrinfo = build_implied_join_equality(root,
+												   eq_op,
 												   cur_ec->ec_collation,
 												   innervar,
 												   cur_em->em_expr,
@@ -1915,7 +1913,8 @@ reconsider_full_join_clause(PlannerInfo *root, RestrictInfo *rinfo)
 											 cur_em->em_datatype);
 			if (OidIsValid(eq_op))
 			{
-				newrinfo = build_implied_join_equality(eq_op,
+				newrinfo = build_implied_join_equality(root,
+													   eq_op,
 													   cur_ec->ec_collation,
 													   leftvar,
 													   cur_em->em_expr,
@@ -1930,7 +1929,8 @@ reconsider_full_join_clause(PlannerInfo *root, RestrictInfo *rinfo)
 											 cur_em->em_datatype);
 			if (OidIsValid(eq_op))
 			{
-				newrinfo = build_implied_join_equality(eq_op,
+				newrinfo = build_implied_join_equality(root,
+													   eq_op,
 													   cur_ec->ec_collation,
 													   rightvar,
 													   cur_em->em_expr,
@@ -2243,9 +2243,20 @@ add_child_join_rel_equivalences(PlannerInfo *root,
 {
 	Relids		top_parent_relids = child_joinrel->top_parent_relids;
 	Relids		child_relids = child_joinrel->relids;
+	MemoryContext oldcontext;
 	ListCell   *lc1;
 
 	Assert(IS_JOIN_REL(child_joinrel) && IS_JOIN_REL(parent_joinrel));
+
+	/*
+	 * If we're being called during GEQO join planning, we still have to
+	 * create any new EC members in the main planner context, to avoid having
+	 * a corrupt EC data structure after the GEQO context is reset.  This is
+	 * problematic since we'll leak memory across repeated GEQO cycles.  For
+	 * now, though, bloat is better than crash.  If it becomes a real issue
+	 * we'll have to do something to avoid generating duplicate EC members.
+	 */
+	oldcontext = MemoryContextSwitchTo(root->planner_cxt);
 
 	foreach(lc1, root->eq_classes)
 	{
@@ -2343,6 +2354,8 @@ add_child_join_rel_equivalences(PlannerInfo *root,
 			}
 		}
 	}
+
+	MemoryContextSwitchTo(oldcontext);
 }
 
 

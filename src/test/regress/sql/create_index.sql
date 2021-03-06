@@ -852,6 +852,26 @@ SELECT obj_description('testcomment_idx1'::regclass, 'pg_class');
 REINDEX TABLE CONCURRENTLY testcomment ;
 SELECT obj_description('testcomment_idx1'::regclass, 'pg_class');
 DROP TABLE testcomment;
+-- Check that indisclustered updates are preserved
+CREATE TABLE concur_clustered(i int);
+CREATE INDEX concur_clustered_i_idx ON concur_clustered(i);
+ALTER TABLE concur_clustered CLUSTER ON concur_clustered_i_idx;
+REINDEX TABLE CONCURRENTLY concur_clustered;
+SELECT indexrelid::regclass, indisclustered FROM pg_index
+  WHERE indrelid = 'concur_clustered'::regclass;
+DROP TABLE concur_clustered;
+-- Check that indisreplident updates are preserved.
+CREATE TABLE concur_replident(i int NOT NULL);
+CREATE UNIQUE INDEX concur_replident_i_idx ON concur_replident(i);
+ALTER TABLE concur_replident REPLICA IDENTITY
+  USING INDEX concur_replident_i_idx;
+SELECT indexrelid::regclass, indisreplident FROM pg_index
+  WHERE indrelid = 'concur_replident'::regclass;
+REINDEX TABLE CONCURRENTLY concur_replident;
+SELECT indexrelid::regclass, indisreplident FROM pg_index
+  WHERE indrelid = 'concur_replident'::regclass;
+DROP TABLE concur_replident;
+
 -- Partitions
 -- Create some partitioned tables
 CREATE TABLE concur_reindex_part (c1 int, c2 int) PARTITION BY RANGE (c1);
@@ -977,6 +997,13 @@ CREATE UNIQUE INDEX concur_exprs_index_pred ON concur_exprs_tab (c1)
 CREATE UNIQUE INDEX concur_exprs_index_pred_2
   ON concur_exprs_tab ((1 / c1))
   WHERE ('-H') >= (c2::TEXT) COLLATE "C";
+ALTER INDEX concur_exprs_index_expr ALTER COLUMN 1 SET STATISTICS 100;
+ANALYZE concur_exprs_tab;
+SELECT starelid::regclass, count(*) FROM pg_statistic WHERE starelid IN (
+  'concur_exprs_index_expr'::regclass,
+  'concur_exprs_index_pred'::regclass,
+  'concur_exprs_index_pred_2'::regclass)
+  GROUP BY starelid ORDER BY starelid::regclass::text;
 SELECT pg_get_indexdef('concur_exprs_index_expr'::regclass);
 SELECT pg_get_indexdef('concur_exprs_index_pred'::regclass);
 SELECT pg_get_indexdef('concur_exprs_index_pred_2'::regclass);
@@ -989,6 +1016,19 @@ ALTER TABLE concur_exprs_tab ALTER c2 TYPE TEXT;
 SELECT pg_get_indexdef('concur_exprs_index_expr'::regclass);
 SELECT pg_get_indexdef('concur_exprs_index_pred'::regclass);
 SELECT pg_get_indexdef('concur_exprs_index_pred_2'::regclass);
+-- Statistics should remain intact.
+SELECT starelid::regclass, count(*) FROM pg_statistic WHERE starelid IN (
+  'concur_exprs_index_expr'::regclass,
+  'concur_exprs_index_pred'::regclass,
+  'concur_exprs_index_pred_2'::regclass)
+  GROUP BY starelid ORDER BY starelid::regclass::text;
+-- attstattarget should remain intact
+SELECT attrelid::regclass, attnum, attstattarget
+  FROM pg_attribute WHERE attrelid IN (
+    'concur_exprs_index_expr'::regclass,
+    'concur_exprs_index_pred'::regclass,
+    'concur_exprs_index_pred_2'::regclass)
+  ORDER BY attrelid::regclass::text, attnum;
 DROP TABLE concur_exprs_tab;
 
 -- Temporary tables and on-commit actions, where CONCURRENTLY is ignored.
