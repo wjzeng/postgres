@@ -75,53 +75,62 @@
 
   <table id="gin-builtin-opclasses-table">
    <title>Built-in <acronym>GIN</acronym> Operator Classes</title>
-   <tgroup cols="3">
+   <tgroup cols="2">
     <thead>
      <row>
       <entry>Name</entry>
-      <entry>Indexed Data Type</entry>
       <entry>Indexable Operators</entry>
      </row>
     </thead>
     <tbody>
      <row>
-      <entry><literal>array_ops</literal></entry>
-      <entry><type>anyarray</type></entry>
-      <entry>
-       <literal>&amp;&amp;</literal>
-       <literal>&lt;@</literal>
-       <literal>=</literal>
-       <literal>@&gt;</literal>
-      </entry>
+      <entry morerows="3" valign="middle"><literal>array_ops</literal></entry>
+      <entry><literal>&amp;&amp; (anyarray,anyarray)</literal></entry>
      </row>
      <row>
-      <entry><literal>jsonb_ops</literal></entry>
-      <entry><type>jsonb</type></entry>
-      <entry>
-       <literal>?</literal>
-       <literal>?&amp;</literal>
-       <literal>?|</literal>
-       <literal>@&gt;</literal>
-       <literal>@?</literal>
-       <literal>@@</literal>
-      </entry>
+      <entry><literal>@&gt; (anyarray,anyarray)</literal></entry>
      </row>
      <row>
-      <entry><literal>jsonb_path_ops</literal></entry>
-      <entry><type>jsonb</type></entry>
-      <entry>
-       <literal>@&gt;</literal>
-       <literal>@?</literal>
-       <literal>@@</literal>
-      </entry>
+      <entry><literal>&lt;@ (anyarray,anyarray)</literal></entry>
      </row>
      <row>
-      <entry><literal>tsvector_ops</literal></entry>
-      <entry><type>tsvector</type></entry>
-      <entry>
-       <literal>@@</literal>
-       <literal>@@@</literal>
-      </entry>
+      <entry><literal>= (anyarray,anyarray)</literal></entry>
+     </row>
+     <row>
+      <entry morerows="5" valign="middle"><literal>jsonb_ops</literal></entry>
+      <entry><literal>@&gt; (jsonb,jsonb)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@? (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@@ (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>? (jsonb,text)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>?| (jsonb,text[])</literal></entry>
+     </row>
+     <row>
+      <entry><literal>?&amp; (jsonb,text[])</literal></entry>
+     </row>
+     <row>
+      <entry morerows="2" valign="middle"><literal>jsonb_path_ops</literal></entry>
+      <entry><literal>@&gt; (jsonb,jsonb)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@? (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@@ (jsonb,jsonpath)</literal></entry>
+     </row>
+     <row>
+      <entry morerows="1" valign="middle"><literal>tsvector_ops</literal></entry>
+      <entry><literal>@@ (tsvector,tsquery)</literal></entry>
+     </row>
+     <row>
+      <entry><literal>@@@ (tsvector,tsquery)</literal></entry>
      </row>
     </tbody>
    </tgroup>
@@ -379,7 +388,7 @@
  </para>
 
  <para>
-  Optionally, an operator class for <acronym>GIN</acronym> can supply the
+  An operator class for <acronym>GIN</acronym> can optionally supply the
   following methods:
 
   <variablelist>
@@ -406,13 +415,13 @@
      <term><function>void options(local_relopts *relopts)</function></term>
      <listitem>
       <para>
-       Defines set of user-visible parameters that control operator class
+       Defines a set of user-visible parameters that control operator class
        behavior.
       </para>
 
       <para>
        The <function>options</function> function is passed a pointer to a
-       <replaceable>local_relopts</replaceable> struct, which needs to be
+       <structname>local_relopts</structname> struct, which needs to be
        filled with a set of operator class specific options.  The options
        can be accessed from other support functions using the
        <literal>PG_HAS_OPCLASS_OPTIONS()</literal> and
@@ -498,7 +507,7 @@
    Updating a <acronym>GIN</acronym> index tends to be slow because of the
    intrinsic nature of inverted indexes: inserting or updating one heap row
    can cause many inserts into the index (one for each key extracted
-   from the indexed item). As of <productname>PostgreSQL</productname> 8.4,
+   from the indexed item).
    <acronym>GIN</acronym> is capable of postponing much of this work by inserting
    new tuples into a temporary, unsorted list of pending entries.
    When the table is vacuumed or autoanalyzed, or when
@@ -567,10 +576,10 @@
     </para>
 
     <para>
-     As of <productname>PostgreSQL</productname> 8.4, this advice is less
-     necessary since delayed indexing is used (see <xref
-     linkend="gin-fast-update"/> for details).  But for very large updates
-     it may still be best to drop and recreate the index.
+     When <literal>fastupdate</literal> is enabled for <acronym>GIN</acronym>
+     (see <xref linkend="gin-fast-update"/> for details), the penalty is
+     less than when it is not.  But for very large updates it may still be
+     best to drop and recreate the index.
     </para>
    </listitem>
   </varlistentry>
@@ -603,7 +612,7 @@
     </para>
     <para>
      <varname>gin_pending_list_limit</varname> can be overridden for individual
-     GIN indexes by changing storage parameters, and which allows each
+     GIN indexes by changing storage parameters, which allows each
      GIN index to have its own cleanup threshold.
      For example, it's possible to increase the threshold only for the GIN
      index which can be updated heavily, and decrease it otherwise.

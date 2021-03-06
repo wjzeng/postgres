@@ -3,7 +3,7 @@
  * slotfuncs.c
  *	   Support functions for replication slots
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/slotfuncs.c
@@ -50,7 +50,7 @@ create_physical_replication_slot(char *name, bool immediately_reserve,
 
 	/* acquire replication slot, this will check for conflicting names */
 	ReplicationSlotCreate(name, false,
-						  temporary ? RS_TEMPORARY : RS_PERSISTENT);
+						  temporary ? RS_TEMPORARY : RS_PERSISTENT, false);
 
 	if (immediately_reserve)
 	{
@@ -124,7 +124,8 @@ pg_create_physical_replication_slot(PG_FUNCTION_ARGS)
  */
 static void
 create_logical_replication_slot(char *name, char *plugin,
-								bool temporary, XLogRecPtr restart_lsn,
+								bool temporary, bool two_phase,
+								XLogRecPtr restart_lsn,
 								bool find_startpoint)
 {
 	LogicalDecodingContext *ctx = NULL;
@@ -140,7 +141,7 @@ create_logical_replication_slot(char *name, char *plugin,
 	 * error as well.
 	 */
 	ReplicationSlotCreate(name, true,
-						  temporary ? RS_TEMPORARY : RS_EPHEMERAL);
+						  temporary ? RS_TEMPORARY : RS_EPHEMERAL, two_phase);
 
 	/*
 	 * Create logical decoding context to find start point or, if we don't
@@ -177,6 +178,7 @@ pg_create_logical_replication_slot(PG_FUNCTION_ARGS)
 	Name		name = PG_GETARG_NAME(0);
 	Name		plugin = PG_GETARG_NAME(1);
 	bool		temporary = PG_GETARG_BOOL(2);
+	bool		two_phase = PG_GETARG_BOOL(3);
 	Datum		result;
 	TupleDesc	tupdesc;
 	HeapTuple	tuple;
@@ -193,6 +195,7 @@ pg_create_logical_replication_slot(PG_FUNCTION_ARGS)
 	create_logical_replication_slot(NameStr(*name),
 									NameStr(*plugin),
 									temporary,
+									two_phase,
 									InvalidXLogRecPtr,
 									true);
 
@@ -236,12 +239,13 @@ pg_drop_replication_slot(PG_FUNCTION_ARGS)
 Datum
 pg_get_replication_slots(PG_FUNCTION_ARGS)
 {
-#define PG_GET_REPLICATION_SLOTS_COLS 13
+#define PG_GET_REPLICATION_SLOTS_COLS 14
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
+	XLogRecPtr	currlsn;
 	int			slotno;
 
 	/* check to see if caller supports us returning a tuplestore */
@@ -274,6 +278,8 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 
 	MemoryContextSwitchTo(oldcontext);
 
+	currlsn = GetXLogWriteRecPtr();
+
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 	for (slotno = 0; slotno < max_replication_slots; slotno++)
 	{
@@ -282,7 +288,6 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 		Datum		values[PG_GET_REPLICATION_SLOTS_COLS];
 		bool		nulls[PG_GET_REPLICATION_SLOTS_COLS];
 		WALAvailability walstate;
-		XLogSegNo	last_removed_seg;
 		int			i;
 
 		if (!slot->in_use)
@@ -380,6 +385,8 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 				 * we looked.  If checkpointer signalled the process to
 				 * termination, then it's definitely lost; but if a process is
 				 * still alive, then "unreserved" seems more appropriate.
+				 *
+				 * If we do change it, save the state for safe_wal_size below.
 				 */
 				if (!XLogRecPtrIsInvalid(slot_contents.data.restart_lsn))
 				{
@@ -387,10 +394,12 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 
 					SpinLockAcquire(&slot->mutex);
 					pid = slot->active_pid;
+					slot_contents.data.restart_lsn = slot->data.restart_lsn;
 					SpinLockRelease(&slot->mutex);
 					if (pid != 0)
 					{
 						values[i++] = CStringGetTextDatum("unreserved");
+						walstate = WALAVAIL_UNRESERVED;
 						break;
 					}
 				}
@@ -398,18 +407,35 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 				break;
 		}
 
-		if (max_slot_wal_keep_size_mb >= 0 &&
-			(walstate == WALAVAIL_RESERVED || walstate == WALAVAIL_EXTENDED) &&
-			((last_removed_seg = XLogGetLastRemovedSegno()) != 0))
-		{
-			XLogRecPtr	min_safe_lsn;
-
-			XLogSegNoOffsetToRecPtr(last_removed_seg + 1, 0,
-									wal_segment_size, min_safe_lsn);
-			values[i++] = Int64GetDatum(min_safe_lsn);
-		}
-		else
+		/*
+		 * safe_wal_size is only computed for slots that have not been lost,
+		 * and only if there's a configured maximum size.
+		 */
+		if (walstate == WALAVAIL_REMOVED || max_slot_wal_keep_size_mb < 0)
 			nulls[i++] = true;
+		else
+		{
+			XLogSegNo   targetSeg;
+			uint64   slotKeepSegs;
+			uint64   keepSegs;
+			XLogSegNo   failSeg;
+			XLogRecPtr  failLSN;
+
+			XLByteToSeg(slot_contents.data.restart_lsn, targetSeg, wal_segment_size);
+
+			/* determine how many segments slots can be kept by slots */
+			slotKeepSegs = XLogMBVarToSegs(max_slot_wal_keep_size_mb, wal_segment_size);
+			/* ditto for wal_keep_size */
+			keepSegs = XLogMBVarToSegs(wal_keep_size_mb, wal_segment_size);
+
+			/* if currpos reaches failLSN, we lose our segment */
+			failSeg = targetSeg + Max(slotKeepSegs, keepSegs) + 1;
+			XLogSegNoOffsetToRecPtr(failSeg, 0, wal_segment_size, failLSN);
+
+			values[i++] = Int64GetDatum(failLSN - currlsn);
+		}
+
+		values[i++] = BoolGetDatum(slot_contents.data.two_phase);
 
 		Assert(i == PG_GET_REPLICATION_SLOTS_COLS);
 
@@ -496,9 +522,6 @@ pg_logical_replication_slot_advance(XLogRecPtr moveto)
 		 * a valid record.
 		 */
 		XLogBeginRead(ctx->reader, MyReplicationSlot->data.restart_lsn);
-
-		/* Initialize our return value in case we don't do anything */
-		retlsn = MyReplicationSlot->data.confirmed_flush;
 
 		/* invalidate non-timetravel entries */
 		InvalidateSystemCaches();
@@ -641,8 +664,7 @@ pg_replication_slot_advance(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("cannot advance replication slot to %X/%X, minimum is %X/%X",
-						(uint32) (moveto >> 32), (uint32) moveto,
-						(uint32) (minlsn >> 32), (uint32) minlsn)));
+						LSN_FORMAT_ARGS(moveto), LSN_FORMAT_ARGS(minlsn))));
 
 	/* Do the actual slot update, depending on the slot type */
 	if (OidIsValid(MyReplicationSlot->data.database))
@@ -779,6 +801,7 @@ copy_replication_slot(FunctionCallInfo fcinfo, bool logical_slot)
 		create_logical_replication_slot(NameStr(*dst_name),
 										plugin,
 										temporary,
+										false,
 										src_restart_lsn,
 										false);
 	}

@@ -3,7 +3,7 @@
  * varlena.c
  *	  Functions for the variable-length built-in types.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -21,11 +21,13 @@
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "common/hashfn.h"
+#include "common/hex.h"
 #include "common/int.h"
 #include "common/unicode_norm.h"
 #include "lib/hyperloglog.h"
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
 #include "parser/scansup.h"
 #include "port/pg_bswap.h"
 #include "regex/regex.h"
@@ -50,7 +52,7 @@ typedef struct varlena VarString;
 typedef struct
 {
 	bool		is_multibyte;	/* T if multibyte encoding */
-	bool		is_multibyte_char_in_char;
+	bool		is_multibyte_char_in_char;	/* need to check char boundaries? */
 
 	char	   *str1;			/* haystack string */
 	char	   *str2;			/* needle string */
@@ -91,6 +93,17 @@ typedef struct
 	double		prop_card;		/* Required cardinality proportion */
 	pg_locale_t locale;
 } VarStringSortSupport;
+
+/*
+ * Output data for split_text(): we output either to an array or a table.
+ * tupstore and tupdesc must be set up in advance to output to a table.
+ */
+typedef struct
+{
+	ArrayBuildState *astate;
+	Tuplestorestate *tupstore;
+	TupleDesc	tupdesc;
+} SplitTextOutputData;
 
 /*
  * This should be large enough that most strings will fit, but small enough
@@ -139,7 +152,11 @@ static bytea *bytea_substring(Datum str,
 							  bool length_not_specified);
 static bytea *bytea_overlay(bytea *t1, bytea *t2, int sp, int sl);
 static void appendStringInfoText(StringInfo str, const text *t);
-static Datum text_to_array_internal(PG_FUNCTION_ARGS);
+static bool split_text(FunctionCallInfo fcinfo, SplitTextOutputData *tstate);
+static void split_text_accum_result(SplitTextOutputData *tstate,
+									text *field_value,
+									text *null_string,
+									Oid collation);
 static text *array_to_text_internal(FunctionCallInfo fcinfo, ArrayType *v,
 									const char *fldsep, const char *null_string);
 static StringInfo makeStringAggState(FunctionCallInfo fcinfo);
@@ -287,10 +304,12 @@ byteain(PG_FUNCTION_ARGS)
 	if (inputText[0] == '\\' && inputText[1] == 'x')
 	{
 		size_t		len = strlen(inputText);
+		uint64		dstlen = pg_hex_dec_len(len - 2);
 
-		bc = (len - 2) / 2 + VARHDRSZ;	/* maximum possible length */
+		bc = dstlen + VARHDRSZ;	/* maximum possible length */
 		result = palloc(bc);
-		bc = hex_decode(inputText + 2, len - 2, VARDATA(result));
+
+		bc = pg_hex_decode(inputText + 2, len - 2, VARDATA(result), dstlen);
 		SET_VARSIZE(result, bc + VARHDRSZ); /* actual length */
 
 		PG_RETURN_BYTEA_P(result);
@@ -379,11 +398,15 @@ byteaout(PG_FUNCTION_ARGS)
 
 	if (bytea_output == BYTEA_OUTPUT_HEX)
 	{
+		uint64		dstlen = pg_hex_enc_len(VARSIZE_ANY_EXHDR(vlena));
+
 		/* Print hex format */
-		rp = result = palloc(VARSIZE_ANY_EXHDR(vlena) * 2 + 2 + 1);
+		rp = result = palloc(dstlen + 2 + 1);
 		*rp++ = '\\';
 		*rp++ = 'x';
-		rp += hex_encode(VARDATA_ANY(vlena), VARSIZE_ANY_EXHDR(vlena), rp);
+
+		rp += pg_hex_encode(VARDATA_ANY(vlena), VARSIZE_ANY_EXHDR(vlena), rp,
+							dstlen);
 	}
 	else if (bytea_output == BYTEA_OUTPUT_ESCAPE)
 	{
@@ -851,29 +874,38 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 	int32		S = start;		/* start position */
 	int32		S1;				/* adjusted start position */
 	int32		L1;				/* adjusted substring length */
+	int32		E;				/* end position */
+
+	/*
+	 * SQL99 says S can be zero or negative, but we still must fetch from the
+	 * start of the string.
+	 */
+	S1 = Max(S, 1);
 
 	/* life is easy if the encoding max length is 1 */
 	if (eml == 1)
 	{
-		S1 = Max(S, 1);
-
 		if (length_not_specified)	/* special case - get length to end of
 									 * string */
 			L1 = -1;
+		else if (length < 0)
+		{
+			/* SQL99 says to throw an error for E < S, i.e., negative length */
+			ereport(ERROR,
+					(errcode(ERRCODE_SUBSTRING_ERROR),
+					 errmsg("negative substring length not allowed")));
+			L1 = -1;			/* silence stupider compilers */
+		}
+		else if (pg_add_s32_overflow(S, length, &E))
+		{
+			/*
+			 * L could be large enough for S + L to overflow, in which case
+			 * the substring must run to end of string.
+			 */
+			L1 = -1;
+		}
 		else
 		{
-			/* end position */
-			int			E = S + length;
-
-			/*
-			 * A negative value for L is the only way for the end position to
-			 * be before the start. SQL99 says to throw an error.
-			 */
-			if (E < S)
-				ereport(ERROR,
-						(errcode(ERRCODE_SUBSTRING_ERROR),
-						 errmsg("negative substring length not allowed")));
-
 			/*
 			 * A zero or negative value for the end position can happen if the
 			 * start was negative or one. SQL99 says to return a zero-length
@@ -887,8 +919,8 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 
 		/*
 		 * If the start position is past the end of the string, SQL99 says to
-		 * return a zero-length string -- PG_GETARG_TEXT_P_SLICE() will do
-		 * that for us. Convert to zero-based starting position
+		 * return a zero-length string -- DatumGetTextPSlice() will do that
+		 * for us.  We need only convert S1 to zero-based starting position.
 		 */
 		return DatumGetTextPSlice(str, S1 - 1, L1);
 	}
@@ -910,12 +942,6 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 		text	   *ret;
 
 		/*
-		 * if S is past the end of the string, the tuple toaster will return a
-		 * zero-length string to us
-		 */
-		S1 = Max(S, 1);
-
-		/*
 		 * We need to start at position zero because there is no way to know
 		 * in advance which byte offset corresponds to the supplied start
 		 * position.
@@ -925,19 +951,24 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 		if (length_not_specified)	/* special case - get length to end of
 									 * string */
 			slice_size = L1 = -1;
+		else if (length < 0)
+		{
+			/* SQL99 says to throw an error for E < S, i.e., negative length */
+			ereport(ERROR,
+					(errcode(ERRCODE_SUBSTRING_ERROR),
+					 errmsg("negative substring length not allowed")));
+			slice_size = L1 = -1;	/* silence stupider compilers */
+		}
+		else if (pg_add_s32_overflow(S, length, &E))
+		{
+			/*
+			 * L could be large enough for S + L to overflow, in which case
+			 * the substring must run to end of string.
+			 */
+			slice_size = L1 = -1;
+		}
 		else
 		{
-			int			E = S + length;
-
-			/*
-			 * A negative value for L is the only way for the end position to
-			 * be before the start. SQL99 says to throw an error.
-			 */
-			if (E < S)
-				ereport(ERROR,
-						(errcode(ERRCODE_SUBSTRING_ERROR),
-						 errmsg("negative substring length not allowed")));
-
 			/*
 			 * A zero or negative value for the end position can happen if the
 			 * start was negative or one. SQL99 says to return a zero-length
@@ -955,8 +986,10 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 			/*
 			 * Total slice size in bytes can't be any longer than the start
 			 * position plus substring length times the encoding max length.
+			 * If that overflows, we can just use -1.
 			 */
-			slice_size = (S1 + L1) * eml;
+			if (pg_mul_s32_overflow(E, eml, &slice_size))
+				slice_size = -1;
 		}
 
 		/*
@@ -1423,8 +1456,7 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 /*
  * Return a pointer to the current match.
  *
- * The returned pointer points into correct position in the original
- * the haystack string.
+ * The returned pointer points into the original haystack string.
  */
 static char *
 text_position_get_match_ptr(TextPositionState *state)
@@ -1455,11 +1487,26 @@ text_position_get_match_pos(TextPositionState *state)
 	}
 }
 
+/*
+ * Reset search state to the initial state installed by text_position_setup.
+ *
+ * The next call to text_position_next will search from the beginning
+ * of the string.
+ */
+static void
+text_position_reset(TextPositionState *state)
+{
+	state->last_match = NULL;
+	state->refpoint = state->str1;
+	state->refpos = 0;
+}
+
 static void
 text_position_cleanup(TextPositionState *state)
 {
 	/* no cleanup needed */
 }
+
 
 static void
 check_collation_set(Oid collid)
@@ -3278,9 +3325,13 @@ bytea_substring(Datum str,
 				int L,
 				bool length_not_specified)
 {
-	int			S1;				/* adjusted start position */
-	int			L1;				/* adjusted substring length */
+	int32		S1;				/* adjusted start position */
+	int32		L1;				/* adjusted substring length */
+	int32		E;				/* end position */
 
+	/*
+	 * The logic here should generally match text_substring().
+	 */
 	S1 = Max(S, 1);
 
 	if (length_not_specified)
@@ -3291,20 +3342,24 @@ bytea_substring(Datum str,
 		 */
 		L1 = -1;
 	}
+	else if (L < 0)
+	{
+		/* SQL99 says to throw an error for E < S, i.e., negative length */
+		ereport(ERROR,
+				(errcode(ERRCODE_SUBSTRING_ERROR),
+				 errmsg("negative substring length not allowed")));
+		L1 = -1;				/* silence stupider compilers */
+	}
+	else if (pg_add_s32_overflow(S, L, &E))
+	{
+		/*
+		 * L could be large enough for S + L to overflow, in which case the
+		 * substring must run to end of string.
+		 */
+		L1 = -1;
+	}
 	else
 	{
-		/* end position */
-		int			E = S + L;
-
-		/*
-		 * A negative value for L is the only way for the end position to be
-		 * before the start. SQL99 says to throw an error.
-		 */
-		if (E < S)
-			ereport(ERROR,
-					(errcode(ERRCODE_SUBSTRING_ERROR),
-					 errmsg("negative substring length not allowed")));
-
 		/*
 		 * A zero or negative value for the end position can happen if the
 		 * start was negative or one. SQL99 says to return a zero-length
@@ -3319,7 +3374,7 @@ bytea_substring(Datum str,
 	/*
 	 * If the start position is past the end of the string, SQL99 says to
 	 * return a zero-length string -- DatumGetByteaPSlice() will do that for
-	 * us. Convert to zero-based starting position
+	 * us.  We need only convert S1 to zero-based starting position.
 	 */
 	return DatumGetByteaPSlice(str, S1 - 1, L1);
 }
@@ -4564,13 +4619,12 @@ replace_text_regexp(text *src_text, void *regexp,
 }
 
 /*
- * split_text
- * parse input string
- * return ord item (1 based)
- * based on provided field separator
+ * split_part
+ * parse input string based on provided field separator
+ * return N'th item (1 based, negative counts from end)
  */
 Datum
-split_text(PG_FUNCTION_ARGS)
+split_part(PG_FUNCTION_ARGS)
 {
 	text	   *inputstring = PG_GETARG_TEXT_PP(0);
 	text	   *fldsep = PG_GETARG_TEXT_PP(1);
@@ -4584,10 +4638,10 @@ split_text(PG_FUNCTION_ARGS)
 	bool		found;
 
 	/* field number is 1 based */
-	if (fldnum < 1)
+	if (fldnum == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("field position must be greater than zero")));
+				 errmsg("field position must not be zero")));
 
 	inputstring_len = VARSIZE_ANY_EXHDR(inputstring);
 	fldsep_len = VARSIZE_ANY_EXHDR(fldsep);
@@ -4596,33 +4650,72 @@ split_text(PG_FUNCTION_ARGS)
 	if (inputstring_len < 1)
 		PG_RETURN_TEXT_P(cstring_to_text(""));
 
-	/* empty field separator */
+	/* handle empty field separator */
 	if (fldsep_len < 1)
 	{
-		text_position_cleanup(&state);
-		/* if first field, return input string, else empty string */
-		if (fldnum == 1)
+		/* if first or last field, return input string, else empty string */
+		if (fldnum == 1 || fldnum == -1)
 			PG_RETURN_TEXT_P(inputstring);
 		else
 			PG_RETURN_TEXT_P(cstring_to_text(""));
 	}
 
+	/* find the first field separator */
 	text_position_setup(inputstring, fldsep, PG_GET_COLLATION(), &state);
 
-	/* identify bounds of first field */
-	start_ptr = VARDATA_ANY(inputstring);
 	found = text_position_next(&state);
 
 	/* special case if fldsep not found at all */
 	if (!found)
 	{
 		text_position_cleanup(&state);
-		/* if field 1 requested, return input string, else empty string */
-		if (fldnum == 1)
+		/* if first or last field, return input string, else empty string */
+		if (fldnum == 1 || fldnum == -1)
 			PG_RETURN_TEXT_P(inputstring);
 		else
 			PG_RETURN_TEXT_P(cstring_to_text(""));
 	}
+
+	/*
+	 * take care of a negative field number (i.e. count from the right) by
+	 * converting to a positive field number; we need total number of fields
+	 */
+	if (fldnum < 0)
+	{
+		/* we found a fldsep, so there are at least two fields */
+		int			numfields = 2;
+
+		while (text_position_next(&state))
+			numfields++;
+
+		/* special case of last field does not require an extra pass */
+		if (fldnum == -1)
+		{
+			start_ptr = text_position_get_match_ptr(&state) + fldsep_len;
+			end_ptr = VARDATA_ANY(inputstring) + inputstring_len;
+			text_position_cleanup(&state);
+			PG_RETURN_TEXT_P(cstring_to_text_with_len(start_ptr,
+													  end_ptr - start_ptr));
+		}
+
+		/* else, convert fldnum to positive notation */
+		fldnum += numfields + 1;
+
+		/* if nonexistent field, return empty string */
+		if (fldnum <= 0)
+		{
+			text_position_cleanup(&state);
+			PG_RETURN_TEXT_P(cstring_to_text(""));
+		}
+
+		/* reset to pointing at first match, but now with positive fldnum */
+		text_position_reset(&state);
+		found = text_position_next(&state);
+		Assert(found);
+	}
+
+	/* identify bounds of first field */
+	start_ptr = VARDATA_ANY(inputstring);
 	end_ptr = text_position_get_match_ptr(&state);
 
 	while (found && --fldnum > 0)
@@ -4679,7 +4772,19 @@ text_isequal(text *txt1, text *txt2, Oid collid)
 Datum
 text_to_array(PG_FUNCTION_ARGS)
 {
-	return text_to_array_internal(fcinfo);
+	SplitTextOutputData tstate;
+
+	/* For array output, tstate should start as all zeroes */
+	memset(&tstate, 0, sizeof(tstate));
+
+	if (!split_text(fcinfo, &tstate))
+		PG_RETURN_NULL();
+
+	if (tstate.astate == NULL)
+		PG_RETURN_ARRAYTYPE_P(construct_empty_array(TEXTOID));
+
+	PG_RETURN_ARRAYTYPE_P(makeArrayResult(tstate.astate,
+										  CurrentMemoryContext));
 }
 
 /*
@@ -4693,30 +4798,90 @@ text_to_array(PG_FUNCTION_ARGS)
 Datum
 text_to_array_null(PG_FUNCTION_ARGS)
 {
-	return text_to_array_internal(fcinfo);
+	return text_to_array(fcinfo);
 }
 
 /*
- * common code for text_to_array and text_to_array_null functions
+ * text_to_table
+ * parse input string and return table of elements,
+ * based on provided field separator
+ */
+Datum
+text_to_table(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	SplitTextOutputData tstate;
+	MemoryContext old_cxt;
+
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsi == NULL || !IsA(rsi, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsi->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* OK, prepare tuplestore in per-query memory */
+	old_cxt = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
+
+	tstate.astate = NULL;
+	tstate.tupdesc = CreateTupleDescCopy(rsi->expectedDesc);
+	tstate.tupstore = tuplestore_begin_heap(true, false, work_mem);
+
+	MemoryContextSwitchTo(old_cxt);
+
+	(void) split_text(fcinfo, &tstate);
+
+	tuplestore_donestoring(tstate.tupstore);
+
+	rsi->returnMode = SFRM_Materialize;
+	rsi->setResult = tstate.tupstore;
+	rsi->setDesc = tstate.tupdesc;
+
+	return (Datum) 0;
+}
+
+/*
+ * text_to_table_null
+ * parse input string and return table of elements,
+ * based on provided field separator and null string
+ *
+ * This is a separate entry point only to prevent the regression tests from
+ * complaining about different argument sets for the same internal function.
+ */
+Datum
+text_to_table_null(PG_FUNCTION_ARGS)
+{
+	return text_to_table(fcinfo);
+}
+
+/*
+ * Common code for text_to_array, text_to_array_null, text_to_table
+ * and text_to_table_null functions.
  *
  * These are not strict so we have to test for null inputs explicitly.
+ * Returns false if result is to be null, else returns true.
+ *
+ * Note that if the result is valid but empty (zero elements), we return
+ * without changing *tstate --- caller must handle that case, too.
  */
-static Datum
-text_to_array_internal(PG_FUNCTION_ARGS)
+static bool
+split_text(FunctionCallInfo fcinfo, SplitTextOutputData *tstate)
 {
 	text	   *inputstring;
 	text	   *fldsep;
 	text	   *null_string;
+	Oid			collation = PG_GET_COLLATION();
 	int			inputstring_len;
 	int			fldsep_len;
 	char	   *start_ptr;
 	text	   *result_text;
-	bool		is_null;
-	ArrayBuildState *astate = NULL;
 
 	/* when input string is NULL, then result is NULL too */
 	if (PG_ARGISNULL(0))
-		PG_RETURN_NULL();
+		return false;
 
 	inputstring = PG_GETARG_TEXT_PP(0);
 
@@ -4743,35 +4908,19 @@ text_to_array_internal(PG_FUNCTION_ARGS)
 		inputstring_len = VARSIZE_ANY_EXHDR(inputstring);
 		fldsep_len = VARSIZE_ANY_EXHDR(fldsep);
 
-		/* return empty array for empty input string */
+		/* return empty set for empty input string */
 		if (inputstring_len < 1)
-			PG_RETURN_ARRAYTYPE_P(construct_empty_array(TEXTOID));
+			return true;
 
-		/*
-		 * empty field separator: return the input string as a one-element
-		 * array
-		 */
+		/* empty field separator: return input string as a one-element set */
 		if (fldsep_len < 1)
 		{
-			Datum		elems[1];
-			bool		nulls[1];
-			int			dims[1];
-			int			lbs[1];
-
-			/* single element can be a NULL too */
-			is_null = null_string ? text_isequal(inputstring, null_string, PG_GET_COLLATION()) : false;
-
-			elems[0] = PointerGetDatum(inputstring);
-			nulls[0] = is_null;
-			dims[0] = 1;
-			lbs[0] = 1;
-			/* XXX: this hardcodes assumptions about the text type */
-			PG_RETURN_ARRAYTYPE_P(construct_md_array(elems, nulls,
-													 1, dims, lbs,
-													 TEXTOID, -1, false, TYPALIGN_INT));
+			split_text_accum_result(tstate, inputstring,
+									null_string, collation);
+			return true;
 		}
 
-		text_position_setup(inputstring, fldsep, PG_GET_COLLATION(), &state);
+		text_position_setup(inputstring, fldsep, collation, &state);
 
 		start_ptr = VARDATA_ANY(inputstring);
 
@@ -4797,16 +4946,12 @@ text_to_array_internal(PG_FUNCTION_ARGS)
 				chunk_len = end_ptr - start_ptr;
 			}
 
-			/* must build a temp text datum to pass to accumArrayResult */
+			/* build a temp text datum to pass to split_text_accum_result */
 			result_text = cstring_to_text_with_len(start_ptr, chunk_len);
-			is_null = null_string ? text_isequal(result_text, null_string, PG_GET_COLLATION()) : false;
 
 			/* stash away this field */
-			astate = accumArrayResult(astate,
-									  PointerGetDatum(result_text),
-									  is_null,
-									  TEXTOID,
-									  CurrentMemoryContext);
+			split_text_accum_result(tstate, result_text,
+									null_string, collation);
 
 			pfree(result_text);
 
@@ -4821,15 +4966,11 @@ text_to_array_internal(PG_FUNCTION_ARGS)
 	else
 	{
 		/*
-		 * When fldsep is NULL, each character in the inputstring becomes an
-		 * element in the result array.  The separator is effectively the
-		 * space between characters.
+		 * When fldsep is NULL, each character in the input string becomes a
+		 * separate element in the result set.  The separator is effectively
+		 * the space between characters.
 		 */
 		inputstring_len = VARSIZE_ANY_EXHDR(inputstring);
-
-		/* return empty array for empty input string */
-		if (inputstring_len < 1)
-			PG_RETURN_ARRAYTYPE_P(construct_empty_array(TEXTOID));
 
 		start_ptr = VARDATA_ANY(inputstring);
 
@@ -4839,16 +4980,12 @@ text_to_array_internal(PG_FUNCTION_ARGS)
 
 			CHECK_FOR_INTERRUPTS();
 
-			/* must build a temp text datum to pass to accumArrayResult */
+			/* build a temp text datum to pass to split_text_accum_result */
 			result_text = cstring_to_text_with_len(start_ptr, chunk_len);
-			is_null = null_string ? text_isequal(result_text, null_string, PG_GET_COLLATION()) : false;
 
 			/* stash away this field */
-			astate = accumArrayResult(astate,
-									  PointerGetDatum(result_text),
-									  is_null,
-									  TEXTOID,
-									  CurrentMemoryContext);
+			split_text_accum_result(tstate, result_text,
+									null_string, collation);
 
 			pfree(result_text);
 
@@ -4857,8 +4994,47 @@ text_to_array_internal(PG_FUNCTION_ARGS)
 		}
 	}
 
-	PG_RETURN_ARRAYTYPE_P(makeArrayResult(astate,
-										  CurrentMemoryContext));
+	return true;
+}
+
+/*
+ * Add text item to result set (table or array).
+ *
+ * This is also responsible for checking to see if the item matches
+ * the null_string, in which case we should emit NULL instead.
+ */
+static void
+split_text_accum_result(SplitTextOutputData *tstate,
+						text *field_value,
+						text *null_string,
+						Oid collation)
+{
+	bool		is_null = false;
+
+	if (null_string && text_isequal(field_value, null_string, collation))
+		is_null = true;
+
+	if (tstate->tupstore)
+	{
+		Datum		values[1];
+		bool		nulls[1];
+
+		values[0] = PointerGetDatum(field_value);
+		nulls[0] = is_null;
+
+		tuplestore_putvalues(tstate->tupstore,
+							 tstate->tupdesc,
+							 values,
+							 nulls);
+	}
+	else
+	{
+		tstate->astate = accumArrayResult(tstate->astate,
+										  PointerGetDatum(field_value),
+										  is_null,
+										  TEXTOID,
+										  CurrentMemoryContext);
+	}
 }
 
 /*
@@ -5586,8 +5762,8 @@ text_format(PG_FUNCTION_ARGS)
 		if (strchr("sIL", *cp) == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("unrecognized format() type specifier \"%c\"",
-							*cp),
+					 errmsg("unrecognized format() type specifier \"%.*s\"",
+							pg_mblen(cp), cp),
 					 errhint("For a single \"%%\" use \"%%%%\".")));
 
 		/* If indirect width was specified, get its value */
@@ -5707,8 +5883,8 @@ text_format(PG_FUNCTION_ARGS)
 				/* should not get here, because of previous check */
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("unrecognized format() type specifier \"%c\"",
-								*cp),
+						 errmsg("unrecognized format() type specifier \"%.*s\"",
+								pg_mblen(cp), cp),
 						 errhint("For a single \"%%\" use \"%%%%\".")));
 				break;
 		}
@@ -6082,7 +6258,7 @@ unicode_normalize_func(PG_FUNCTION_ARGS)
 /*
  * Check whether the string is in the specified Unicode normalization form.
  *
- * This is done by convering the string to the specified normal form and then
+ * This is done by converting the string to the specified normal form and then
  * comparing that to the original string.  To speed that up, we also apply the
  * "quick check" algorithm specified in UAX #15, which can give a yes or no
  * answer for many strings by just scanning the string once.

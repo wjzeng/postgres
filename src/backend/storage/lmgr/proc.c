@@ -3,7 +3,7 @@
  * proc.c
  *	  routines to manage per-process shared memory data structure
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -61,11 +61,11 @@ int			DeadlockTimeout = 1000;
 int			StatementTimeout = 0;
 int			LockTimeout = 0;
 int			IdleInTransactionSessionTimeout = 0;
+int			IdleSessionTimeout = 0;
 bool		log_lock_waits = false;
 
-/* Pointer to this process's PGPROC and PGXACT structs, if any */
+/* Pointer to this process's PGPROC struct, if any */
 PGPROC	   *MyProc = NULL;
-PGXACT	   *MyPgXact = NULL;
 
 /*
  * This spinlock protects the freelist of recycled PGPROC structures.
@@ -102,21 +102,17 @@ Size
 ProcGlobalShmemSize(void)
 {
 	Size		size = 0;
+	Size		TotalProcs =
+		add_size(MaxBackends, add_size(NUM_AUXILIARY_PROCS, max_prepared_xacts));
 
 	/* ProcGlobal */
 	size = add_size(size, sizeof(PROC_HDR));
-	/* MyProcs, including autovacuum workers and launcher */
-	size = add_size(size, mul_size(MaxBackends, sizeof(PGPROC)));
-	/* AuxiliaryProcs */
-	size = add_size(size, mul_size(NUM_AUXILIARY_PROCS, sizeof(PGPROC)));
-	/* Prepared xacts */
-	size = add_size(size, mul_size(max_prepared_xacts, sizeof(PGPROC)));
-	/* ProcStructLock */
+	size = add_size(size, mul_size(TotalProcs, sizeof(PGPROC)));
 	size = add_size(size, sizeof(slock_t));
 
-	size = add_size(size, mul_size(MaxBackends, sizeof(PGXACT)));
-	size = add_size(size, mul_size(NUM_AUXILIARY_PROCS, sizeof(PGXACT)));
-	size = add_size(size, mul_size(max_prepared_xacts, sizeof(PGXACT)));
+	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->xids)));
+	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->subxidStates)));
+	size = add_size(size, mul_size(TotalProcs, sizeof(*ProcGlobal->statusFlags)));
 
 	return size;
 }
@@ -163,7 +159,6 @@ void
 InitProcGlobal(void)
 {
 	PGPROC	   *procs;
-	PGXACT	   *pgxacts;
 	int			i,
 				j;
 	bool		found;
@@ -205,16 +200,19 @@ InitProcGlobal(void)
 	ProcGlobal->allProcCount = MaxBackends + NUM_AUXILIARY_PROCS;
 
 	/*
-	 * Also allocate a separate array of PGXACT structures.  This is separate
-	 * from the main PGPROC array so that the most heavily accessed data is
-	 * stored contiguously in memory in as few cache lines as possible. This
-	 * provides significant performance benefits, especially on a
-	 * multiprocessor system.  There is one PGXACT structure for every PGPROC
-	 * structure.
+	 * Allocate arrays mirroring PGPROC fields in a dense manner. See
+	 * PROC_HDR.
+	 *
+	 * XXX: It might make sense to increase padding for these arrays, given
+	 * how hotly they are accessed.
 	 */
-	pgxacts = (PGXACT *) ShmemAlloc(TotalProcs * sizeof(PGXACT));
-	MemSet(pgxacts, 0, TotalProcs * sizeof(PGXACT));
-	ProcGlobal->allPgXact = pgxacts;
+	ProcGlobal->xids =
+		(TransactionId *) ShmemAlloc(TotalProcs * sizeof(*ProcGlobal->xids));
+	MemSet(ProcGlobal->xids, 0, TotalProcs * sizeof(*ProcGlobal->xids));
+	ProcGlobal->subxidStates = (XidCacheStatus *) ShmemAlloc(TotalProcs * sizeof(*ProcGlobal->subxidStates));
+	MemSet(ProcGlobal->subxidStates, 0, TotalProcs * sizeof(*ProcGlobal->subxidStates));
+	ProcGlobal->statusFlags = (uint8 *) ShmemAlloc(TotalProcs * sizeof(*ProcGlobal->statusFlags));
+	MemSet(ProcGlobal->statusFlags, 0, TotalProcs * sizeof(*ProcGlobal->statusFlags));
 
 	for (i = 0; i < TotalProcs; i++)
 	{
@@ -283,6 +281,7 @@ InitProcGlobal(void)
 		 */
 		pg_atomic_init_u32(&(procs[i].procArrayGroupNext), INVALID_PGPROCNO);
 		pg_atomic_init_u32(&(procs[i].clogGroupNext), INVALID_PGPROCNO);
+		pg_atomic_init_u64(&(procs[i].waitStart), 0);
 	}
 
 	/*
@@ -361,7 +360,6 @@ InitProcess(void)
 				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
 				 errmsg("sorry, too many clients already")));
 	}
-	MyPgXact = &ProcGlobal->allPgXact[MyProc->pgprocno];
 
 	/*
 	 * Cross-check that the PGPROC is of the type we expect; if this were not
@@ -387,8 +385,8 @@ InitProcess(void)
 	MyProc->lxid = InvalidLocalTransactionId;
 	MyProc->fpVXIDLock = false;
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
-	MyPgXact->xid = InvalidTransactionId;
-	MyPgXact->xmin = InvalidTransactionId;
+	MyProc->xid = InvalidTransactionId;
+	MyProc->xmin = InvalidTransactionId;
 	MyProc->pid = MyProcPid;
 	/* backendId, databaseId and roleId will be filled in later */
 	MyProc->backendId = InvalidBackendId;
@@ -397,14 +395,15 @@ InitProcess(void)
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyProc->delayChkpt = false;
-	MyPgXact->vacuumFlags = 0;
+	MyProc->statusFlags = 0;
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */
 	if (IsAutoVacuumWorkerProcess())
-		MyPgXact->vacuumFlags |= PROC_IS_AUTOVACUUM;
+		MyProc->statusFlags |= PROC_IS_AUTOVACUUM;
 	MyProc->lwWaiting = false;
 	MyProc->lwWaitMode = 0;
 	MyProc->waitLock = NULL;
 	MyProc->waitProcLock = NULL;
+	pg_atomic_write_u64(&MyProc->waitStart, 0);
 #ifdef USE_ASSERT_CHECKING
 	{
 		int			i;
@@ -558,7 +557,6 @@ InitAuxiliaryProcess(void)
 	((volatile PGPROC *) auxproc)->pid = MyProcPid;
 
 	MyProc = auxproc;
-	MyPgXact = &ProcGlobal->allPgXact[auxproc->pgprocno];
 
 	SpinLockRelease(ProcStructLock);
 
@@ -571,19 +569,20 @@ InitAuxiliaryProcess(void)
 	MyProc->lxid = InvalidLocalTransactionId;
 	MyProc->fpVXIDLock = false;
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
-	MyPgXact->xid = InvalidTransactionId;
-	MyPgXact->xmin = InvalidTransactionId;
+	MyProc->xid = InvalidTransactionId;
+	MyProc->xmin = InvalidTransactionId;
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyProc->delayChkpt = false;
-	MyPgXact->vacuumFlags = 0;
+	MyProc->statusFlags = 0;
 	MyProc->lwWaiting = false;
 	MyProc->lwWaitMode = 0;
 	MyProc->waitLock = NULL;
 	MyProc->waitProcLock = NULL;
+	pg_atomic_write_u64(&MyProc->waitStart, 0);
 #ifdef USE_ASSERT_CHECKING
 	{
 		int			i;
@@ -1068,8 +1067,10 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	LWLock	   *partitionLock = LockHashPartitionLock(hashcode);
 	PROC_QUEUE *waitQueue = &(lock->waitProcs);
 	LOCKMASK	myHeldLocks = MyProc->heldLocks;
+	TimestampTz standbyWaitStart = 0;
 	bool		early_deadlock = false;
 	bool		allow_autovacuum_cancel = true;
+	bool		logged_recovery_conflict = false;
 	ProcWaitStatus myWaitStatus;
 	PGPROC	   *proc;
 	PGPROC	   *leader = MyProc->lockGroupLeader;
@@ -1264,6 +1265,31 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 		}
 		else
 			enable_timeout_after(DEADLOCK_TIMEOUT, DeadlockTimeout);
+
+		/*
+		 * Use the current time obtained for the deadlock timeout timer as
+		 * waitStart (i.e., the time when this process started waiting for the
+		 * lock). Since getting the current time newly can cause overhead, we
+		 * reuse the already-obtained time to avoid that overhead.
+		 *
+		 * Note that waitStart is updated without holding the lock table's
+		 * partition lock, to avoid the overhead by additional lock
+		 * acquisition. This can cause "waitstart" in pg_locks to become NULL
+		 * for a very short period of time after the wait started even though
+		 * "granted" is false. This is OK in practice because we can assume
+		 * that users are likely to look at "waitstart" when waiting for the
+		 * lock for a long time.
+		 */
+		pg_atomic_write_u64(&MyProc->waitStart,
+							get_timeout_start_time(DEADLOCK_TIMEOUT));
+	}
+	else if (log_recovery_conflict_waits)
+	{
+		/*
+		 * Set the wait start timestamp if logging is enabled and in hot
+		 * standby.
+		 */
+		standbyWaitStart = GetCurrentTimestamp();
 	}
 
 	/*
@@ -1284,8 +1310,43 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	{
 		if (InHotStandby)
 		{
-			/* Set a timer and wait for that or for the Lock to be granted */
-			ResolveRecoveryConflictWithLock(locallock->tag.lock);
+			bool		maybe_log_conflict =
+			(standbyWaitStart != 0 && !logged_recovery_conflict);
+
+			/* Set a timer and wait for that or for the lock to be granted */
+			ResolveRecoveryConflictWithLock(locallock->tag.lock,
+											maybe_log_conflict);
+
+			/*
+			 * Emit the log message if the startup process is waiting longer
+			 * than deadlock_timeout for recovery conflict on lock.
+			 */
+			if (maybe_log_conflict)
+			{
+				TimestampTz now = GetCurrentTimestamp();
+
+				if (TimestampDifferenceExceeds(standbyWaitStart, now,
+											   DeadlockTimeout))
+				{
+					VirtualTransactionId *vxids;
+					int			cnt;
+
+					vxids = GetLockConflicts(&locallock->tag.lock,
+											 AccessExclusiveLock, &cnt);
+
+					/*
+					 * Log the recovery conflict and the list of PIDs of
+					 * backends holding the conflicting lock. Note that we do
+					 * logging even if there are no such backends right now
+					 * because the startup process here has already waited
+					 * longer than deadlock_timeout.
+					 */
+					LogRecoveryConflict(PROCSIG_RECOVERY_CONFLICT_LOCK,
+										standbyWaitStart, now,
+										cnt > 0 ? vxids : NULL, true);
+					logged_recovery_conflict = true;
+				}
+			}
 		}
 		else
 		{
@@ -1315,40 +1376,59 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 		if (deadlock_state == DS_BLOCKED_BY_AUTOVACUUM && allow_autovacuum_cancel)
 		{
 			PGPROC	   *autovac = GetBlockingAutoVacuumPgproc();
-			PGXACT	   *autovac_pgxact = &ProcGlobal->allPgXact[autovac->pgprocno];
+			uint8		statusFlags;
+			uint8		lockmethod_copy;
+			LOCKTAG		locktag_copy;
 
+			/*
+			 * Grab info we need, then release lock immediately.  Note this
+			 * coding means that there is a tiny chance that the process
+			 * terminates its current transaction and starts a different one
+			 * before we have a change to send the signal; the worst possible
+			 * consequence is that a for-wraparound vacuum is cancelled.  But
+			 * that could happen in any case unless we were to do kill() with
+			 * the lock held, which is much more undesirable.
+			 */
 			LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+			statusFlags = ProcGlobal->statusFlags[autovac->pgxactoff];
+			lockmethod_copy = lock->tag.locktag_lockmethodid;
+			locktag_copy = lock->tag;
+			LWLockRelease(ProcArrayLock);
 
 			/*
 			 * Only do it if the worker is not working to protect against Xid
 			 * wraparound.
 			 */
-			if ((autovac_pgxact->vacuumFlags & PROC_IS_AUTOVACUUM) &&
-				!(autovac_pgxact->vacuumFlags & PROC_VACUUM_FOR_WRAPAROUND))
+			if ((statusFlags & PROC_IS_AUTOVACUUM) &&
+				!(statusFlags & PROC_VACUUM_FOR_WRAPAROUND))
 			{
 				int			pid = autovac->pid;
-				StringInfoData locktagbuf;
-				StringInfoData logbuf;	/* errdetail for server log */
 
-				initStringInfo(&locktagbuf);
-				initStringInfo(&logbuf);
-				DescribeLockTag(&locktagbuf, &lock->tag);
-				appendStringInfo(&logbuf,
-								 _("Process %d waits for %s on %s."),
-								 MyProcPid,
-								 GetLockmodeName(lock->tag.locktag_lockmethodid,
-												 lockmode),
-								 locktagbuf.data);
+				/* report the case, if configured to do so */
+				if (message_level_is_interesting(DEBUG1))
+				{
+					StringInfoData locktagbuf;
+					StringInfoData logbuf;	/* errdetail for server log */
 
-				/* release lock as quickly as possible */
-				LWLockRelease(ProcArrayLock);
+					initStringInfo(&locktagbuf);
+					initStringInfo(&logbuf);
+					DescribeLockTag(&locktagbuf, &locktag_copy);
+					appendStringInfo(&logbuf,
+									 "Process %d waits for %s on %s.",
+									 MyProcPid,
+									 GetLockmodeName(lockmethod_copy, lockmode),
+									 locktagbuf.data);
+
+					ereport(DEBUG1,
+							(errmsg_internal("sending cancel to blocking autovacuum PID %d",
+									pid),
+							 errdetail_log("%s", logbuf.data)));
+
+					pfree(locktagbuf.data);
+					pfree(logbuf.data);
+				}
 
 				/* send the autovacuum worker Back to Old Kent Road */
-				ereport(DEBUG1,
-						(errmsg("sending cancel to blocking autovacuum PID %d",
-								pid),
-						 errdetail_log("%s", logbuf.data)));
-
 				if (kill(pid, SIGINT) < 0)
 				{
 					/*
@@ -1366,14 +1446,9 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 								(errmsg("could not send signal to process %d: %m",
 										pid)));
 				}
-
-				pfree(logbuf.data);
-				pfree(locktagbuf.data);
 			}
-			else
-				LWLockRelease(ProcArrayLock);
 
-			/* prevent signal from being resent more than once */
+			/* prevent signal from being sent again more than once */
 			allow_autovacuum_cancel = false;
 		}
 
@@ -1554,6 +1629,15 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 	}
 
 	/*
+	 * Emit the log message if recovery conflict on lock was resolved but the
+	 * startup process waited longer than deadlock_timeout for it.
+	 */
+	if (InHotStandby && logged_recovery_conflict)
+		LogRecoveryConflict(PROCSIG_RECOVERY_CONFLICT_LOCK,
+							standbyWaitStart, GetCurrentTimestamp(),
+							NULL, false);
+
+	/*
 	 * Re-acquire the lock table's partition lock.  We have to do this to hold
 	 * off cancel/die interrupts before we can mess with lockAwaited (else we
 	 * might have a missed or duplicated locallock update).
@@ -1614,6 +1698,7 @@ ProcWakeup(PGPROC *proc, ProcWaitStatus waitStatus)
 	proc->waitLock = NULL;
 	proc->waitProcLock = NULL;
 	proc->waitStatus = waitStatus;
+	pg_atomic_write_u64(&MyProc->waitStart, 0);
 
 	/* And awaken it */
 	SetLatch(&proc->procLatch);
@@ -1784,6 +1869,9 @@ CheckDeadLockAlert(void)
 	 * Have to set the latch again, even if handle_sig_alarm already did. Back
 	 * then got_deadlock_timeout wasn't yet set... It's unlikely that this
 	 * ever would be a problem, but setting a set latch again is cheap.
+	 *
+	 * Note that, when this function runs inside procsignal_sigusr1_handler(),
+	 * the handler function sets the latch again after the latch is set here.
 	 */
 	SetLatch(MyLatch);
 	errno = save_errno;

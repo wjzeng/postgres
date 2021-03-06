@@ -3,7 +3,7 @@
  * typecmds.c
  *	  Routines for SQL commands that manipulate types (and domains).
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -94,6 +94,7 @@ typedef struct
 	bool		updateTypmodin;
 	bool		updateTypmodout;
 	bool		updateAnalyze;
+	bool		updateSubscript;
 	/* New values for relevant attributes */
 	char		storage;
 	Oid			receiveOid;
@@ -101,13 +102,19 @@ typedef struct
 	Oid			typmodinOid;
 	Oid			typmodoutOid;
 	Oid			analyzeOid;
+	Oid			subscriptOid;
 } AlterTypeRecurseParams;
 
 /* Potentially set by pg_upgrade_support functions */
 Oid			binary_upgrade_next_array_pg_type_oid = InvalidOid;
+Oid			binary_upgrade_next_mrng_pg_type_oid = InvalidOid;
+Oid			binary_upgrade_next_mrng_array_pg_type_oid = InvalidOid;
 
 static void makeRangeConstructors(const char *name, Oid namespace,
 								  Oid rangeOid, Oid subtype);
+static void makeMultirangeConstructors(const char *name, Oid namespace,
+									   Oid multirangeOid, Oid rangeOid,
+									   Oid rangeArrayOid, Oid *castFuncOid);
 static Oid	findTypeInputFunction(List *procname, Oid typeOid);
 static Oid	findTypeOutputFunction(List *procname, Oid typeOid);
 static Oid	findTypeReceiveFunction(List *procname, Oid typeOid);
@@ -115,6 +122,7 @@ static Oid	findTypeSendFunction(List *procname, Oid typeOid);
 static Oid	findTypeTypmodinFunction(List *procname);
 static Oid	findTypeTypmodoutFunction(List *procname);
 static Oid	findTypeAnalyzeFunction(List *procname, Oid typeOid);
+static Oid	findTypeSubscriptingFunction(List *procname, Oid typeOid);
 static Oid	findRangeSubOpclass(List *opcname, Oid subtype);
 static Oid	findRangeCanonicalFunction(List *procname, Oid typeOid);
 static Oid	findRangeSubtypeDiffFunction(List *procname, Oid subtype);
@@ -127,7 +135,8 @@ static char *domainAddConstraint(Oid domainOid, Oid domainNamespace,
 								 const char *domainName, ObjectAddress *constrAddr);
 static Node *replace_domain_constraint_value(ParseState *pstate,
 											 ColumnRef *cref);
-static void AlterTypeRecurse(Oid typeOid, HeapTuple tup, Relation catalog,
+static void AlterTypeRecurse(Oid typeOid, bool isImplicitArray,
+							 HeapTuple tup, Relation catalog,
 							 AlterTypeRecurseParams *atparams);
 
 
@@ -148,6 +157,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	List	   *typmodinName = NIL;
 	List	   *typmodoutName = NIL;
 	List	   *analyzeName = NIL;
+	List	   *subscriptName = NIL;
 	char		category = TYPCATEGORY_USER;
 	bool		preferred = false;
 	char		delimiter = DEFAULT_TYPDELIM;
@@ -166,6 +176,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	DefElem    *typmodinNameEl = NULL;
 	DefElem    *typmodoutNameEl = NULL;
 	DefElem    *analyzeNameEl = NULL;
+	DefElem    *subscriptNameEl = NULL;
 	DefElem    *categoryEl = NULL;
 	DefElem    *preferredEl = NULL;
 	DefElem    *delimiterEl = NULL;
@@ -182,6 +193,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	Oid			typmodinOid = InvalidOid;
 	Oid			typmodoutOid = InvalidOid;
 	Oid			analyzeOid = InvalidOid;
+	Oid			subscriptOid = InvalidOid;
 	char	   *array_type;
 	Oid			array_oid;
 	Oid			typoid;
@@ -287,6 +299,8 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 		else if (strcmp(defel->defname, "analyze") == 0 ||
 				 strcmp(defel->defname, "analyse") == 0)
 			defelp = &analyzeNameEl;
+		else if (strcmp(defel->defname, "subscript") == 0)
+			defelp = &subscriptNameEl;
 		else if (strcmp(defel->defname, "category") == 0)
 			defelp = &categoryEl;
 		else if (strcmp(defel->defname, "preferred") == 0)
@@ -357,6 +371,8 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 		typmodoutName = defGetQualifiedName(typmodoutNameEl);
 	if (analyzeNameEl)
 		analyzeName = defGetQualifiedName(analyzeNameEl);
+	if (subscriptNameEl)
+		subscriptName = defGetQualifiedName(subscriptNameEl);
 	if (categoryEl)
 	{
 		char	   *p = defGetString(categoryEl);
@@ -482,6 +498,24 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 		analyzeOid = findTypeAnalyzeFunction(analyzeName, typoid);
 
 	/*
+	 * Likewise look up the subscripting procedure if any.  If it is not
+	 * specified, but a typelem is specified, allow that if
+	 * raw_array_subscript_handler can be used.  (This is for backwards
+	 * compatibility; maybe someday we should throw an error instead.)
+	 */
+	if (subscriptName)
+		subscriptOid = findTypeSubscriptingFunction(subscriptName, typoid);
+	else if (OidIsValid(elemType))
+	{
+		if (internalLength > 0 && !byValue && get_typlen(elemType) > 0)
+			subscriptOid = F_RAW_ARRAY_SUBSCRIPT_HANDLER;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("element type cannot be specified without a valid subscripting procedure")));
+	}
+
+	/*
 	 * Check permissions on functions.  We choose to require the creator/owner
 	 * of a type to also own the underlying functions.  Since creating a type
 	 * is tantamount to granting public execute access on the functions, the
@@ -515,6 +549,9 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 	if (analyzeOid && !pg_proc_ownercheck(analyzeOid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
 					   NameListToString(analyzeName));
+	if (subscriptOid && !pg_proc_ownercheck(subscriptOid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_FUNCTION,
+					   NameListToString(subscriptName));
 #endif
 
 	/*
@@ -550,8 +587,9 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 				   typmodinOid, /* typmodin procedure */
 				   typmodoutOid,	/* typmodout procedure */
 				   analyzeOid,	/* analyze procedure */
+				   subscriptOid,	/* subscript procedure */
 				   elemType,	/* element type ID */
-				   false,		/* this is not an array type */
+				   false,		/* this is not an implicit array type */
 				   array_oid,	/* array type we are about to create */
 				   InvalidOid,	/* base type ID (only for domains) */
 				   defaultValue,	/* default type value */
@@ -591,6 +629,7 @@ DefineType(ParseState *pstate, List *names, List *parameters)
 			   typmodinOid,		/* typmodin procedure */
 			   typmodoutOid,	/* typmodout procedure */
 			   F_ARRAY_TYPANALYZE,	/* analyze procedure */
+			   F_ARRAY_SUBSCRIPT_HANDLER,	/* array subscript procedure */
 			   typoid,			/* element type ID */
 			   true,			/* yes this is an array type */
 			   InvalidOid,		/* no further array type */
@@ -738,7 +777,8 @@ DefineDomain(CreateDomainStmt *stmt)
 		typtype != TYPTYPE_COMPOSITE &&
 		typtype != TYPTYPE_DOMAIN &&
 		typtype != TYPTYPE_ENUM &&
-		typtype != TYPTYPE_RANGE)
+		typtype != TYPTYPE_RANGE &&
+		typtype != TYPTYPE_MULTIRANGE)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
 				 errmsg("\"%s\" is not a valid base type for a domain",
@@ -798,6 +838,12 @@ DefineDomain(CreateDomainStmt *stmt)
 
 	/* Analysis function */
 	analyzeProcedure = baseType->typanalyze;
+
+	/*
+	 * Domains don't need a subscript procedure, since they are not
+	 * subscriptable on their own.  If the base type is subscriptable, the
+	 * parser will reduce the type to the base type before subscripting.
+	 */
 
 	/* Inherited default value */
 	datum = SysCacheGetAttr(TYPEOID, typeTup,
@@ -992,6 +1038,7 @@ DefineDomain(CreateDomainStmt *stmt)
 				   InvalidOid,	/* typmodin procedure - none */
 				   InvalidOid,	/* typmodout procedure - none */
 				   analyzeProcedure,	/* analyze procedure */
+				   InvalidOid,	/* subscript procedure - none */
 				   InvalidOid,	/* no array element type */
 				   false,		/* this isn't an array */
 				   domainArrayOid,	/* array type we are about to create */
@@ -1032,6 +1079,7 @@ DefineDomain(CreateDomainStmt *stmt)
 			   InvalidOid,		/* typmodin procedure - none */
 			   InvalidOid,		/* typmodout procedure - none */
 			   F_ARRAY_TYPANALYZE,	/* analyze procedure */
+			   F_ARRAY_SUBSCRIPT_HANDLER,	/* array subscript procedure */
 			   address.objectId,	/* element type ID */
 			   true,			/* yes this is an array type */
 			   InvalidOid,		/* no further array type */
@@ -1147,6 +1195,7 @@ DefineEnum(CreateEnumStmt *stmt)
 				   InvalidOid,	/* typmodin procedure - none */
 				   InvalidOid,	/* typmodout procedure - none */
 				   InvalidOid,	/* analyze procedure - default */
+				   InvalidOid,	/* subscript procedure - none */
 				   InvalidOid,	/* element type ID */
 				   false,		/* this is not an array type */
 				   enumArrayOid,	/* array type we are about to create */
@@ -1187,6 +1236,7 @@ DefineEnum(CreateEnumStmt *stmt)
 			   InvalidOid,		/* typmodin procedure - none */
 			   InvalidOid,		/* typmodout procedure - none */
 			   F_ARRAY_TYPANALYZE,	/* analyze procedure */
+			   F_ARRAY_SUBSCRIPT_HANDLER,	/* array subscript procedure */
 			   enumTypeAddr.objectId,	/* element type ID */
 			   true,			/* yes this is an array type */
 			   InvalidOid,		/* no further array type */
@@ -1279,6 +1329,11 @@ checkEnumOwner(HeapTuple tup)
 /*
  * DefineRange
  *		Registers a new range type.
+ *
+ * Perhaps it might be worthwhile to set pg_type.typelem to the base type,
+ * and likewise on multiranges to set it to the range type. But having a
+ * non-zero typelem is treated elsewhere as a synonym for being an array,
+ * and users might have queries with that same assumption.
  */
 ObjectAddress
 DefineRange(CreateRangeStmt *stmt)
@@ -1287,7 +1342,12 @@ DefineRange(CreateRangeStmt *stmt)
 	Oid			typeNamespace;
 	Oid			typoid;
 	char	   *rangeArrayName;
+	char	   *multirangeTypeName = NULL;
+	char	   *multirangeArrayName;
+	Oid			multirangeNamespace = InvalidOid;
 	Oid			rangeArrayOid;
+	Oid			multirangeOid;
+	Oid			multirangeArrayOid;
 	Oid			rangeSubtype = InvalidOid;
 	List	   *rangeSubOpclassName = NIL;
 	List	   *rangeCollationName = NIL;
@@ -1304,6 +1364,8 @@ DefineRange(CreateRangeStmt *stmt)
 	AclResult	aclresult;
 	ListCell   *lc;
 	ObjectAddress address;
+	ObjectAddress mltrngaddress PG_USED_FOR_ASSERTS_ONLY;
+	Oid			castFuncOid;
 
 	/* Convert list of names to a name and namespace */
 	typeNamespace = QualifiedNameGetCreationNamespace(stmt->typeName,
@@ -1387,6 +1449,16 @@ DefineRange(CreateRangeStmt *stmt)
 						 errmsg("conflicting or redundant options")));
 			rangeSubtypeDiffName = defGetQualifiedName(defel);
 		}
+		else if (strcmp(defel->defname, "multirange_type_name") == 0)
+		{
+			if (multirangeTypeName != NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			/* we can look up the subtype name immediately */
+			multirangeNamespace = QualifiedNameGetCreationNamespace(defGetQualifiedName(defel),
+																	&multirangeTypeName);
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -1452,8 +1524,10 @@ DefineRange(CreateRangeStmt *stmt)
 	/* alignment must be TYPALIGN_INT or TYPALIGN_DOUBLE for ranges */
 	alignment = (subtypalign == TYPALIGN_DOUBLE) ? TYPALIGN_DOUBLE : TYPALIGN_INT;
 
-	/* Allocate OID for array type */
+	/* Allocate OID for array type, its multirange, and its multirange array */
 	rangeArrayOid = AssignTypeArrayOid();
+	multirangeOid = AssignTypeMultirangeOid();
+	multirangeArrayOid = AssignTypeMultirangeArrayOid();
 
 	/* Create the pg_type entry */
 	address =
@@ -1475,6 +1549,7 @@ DefineRange(CreateRangeStmt *stmt)
 				   InvalidOid,	/* typmodin procedure - none */
 				   InvalidOid,	/* typmodout procedure - none */
 				   F_RANGE_TYPANALYZE,	/* analyze procedure */
+				   InvalidOid,	/* subscript procedure - none */
 				   InvalidOid,	/* element type ID - none */
 				   false,		/* this is not an array type */
 				   rangeArrayOid,	/* array type we are about to create */
@@ -1491,9 +1566,75 @@ DefineRange(CreateRangeStmt *stmt)
 	Assert(typoid == InvalidOid || typoid == address.objectId);
 	typoid = address.objectId;
 
+	/* Create the multirange that goes with it */
+	if (multirangeTypeName)
+	{
+		Oid		old_typoid;
+
+		/*
+		 * Look to see if multirange type already exists.
+		 */
+		old_typoid = GetSysCacheOid2(TYPENAMENSP, Anum_pg_type_oid,
+									 CStringGetDatum(multirangeTypeName),
+									 ObjectIdGetDatum(multirangeNamespace));
+
+		/*
+		 * If it's not a shell, see if it's an autogenerated array type, and if so
+		 * rename it out of the way.
+		 */
+		if (OidIsValid(old_typoid) && get_typisdefined(old_typoid))
+		{
+			if (!moveArrayTypeName(old_typoid, multirangeTypeName, multirangeNamespace))
+				ereport(ERROR,
+						(errcode(ERRCODE_DUPLICATE_OBJECT),
+						 errmsg("type \"%s\" already exists", multirangeTypeName)));
+		}
+	}
+	else
+	{
+		/* Generate multirange name automatically */
+		multirangeNamespace = typeNamespace;
+		multirangeTypeName = makeMultirangeTypeName(typeName, multirangeNamespace);
+	}
+
+	mltrngaddress =
+		TypeCreate(multirangeOid,	/* force assignment of this type OID */
+				   multirangeTypeName,	/* type name */
+				   multirangeNamespace,	/* namespace */
+				   InvalidOid,	/* relation oid (n/a here) */
+				   0,			/* relation kind (ditto) */
+				   GetUserId(), /* owner's ID */
+				   -1,			/* internal size (always varlena) */
+				   TYPTYPE_MULTIRANGE,	/* type-type (multirange type) */
+				   TYPCATEGORY_RANGE,	/* type-category (range type) */
+				   false,		/* multirange types are never preferred */
+				   DEFAULT_TYPDELIM,	/* array element delimiter */
+				   F_MULTIRANGE_IN, /* input procedure */
+				   F_MULTIRANGE_OUT,	/* output procedure */
+				   F_MULTIRANGE_RECV,	/* receive procedure */
+				   F_MULTIRANGE_SEND,	/* send procedure */
+				   InvalidOid,	/* typmodin procedure - none */
+				   InvalidOid,	/* typmodout procedure - none */
+				   F_MULTIRANGE_TYPANALYZE, /* analyze procedure */
+				   InvalidOid,	/* subscript procedure - none */
+				   InvalidOid,	/* element type ID - none */
+				   false,		/* this is not an array type */
+				   multirangeArrayOid,	/* array type we are about to create */
+				   InvalidOid,	/* base type ID (only for domains) */
+				   NULL,		/* never a default type value */
+				   NULL,		/* no binary form available either */
+				   false,		/* never passed by value */
+				   alignment,	/* alignment */
+				   'x',			/* TOAST strategy (always extended) */
+				   -1,			/* typMod (Domains only) */
+				   0,			/* Array dimensions of typbasetype */
+				   false,		/* Type NOT NULL */
+				   InvalidOid); /* type's collation (ranges never have one) */
+	Assert(multirangeOid == mltrngaddress.objectId);
+
 	/* Create the entry in pg_range */
 	RangeCreate(typoid, rangeSubtype, rangeCollation, rangeSubOpclass,
-				rangeCanonical, rangeSubtypeDiff);
+				rangeCanonical, rangeSubtypeDiff, multirangeOid);
 
 	/*
 	 * Create the array type that goes with it.
@@ -1518,6 +1659,7 @@ DefineRange(CreateRangeStmt *stmt)
 			   InvalidOid,		/* typmodin procedure - none */
 			   InvalidOid,		/* typmodout procedure - none */
 			   F_ARRAY_TYPANALYZE,	/* analyze procedure */
+			   F_ARRAY_SUBSCRIPT_HANDLER,	/* array subscript procedure */
 			   typoid,			/* element type ID */
 			   true,			/* yes this is an array type */
 			   InvalidOid,		/* no further array type */
@@ -1534,8 +1676,54 @@ DefineRange(CreateRangeStmt *stmt)
 
 	pfree(rangeArrayName);
 
+	/* Create the multirange's array type */
+
+	multirangeArrayName = makeArrayTypeName(multirangeTypeName, typeNamespace);
+
+	TypeCreate(multirangeArrayOid,	/* force assignment of this type OID */
+			   multirangeArrayName, /* type name */
+			   multirangeNamespace,	/* namespace */
+			   InvalidOid,		/* relation oid (n/a here) */
+			   0,				/* relation kind (ditto) */
+			   GetUserId(),		/* owner's ID */
+			   -1,				/* internal size (always varlena) */
+			   TYPTYPE_BASE,	/* type-type (base type) */
+			   TYPCATEGORY_ARRAY,	/* type-category (array) */
+			   false,			/* array types are never preferred */
+			   DEFAULT_TYPDELIM,	/* array element delimiter */
+			   F_ARRAY_IN,		/* input procedure */
+			   F_ARRAY_OUT,		/* output procedure */
+			   F_ARRAY_RECV,	/* receive procedure */
+			   F_ARRAY_SEND,	/* send procedure */
+			   InvalidOid,		/* typmodin procedure - none */
+			   InvalidOid,		/* typmodout procedure - none */
+			   F_ARRAY_TYPANALYZE,	/* analyze procedure */
+			   F_ARRAY_SUBSCRIPT_HANDLER,	/* array subscript procedure */
+			   multirangeOid,	/* element type ID */
+			   true,			/* yes this is an array type */
+			   InvalidOid,		/* no further array type */
+			   InvalidOid,		/* base type ID */
+			   NULL,			/* never a default type value */
+			   NULL,			/* binary default isn't sent either */
+			   false,			/* never passed by value */
+			   alignment,		/* alignment - same as range's */
+			   'x',				/* ARRAY is always toastable */
+			   -1,				/* typMod (Domains only) */
+			   0,				/* Array dimensions of typbasetype */
+			   false,			/* Type NOT NULL */
+			   InvalidOid);		/* typcollation */
+
 	/* And create the constructor functions for this range type */
 	makeRangeConstructors(typeName, typeNamespace, typoid, rangeSubtype);
+	makeMultirangeConstructors(multirangeTypeName, typeNamespace,
+							   multirangeOid, typoid, rangeArrayOid,
+							   &castFuncOid);
+
+	/* Create cast from the range type to its multirange type */
+	CastCreate(typoid, multirangeOid, castFuncOid, 'e', 'f', DEPENDENCY_INTERNAL);
+
+	pfree(multirangeTypeName);
+	pfree(multirangeArrayName);
 
 	return address;
 }
@@ -1613,9 +1801,152 @@ makeRangeConstructors(const char *name, Oid namespace,
 	}
 }
 
+/*
+ * We make a separate multirange constructor for each range type
+ * so its name can include the base type, like range constructors do.
+ * If we had an anyrangearray polymorphic type we could use it here,
+ * but since each type has its own constructor name there's no need.
+ *
+ * Sets castFuncOid to the oid of the new constructor that can be used
+ * to cast from a range to a multirange.
+ */
+static void
+makeMultirangeConstructors(const char *name, Oid namespace,
+						   Oid multirangeOid, Oid rangeOid, Oid rangeArrayOid,
+						   Oid *castFuncOid)
+{
+	ObjectAddress myself,
+				referenced;
+	oidvector  *argtypes;
+	Datum		allParamTypes;
+	ArrayType  *allParameterTypes;
+	Datum		paramModes;
+	ArrayType  *parameterModes;
+
+	referenced.classId = TypeRelationId;
+	referenced.objectId = multirangeOid;
+	referenced.objectSubId = 0;
+
+	/* 0-arg constructor - for empty multiranges */
+	argtypes = buildoidvector(NULL, 0);
+	myself = ProcedureCreate(name,	/* name: same as multirange type */
+							 namespace,
+							 false, /* replace */
+							 false, /* returns set */
+							 multirangeOid, /* return type */
+							 BOOTSTRAP_SUPERUSERID, /* proowner */
+							 INTERNALlanguageId,	/* language */
+							 F_FMGR_INTERNAL_VALIDATOR,
+							 "multirange_constructor0", /* prosrc */
+							 NULL,	/* probin */
+							 PROKIND_FUNCTION,
+							 false, /* security_definer */
+							 false, /* leakproof */
+							 false, /* isStrict */
+							 PROVOLATILE_IMMUTABLE, /* volatility */
+							 PROPARALLEL_SAFE,	/* parallel safety */
+							 argtypes,	/* parameterTypes */
+							 PointerGetDatum(NULL), /* allParameterTypes */
+							 PointerGetDatum(NULL), /* parameterModes */
+							 PointerGetDatum(NULL), /* parameterNames */
+							 NIL,	/* parameterDefaults */
+							 PointerGetDatum(NULL), /* trftypes */
+							 PointerGetDatum(NULL), /* proconfig */
+							 InvalidOid,	/* prosupport */
+							 1.0,	/* procost */
+							 0.0);	/* prorows */
+
+	/*
+	 * Make the constructor internally-dependent on the multirange type so
+	 * that they go away silently when the type is dropped.  Note that pg_dump
+	 * depends on this choice to avoid dumping the constructors.
+	 */
+	recordDependencyOn(&myself, &referenced, DEPENDENCY_INTERNAL);
+	pfree(argtypes);
+
+	/*
+	 * 1-arg constructor - for casts
+	 *
+	 * In theory we shouldn't need both this and the vararg (n-arg)
+	 * constructor, but having a separate 1-arg function lets us define casts
+	 * against it.
+	 */
+	argtypes = buildoidvector(&rangeOid, 1);
+	myself = ProcedureCreate(name,	/* name: same as multirange type */
+							 namespace,
+							 false, /* replace */
+							 false, /* returns set */
+							 multirangeOid, /* return type */
+							 BOOTSTRAP_SUPERUSERID, /* proowner */
+							 INTERNALlanguageId,	/* language */
+							 F_FMGR_INTERNAL_VALIDATOR,
+							 "multirange_constructor1", /* prosrc */
+							 NULL,	/* probin */
+							 PROKIND_FUNCTION,
+							 false, /* security_definer */
+							 false, /* leakproof */
+							 true,	/* isStrict */
+							 PROVOLATILE_IMMUTABLE, /* volatility */
+							 PROPARALLEL_SAFE,	/* parallel safety */
+							 argtypes,	/* parameterTypes */
+							 PointerGetDatum(NULL), /* allParameterTypes */
+							 PointerGetDatum(NULL), /* parameterModes */
+							 PointerGetDatum(NULL), /* parameterNames */
+							 NIL,	/* parameterDefaults */
+							 PointerGetDatum(NULL), /* trftypes */
+							 PointerGetDatum(NULL), /* proconfig */
+							 InvalidOid,	/* prosupport */
+							 1.0,	/* procost */
+							 0.0);	/* prorows */
+	/* ditto */
+	recordDependencyOn(&myself, &referenced, DEPENDENCY_INTERNAL);
+	pfree(argtypes);
+	*castFuncOid = myself.objectId;
+
+	/* n-arg constructor - vararg */
+	argtypes = buildoidvector(&rangeArrayOid, 1);
+	allParamTypes = ObjectIdGetDatum(rangeArrayOid);
+	allParameterTypes = construct_array(&allParamTypes,
+										1, OIDOID,
+										sizeof(Oid), true, 'i');
+	paramModes = CharGetDatum(FUNC_PARAM_VARIADIC);
+	parameterModes = construct_array(&paramModes, 1, CHAROID,
+									 1, true, 'c');
+	myself = ProcedureCreate(name,	/* name: same as multirange type */
+							 namespace,
+							 false, /* replace */
+							 false, /* returns set */
+							 multirangeOid, /* return type */
+							 BOOTSTRAP_SUPERUSERID, /* proowner */
+							 INTERNALlanguageId,	/* language */
+							 F_FMGR_INTERNAL_VALIDATOR,
+							 "multirange_constructor2", /* prosrc */
+							 NULL,	/* probin */
+							 PROKIND_FUNCTION,
+							 false, /* security_definer */
+							 false, /* leakproof */
+							 false, /* isStrict */
+							 PROVOLATILE_IMMUTABLE, /* volatility */
+							 PROPARALLEL_SAFE,	/* parallel safety */
+							 argtypes,	/* parameterTypes */
+							 PointerGetDatum(allParameterTypes),	/* allParameterTypes */
+							 PointerGetDatum(parameterModes),	/* parameterModes */
+							 PointerGetDatum(NULL), /* parameterNames */
+							 NIL,	/* parameterDefaults */
+							 PointerGetDatum(NULL), /* trftypes */
+							 PointerGetDatum(NULL), /* proconfig */
+							 InvalidOid,	/* prosupport */
+							 1.0,	/* procost */
+							 0.0);	/* prorows */
+	/* ditto */
+	recordDependencyOn(&myself, &referenced, DEPENDENCY_INTERNAL);
+	pfree(argtypes);
+	pfree(allParameterTypes);
+	pfree(parameterModes);
+}
 
 /*
- * Find suitable I/O functions for a type.
+ * Find suitable I/O and other support functions for a type.
  *
  * typeOid is the type's OID (which will already exist, if only as a shell
  * type).
@@ -1626,21 +1957,31 @@ findTypeInputFunction(List *procname, Oid typeOid)
 {
 	Oid			argList[3];
 	Oid			procOid;
+	Oid			procOid2;
 
 	/*
 	 * Input functions can take a single argument of type CSTRING, or three
-	 * arguments (string, typioparam OID, typmod).  They must return the
-	 * target type.
+	 * arguments (string, typioparam OID, typmod).  Whine about ambiguity if
+	 * both forms exist.
 	 */
 	argList[0] = CSTRINGOID;
+	argList[1] = OIDOID;
+	argList[2] = INT4OID;
 
 	procOid = LookupFuncName(procname, 1, argList, true);
-	if (!OidIsValid(procOid))
+	procOid2 = LookupFuncName(procname, 3, argList, true);
+	if (OidIsValid(procOid))
 	{
-		argList[1] = OIDOID;
-		argList[2] = INT4OID;
-
-		procOid = LookupFuncName(procname, 3, argList, true);
+		if (OidIsValid(procOid2))
+			ereport(ERROR,
+					(errcode(ERRCODE_AMBIGUOUS_FUNCTION),
+					 errmsg("type input function %s has multiple matches",
+							NameListToString(procname))));
+	}
+	else
+	{
+		procOid = procOid2;
+		/* If not found, reference the 1-argument signature in error msg */
 		if (!OidIsValid(procOid))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_FUNCTION),
@@ -1648,6 +1989,7 @@ findTypeInputFunction(List *procname, Oid typeOid)
 							func_signature_string(procname, 1, NIL, argList))));
 	}
 
+	/* Input functions must return the target type. */
 	if (get_func_rettype(procOid) != typeOid)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -1713,21 +2055,31 @@ findTypeReceiveFunction(List *procname, Oid typeOid)
 {
 	Oid			argList[3];
 	Oid			procOid;
+	Oid			procOid2;
 
 	/*
 	 * Receive functions can take a single argument of type INTERNAL, or three
-	 * arguments (internal, typioparam OID, typmod).  They must return the
-	 * target type.
+	 * arguments (internal, typioparam OID, typmod).  Whine about ambiguity if
+	 * both forms exist.
 	 */
 	argList[0] = INTERNALOID;
+	argList[1] = OIDOID;
+	argList[2] = INT4OID;
 
 	procOid = LookupFuncName(procname, 1, argList, true);
-	if (!OidIsValid(procOid))
+	procOid2 = LookupFuncName(procname, 3, argList, true);
+	if (OidIsValid(procOid))
 	{
-		argList[1] = OIDOID;
-		argList[2] = INT4OID;
-
-		procOid = LookupFuncName(procname, 3, argList, true);
+		if (OidIsValid(procOid2))
+			ereport(ERROR,
+					(errcode(ERRCODE_AMBIGUOUS_FUNCTION),
+					 errmsg("type receive function %s has multiple matches",
+							NameListToString(procname))));
+	}
+	else
+	{
+		procOid = procOid2;
+		/* If not found, reference the 1-argument signature in error msg */
 		if (!OidIsValid(procOid))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_FUNCTION),
@@ -1735,6 +2087,7 @@ findTypeReceiveFunction(List *procname, Oid typeOid)
 							func_signature_string(procname, 1, NIL, argList))));
 	}
 
+	/* Receive functions must return the target type. */
 	if (get_func_rettype(procOid) != typeOid)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -1877,6 +2230,45 @@ findTypeAnalyzeFunction(List *procname, Oid typeOid)
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("type analyze function %s must return type %s",
 						NameListToString(procname), "boolean")));
+
+	return procOid;
+}
+
+static Oid
+findTypeSubscriptingFunction(List *procname, Oid typeOid)
+{
+	Oid			argList[1];
+	Oid			procOid;
+
+	/*
+	 * Subscripting support functions always take one INTERNAL argument and
+	 * return INTERNAL.  (The argument is not used, but we must have it to
+	 * maintain type safety.)
+	 */
+	argList[0] = INTERNALOID;
+
+	procOid = LookupFuncName(procname, 1, argList, true);
+	if (!OidIsValid(procOid))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_FUNCTION),
+				 errmsg("function %s does not exist",
+						func_signature_string(procname, 1, NIL, argList))));
+
+	if (get_func_rettype(procOid) != INTERNALOID)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("type subscripting function %s must return type %s",
+						NameListToString(procname), "internal")));
+
+	/*
+	 * We disallow array_subscript_handler() from being selected explicitly,
+	 * since that must only be applied to autogenerated array types.
+	 */
+	if (procOid == F_ARRAY_SUBSCRIPT_HANDLER)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("user-defined types cannot use subscripting function %s",
+						NameListToString(procname))));
 
 	return procOid;
 }
@@ -2043,6 +2435,72 @@ AssignTypeArrayOid(void)
 	}
 
 	return type_array_oid;
+}
+
+/*
+ *	AssignTypeMultirangeOid
+ *
+ *	Pre-assign the range type's multirange OID for use in pg_type.oid
+ */
+Oid
+AssignTypeMultirangeOid(void)
+{
+	Oid			type_multirange_oid;
+
+	/* Use binary-upgrade override for pg_type.oid? */
+	if (IsBinaryUpgrade)
+	{
+		if (!OidIsValid(binary_upgrade_next_mrng_pg_type_oid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("pg_type multirange OID value not set when in binary upgrade mode")));
+
+		type_multirange_oid = binary_upgrade_next_mrng_pg_type_oid;
+		binary_upgrade_next_mrng_pg_type_oid = InvalidOid;
+	}
+	else
+	{
+		Relation	pg_type = table_open(TypeRelationId, AccessShareLock);
+
+		type_multirange_oid = GetNewOidWithIndex(pg_type, TypeOidIndexId,
+												 Anum_pg_type_oid);
+		table_close(pg_type, AccessShareLock);
+	}
+
+	return type_multirange_oid;
+}
+
+/*
+ *	AssignTypeMultirangeArrayOid
+ *
+ *	Pre-assign the range type's multirange array OID for use in pg_type.typarray
+ */
+Oid
+AssignTypeMultirangeArrayOid(void)
+{
+	Oid			type_multirange_array_oid;
+
+	/* Use binary-upgrade override for pg_type.oid? */
+	if (IsBinaryUpgrade)
+	{
+		if (!OidIsValid(binary_upgrade_next_mrng_array_pg_type_oid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("pg_type multirange array OID value not set when in binary upgrade mode")));
+
+		type_multirange_array_oid = binary_upgrade_next_mrng_array_pg_type_oid;
+		binary_upgrade_next_mrng_array_pg_type_oid = InvalidOid;
+	}
+	else
+	{
+		Relation	pg_type = table_open(TypeRelationId, AccessShareLock);
+
+		type_multirange_array_oid = GetNewOidWithIndex(pg_type, TypeOidIndexId,
+													   Anum_pg_type_oid);
+		table_close(pg_type, AccessShareLock);
+	}
+
+	return type_multirange_array_oid;
 }
 
 
@@ -3198,8 +3656,7 @@ RenameType(RenameStmt *stmt)
 				 errhint("Use ALTER TABLE instead.")));
 
 	/* don't allow direct alteration of array types, either */
-	if (OidIsValid(typTup->typelem) &&
-		get_array_type(typTup->typelem) == typeOid)
+	if (IsTrueArrayType(typTup))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot alter array type %s",
@@ -3280,8 +3737,7 @@ AlterTypeOwner(List *names, Oid newOwnerId, ObjectType objecttype)
 				 errhint("Use ALTER TABLE instead.")));
 
 	/* don't allow direct alteration of array types, either */
-	if (OidIsValid(typTup->typelem) &&
-		get_array_type(typTup->typelem) == typeOid)
+	if (IsTrueArrayType(typTup))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot alter array type %s",
@@ -3782,6 +4238,18 @@ AlterType(AlterTypeStmt *stmt)
 			/* Replacing an analyze function requires superuser. */
 			requireSuper = true;
 		}
+		else if (strcmp(defel->defname, "subscript") == 0)
+		{
+			if (defel->arg != NULL)
+				atparams.subscriptOid =
+					findTypeSubscriptingFunction(defGetQualifiedName(defel),
+												 typeOid);
+			else
+				atparams.subscriptOid = InvalidOid; /* NONE, remove function */
+			atparams.updateSubscript = true;
+			/* Replacing a subscript function requires superuser. */
+			requireSuper = true;
+		}
 
 		/*
 		 * The rest of the options that CREATE accepts cannot be changed.
@@ -3846,15 +4314,14 @@ AlterType(AlterTypeStmt *stmt)
 	/*
 	 * For the same reasons, don't allow direct alteration of array types.
 	 */
-	if (OidIsValid(typForm->typelem) &&
-		get_array_type(typForm->typelem) == typeOid)
+	if (IsTrueArrayType(typForm))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("%s is not a base type",
 						format_type_be(typeOid))));
 
-	/* OK, recursively update this type and any domains over it */
-	AlterTypeRecurse(typeOid, tup, catalog, &atparams);
+	/* OK, recursively update this type and any arrays/domains over it */
+	AlterTypeRecurse(typeOid, false, tup, catalog, &atparams);
 
 	/* Clean up */
 	ReleaseSysCache(tup);
@@ -3870,13 +4337,15 @@ AlterType(AlterTypeStmt *stmt)
  * AlterTypeRecurse: one recursion step for AlterType()
  *
  * Apply the changes specified by "atparams" to the type identified by
- * "typeOid", whose existing pg_type tuple is "tup".  Then search for any
- * domains over this type, and recursively apply (most of) the same changes
- * to those domains.
+ * "typeOid", whose existing pg_type tuple is "tup".  If necessary,
+ * recursively update its array type as well.  Then search for any domains
+ * over this type, and recursively apply (most of) the same changes to those
+ * domains.
  *
  * We need this because the system generally assumes that a domain inherits
  * many properties from its base type.  See DefineDomain() above for details
- * of what is inherited.
+ * of what is inherited.  Arrays inherit a smaller number of properties,
+ * but not none.
  *
  * There's a race condition here, in that some other transaction could
  * concurrently add another domain atop this base type; we'd miss updating
@@ -3888,7 +4357,8 @@ AlterType(AlterTypeStmt *stmt)
  * committed.
  */
 static void
-AlterTypeRecurse(Oid typeOid, HeapTuple tup, Relation catalog,
+AlterTypeRecurse(Oid typeOid, bool isImplicitArray,
+				 HeapTuple tup, Relation catalog,
 				 AlterTypeRecurseParams *atparams)
 {
 	Datum		values[Natts_pg_type];
@@ -3937,6 +4407,11 @@ AlterTypeRecurse(Oid typeOid, HeapTuple tup, Relation catalog,
 		replaces[Anum_pg_type_typanalyze - 1] = true;
 		values[Anum_pg_type_typanalyze - 1] = ObjectIdGetDatum(atparams->analyzeOid);
 	}
+	if (atparams->updateSubscript)
+	{
+		replaces[Anum_pg_type_typsubscript - 1] = true;
+		values[Anum_pg_type_typsubscript - 1] = ObjectIdGetDatum(atparams->subscriptOid);
+	}
 
 	newtup = heap_modify_tuple(tup, RelationGetDescr(catalog),
 							   values, nulls, replaces);
@@ -3949,11 +4424,42 @@ AlterTypeRecurse(Oid typeOid, HeapTuple tup, Relation catalog,
 							 NULL,	/* don't have defaultExpr handy */
 							 NULL,	/* don't have typacl handy */
 							 0, /* we rejected composite types above */
-							 false, /* and we rejected implicit arrays above */
-							 false, /* so it can't be a dependent type */
+							 isImplicitArray,	/* it might be an array */
+							 isImplicitArray,	/* dependent iff it's array */
 							 true);
 
 	InvokeObjectPostAlterHook(TypeRelationId, typeOid, 0);
+
+	/*
+	 * Arrays inherit their base type's typmodin and typmodout, but none of
+	 * the other properties we're concerned with here.  Recurse to the array
+	 * type if needed.
+	 */
+	if (!isImplicitArray &&
+		(atparams->updateTypmodin || atparams->updateTypmodout))
+	{
+		Oid			arrtypoid = ((Form_pg_type) GETSTRUCT(newtup))->typarray;
+
+		if (OidIsValid(arrtypoid))
+		{
+			HeapTuple	arrtup;
+			AlterTypeRecurseParams arrparams;
+
+			arrtup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(arrtypoid));
+			if (!HeapTupleIsValid(arrtup))
+				elog(ERROR, "cache lookup failed for type %u", arrtypoid);
+
+			memset(&arrparams, 0, sizeof(arrparams));
+			arrparams.updateTypmodin = atparams->updateTypmodin;
+			arrparams.updateTypmodout = atparams->updateTypmodout;
+			arrparams.typmodinOid = atparams->typmodinOid;
+			arrparams.typmodoutOid = atparams->typmodoutOid;
+
+			AlterTypeRecurse(arrtypoid, true, arrtup, catalog, &arrparams);
+
+			ReleaseSysCache(arrtup);
+		}
+	}
 
 	/*
 	 * Now we need to recurse to domains.  However, some properties are not
@@ -3962,6 +4468,13 @@ AlterTypeRecurse(Oid typeOid, HeapTuple tup, Relation catalog,
 	atparams->updateReceive = false;	/* domains use F_DOMAIN_RECV */
 	atparams->updateTypmodin = false;	/* domains don't have typmods */
 	atparams->updateTypmodout = false;
+	atparams->updateSubscript = false;	/* domains don't have subscriptors */
+
+	/* Skip the scan if nothing remains to be done */
+	if (!(atparams->updateStorage ||
+		  atparams->updateSend ||
+		  atparams->updateAnalyze))
+		return;
 
 	/* Search pg_type for possible domains over this type */
 	ScanKeyInit(&key[0],
@@ -3983,7 +4496,7 @@ AlterTypeRecurse(Oid typeOid, HeapTuple tup, Relation catalog,
 		if (domainForm->typtype != TYPTYPE_DOMAIN)
 			continue;
 
-		AlterTypeRecurse(domainForm->oid, domainTup, catalog, atparams);
+		AlterTypeRecurse(domainForm->oid, false, domainTup, catalog, atparams);
 	}
 
 	systable_endscan(scan);

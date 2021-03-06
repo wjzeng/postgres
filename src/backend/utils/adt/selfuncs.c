@@ -10,7 +10,7 @@
  *	  Index cost functions are located via the index AM's API struct,
  *	  which is obtained from the handler function registered in pg_am.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -645,7 +645,7 @@ scalarineqsel(PlannerInfo *root, Oid operator, bool isgt, bool iseq,
 
 			/*
 			 * The calculation so far gave us a selectivity for the "<=" case.
-			 * We'll have one less tuple for "<" and one additional tuple for
+			 * We'll have one fewer tuple for "<" and one additional tuple for
 			 * ">=", the latter of which we'll reverse the selectivity for
 			 * below, so we can simply subtract one tuple for both cases.  The
 			 * cases that need this adjustment can be identified by iseq being
@@ -2206,7 +2206,7 @@ rowcomparesel(PlannerInfo *root,
 		/*
 		 * Otherwise, it's a join if there's more than one relation used.
 		 */
-		is_join_clause = (NumRelids((Node *) opargs) > 1);
+		is_join_clause = (NumRelids(root, (Node *) opargs) > 1);
 	}
 
 	if (is_join_clause)
@@ -2775,6 +2775,7 @@ neqjoinsel(PG_FUNCTION_ARGS)
 	List	   *args = (List *) PG_GETARG_POINTER(2);
 	JoinType	jointype = (JoinType) PG_GETARG_INT16(3);
 	SpecialJoinInfo *sjinfo = (SpecialJoinInfo *) PG_GETARG_POINTER(4);
+	Oid			collation = PG_GET_COLLATION();
 	float8		result;
 
 	if (jointype == JOIN_SEMI || jointype == JOIN_ANTI)
@@ -2821,12 +2822,14 @@ neqjoinsel(PG_FUNCTION_ARGS)
 
 		if (eqop)
 		{
-			result = DatumGetFloat8(DirectFunctionCall5(eqjoinsel,
-														PointerGetDatum(root),
-														ObjectIdGetDatum(eqop),
-														PointerGetDatum(args),
-														Int16GetDatum(jointype),
-														PointerGetDatum(sjinfo)));
+			result =
+				DatumGetFloat8(DirectFunctionCall5Coll(eqjoinsel,
+													   collation,
+													   PointerGetDatum(root),
+													   ObjectIdGetDatum(eqop),
+													   PointerGetDatum(args),
+													   Int16GetDatum(jointype),
+													   PointerGetDatum(sjinfo)));
 		}
 		else
 		{
@@ -3516,7 +3519,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		 * for remaining Vars on other rels.
 		 */
 		relvarinfos = lappend(relvarinfos, varinfo1);
-		for_each_cell(l, varinfos, list_second_cell(varinfos))
+		for_each_from(l, varinfos, 1)
 		{
 			GroupVarInfo *varinfo2 = (GroupVarInfo *) lfirst(l);
 
@@ -3836,12 +3839,14 @@ estimate_hash_bucket_stats(PlannerInfo *root, Node *hashkey, double nbuckets,
  * won't store them.  Is this a problem?
  */
 double
-estimate_hashagg_tablesize(Path *path, const AggClauseCosts *agg_costs,
-						   double dNumGroups)
+estimate_hashagg_tablesize(PlannerInfo *root, Path *path,
+						   const AggClauseCosts *agg_costs, double dNumGroups)
 {
-	Size		hashentrysize = hash_agg_entry_size(agg_costs->numAggs,
-													path->pathtarget->width,
-													agg_costs->transitionSpace);
+	Size		hashentrysize;
+
+	hashentrysize = hash_agg_entry_size(list_length(root->aggtransinfos),
+										path->pathtarget->width,
+										agg_costs->transitionSpace);
 
 	/*
 	 * Note that this disregards the effect of fill-factor and growth policy
@@ -4766,7 +4771,7 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 	 * membership.  Note that when varRelid isn't zero, only vars of that
 	 * relation are considered "real" vars.
 	 */
-	varnos = pull_varnos(basenode);
+	varnos = pull_varnos(root, basenode);
 
 	onerel = NULL;
 
@@ -5783,14 +5788,15 @@ get_actual_variable_endpoint(Relation heapRel,
 	 * recent); that case motivates not using SnapshotAny here.
 	 *
 	 * A crucial point here is that SnapshotNonVacuumable, with
-	 * RecentGlobalXmin as horizon, yields the inverse of the condition that
-	 * the indexscan will use to decide that index entries are killable (see
-	 * heap_hot_search_buffer()).  Therefore, if the snapshot rejects a tuple
-	 * (or more precisely, all tuples of a HOT chain) and we have to continue
-	 * scanning past it, we know that the indexscan will mark that index entry
-	 * killed.  That means that the next get_actual_variable_endpoint() call
-	 * will not have to re-consider that index entry.  In this way we avoid
-	 * repetitive work when this function is used a lot during planning.
+	 * GlobalVisTestFor(heapRel) as horizon, yields the inverse of the
+	 * condition that the indexscan will use to decide that index entries are
+	 * killable (see heap_hot_search_buffer()).  Therefore, if the snapshot
+	 * rejects a tuple (or more precisely, all tuples of a HOT chain) and we
+	 * have to continue scanning past it, we know that the indexscan will mark
+	 * that index entry killed.  That means that the next
+	 * get_actual_variable_endpoint() call will not have to re-consider that
+	 * index entry.  In this way we avoid repetitive work when this function
+	 * is used a lot during planning.
 	 *
 	 * But using SnapshotNonVacuumable creates a hazard of its own.  In a
 	 * recently-created index, some index entries may point at "broken" HOT
@@ -5802,7 +5808,8 @@ get_actual_variable_endpoint(Relation heapRel,
 	 * or could even be NULL.  We avoid this hazard because we take the data
 	 * from the index entry not the heap.
 	 */
-	InitNonVacuumableSnapshot(SnapshotNonVacuumable, RecentGlobalXmin);
+	InitNonVacuumableSnapshot(SnapshotNonVacuumable,
+							  GlobalVisTestFor(heapRel));
 
 	index_scan = index_beginscan(heapRel, indexRel,
 								 &SnapshotNonVacuumable,

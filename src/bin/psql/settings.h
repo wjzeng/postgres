@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * src/bin/psql/settings.h
  */
@@ -116,6 +116,13 @@ typedef struct _psqlSettings
 	FILE	   *logfile;		/* session log file handle */
 
 	VariableSpace vars;			/* "shell variable" repository */
+
+	/*
+	 * If we get a connection failure, the now-unusable PGconn is stashed here
+	 * until we can successfully reconnect.  Never attempt to do anything with
+	 * this PGconn except extract parameters for a \connect attempt.
+	 */
+	PGconn	   *dead_conn;		/* previous connection to backend */
 
 	/*
 	 * The remaining fields are set by assign hooks associated with entries in

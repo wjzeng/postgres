@@ -6,7 +6,7 @@
  * loaded as a dynamic module to avoid linking the main server binary with
  * libpq.
  *
- * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -21,6 +21,7 @@
 
 #include "access/xlog.h"
 #include "catalog/pg_type.h"
+#include "common/connect.h"
 #include "funcapi.h"
 #include "libpq-fe.h"
 #include "mb/pg_wchar.h"
@@ -213,6 +214,22 @@ libpqrcv_connect(const char *conninfo, bool logical, const char *appname,
 		return NULL;
 	}
 
+	if (logical)
+	{
+		PGresult   *res;
+
+		res = libpqrcv_PQexec(conn->streamConn,
+							  ALWAYS_SECURE_SEARCH_PATH_SQL);
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
+		{
+			PQclear(res);
+			ereport(ERROR,
+					(errmsg("could not clear search path: %s",
+							pchomp(PQerrorMessage(conn->streamConn)))));
+		}
+		PQclear(res);
+	}
+
 	conn->logical = logical;
 
 	return conn;
@@ -389,9 +406,7 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 	if (options->logical)
 		appendStringInfoString(&cmd, " LOGICAL");
 
-	appendStringInfo(&cmd, " %X/%X",
-					 (uint32) (options->startpoint >> 32),
-					 (uint32) options->startpoint);
+	appendStringInfo(&cmd, " %X/%X", LSN_FORMAT_ARGS(options->startpoint));
 
 	/*
 	 * Additional options are different depending on if we are doing logical
@@ -408,6 +423,10 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		appendStringInfo(&cmd, "proto_version '%u'",
 						 options->proto.logical.proto_version);
 
+		if (options->proto.logical.streaming &&
+			PQserverVersion(conn->streamConn) >= 140000)
+			appendStringInfoString(&cmd, ", streaming 'on'");
+
 		pubnames = options->proto.logical.publication_names;
 		pubnames_str = stringlist_to_identifierstr(conn->streamConn, pubnames);
 		if (!pubnames_str)
@@ -423,6 +442,10 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		appendStringInfo(&cmd, ", publication_names %s", pubnames_literal);
 		PQfreemem(pubnames_literal);
 		pfree(pubnames_str);
+
+		if (options->proto.logical.binary &&
+			PQserverVersion(conn->streamConn) >= 140000)
+			appendStringInfoString(&cmd, ", binary 'true'");
 
 		appendStringInfoChar(&cmd, ')');
 	}
@@ -957,6 +980,7 @@ libpqrcv_exec(WalReceiverConn *conn, const char *query,
 {
 	PGresult   *pgres = NULL;
 	WalRcvExecResult *walres = palloc0(sizeof(WalRcvExecResult));
+	char	   *diag_sqlstate;
 
 	if (MyDatabaseId == InvalidOid)
 		ereport(ERROR,
@@ -1000,6 +1024,13 @@ libpqrcv_exec(WalReceiverConn *conn, const char *query,
 		case PGRES_BAD_RESPONSE:
 			walres->status = WALRCV_ERROR;
 			walres->err = pchomp(PQerrorMessage(conn->streamConn));
+			diag_sqlstate = PQresultErrorField(pgres, PG_DIAG_SQLSTATE);
+			if (diag_sqlstate)
+				walres->sqlstate = MAKE_SQLSTATE(diag_sqlstate[0],
+												 diag_sqlstate[1],
+												 diag_sqlstate[2],
+												 diag_sqlstate[3],
+												 diag_sqlstate[4]);
 			break;
 	}
 

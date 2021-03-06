@@ -4,7 +4,7 @@
  *	  This file contains definitions for structures and
  *	  externs for functions used by frontend postgres applications.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/interfaces/libpq/libpq-fe.h
@@ -60,15 +60,14 @@ typedef enum
 									 * postmaster.        */
 	CONNECTION_AUTH_OK,			/* Received authentication; waiting for
 								 * backend startup. */
-	CONNECTION_SETENV,			/* Negotiating environment. */
+	CONNECTION_SETENV,			/* This state is no longer used. */
 	CONNECTION_SSL_STARTUP,		/* Negotiating SSL. */
 	CONNECTION_NEEDED,			/* Internal state: connect() needed */
-	CONNECTION_CHECK_WRITABLE,	/* Check if we could make a writable
-								 * connection. */
-	CONNECTION_CONSUME,			/* Wait for any pending message and consume
-								 * them. */
+	CONNECTION_CHECK_WRITABLE,	/* Checking if session is read-write. */
+	CONNECTION_CONSUME,			/* Consuming any extra messages. */
 	CONNECTION_GSS_STARTUP,		/* Negotiating GSSAPI. */
-	CONNECTION_CHECK_TARGET		/* Check if we have a proper target connection */
+	CONNECTION_CHECK_TARGET,	/* Checking target server properties. */
+	CONNECTION_CHECK_STANDBY	/* Checking if server is in standby mode. */
 } ConnStatusType;
 
 typedef enum
@@ -619,7 +618,7 @@ extern int	pg_valid_server_encoding_id(int encoding);
 
 /* === in fe-secure-openssl.c === */
 
-/* Support for overriding sslpassword handling with a callback. */
+/* Support for overriding sslpassword handling with a callback */
 typedef int (*PQsslKeyPassHook_OpenSSL_type) (char *buf, int size, PGconn *conn);
 extern PQsslKeyPassHook_OpenSSL_type PQgetSSLKeyPassHook_OpenSSL(void);
 extern void PQsetSSLKeyPassHook_OpenSSL(PQsslKeyPassHook_OpenSSL_type hook);

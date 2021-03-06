@@ -12,7 +12,7 @@
  * case, but most of the heavy lifting for that is done elsewhere,
  * notably in prepjointree.c and allpaths.c.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -620,7 +620,7 @@ generate_union_paths(SetOperationStmt *op, PlannerInfo *root,
 	 * Append the child results together.
 	 */
 	path = (Path *) create_append_path(root, result_rel, pathlist, NIL,
-									   NIL, NULL, 0, false, NIL, -1);
+									   NIL, NULL, 0, false, -1);
 
 	/*
 	 * For UNION ALL, we just need the Append path.  For UNION, need to add
@@ -677,7 +677,7 @@ generate_union_paths(SetOperationStmt *op, PlannerInfo *root,
 			create_append_path(root, result_rel, NIL, partial_pathlist,
 							   NIL, NULL,
 							   parallel_workers, enable_parallel_append,
-							   NIL, -1);
+							   -1);
 		ppath = (Path *)
 			create_gather_path(root, result_rel, ppath,
 							   result_rel->reltarget, NULL, NULL);
@@ -787,7 +787,7 @@ generate_nonunion_paths(SetOperationStmt *op, PlannerInfo *root,
 	 * Append the child results together.
 	 */
 	path = (Path *) create_append_path(root, result_rel, pathlist, NIL,
-									   NIL, NULL, 0, false, NIL, -1);
+									   NIL, NULL, 0, false, -1);
 
 	/* Identify the grouping semantics */
 	groupList = generate_setop_grouplist(op, tlist);
@@ -944,11 +944,10 @@ make_union_unique(SetOperationStmt *op, Path *path, List *tlist,
 
 	/*
 	 * XXX for the moment, take the number of distinct groups as equal to the
-	 * total input size, ie, the worst case.  This is too conservative, but we
-	 * don't want to risk having the hashtable overrun memory; also, it's not
-	 * clear how to get a decent estimate of the true size.  One should note
-	 * as well the propensity of novices to write UNION rather than UNION ALL
-	 * even when they don't expect any duplicates...
+	 * total input size, ie, the worst case.  This is too conservative, but
+	 * it's not clear how to get a decent estimate of the true size.  One
+	 * should note as well the propensity of novices to write UNION rather
+	 * than UNION ALL even when they don't expect any duplicates...
 	 */
 	dNumGroups = path->rows;
 
@@ -1019,6 +1018,7 @@ choose_hashed_setop(PlannerInfo *root, List *groupClauses,
 					const char *construct)
 {
 	int			numGroupCols = list_length(groupClauses);
+	int			hash_mem = get_hash_mem();
 	bool		can_sort;
 	bool		can_hash;
 	Size		hashentrysize;
@@ -1050,15 +1050,17 @@ choose_hashed_setop(PlannerInfo *root, List *groupClauses,
 
 	/*
 	 * Don't do it if it doesn't look like the hashtable will fit into
-	 * work_mem.
+	 * hash_mem.
 	 */
 	hashentrysize = MAXALIGN(input_path->pathtarget->width) + MAXALIGN(SizeofMinimalTupleHeader);
 
-	if (hashentrysize * dNumGroups > work_mem * 1024L)
+	if (hashentrysize * dNumGroups > hash_mem * 1024L)
 		return false;
 
 	/*
-	 * See if the estimated cost is no more than doing it the other way.
+	 * See if the estimated cost is no more than doing it the other way.  We
+	 * deliberately give the hash case more memory when hash_mem exceeds
+	 * standard work mem (i.e. when hash_mem_multiplier exceeds 1.0).
 	 *
 	 * We need to consider input_plan + hashagg versus input_plan + sort +
 	 * group.  Note that the actual result plan might involve a SetOp or
@@ -1198,13 +1200,9 @@ generate_setop_tlist(List *colTypes, List *colCollations,
 		 * will reach the executor without any further processing.
 		 */
 		if (exprCollation(expr) != colColl)
-		{
-			expr = (Node *) makeRelabelType((Expr *) expr,
-											exprType(expr),
-											exprTypmod(expr),
-											colColl,
-											COERCE_IMPLICIT_CAST);
-		}
+			expr = applyRelabelType(expr,
+									exprType(expr), exprTypmod(expr), colColl,
+									COERCE_IMPLICIT_CAST, -1, false);
 
 		tle = makeTargetEntry((Expr *) expr,
 							  (AttrNumber) resno++,

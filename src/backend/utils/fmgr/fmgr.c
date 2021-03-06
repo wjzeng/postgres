@@ -3,7 +3,7 @@
  * fmgr.c
  *	  The Postgres function manager.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -565,7 +565,6 @@ record_C_func(HeapTuple procedureTuple,
 	{
 		HASHCTL		hash_ctl;
 
-		MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(CFuncHashTabEntry);
 		CFuncHash = hash_create("CFuncHash",
@@ -2000,7 +1999,7 @@ get_fn_opclass_options(FmgrInfo *flinfo)
 
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-			 errmsg("opclass options info is absent in function call context")));
+			 errmsg("operator class options info is absent in function call context")));
 
 	return NULL;
 }

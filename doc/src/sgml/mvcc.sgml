@@ -269,7 +269,7 @@
    <para>
     In <productname>PostgreSQL</productname>, you can request any of
     the four standard transaction isolation levels, but internally only
-    three distinct isolation levels are implemented, i.e. PostgreSQL's
+    three distinct isolation levels are implemented, i.e., PostgreSQL's
     Read Uncommitted mode behaves like Read Committed.  This is because
     it is the only sensible way to map the standard isolation levels to
     PostgreSQL's multiversion concurrency control architecture.
@@ -950,10 +950,9 @@ ERROR:  could not serialize access due to read/write dependencies among transact
          Acquired by <command>VACUUM</command> (without <option>FULL</option>),
          <command>ANALYZE</command>, <command>CREATE INDEX CONCURRENTLY</command>,
          <command>REINDEX CONCURRENTLY</command>,
-         <command>CREATE STATISTICS</command>, and certain <command>ALTER
-         INDEX</command> and <command>ALTER TABLE</command> variants (for full
-         details see <xref linkend="sql-alterindex"/> and <xref
-         linkend="sql-altertable"/>).
+         <command>CREATE STATISTICS</command>, and certain <link linkend="sql-alterindex"><command>ALTER
+         INDEX</command></link> and <link linkend="sql-altertable"><command>ALTER TABLE</command></link> variants (for full
+         details see the documentation of these commands).
         </para>
        </listitem>
       </varlistentry>
@@ -995,7 +994,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
 
         <para>
          Acquired by <command>CREATE TRIGGER</command> and some forms of
-         <command>ALTER TABLE</command> (see <xref linkend="sql-altertable"/>).
+         <link linkend="sql-altertable"><command>ALTER TABLE</command></link>.
         </para>
        </listitem>
       </varlistentry>
@@ -1246,7 +1245,7 @@ ERROR:  could not serialize access due to read/write dependencies among transact
         <para>
          The <literal>FOR UPDATE</literal> lock mode
          is also acquired by any <command>DELETE</command> on a row, and also by an
-         <command>UPDATE</command> that modifies the values on certain columns.  Currently,
+         <command>UPDATE</command> that modifies the values of certain columns.  Currently,
          the set of columns considered for the <command>UPDATE</command> case are those that
          have a unique index on them that can be used in a foreign key (so partial
          indexes and expressional indexes are not considered), but this may change
@@ -1642,7 +1641,7 @@ SELECT pg_advisory_lock(q.id) FROM
       This level of integrity protection using Serializable transactions
       does not yet extend to hot standby mode (<xref linkend="hot-standby"/>).
       Because of that, those using hot standby may want to use Repeatable
-      Read and explicit locking on the master.
+      Read and explicit locking on the primary.
      </para>
     </warning>
    </sect2>
@@ -1723,8 +1722,8 @@ SELECT pg_advisory_lock(q.id) FROM
    <title>Caveats</title>
 
    <para>
-    Some DDL commands, currently only <xref linkend="sql-truncate"/> and the
-    table-rewriting forms of <xref linkend="sql-altertable"/>, are not
+    Some DDL commands, currently only <link linkend="sql-truncate"><command>TRUNCATE</command></link> and the
+    table-rewriting forms of <link linkend="sql-altertable"><command>ALTER TABLE</command></link>, are not
     MVCC-safe.  This means that after the truncation or rewrite commits, the
     table will appear empty to concurrent transactions, if they are using a
     snapshot taken before the DDL command committed.  This will only be an
@@ -1744,10 +1743,10 @@ SELECT pg_advisory_lock(q.id) FROM
     <xref linkend="hot-standby"/>).  The strictest isolation level currently
     supported in hot standby mode is Repeatable Read.  While performing all
     permanent database writes within Serializable transactions on the
-    master will ensure that all standbys will eventually reach a consistent
+    primary will ensure that all standbys will eventually reach a consistent
     state, a Repeatable Read transaction run on the standby can sometimes
     see a transient state that is inconsistent with any serial execution
-    of the transactions on the master.
+    of the transactions on the primary.
    </para>
 
    <para>

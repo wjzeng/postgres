@@ -3,7 +3,7 @@
  * fd.c
  *	  Virtual file descriptor code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -89,8 +89,10 @@
 #include "access/xlog.h"
 #include "catalog/pg_tablespace.h"
 #include "common/file_perm.h"
+#include "common/file_utils.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "port/pg_iovec.h"
 #include "portability/mem.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -264,8 +266,10 @@ static int	numExternalFDs = 0;
 static long tempFileCounter = 0;
 
 /*
- * Array of OIDs of temp tablespaces.  When numTempTableSpaces is -1,
- * this has not been set in the current transaction.
+ * Array of OIDs of temp tablespaces.  (Some entries may be InvalidOid,
+ * indicating that the current database's default tablespace should be used.)
+ * When numTempTableSpaces is -1, this has not been set in the current
+ * transaction.
  */
 static Oid *tempTableSpaces = NULL;
 static int	numTempTableSpaces = -1;
@@ -619,6 +623,33 @@ pg_flush_data(int fd, off_t offset, off_t nbytes)
 #endif
 }
 
+/*
+ * Truncate a file to a given length by name.
+ */
+int
+pg_truncate(const char *path, off_t length)
+{
+#ifdef WIN32
+	int			save_errno;
+	int			ret;
+	int			fd;
+
+	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
+	if (fd >= 0)
+	{
+		ret = ftruncate(fd, 0);
+		save_errno = errno;
+		CloseTransientFile(fd);
+		errno = save_errno;
+	}
+	else
+		ret = -1;
+
+	return ret;
+#else
+	return truncate(path, length);
+#endif
+}
 
 /*
  * fsync_fname -- fsync a file or directory, handling errors properly
@@ -1483,8 +1514,6 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	DO_DB(elog(LOG, "PathNameOpenFile: success %d",
 			   vfdP->fd));
 
-	Insert(file);
-
 	vfdP->fileName = fnamecopy;
 	/* Saved flags are adjusted to be OK for re-opening file */
 	vfdP->fileFlags = fileFlags & ~(O_CREAT | O_TRUNC | O_EXCL);
@@ -1492,6 +1521,8 @@ PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode)
 	vfdP->fileSize = 0;
 	vfdP->fdstate = 0x0;
 	vfdP->resowner = NULL;
+
+	Insert(file);
 
 	return file;
 }
@@ -1741,18 +1772,17 @@ PathNameCreateTemporaryFile(const char *path, bool error_on_failure)
 /*
  * Open a file that was created with PathNameCreateTemporaryFile, possibly in
  * another backend.  Files opened this way don't count against the
- * temp_file_limit of the caller, are read-only and are automatically closed
- * at the end of the transaction but are not deleted on close.
+ * temp_file_limit of the caller, are automatically closed at the end of the
+ * transaction but are not deleted on close.
  */
 File
-PathNameOpenTemporaryFile(const char *path)
+PathNameOpenTemporaryFile(const char *path, int mode)
 {
 	File		file;
 
 	ResourceOwnerEnlargeFiles(CurrentResourceOwner);
 
-	/* We open the file read-only. */
-	file = PathNameOpenFile(path, O_RDONLY | PG_BINARY);
+	file = PathNameOpenFile(path, mode | PG_BINARY);
 
 	/* If no such file, then we don't raise an error. */
 	if (file <= 0 && errno != ENOENT)
@@ -1885,7 +1915,9 @@ FileClose(File file)
 
 		/* in any case do the unlink */
 		if (unlink(vfdP->fileName))
-			elog(LOG, "could not unlink file \"%s\": %m", vfdP->fileName);
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not delete file \"%s\": %m", vfdP->fileName)));
 
 		/* and last report the stat results */
 		if (stat_errno == 0)
@@ -1893,7 +1925,9 @@ FileClose(File file)
 		else
 		{
 			errno = stat_errno;
-			elog(LOG, "could not stat file \"%s\": %m", vfdP->fileName);
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("could not stat file \"%s\": %m", vfdP->fileName)));
 		}
 	}
 
@@ -2779,6 +2813,9 @@ closeAllVfds(void)
  * unless this function is called again before then.  It is caller's
  * responsibility that the passed-in array has adequate lifespan (typically
  * it'd be allocated in TopTransactionContext).
+ *
+ * Some entries of the array may be InvalidOid, indicating that the current
+ * database's default tablespace should be used.
  */
 void
 SetTempTablespaces(Oid *tableSpaces, int numSpaces)
@@ -2818,7 +2855,10 @@ TempTablespacesAreSet(void)
  * GetTempTablespaces
  *
  * Populate an array with the OIDs of the tablespaces that should be used for
- * temporary files.  Return the number that were copied into the output array.
+ * temporary files.  (Some entries may be InvalidOid, indicating that the
+ * current database's default tablespace should be used.)  At most numSpaces
+ * entries will be filled.
+ * Returns the number of OIDs that were copied into the output array.
  */
 int
 GetTempTablespaces(Oid *tableSpaces, int numSpaces)
@@ -3333,8 +3373,6 @@ walkdir(const char *path,
 	while ((de = ReadDirExtended(dir, path, elevel)) != NULL)
 	{
 		char		subpath[MAXPGPATH * 2];
-		struct stat fst;
-		int			sret;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -3344,23 +3382,23 @@ walkdir(const char *path,
 
 		snprintf(subpath, sizeof(subpath), "%s/%s", path, de->d_name);
 
-		if (process_symlinks)
-			sret = stat(subpath, &fst);
-		else
-			sret = lstat(subpath, &fst);
-
-		if (sret < 0)
+		switch (get_dirent_type(subpath, de, process_symlinks, elevel))
 		{
-			ereport(elevel,
-					(errcode_for_file_access(),
-					 errmsg("could not stat file \"%s\": %m", subpath)));
-			continue;
-		}
+			case PGFILETYPE_REG:
+				(*action) (subpath, false, elevel);
+				break;
+			case PGFILETYPE_DIR:
+				walkdir(subpath, action, false, elevel);
+				break;
+			default:
 
-		if (S_ISREG(fst.st_mode))
-			(*action) (subpath, false, elevel);
-		else if (S_ISDIR(fst.st_mode))
-			walkdir(subpath, action, false, elevel);
+				/*
+				 * Errors are already reported directly by get_dirent_type(),
+				 * and any remaining symlinks and unknown file types are
+				 * ignored.
+				 */
+				break;
+		}
 	}
 
 	FreeDir(dir);				/* we ignore any error here */
@@ -3597,4 +3635,68 @@ int
 data_sync_elevel(int elevel)
 {
 	return data_sync_retry ? elevel : PANIC;
+}
+
+/*
+ * A convenience wrapper for pg_pwritev() that retries on partial write.  If an
+ * error is returned, it is unspecified how much has been written.
+ */
+ssize_t
+pg_pwritev_with_retry(int fd, const struct iovec *iov, int iovcnt, off_t offset)
+{
+	struct iovec iov_copy[PG_IOV_MAX];
+	ssize_t		sum = 0;
+	ssize_t		part;
+
+	/* We'd better have space to make a copy, in case we need to retry. */
+	if (iovcnt > PG_IOV_MAX)
+	{
+		errno = EINVAL;
+		return -1;
+	}
+
+	for (;;)
+	{
+		/* Write as much as we can. */
+		part = pg_pwritev(fd, iov, iovcnt, offset);
+		if (part < 0)
+			return -1;
+
+#ifdef SIMULATE_SHORT_WRITE
+		part = Min(part, 4096);
+#endif
+
+		/* Count our progress. */
+		sum += part;
+		offset += part;
+
+		/* Step over iovecs that are done. */
+		while (iovcnt > 0 && iov->iov_len <= part)
+		{
+			part -= iov->iov_len;
+			++iov;
+			--iovcnt;
+		}
+
+		/* Are they all done? */
+		if (iovcnt == 0)
+		{
+			/* We don't expect the kernel to write more than requested. */
+			Assert(part == 0);
+			break;
+		}
+
+		/*
+		 * Move whatever's left to the front of our mutable copy and adjust
+		 * the leading iovec.
+		 */
+		Assert(iovcnt > 0);
+		memmove(iov_copy, iov, sizeof(*iov) * iovcnt);
+		Assert(iov->iov_len > part);
+		iov_copy[0].iov_base = (char *) iov_copy[0].iov_base + part;
+		iov_copy[0].iov_len -= part;
+		iov = iov_copy;
+	}
+
+	return sum;
 }
