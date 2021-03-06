@@ -27,8 +27,6 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
-static bool toastrel_valueid_exists(Relation toastrel, Oid valueid);
-static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
 
 /* ----------
  * toast_compress_datum -
@@ -439,7 +437,7 @@ toast_delete_datum(Relation rel, Datum value, bool is_speculative)
  *	toast rows with that ID; see notes for GetNewOidWithIndex().
  * ----------
  */
-static bool
+bool
 toastrel_valueid_exists(Relation toastrel, Oid valueid)
 {
 	bool		result = false;
@@ -487,7 +485,7 @@ toastrel_valueid_exists(Relation toastrel, Oid valueid)
  *	As above, but work from toast rel's OID not an open relation
  * ----------
  */
-static bool
+bool
 toastid_valueid_exists(Oid toastrelid, Oid valueid)
 {
 	bool		result;

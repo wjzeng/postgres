@@ -32,6 +32,7 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undoworker.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "catalog/namespace.h"
@@ -124,6 +125,7 @@ extern int	CommitDelay;
 extern int	CommitSiblings;
 extern char *default_tablespace;
 extern char *temp_tablespaces;
+extern char *undo_tablespaces;
 extern bool ignore_checksum_failure;
 extern bool ignore_invalid_pages;
 extern bool synchronize_seqscans;
@@ -2039,6 +2041,16 @@ static struct config_bool ConfigureNamesBool[] =
 		false,
 		NULL, NULL, NULL
 	},
+	{
+		{"disable_undo_launcher", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Decides whether to launch an undo worker."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&disable_undo_launcher,
+		false,
+		NULL, NULL, NULL
+	},
 
 	/* End-of-list marker */
 	{
@@ -2830,7 +2842,7 @@ static struct config_int ConfigureNamesInt[] =
 			gettext_noop("Sets the minimum execution time above which "
 						 "a sample of statements will be logged."
 						 " Sampling is determined by log_statement_sample_rate."),
-			gettext_noop("Zero log a sample of all queries. -1 turns this feature off."),
+			gettext_noop("Zero logs a sample of all queries. -1 turns this feature off."),
 			GUC_UNIT_MS
 		},
 		&log_min_duration_sample,
@@ -3100,6 +3112,17 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"rollback_overflow_size", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Rollbacks greater than this size are done lazily"),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&rollback_overflow_size,
+		64, 0, MAX_KILOBYTES,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"wal_segment_size", PGC_INTERNAL, PRESET_OPTIONS,
 			gettext_noop("Shows the size of write ahead log segments."),
 			NULL,
@@ -3133,7 +3156,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 	{
 		{"autovacuum_vacuum_insert_threshold", PGC_SIGHUP, AUTOVACUUM,
-			gettext_noop("Minimum number of tuple inserts prior to vacuum, or -1 to disable insert vacuums"),
+			gettext_noop("Minimum number of tuple inserts prior to vacuum, or -1 to disable insert vacuums."),
 			NULL
 		},
 		&autovacuum_vac_ins_thresh,
@@ -3682,7 +3705,7 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"restore_command", PGC_POSTMASTER, WAL_ARCHIVE_RECOVERY,
-			gettext_noop("Sets the shell command that will retrieve an archived WAL file."),
+			gettext_noop("Sets the shell command that will be called to retrieve an archived WAL file."),
 			NULL
 		},
 		&recoveryRestoreCommand,
@@ -3871,6 +3894,17 @@ static struct config_string ConfigureNamesString[] =
 		&temp_tablespaces,
 		"",
 		check_temp_tablespaces, assign_temp_tablespaces, NULL
+	},
+
+	{
+		{"undo_tablespaces", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the tablespace(s) to use for undo logs."),
+			NULL,
+			GUC_LIST_INPUT | GUC_LIST_QUOTE
+		},
+		&undo_tablespaces,
+		"",
+		check_undo_tablespaces, assign_undo_tablespaces, NULL
 	},
 
 	{

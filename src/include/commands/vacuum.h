@@ -14,6 +14,7 @@
 #ifndef VACUUM_H
 #define VACUUM_H
 
+#include "access/amapi.h"
 #include "access/htup.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_statistic.h"
@@ -22,6 +23,15 @@
 #include "storage/buf.h"
 #include "storage/lock.h"
 #include "utils/relcache.h"
+
+/*
+ * When a table has no indexes, vacuum the FSM after every 8GB, approximately
+ * (it won't be exact because we only vacuum FSM after processing a heap/zheap
+ * page that has some removable tuples).  When there are indexes, this is
+ * ignored, and we vacuum FSM after each index/heap cleaning pass.
+ */
+#define VACUUM_FSM_EVERY_PAGES \
+	((BlockNumber) (((uint64) 8 * 1024 * 1024 * 1024) / BLCKSZ))
 
 /*
  * Flags for amparallelvacuumoptions to control the participation of bulkdelete
@@ -230,6 +240,77 @@ typedef struct VacuumParams
 	 */
 	int			nworkers;
 } VacuumParams;
+
+/* Phases of vacuum during which we report error context. */
+typedef enum
+{
+	VACUUM_ERRCB_PHASE_UNKNOWN,
+	VACUUM_ERRCB_PHASE_SCAN_HEAP,
+	VACUUM_ERRCB_PHASE_VACUUM_INDEX,
+	VACUUM_ERRCB_PHASE_VACUUM_HEAP,
+	VACUUM_ERRCB_PHASE_INDEX_CLEANUP,
+	VACUUM_ERRCB_PHASE_TRUNCATE
+} VacErrPhase;
+
+/*
+ * LVDeadTuples stores the dead tuple TIDs collected during the heap scan.
+ * This is allocated in the DSM segment in parallel mode and in local memory
+ * in non-parallel mode.
+ */
+typedef struct LVDeadTuples
+{
+	int			max_tuples;		/* # slots allocated in array */
+	int			num_tuples;		/* current # of entries */
+	/* List of TIDs of tuples we intend to delete */
+	/* NB: this list is ordered by TID address */
+	ItemPointerData itemptrs[FLEXIBLE_ARRAY_MEMBER];	/* array of
+														 * ItemPointerData */
+} LVDeadTuples;
+
+/* The dead tuple space consists of LVDeadTuples and dead tuple TIDs */
+#define SizeOfDeadTuples(cnt) \
+	add_size(offsetof(LVDeadTuples, itemptrs), \
+			 mul_size(sizeof(ItemPointerData), cnt))
+#define MAXDEADTUPLES(max_size) \
+		(((max_size) - offsetof(LVDeadTuples, itemptrs)) / sizeof(ItemPointerData))
+
+typedef struct LVRelStats
+{
+	char	   *relnamespace;
+	char	   *relname;
+	/* useindex = true means two-pass strategy; false means one-pass */
+	bool		useindex;
+	/* Overall statistics about rel */
+	BlockNumber old_rel_pages;	/* previous value of pg_class.relpages */
+	BlockNumber rel_pages;		/* total number of pages */
+	BlockNumber scanned_pages;	/* number of pages we examined */
+	BlockNumber pinskipped_pages;	/* # of pages we skipped due to a pin */
+	BlockNumber frozenskipped_pages;	/* # of frozen pages we skipped */
+	BlockNumber tupcount_pages; /* pages whose tuples we counted */
+	double		old_live_tuples;	/* previous value of pg_class.reltuples */
+	double		new_rel_tuples; /* new estimated total # of tuples */
+	double		new_live_tuples;	/* new estimated total # of live tuples */
+	double		new_dead_tuples;	/* new estimated total # of dead tuples */
+	BlockNumber pages_removed;
+	double		tuples_deleted;
+	BlockNumber nonempty_pages; /* actually, last nonempty page + 1 */
+	LVDeadTuples *dead_tuples;
+	int			num_index_scans;
+	TransactionId latestRemovedXid;
+	bool		lock_waiter_detected;
+
+	/* Used for error callback */
+	char	   *indname;
+	BlockNumber blkno;			/* used only for heap operations */
+	VacErrPhase phase;
+} LVRelStats;
+
+/* Struct for saving and restoring vacuum error information. */
+typedef struct LVSavedErrInfo
+{
+	BlockNumber blkno;
+	VacErrPhase phase;
+} LVSavedErrInfo;
 
 /* GUC parameters */
 extern PGDLLIMPORT int default_statistics_target;	/* PGDLLIMPORT for PostGIS */

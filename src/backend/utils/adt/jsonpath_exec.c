@@ -35,7 +35,7 @@
  * executeItemOptUnwrapTarget() function have 'unwrap' argument, which indicates
  * whether unwrapping of array is needed.  When unwrap == true, each of array
  * members is passed to executeItemOptUnwrapTarget() again but with unwrap == false
- * in order to evade subsequent array unwrapping.
+ * in order to avoid subsequent array unwrapping.
  *
  * All boolean expressions (predicates) are evaluated by executeBoolItem()
  * function, which returns tri-state JsonPathBool.  When error is occurred
@@ -1837,16 +1837,22 @@ executeDateTimeMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
 		/*
 		 * According to SQL/JSON standard enumerate ISO formats for: date,
 		 * timetz, time, timestamptz, timestamp.
+		 *
+		 * We also support ISO 8601 for timestamps, because to_json[b]()
+		 * functions use this format.
 		 */
 		static const char *fmt_str[] =
 		{
 			"yyyy-mm-dd",
-			"HH24:MI:SS TZH:TZM",
-			"HH24:MI:SS TZH",
+			"HH24:MI:SSTZH:TZM",
+			"HH24:MI:SSTZH",
 			"HH24:MI:SS",
-			"yyyy-mm-dd HH24:MI:SS TZH:TZM",
-			"yyyy-mm-dd HH24:MI:SS TZH",
-			"yyyy-mm-dd HH24:MI:SS"
+			"yyyy-mm-dd HH24:MI:SSTZH:TZM",
+			"yyyy-mm-dd HH24:MI:SSTZH",
+			"yyyy-mm-dd HH24:MI:SS",
+			"yyyy-mm-dd\"T\"HH24:MI:SSTZH:TZM",
+			"yyyy-mm-dd\"T\"HH24:MI:SSTZH",
+			"yyyy-mm-dd\"T\"HH24:MI:SS"
 		};
 
 		/* cache for format texts */
@@ -2587,9 +2593,9 @@ checkTimezoneIsUsedForCast(bool useTz, const char *type1, const char *type2)
 	if (!useTz)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot convert value from %s to %s without timezone usage",
+				 errmsg("cannot convert value from %s to %s without time zone usage",
 						type1, type2),
-				 errhint("Use *_tz() function for timezone support.")));
+				 errhint("Use *_tz() function for time zone support.")));
 }
 
 /* Convert time datum to timetz datum */

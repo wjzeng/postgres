@@ -16,6 +16,7 @@ OBJS = \
 	table.o \
 	tableam.o \
 	tableamapi.o \
-	toast_helper.o
+	toast_helper.o \
+	vacuumblk.o
 
 include $(top_srcdir)/src/backend/common.mk

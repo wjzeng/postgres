@@ -14,6 +14,8 @@
 
 #include "access/parallel.h"
 #include "libpq/pqsignal.h"
+#include "access/discardworker.h"
+#include "access/undoworker.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
@@ -128,6 +130,15 @@ static const struct
 	},
 	{
 		"ApplyWorkerMain", ApplyWorkerMain
+	},
+	{
+		"UndoLauncherMain", UndoLauncherMain
+	},
+	{
+		"UndoWorkerMain", UndoWorkerMain
+	},
+	{
+		"DiscardWorkerMain", DiscardWorkerMain
 	}
 };
 
@@ -743,7 +754,7 @@ StartBackgroundWorker(void)
 	/*
 	 * If an exception is encountered, processing resumes here.
 	 *
-	 * See notes in postgres.c about the design of this coding.
+	 * We just need to clean up, report the error, and go away.
 	 */
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
 	{
@@ -753,7 +764,14 @@ StartBackgroundWorker(void)
 		/* Prevent interrupts while cleaning up */
 		HOLD_INTERRUPTS();
 
-		/* Report the error to the server log */
+		/*
+		 * sigsetjmp will have blocked all signals, but we may need to accept
+		 * signals while communicating with our parallel leader.  Once we've
+		 * done HOLD_INTERRUPTS() it should be safe to unblock signals.
+		 */
+		BackgroundWorkerUnblockSignals();
+
+		/* Report the error to the parallel leader and the server log */
 		EmitErrorReport();
 
 		/*

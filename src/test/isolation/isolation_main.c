@@ -28,7 +28,8 @@ static PID_TYPE
 isolation_start_test(const char *testname,
 					 _stringlist **resultfiles,
 					 _stringlist **expectfiles,
-					 _stringlist **tags)
+					 _stringlist **tags,
+					 const bool *zheap)
 {
 	PID_TYPE	pid;
 	char		infile[MAXPGPATH];

@@ -17,6 +17,7 @@
 
 #include "access/nbtree.h"
 #include "access/nbtxlog.h"
+#include "access/subtrans.h"
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xloginsert.h"
@@ -33,7 +34,8 @@ static BTStack _bt_search_insert(Relation rel, BTInsertState insertstate);
 static TransactionId _bt_check_unique(Relation rel, BTInsertState insertstate,
 									  Relation heapRel,
 									  IndexUniqueCheck checkUnique, bool *is_unique,
-									  uint32 *speculativeToken);
+									  uint32 *speculativeToken,
+									  SubTransactionId *subxid);
 static OffsetNumber _bt_findinsertloc(Relation rel,
 									  BTInsertState insertstate,
 									  bool checkingunique,
@@ -185,10 +187,10 @@ search:
 	{
 		TransactionId xwait;
 		uint32		speculativeToken;
+		SubTransactionId subxid = InvalidSubTransactionId;
 
 		xwait = _bt_check_unique(rel, &insertstate, heapRel, checkUnique,
-								 &is_unique, &speculativeToken);
-
+								 &is_unique, &speculativeToken, &subxid);
 		if (unlikely(TransactionIdIsValid(xwait)))
 		{
 			/* Have to wait for the other guy ... */
@@ -201,9 +203,14 @@ search:
 			 * wait for the transaction to finish as usual.
 			 */
 			if (speculativeToken)
-				SpeculativeInsertionWait(xwait, speculativeToken);
+				SpeculativeInsertionWait(SubTransGetTopmostTransaction(xwait),
+										 speculativeToken);
+			else if (subxid != InvalidSubTransactionId)
+				SubXactLockTableWait(xwait, subxid, rel, &itup->t_tid,
+									 XLTW_InsertIndex);
 			else
-				XactLockTableWait(xwait, rel, &itup->t_tid, XLTW_InsertIndex);
+				XactLockTableWait(xwait, rel, &itup->t_tid,
+								  XLTW_InsertIndex);
 
 			/* start over... */
 			if (stack)
@@ -386,7 +393,7 @@ _bt_search_insert(Relation rel, BTInsertState insertstate)
 static TransactionId
 _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 IndexUniqueCheck checkUnique, bool *is_unique,
-				 uint32 *speculativeToken)
+				 uint32 *speculativeToken, SubTransactionId *subxid)
 {
 	IndexTuple	itup = insertstate->itup;
 	IndexTuple	curitup = NULL;
@@ -575,6 +582,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 							_bt_relbuf(rel, nbuf);
 						/* Tell _bt_doinsert to wait... */
 						*speculativeToken = SnapshotDirty.speculativeToken;
+						*subxid = SnapshotDirty.subxid;
 						/* Caller releases lock on buf immediately */
 						insertstate->bounds_valid = false;
 						return xwait;

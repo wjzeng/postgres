@@ -28,7 +28,8 @@ static PID_TYPE
 psql_start_test(const char *testname,
 				_stringlist **resultfiles,
 				_stringlist **expectfiles,
-				_stringlist **tags)
+				_stringlist **tags,
+				const bool *zheap)
 {
 	PID_TYPE	pid;
 	char		infile[MAXPGPATH];
@@ -44,20 +45,40 @@ psql_start_test(const char *testname,
 	 * not found.  It also allows local test overrides when running pg_regress
 	 * outside of the source tree.
 	 */
-	snprintf(infile, sizeof(infile), "%s/sql/%s.sql",
-			 outputdir, testname);
-	if (!file_exists(infile))
+	if (*zheap == true)
+	{
+		snprintf(infile, sizeof(infile), "%s/sql_zheap/%s.sql",
+				 outputdir, testname);
+		if (!file_exists(infile))
+			snprintf(infile, sizeof(infile), "%s/sql_zheap/%s.sql",
+					 inputdir, testname);
+
+		snprintf(outfile, sizeof(outfile), "%s/results/%s.out",
+				 outputdir, testname);
+
+		snprintf(expectfile, sizeof(expectfile), "%s/expected_zheap/%s.out",
+				 outputdir, testname);
+		if (!file_exists(expectfile))
+			snprintf(expectfile, sizeof(expectfile), "%s/expected_zheap/%s.out",
+					 inputdir, testname);
+	}
+	else
+	{
 		snprintf(infile, sizeof(infile), "%s/sql/%s.sql",
-				 inputdir, testname);
+				 outputdir, testname);
+		if (!file_exists(infile))
+			snprintf(infile, sizeof(infile), "%s/sql/%s.sql",
+					 inputdir, testname);
 
-	snprintf(outfile, sizeof(outfile), "%s/results/%s.out",
-			 outputdir, testname);
+		snprintf(outfile, sizeof(outfile), "%s/results/%s.out",
+				 outputdir, testname);
 
-	snprintf(expectfile, sizeof(expectfile), "%s/expected/%s.out",
-			 outputdir, testname);
-	if (!file_exists(expectfile))
 		snprintf(expectfile, sizeof(expectfile), "%s/expected/%s.out",
-				 inputdir, testname);
+				 outputdir, testname);
+		if (!file_exists(expectfile))
+			snprintf(expectfile, sizeof(expectfile), "%s/expected/%s.out",
+					 inputdir, testname);
+	}
 
 	add_stringlist_item(resultfiles, outfile);
 	add_stringlist_item(expectfiles, expectfile);

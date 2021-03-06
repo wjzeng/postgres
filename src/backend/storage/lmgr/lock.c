@@ -32,12 +32,14 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "access/multixact.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "miscadmin.h"
+#include "nodes/lockoptions.h"
 #include "pg_trace.h"
 #include "pgstat.h"
 #include "storage/proc.h"
@@ -121,6 +123,31 @@ static const char *const lock_mode_names[] =
 #ifndef LOCK_DEBUG
 static bool Dummy_trace = false;
 #endif
+
+const struct LockExtraInfo
+			tupleLockExtraInfo[MaxLockTupleMode + 1] =
+{
+	{							/* LockTupleKeyShare */
+		AccessShareLock,
+		MultiXactStatusForKeyShare,
+		-1						/* KeyShare does not allow updating tuples */
+	},
+	{							/* LockTupleShare */
+		RowShareLock,
+		MultiXactStatusForShare,
+		-1						/* Share does not allow updating tuples */
+	},
+	{							/* LockTupleNoKeyExclusive */
+		ExclusiveLock,
+		MultiXactStatusForNoKeyUpdate,
+		MultiXactStatusNoKeyUpdate
+	},
+	{							/* LockTupleExclusive */
+		AccessExclusiveLock,
+		MultiXactStatusForUpdate,
+		MultiXactStatusUpdate
+	}
+};
 
 static const LockMethodData default_lockmethod = {
 	AccessExclusiveLock,		/* highest valid lock mode number */
@@ -4584,4 +4611,13 @@ LockWaiterCount(const LOCKTAG *locktag)
 	LWLockRelease(partitionLock);
 
 	return waiters;
+}
+
+/*
+ * Get the heavy-weight lock mode from lock tuple mode.
+ */
+LOCKMODE
+GetHWLockModeFromMode(LockTupleMode mode)
+{
+	return tupleLockExtraInfo[mode].hwlock;
 }

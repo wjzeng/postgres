@@ -23,6 +23,7 @@
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
+#include "access/undodiscard.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -1372,6 +1373,17 @@ RemoveRelations(DropStmt *drop)
 				   drop->removeType == OBJECT_INDEX);
 			flags |= PERFORM_DELETION_CONCURRENTLY;
 		}
+
+		/*
+		 * Concurrent index drop cannot be used with partitioned indexes,
+		 * either.
+		 */
+		if ((flags & PERFORM_DELETION_CONCURRENTLY) != 0 &&
+			get_rel_relkind(relOid) == RELKIND_PARTITIONED_INDEX)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot drop partitioned index \"%s\" concurrently",
+							rel->relname)));
 
 		/* OK, we're ready to delete this one */
 		obj.classId = RelationRelationId;
@@ -4513,9 +4525,12 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 									 lockmode);
 			break;
 		case AT_AddConstraint:	/* ADD CONSTRAINT */
-			cmd = ATParseTransformCmd(wqueue, tab, rel, cmd, false, lockmode,
-									  cur_pass, context);
-			/* Might not have gotten AddConstraint back from parse transform */
+			/* Transform the command only during initial examination */
+			if (cur_pass == AT_PASS_ADD_CONSTR)
+				cmd = ATParseTransformCmd(wqueue, tab, rel, cmd,
+										  false, lockmode,
+										  cur_pass, context);
+			/* Depending on constraint type, might be no more work to do now */
 			if (cmd != NULL)
 				address =
 					ATExecAddConstraint(wqueue, tab, rel,
@@ -4523,9 +4538,12 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 										false, false, lockmode);
 			break;
 		case AT_AddConstraintRecurse:	/* ADD CONSTRAINT with recursion */
-			cmd = ATParseTransformCmd(wqueue, tab, rel, cmd, true, lockmode,
-									  cur_pass, context);
-			/* Might not have gotten AddConstraint back from parse transform */
+			/* Transform the command only during initial examination */
+			if (cur_pass == AT_PASS_ADD_CONSTR)
+				cmd = ATParseTransformCmd(wqueue, tab, rel, cmd,
+										  true, lockmode,
+										  cur_pass, context);
+			/* Depending on constraint type, might be no more work to do now */
 			if (cmd != NULL)
 				address =
 					ATExecAddConstraint(wqueue, tab, rel,
@@ -4787,75 +4805,88 @@ ATParseTransformCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	foreach(lc, atstmt->cmds)
 	{
 		AlterTableCmd *cmd2 = lfirst_node(AlterTableCmd, lc);
+		int			pass;
 
-		if (newcmd == NULL &&
-			(cmd->subtype == cmd2->subtype ||
-			 (cmd->subtype == AT_AddConstraintRecurse &&
-			  cmd2->subtype == AT_AddConstraint)))
+		/*
+		 * This switch need only cover the subcommand types that can be added
+		 * by parse_utilcmd.c; otherwise, we'll use the default strategy of
+		 * executing the subcommand immediately, as a substitute for the
+		 * original subcommand.  (Note, however, that this does cause
+		 * AT_AddConstraint subcommands to be rescheduled into later passes,
+		 * which is important for index and foreign key constraints.)
+		 *
+		 * We assume we needn't do any phase-1 checks for added subcommands.
+		 */
+		switch (cmd2->subtype)
 		{
-			/* Found the transformed version of our subcommand */
-			cmd2->subtype = cmd->subtype;	/* copy recursion flag */
-			newcmd = cmd2;
+			case AT_SetNotNull:
+				/* Need command-specific recursion decision */
+				ATPrepSetNotNull(wqueue, rel, cmd2,
+								 recurse, false,
+								 lockmode, context);
+				pass = AT_PASS_COL_ATTRS;
+				break;
+			case AT_AddIndex:
+				/* This command never recurses */
+				/* No command-specific prep needed */
+				pass = AT_PASS_ADD_INDEX;
+				break;
+			case AT_AddIndexConstraint:
+				/* This command never recurses */
+				/* No command-specific prep needed */
+				pass = AT_PASS_ADD_INDEXCONSTR;
+				break;
+			case AT_AddConstraint:
+				/* Recursion occurs during execution phase */
+				if (recurse)
+					cmd2->subtype = AT_AddConstraintRecurse;
+				switch (castNode(Constraint, cmd2->def)->contype)
+				{
+					case CONSTR_PRIMARY:
+					case CONSTR_UNIQUE:
+					case CONSTR_EXCLUSION:
+						pass = AT_PASS_ADD_INDEXCONSTR;
+						break;
+					default:
+						pass = AT_PASS_ADD_OTHERCONSTR;
+						break;
+				}
+				break;
+			case AT_AlterColumnGenericOptions:
+				/* This command never recurses */
+				/* No command-specific prep needed */
+				pass = AT_PASS_MISC;
+				break;
+			default:
+				pass = cur_pass;
+				break;
+		}
+
+		if (pass < cur_pass)
+		{
+			/* Cannot schedule into a pass we already finished */
+			elog(ERROR, "ALTER TABLE scheduling failure: too late for pass %d",
+				 pass);
+		}
+		else if (pass > cur_pass)
+		{
+			/* OK, queue it up for later */
+			tab->subcmds[pass] = lappend(tab->subcmds[pass], cmd2);
 		}
 		else
 		{
-			int			pass;
-
 			/*
-			 * Schedule added subcommand appropriately.  We assume we needn't
-			 * do any phase-1 checks for it.  This switch only has to cover
-			 * the subcommand types that can be added by parse_utilcmd.c.
+			 * We should see at most one subcommand for the current pass,
+			 * which is the transformed version of the original subcommand.
 			 */
-			switch (cmd2->subtype)
+			if (newcmd == NULL && cmd->subtype == cmd2->subtype)
 			{
-				case AT_SetNotNull:
-					/* Need command-specific recursion decision */
-					ATPrepSetNotNull(wqueue, rel, cmd2,
-									 recurse, false,
-									 lockmode, context);
-					pass = AT_PASS_COL_ATTRS;
-					break;
-				case AT_AddIndex:
-					/* This command never recurses */
-					/* No command-specific prep needed */
-					pass = AT_PASS_ADD_INDEX;
-					break;
-				case AT_AddIndexConstraint:
-					/* This command never recurses */
-					/* No command-specific prep needed */
-					pass = AT_PASS_ADD_INDEXCONSTR;
-					break;
-				case AT_AddConstraint:
-					/* Recursion occurs during execution phase */
-					if (recurse)
-						cmd2->subtype = AT_AddConstraintRecurse;
-					switch (castNode(Constraint, cmd2->def)->contype)
-					{
-						case CONSTR_PRIMARY:
-						case CONSTR_UNIQUE:
-						case CONSTR_EXCLUSION:
-							pass = AT_PASS_ADD_INDEXCONSTR;
-							break;
-						default:
-							pass = AT_PASS_ADD_OTHERCONSTR;
-							break;
-					}
-					break;
-				case AT_AlterColumnGenericOptions:
-					/* This command never recurses */
-					/* No command-specific prep needed */
-					pass = AT_PASS_MISC;
-					break;
-				default:
-					elog(ERROR, "unexpected AlterTableType: %d",
-						 (int) cmd2->subtype);
-					pass = AT_PASS_UNSET;
-					break;
+				/* Found the transformed version of our subcommand */
+				newcmd = cmd2;
 			}
-			/* Must be for a later pass than we're currently doing */
-			if (pass <= cur_pass)
-				elog(ERROR, "ALTER TABLE scheduling failure");
-			tab->subcmds[pass] = lappend(tab->subcmds[pass], cmd2);
+			else
+				elog(ERROR, "ALTER TABLE scheduling failure: bogus item for pass %d",
+					 pass);
 		}
 	}
 
@@ -5311,15 +5342,16 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 		snapshot = RegisterSnapshot(GetLatestSnapshot());
 		scan = table_beginscan(oldrel, snapshot, 0, NULL);
 
-		/*
-		 * Switch to per-tuple memory context and reset it for each tuple
-		 * produced, so we don't leak memory.
-		 */
-		oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
 		while (table_scan_getnextslot(scan, ForwardScanDirection, oldslot))
 		{
 			TupleTableSlot *insertslot;
+
+			/*
+			 * Switch to per-tuple memory context and reset it for each tuple
+			 * produced, so we don't leak memory.
+			 */
+			oldCxt = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 
 			if (tab->rewrite > 0)
 			{
@@ -5464,10 +5496,11 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 
 			ResetExprContext(econtext);
 
+			MemoryContextSwitchTo(oldCxt);
+
 			CHECK_FOR_INTERRUPTS();
 		}
 
-		MemoryContextSwitchTo(oldCxt);
 		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
 
@@ -5653,14 +5686,10 @@ ATSimpleRecursion(List **wqueue, Relation rel,
 				  AlterTableUtilityContext *context)
 {
 	/*
-	 * Propagate to children if desired.  Only plain tables, foreign tables
-	 * and partitioned tables have children, so no need to search for other
-	 * relkinds.
+	 * Propagate to children, if desired and if there are (or might be) any
+	 * children.
 	 */
-	if (recurse &&
-		(rel->rd_rel->relkind == RELKIND_RELATION ||
-		 rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE ||
-		 rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE))
+	if (recurse && rel->rd_rel->relhassubclass)
 	{
 		Oid			relid = RelationGetRelid(rel);
 		ListCell   *child;
@@ -5706,7 +5735,7 @@ ATCheckPartitionsNotInUse(Relation rel, LOCKMODE lockmode)
 
 		inh = find_all_inheritors(RelationGetRelid(rel), lockmode, NULL);
 		/* first element is the parent rel; must ignore it */
-		for_each_cell(cell, inh, list_second_cell(inh))
+		for_each_from(cell, inh, 1)
 		{
 			Relation	childrel;
 
@@ -6667,6 +6696,41 @@ ATPrepSetNotNull(List **wqueue, Relation rel,
 		return;
 
 	/*
+	 * If the target column is already marked NOT NULL, we can skip recursing
+	 * to children, because their columns should already be marked NOT NULL as
+	 * well.  But there's no point in checking here unless the relation has
+	 * some children; else we can just wait till execution to check.  (If it
+	 * does have children, however, this can save taking per-child locks
+	 * unnecessarily.  This greatly improves concurrency in some parallel
+	 * restore scenarios.)
+	 *
+	 * Unfortunately, we can only apply this optimization to partitioned
+	 * tables, because traditional inheritance doesn't enforce that child
+	 * columns be NOT NULL when their parent is.  (That's a bug that should
+	 * get fixed someday.)
+	 */
+	if (rel->rd_rel->relhassubclass &&
+		rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		HeapTuple	tuple;
+		bool		attnotnull;
+
+		tuple = SearchSysCacheAttName(RelationGetRelid(rel), cmd->name);
+
+		/* Might as well throw the error now, if name is bad */
+		if (!HeapTupleIsValid(tuple))
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_COLUMN),
+					 errmsg("column \"%s\" of relation \"%s\" does not exist",
+							cmd->name, RelationGetRelationName(rel))));
+
+		attnotnull = ((Form_pg_attribute) GETSTRUCT(tuple))->attnotnull;
+		ReleaseSysCache(tuple);
+		if (attnotnull)
+			return;
+	}
+
+	/*
 	 * If we have ALTER TABLE ONLY ... SET NOT NULL on a partitioned table,
 	 * apply ALTER TABLE ... CHECK NOT NULL to every child.  Otherwise, use
 	 * normal recursion logic.
@@ -6823,7 +6887,7 @@ NotNullImpliedByRelConstraints(Relation rel, Form_pg_attribute attr)
 	if (ConstraintImpliedByRelConstraint(rel, list_make1(nnulltest), NIL))
 	{
 		ereport(DEBUG1,
-				(errmsg("existing constraints on column \"%s\".\"%s\" are sufficient to prove that it does not contain nulls",
+				(errmsg("existing constraints on column \"%s.%s\" are sufficient to prove that it does not contain nulls",
 						RelationGetRelationName(rel), NameStr(attr->attname))));
 		return true;
 	}
@@ -10392,12 +10456,13 @@ validateForeignKeyConstraint(char *conname,
 	perTupCxt = AllocSetContextCreate(CurrentMemoryContext,
 									  "validateForeignKeyConstraint",
 									  ALLOCSET_SMALL_SIZES);
-	oldcxt = MemoryContextSwitchTo(perTupCxt);
 
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		LOCAL_FCINFO(fcinfo, 0);
 		TriggerData trigdata = {0};
+
+		oldcxt = MemoryContextSwitchTo(perTupCxt);
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -10423,9 +10488,9 @@ validateForeignKeyConstraint(char *conname,
 		RI_FKey_check_ins(fcinfo);
 
 		MemoryContextReset(perTupCxt);
+		MemoryContextSwitchTo(oldcxt);
 	}
 
-	MemoryContextSwitchTo(oldcxt);
 	MemoryContextDelete(perTupCxt);
 	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
@@ -15357,6 +15422,10 @@ PreCommit_on_commit_actions(void)
 			case ONCOMMIT_DROP:
 				oids_to_drop = lappend_oid(oids_to_drop, oc->relid);
 				break;
+		case ONCOMMIT_TEMP_DISCARD:
+			/* Discard temp table undo logs for temp tables. */
+			TempUndoDiscard(oc->relid);
+			break;
 		}
 	}
 

@@ -580,10 +580,18 @@ convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const ch
 
 /* Create the .sql and .out files from the .source files, if any */
 static void
-convert_sourcefiles(void)
+convert_sourcefiles(const bool zheap)
 {
-	convert_sourcefiles_in("input", outputdir, "sql", "sql");
-	convert_sourcefiles_in("output", outputdir, "expected", "out");
+	if (zheap)
+	{
+		convert_sourcefiles_in("input", outputdir, "sql_zheap", "sql");
+		convert_sourcefiles_in("output", outputdir, "expected_zheap", "out");
+	}
+	else
+	{
+		convert_sourcefiles_in("input", outputdir, "sql", "sql");
+		convert_sourcefiles_in("output", outputdir, "expected", "out");
+	}
 }
 
 /*
@@ -723,7 +731,7 @@ doputenv(const char *var, const char *val)
  * Prepare environment variables for running regression tests
  */
 static void
-initialize_environment(void)
+initialize_environment(const bool zheap)
 {
 	/*
 	 * Set default application_name.  (The test_function may choose to
@@ -888,7 +896,7 @@ initialize_environment(void)
 			printf(_("(using postmaster on Unix socket, default port)\n"));
 	}
 
-	convert_sourcefiles();
+	convert_sourcefiles(zheap);
 	load_resultmap();
 }
 
@@ -1610,7 +1618,7 @@ log_child_failure(int exitstatus)
  * Run all the tests specified in one schedule file
  */
 static void
-run_schedule(const char *schedule, test_function tfunc)
+run_schedule(const char *schedule, test_function tfunc, const bool zheap)
 {
 #define MAX_PARALLEL_TESTS 100
 	char	   *tests[MAX_PARALLEL_TESTS];
@@ -1724,7 +1732,7 @@ run_schedule(const char *schedule, test_function tfunc)
 		if (num_tests == 1)
 		{
 			status(_("test %-28s ... "), tests[0]);
-			pids[0] = (tfunc) (tests[0], &resultfiles[0], &expectfiles[0], &tags[0]);
+			pids[0] = (tfunc) (tests[0], &resultfiles[0], &expectfiles[0], &tags[0], &zheap);
 			INSTR_TIME_SET_CURRENT(starttimes[0]);
 			wait_for_tests(pids, statuses, stoptimes, NULL, 1);
 			/* status line is finished below */
@@ -1750,7 +1758,7 @@ run_schedule(const char *schedule, test_function tfunc)
 								   tests + oldest, i - oldest);
 					oldest = i;
 				}
-				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
+				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i], &zheap);
 				INSTR_TIME_SET_CURRENT(starttimes[i]);
 			}
 			wait_for_tests(pids + oldest, statuses + oldest,
@@ -1763,7 +1771,7 @@ run_schedule(const char *schedule, test_function tfunc)
 			status(_("parallel group (%d tests): "), num_tests);
 			for (i = 0; i < num_tests; i++)
 			{
-				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
+				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i], &zheap);
 				INSTR_TIME_SET_CURRENT(starttimes[i]);
 			}
 			wait_for_tests(pids, statuses, stoptimes, tests, num_tests);
@@ -1861,7 +1869,7 @@ run_schedule(const char *schedule, test_function tfunc)
  * Run a single test
  */
 static void
-run_single_test(const char *test, test_function tfunc)
+run_single_test(const char *test, test_function tfunc, const bool zheap)
 {
 	PID_TYPE	pid;
 	instr_time	starttime;
@@ -1876,7 +1884,7 @@ run_single_test(const char *test, test_function tfunc)
 	bool		differ = false;
 
 	status(_("test %-28s ... "), test);
-	pid = (tfunc) (test, &resultfiles, &expectfiles, &tags);
+	pid = (tfunc) (test, &resultfiles, &expectfiles, &tags, &zheap);
 	INSTR_TIME_SET_CURRENT(starttime);
 	wait_for_tests(&pid, &exit_status, &stoptime, NULL, 1);
 
@@ -2103,6 +2111,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		{"load-extension", required_argument, NULL, 22},
 		{"config-auth", required_argument, NULL, 24},
 		{"max-concurrent-tests", required_argument, NULL, 25},
+		{"zheap", no_argument, NULL, 'z'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -2113,6 +2122,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 	int			option_index;
 	char		buf[MAXPGPATH * 4];
 	char		buf2[MAXPGPATH * 4];
+	bool		zheap = false;
 
 	pg_logging_init(argv[0]);
 	progname = get_progname(argv[0]);
@@ -2158,6 +2168,9 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 			case 'V':
 				puts("pg_regress (PostgreSQL) " PG_VERSION);
 				exit(0);
+			case 'z':
+				zheap = true;
+				break;
 			case 1:
 
 				/*
@@ -2278,7 +2291,7 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 	 */
 	open_result_files();
 
-	initialize_environment();
+	initialize_environment(zheap);
 
 #if defined(HAVE_GETRLIMIT) && defined(RLIMIT_CORE)
 	unlimit_core_size();
@@ -2353,6 +2366,8 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 		fputs("log_lock_waits = on\n", pg_conf);
 		fputs("log_temp_files = 128kB\n", pg_conf);
 		fputs("max_prepared_transactions = 2\n", pg_conf);
+		if (zheap == true)
+			fputs("default_table_access_method = 'zheap'\n", pg_conf);
 
 		for (sl = temp_configs; sl != NULL; sl = sl->next)
 		{
@@ -2548,12 +2563,12 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 
 	for (sl = schedulelist; sl != NULL; sl = sl->next)
 	{
-		run_schedule(sl->str, tfunc);
+		run_schedule(sl->str, tfunc, zheap);
 	}
 
 	for (sl = extra_tests; sl != NULL; sl = sl->next)
 	{
-		run_single_test(sl->str, tfunc);
+		run_single_test(sl->str, tfunc, zheap);
 	}
 
 	/*

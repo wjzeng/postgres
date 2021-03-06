@@ -69,6 +69,9 @@ extern bool CheckForSerializableConflictOutNeeded(Relation relation, Snapshot sn
 extern void CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot snapshot);
 extern void CheckForSerializableConflictIn(Relation relation, ItemPointer tid, BlockNumber blkno);
 extern void CheckTableForSerializableConflictIn(Relation relation);
+extern void ZHeapCheckForSerializableConflictOut(bool visible, Relation relation,
+												 void *stup, Buffer buffer,
+												 Snapshot snapshot);
 
 /* final rollback checking */
 extern void PreCommit_CheckForSerializationFailure(void);
@@ -79,6 +82,7 @@ extern void PostPrepare_PredicateLocks(TransactionId xid);
 extern void PredicateLockTwoPhaseFinish(TransactionId xid, bool isCommit);
 extern void predicatelock_twophase_recover(TransactionId xid, uint16 info,
 										   void *recdata, uint32 len);
+extern bool IsSerializableXact(void);
 
 /* parallel query support */
 extern SerializableXactHandle ShareSerializableXact(void);

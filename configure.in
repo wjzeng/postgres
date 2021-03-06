@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [13beta3], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
+AC_INIT([PostgreSQL], [13.0], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -340,6 +340,28 @@ AC_DEFINE_UNQUOTED([XLOG_BLCKSZ], ${XLOG_BLCKSZ}, [
  Changing XLOG_BLCKSZ requires an initdb.
 ])
 
+#
+# transaction slots per zheap page
+#
+AC_MSG_CHECKING([for transaction slots per zheap page])
+PGAC_ARG_REQ(with, trans_slots_per_zheap_page, [SLOTS], [set transaction slots per zheap page [4]],
+             [trans_slots_per_page=$withval],
+             [trans_slots_per_page=4])
+case ${trans_slots_per_page} in
+  2) ZHEAP_PAGE_TRANS_SLOTS=2;;
+  4) ZHEAP_PAGE_TRANS_SLOTS=4;;
+  8) ZHEAP_PAGE_TRANS_SLOTS=8;;
+ 16) ZHEAP_PAGE_TRANS_SLOTS=16;;
+ 31) ZHEAP_PAGE_TRANS_SLOTS=31;;
+  *) AC_MSG_ERROR([Invalid transaction slots per zheap page. Allowed values are 2,4,8,16,31.])
+esac
+AC_MSG_RESULT([${trans_slots_per_page}])
+
+AC_DEFINE_UNQUOTED([ZHEAP_PAGE_TRANS_SLOTS], ${ZHEAP_PAGE_TRANS_SLOTS}, [
+ transaction slots per zheap page. By default, it is set to 4.
+
+ Changing ZHEAP_PAGE_TRANS_SLOTS requires an initdb.
+])
 #
 # C compiler
 #

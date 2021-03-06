@@ -295,6 +295,8 @@ InitProcGlobal(void)
 	/* Create ProcStructLock spinlock, too */
 	ProcStructLock = (slock_t *) ShmemAlloc(sizeof(slock_t));
 	SpinLockInit(ProcStructLock);
+
+	pg_atomic_init_u64(&ProcGlobal->oldestXidWithEpochHavingUndo, 0);
 }
 
 /*
@@ -1373,7 +1375,7 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 			else
 				LWLockRelease(ProcArrayLock);
 
-			/* prevent signal from being resent more than once */
+			/* prevent signal from being sent again more than once */
 			allow_autovacuum_cancel = false;
 		}
 
