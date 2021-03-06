@@ -189,6 +189,9 @@ extern int	pg_printf(const char *fmt,...) pg_attribute_printf(1, 2);
 #endif
 #endif							/* USE_REPL_SNPRINTF */
 
+/* Wrap strsignal(), or provide our own version if necessary */
+extern const char *pg_strsignal(int signum);
+
 /* Portable prompt handling */
 extern void simple_prompt(const char *prompt, char *destination, size_t destlen,
 			  bool echo);
@@ -453,11 +456,6 @@ extern int	pg_mkdir_p(char *path, int omode);
 /* port/pqsignal.c */
 typedef void (*pqsigfunc) (int signo);
 extern pqsigfunc pqsignal(int signo, pqsigfunc func);
-#ifndef WIN32
-extern pqsigfunc pqsignal_no_restart(int signo, pqsigfunc func);
-#else
-#define pqsignal_no_restart(signo, func) pqsignal(signo, func)
-#endif
 
 /* port/quotes.c */
 extern char *escape_single_quotes_ascii(const char *src);

@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [11.7], [pgsql-bugs@postgresql.org])
+AC_INIT([PostgreSQL], [11.11], [pgsql-bugs@postgresql.org])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -652,6 +652,10 @@ else
 fi
 AC_SUBST(TAS)
 
+#
+# Set up pkg_config in case we need it below
+#
+PKG_PROG_PKG_CONFIG
 
 #
 # Automatic dependency tracking
@@ -911,26 +915,41 @@ AC_SUBST(UUID_EXTRA_OBJS)
 #
 # XML
 #
+AC_MSG_CHECKING([whether to build with XML support])
 PGAC_ARG_BOOL(with, libxml, no, [build with XML support],
               [AC_DEFINE([USE_LIBXML], 1, [Define to 1 to build with XML support. (--with-libxml)])])
+AC_MSG_RESULT([$with_libxml])
+AC_SUBST(with_libxml)
 
 if test "$with_libxml" = yes ; then
-  PGAC_PATH_PROGS(XML2_CONFIG, xml2-config)
-  if test -n "$XML2_CONFIG"; then
-    for pgac_option in `$XML2_CONFIG --cflags`; do
-      case $pgac_option in
-        -I*|-D*) CPPFLAGS="$CPPFLAGS $pgac_option";;
-      esac
-    done
-    for pgac_option in `$XML2_CONFIG --libs`; do
-      case $pgac_option in
-        -L*) LDFLAGS="$LDFLAGS $pgac_option";;
-      esac
-    done
+  # Check pkg-config, then xml2-config.  But for backwards compatibility,
+  # setting XML2_CONFIG overrides pkg-config.
+  AC_ARG_VAR(XML2_CONFIG, [path to xml2-config utility])dnl
+  have_libxml2_pkg_config=no
+  if test -z "$XML2_CONFIG" -a -n "$PKG_CONFIG"; then
+    PKG_CHECK_MODULES(XML2, [libxml-2.0 >= 2.6.23],
+                      [have_libxml2_pkg_config=yes], [# do nothing])
   fi
+  if test "$have_libxml2_pkg_config" = no ; then
+    PGAC_PATH_PROGS(XML2_CONFIG, xml2-config)
+    if test -n "$XML2_CONFIG"; then
+      XML2_CFLAGS=`$XML2_CONFIG --cflags`
+      XML2_LIBS=`$XML2_CONFIG --libs`
+    fi
+  fi
+  # Note the user could also set XML2_CFLAGS/XML2_LIBS directly
+  for pgac_option in $XML2_CFLAGS; do
+    case $pgac_option in
+      -I*|-D*) CPPFLAGS="$CPPFLAGS $pgac_option";;
+    esac
+  done
+  for pgac_option in $XML2_LIBS; do
+    case $pgac_option in
+      -L*) LDFLAGS="$LDFLAGS $pgac_option";;
+    esac
+  done
 fi
 
-AC_SUBST(with_libxml)
 
 #
 # XSLT
@@ -1603,6 +1622,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	setproctitle
 	setsid
 	shm_open
+	strsignal
 	symlink
 	sync_file_range
 	uselocale
@@ -1801,14 +1821,6 @@ fi
 if test "$PORTNAME" = "cygwin"; then
   AC_LIBOBJ(dirmod)
 fi
-
-AC_CHECK_DECLS([sys_siglist], [], [],
-[#include <signal.h>
-/* NetBSD declares sys_siglist in unistd.h.  */
-#ifdef HAVE_UNISTD_H
-# include <unistd.h>
-#endif
-])
 
 AC_CHECK_FUNC(syslog,
               [AC_CHECK_HEADER(syslog.h,
@@ -2306,13 +2318,12 @@ if test "$with_python" = yes; then
 fi
 
 #
-# Check for DocBook and tools
+# Check for documentation-building tools
 #
-PGAC_PATH_XMLLINT
-PGAC_CHECK_DOCBOOK(4.2)
-PGAC_PATH_PROGS(DBTOEPUB, dbtoepub)
+PGAC_PATH_PROGS(XMLLINT, xmllint)
 PGAC_PATH_PROGS(XSLTPROC, xsltproc)
 PGAC_PATH_PROGS(FOP, fop)
+PGAC_PATH_PROGS(DBTOEPUB, dbtoepub)
 
 #
 # Check for test tools
@@ -2415,8 +2426,10 @@ AC_SUBST(PG_VERSION_NUM)
 # literally, so that it's possible to override it at build time using
 # a command like "make ... PG_SYSROOT=path".  This has to be done after
 # we've finished all configure checks that depend on CPPFLAGS.
+# The same for LDFLAGS, too.
 if test x"$PG_SYSROOT" != x; then
   CPPFLAGS=`echo "$CPPFLAGS" | sed -e "s| $PG_SYSROOT | \\\$(PG_SYSROOT) |"`
+  LDFLAGS=`echo "$LDFLAGS" | sed -e "s| $PG_SYSROOT | \\\$(PG_SYSROOT) |"`
 fi
 AC_SUBST(PG_SYSROOT)
 

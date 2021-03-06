@@ -3437,23 +3437,30 @@ makeEmptyPGconn(void)
 #ifdef WIN32
 
 	/*
-	 * Make sure socket support is up and running.
+	 * Make sure socket support is up and running in this process.
+	 *
+	 * Note: the Windows documentation says that we should eventually do a
+	 * matching WSACleanup() call, but experience suggests that that is at
+	 * least as likely to cause problems as fix them.  So we don't.
 	 */
-	WSADATA		wsaData;
+	static bool wsastartup_done = false;
 
-	if (WSAStartup(MAKEWORD(1, 1), &wsaData))
-		return NULL;
+	if (!wsastartup_done)
+	{
+		WSADATA		wsaData;
+
+		if (WSAStartup(MAKEWORD(1, 1), &wsaData) != 0)
+			return NULL;
+		wsastartup_done = true;
+	}
+
+	/* Forget any earlier error */
 	WSASetLastError(0);
-#endif
+#endif							/* WIN32 */
 
 	conn = (PGconn *) malloc(sizeof(PGconn));
 	if (conn == NULL)
-	{
-#ifdef WIN32
-		WSACleanup();
-#endif
 		return conn;
-	}
 
 	/* Zero all pointers and booleans */
 	MemSet(conn, 0, sizeof(PGconn));
@@ -3621,10 +3628,6 @@ freePGconn(PGconn *conn)
 	termPQExpBuffer(&conn->workBuffer);
 
 	free(conn);
-
-#ifdef WIN32
-	WSACleanup();
-#endif
 }
 
 /*
@@ -6459,9 +6462,7 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 {
 	FILE	   *fp;
 	struct stat stat_buf;
-
-#define LINELEN NAMEDATALEN*5
-	char		buf[LINELEN];
+	PQExpBufferData buf;
 
 	if (dbname == NULL || dbname[0] == '\0')
 		return NULL;
@@ -6517,63 +6518,81 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 	if (fp == NULL)
 		return NULL;
 
+	/* Use an expansible buffer to accommodate any reasonable line length */
+	initPQExpBuffer(&buf);
+
 	while (!feof(fp) && !ferror(fp))
 	{
-		char	   *t = buf,
-				   *ret,
-				   *p1,
-				   *p2;
-		int			len;
-
-		if (fgets(buf, sizeof(buf), fp) == NULL)
+		/* Make sure there's a reasonable amount of room in the buffer */
+		if (!enlargePQExpBuffer(&buf, 128))
 			break;
 
-		len = strlen(buf);
+		/* Read some data, appending it to what we already have */
+		if (fgets(buf.data + buf.len, buf.maxlen - buf.len, fp) == NULL)
+			break;
+		buf.len += strlen(buf.data + buf.len);
 
-		/* Remove trailing newline */
-		if (len > 0 && buf[len - 1] == '\n')
-		{
-			buf[--len] = '\0';
-			/* Handle DOS-style line endings, too, even when not on Windows */
-			if (len > 0 && buf[len - 1] == '\r')
-				buf[--len] = '\0';
-		}
-
-		if (len == 0)
+		/* If we don't yet have a whole line, loop around to read more */
+		if (!(buf.len > 0 && buf.data[buf.len - 1] == '\n') && !feof(fp))
 			continue;
 
-		if ((t = pwdfMatchesString(t, hostname)) == NULL ||
-			(t = pwdfMatchesString(t, port)) == NULL ||
-			(t = pwdfMatchesString(t, dbname)) == NULL ||
-			(t = pwdfMatchesString(t, username)) == NULL)
-			continue;
-
-		/* Found a match. */
-		ret = strdup(t);
-		fclose(fp);
-
-		if (!ret)
+		/* ignore comments */
+		if (buf.data[0] != '#')
 		{
-			/* Out of memory. XXX: an error message would be nice. */
-			return NULL;
+			char	   *t = buf.data;
+			int			len = buf.len;
+
+			/* Remove trailing newline */
+			if (len > 0 && t[len - 1] == '\n')
+			{
+				t[--len] = '\0';
+				/* Handle DOS-style line endings, too */
+				if (len > 0 && t[len - 1] == '\r')
+					t[--len] = '\0';
+			}
+
+			if (len > 0 &&
+				(t = pwdfMatchesString(t, hostname)) != NULL &&
+				(t = pwdfMatchesString(t, port)) != NULL &&
+				(t = pwdfMatchesString(t, dbname)) != NULL &&
+				(t = pwdfMatchesString(t, username)) != NULL)
+			{
+				/* Found a match. */
+				char	   *ret,
+						   *p1,
+						   *p2;
+
+				ret = strdup(t);
+
+				fclose(fp);
+				termPQExpBuffer(&buf);
+
+				if (!ret)
+				{
+					/* Out of memory. XXX: an error message would be nice. */
+					return NULL;
+				}
+
+				/* De-escape password. */
+				for (p1 = p2 = ret; *p1 != ':' && *p1 != '\0'; ++p1, ++p2)
+				{
+					if (*p1 == '\\' && p1[1] != '\0')
+						++p1;
+					*p2 = *p1;
+				}
+				*p2 = '\0';
+
+				return ret;
+			}
 		}
 
-		/* De-escape password. */
-		for (p1 = p2 = ret; *p1 != ':' && *p1 != '\0'; ++p1, ++p2)
-		{
-			if (*p1 == '\\' && p1[1] != '\0')
-				++p1;
-			*p2 = *p1;
-		}
-		*p2 = '\0';
-
-		return ret;
+		/* No match, reset buffer to prepare for next line. */
+		buf.len = 0;
 	}
 
 	fclose(fp);
+	termPQExpBuffer(&buf);
 	return NULL;
-
-#undef LINELEN
 }
 
 

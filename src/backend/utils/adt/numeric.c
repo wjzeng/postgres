@@ -3628,11 +3628,11 @@ numeric_combine(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(state1);
 	}
 
+	state1->N += state2->N;
+	state1->NaNcount += state2->NaNcount;
+
 	if (state2->N > 0)
 	{
-		state1->N += state2->N;
-		state1->NaNcount += state2->NaNcount;
-
 		/*
 		 * These are currently only needed for moving aggregates, but let's do
 		 * the right thing anyway...
@@ -3715,11 +3715,11 @@ numeric_avg_combine(PG_FUNCTION_ARGS)
 		PG_RETURN_POINTER(state1);
 	}
 
+	state1->N += state2->N;
+	state1->NaNcount += state2->NaNcount;
+
 	if (state2->N > 0)
 	{
-		state1->N += state2->N;
-		state1->NaNcount += state2->NaNcount;
-
 		/*
 		 * These are currently only needed for moving aggregates, but let's do
 		 * the right thing anyway...
@@ -8433,7 +8433,7 @@ power_var_int(const NumericVar *base, int exp, NumericVar *result, int rscale)
 	 * to around log10(abs(exp)) digits, so work with this many extra digits
 	 * of precision (plus a few more for good measure).
 	 */
-	sig_digits += (int) log(Abs(exp)) + 8;
+	sig_digits += (int) log(fabs((double) exp)) + 8;
 
 	/*
 	 * Now we can proceed with the multiplications.

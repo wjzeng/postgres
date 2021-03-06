@@ -1014,6 +1014,7 @@ finalize_partialaggregate(AggState *aggstate,
 														pergroupstate->transValueIsNull,
 														pertrans->transtypeLen);
 			fcinfo->argnull[0] = pergroupstate->transValueIsNull;
+			fcinfo->isnull = false;
 
 			*resultVal = FunctionCallInvoke(fcinfo);
 			*resultIsNull = fcinfo->isnull;
@@ -2453,7 +2454,11 @@ ExecInitAgg(Agg *node, EState *estate, int eflags)
 		aggstate->hash_pergroup = pergroups;
 
 		find_hash_columns(aggstate);
-		build_hash_table(aggstate);
+
+		/* Skip massive memory allocation if we are just doing EXPLAIN */
+		if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+			build_hash_table(aggstate);
+
 		aggstate->table_filled = false;
 	}
 

@@ -68,15 +68,6 @@ int			SessionReplicationRole = SESSION_REPLICATION_ROLE_ORIGIN;
 /* How many levels deep into trigger execution are we? */
 static int	MyTriggerDepth = 0;
 
-/*
- * Note that similar macros also exist in executor/execMain.c.  There does not
- * appear to be any good header to put them into, given the structures that
- * they use, so we let them be duplicated.  Be sure to update all if one needs
- * to be changed, however.
- */
-#define GetUpdatedColumns(relinfo, estate) \
-	(rt_fetch((relinfo)->ri_RangeTableIndex, (estate)->es_range_table)->updatedCols)
-
 /* Local function prototypes */
 static void ConvertTriggerToFK(CreateTrigStmt *stmt, Oid funcoid);
 static void SetTriggerFlags(TriggerDesc *trigdesc, Trigger *trigger);
@@ -1847,27 +1838,6 @@ EnableDisableTrigger(Relation rel, const char *tgname,
 
 			heap_freetuple(newtup);
 
-			/*
-			 * When altering FOR EACH ROW triggers on a partitioned table, do
-			 * the same on the partitions as well.
-			 */
-			if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE &&
-				(TRIGGER_FOR_ROW(oldtrig->tgtype)))
-			{
-				PartitionDesc partdesc = RelationGetPartitionDesc(rel);
-				int			i;
-
-				for (i = 0; i < partdesc->nparts; i++)
-				{
-					Relation	part;
-
-					part = relation_open(partdesc->oids[i], lockmode);
-					EnableDisableTrigger(part, NameStr(oldtrig->tgname),
-										 fires_when, skip_system, lockmode);
-					heap_close(part, NoLock);	/* keep lock till commit */
-				}
-			}
-
 			changed = true;
 		}
 
@@ -2913,7 +2883,7 @@ ExecBSUpdateTriggers(EState *estate, ResultRelInfo *relinfo)
 								   CMD_UPDATE))
 		return;
 
-	updatedCols = GetUpdatedColumns(relinfo, estate);
+	updatedCols = ExecGetUpdatedCols(relinfo, estate);
 
 	LocTriggerData.type = T_TriggerData;
 	LocTriggerData.tg_event = TRIGGER_EVENT_UPDATE |
@@ -2959,10 +2929,13 @@ ExecASUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
 
+	/* statement-level triggers operate on the parent table */
+	Assert(relinfo->ri_RootResultRelInfo == NULL);
+
 	if (trigdesc && trigdesc->trig_update_after_statement)
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_UPDATE,
 							  false, NULL, NULL, NIL,
-							  GetUpdatedColumns(relinfo, estate),
+							  ExecGetUpdatedCols(relinfo, estate),
 							  transition_capture);
 }
 
@@ -3028,7 +3001,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 	LocTriggerData.tg_relation = relinfo->ri_RelationDesc;
 	LocTriggerData.tg_oldtable = NULL;
 	LocTriggerData.tg_newtable = NULL;
-	updatedCols = GetUpdatedColumns(relinfo, estate);
+	updatedCols = ExecGetUpdatedCols(relinfo, estate);
 	for (i = 0; i < trigdesc->numtriggers; i++)
 	{
 		Trigger    *trigger = &trigdesc->triggers[i];
@@ -3120,7 +3093,7 @@ ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_UPDATE,
 							  true, trigtuple, newtuple, recheckIndexes,
-							  GetUpdatedColumns(relinfo, estate),
+							  ExecGetUpdatedCols(relinfo, estate),
 							  transition_capture);
 		if (trigtuple != fdw_trigtuple)
 			heap_freetuple(trigtuple);
@@ -4404,6 +4377,7 @@ afterTriggerMarkEvents(AfterTriggerEventList *events,
 					   bool immediate_only)
 {
 	bool		found = false;
+	bool		deferred_found = false;
 	AfterTriggerEvent event;
 	AfterTriggerEventChunk *chunk;
 
@@ -4439,12 +4413,23 @@ afterTriggerMarkEvents(AfterTriggerEventList *events,
 		 */
 		if (defer_it && move_list != NULL)
 		{
+			deferred_found = true;
 			/* add it to move_list */
 			afterTriggerAddEvent(move_list, event, evtshared);
 			/* mark original copy "done" so we don't do it again */
 			event->ate_flags |= AFTER_TRIGGER_DONE;
 		}
 	}
+
+	/*
+	 * We could allow deferred triggers if, before the end of the
+	 * security-restricted operation, we were to verify that a SET CONSTRAINTS
+	 * ... IMMEDIATE has fired all such triggers.  For now, don't bother.
+	 */
+	if (deferred_found && InSecurityRestrictedOperation())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("cannot fire deferred trigger within security-restricted operation")));
 
 	return found;
 }

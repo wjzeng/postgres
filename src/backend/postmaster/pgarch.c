@@ -247,8 +247,16 @@ PgArchiverMain(int argc, char *argv[])
 static void
 pgarch_exit(SIGNAL_ARGS)
 {
-	/* SIGQUIT means curl up and die ... */
-	exit(1);
+	/*
+	 * We DO NOT want to run proc_exit() or atexit() callbacks; they wouldn't
+	 * be safe to run from a signal handler.  Just nail the windows shut and
+	 * get out of town.
+	 *
+	 * For consistency with other postmaster children, we do _exit(2) not
+	 * _exit(1).  The postmaster currently will treat these exit codes alike,
+	 * but it seems better to report that we died in an unexpected way.
+	 */
+	_exit(2);
 }
 
 /* SIGHUP signal handler for archiver process */
@@ -596,17 +604,10 @@ pgarch_archiveXlog(char *xlog)
 					 errhint("See C include file \"ntstatus.h\" for a description of the hexadecimal value."),
 					 errdetail("The failed archive command was: %s",
 							   xlogarchcmd)));
-#elif defined(HAVE_DECL_SYS_SIGLIST) && HAVE_DECL_SYS_SIGLIST
-			ereport(lev,
-					(errmsg("archive command was terminated by signal %d: %s",
-							WTERMSIG(rc),
-							WTERMSIG(rc) < NSIG ? sys_siglist[WTERMSIG(rc)] : "(unknown)"),
-					 errdetail("The failed archive command was: %s",
-							   xlogarchcmd)));
 #else
 			ereport(lev,
-					(errmsg("archive command was terminated by signal %d",
-							WTERMSIG(rc)),
+					(errmsg("archive command was terminated by signal %d: %s",
+							WTERMSIG(rc), pg_strsignal(WTERMSIG(rc))),
 					 errdetail("The failed archive command was: %s",
 							   xlogarchcmd)));
 #endif

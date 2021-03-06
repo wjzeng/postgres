@@ -3147,7 +3147,7 @@ main(int argc, char *argv[])
 
 	/* process command-line options */
 
-	while ((c = getopt_long(argc, argv, "dD:E:kL:nNU:WA:sST:X:g", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "A:dD:E:gkL:nNsST:U:WX:", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -3400,6 +3400,9 @@ main(int argc, char *argv[])
 	get_parent_directory(pg_ctl_path);
 	/* ... and tag on pg_ctl instead */
 	join_path_components(pg_ctl_path, pg_ctl_path, "pg_ctl");
+
+	/* Convert the path to use native separators */
+	make_native_path(pg_ctl_path);
 
 	/* path to pg_ctl, properly quoted */
 	appendShellString(start_db_cmd, pg_ctl_path);

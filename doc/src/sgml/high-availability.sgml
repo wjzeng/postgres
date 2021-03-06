@@ -219,7 +219,7 @@ protocol to make nodes agree on a serializable transactional order.
      this is unacceptable, either the middleware or the application
      must query such values from a single server and then use those
      values in write queries.  Another option is to use this replication
-     option with a traditional master-standby setup, i.e. data modification
+     option with a traditional master-standby setup, i.e., data modification
      queries are sent only to the master and are propagated to the
      standby servers via master-standby replication, not by the replication
      middleware.  Care must also be taken that all
@@ -433,7 +433,7 @@ protocol to make nodes agree on a serializable transactional order.
      <entry align="center">&bull;</entry>
      <entry align="center"></entry>
      <entry align="center">&bull;</entry>
-     <entry align="center"></entry>
+     <entry align="center">&bull;</entry>
      <entry align="center"></entry>
      <entry align="center">&bull;</entry>
     </row>
@@ -475,8 +475,7 @@ protocol to make nodes agree on a serializable transactional order.
      concurrently on a single query.  It is usually accomplished by
      splitting the data among servers and having each server execute its
      part of the query and return results to a central server where they
-     are combined and returned to the user.  <productname>Pgpool-II</productname>
-     has this capability.  Also, this can be implemented using the
+     are combined and returned to the user. This can be implemented using the
      <productname>PL/Proxy</productname> tool set.
     </para>
 
@@ -658,7 +657,7 @@ protocol to make nodes agree on a serializable transactional order.
     Set up continuous archiving on the primary to an archive directory
     accessible from the standby, as described
     in <xref linkend="continuous-archiving"/>. The archive location should be
-    accessible from the standby even when the master is down, i.e. it should
+    accessible from the standby even when the master is down, i.e., it should
     reside on the standby server itself or another trusted server, not on
     the master server.
    </para>
@@ -1390,7 +1389,8 @@ synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
      If <varname>archive_mode</varname> is set to <literal>on</literal>, the
      archiver is not enabled during recovery or standby mode. If the standby
      server is promoted, it will start archiving after the promotion, but
-     will not archive any WAL it did not generate itself. To get a complete
+     will not archive any WAL or timeline history files that
+     it did not generate itself. To get a complete
      series of WAL files in the archive, you must ensure that all WAL is
      archived, before it reaches the standby. This is inherently true with
      file-based log shipping, as the standby can only restore files that
@@ -1499,7 +1499,7 @@ synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
     Note that in this mode, the server will apply WAL one file at a
     time, so if you use the standby server for queries (see Hot Standby),
     there is a delay between an action in the master and when the
-    action becomes visible in the standby, corresponding the time it takes
+    action becomes visible in the standby, corresponding to the time it takes
     to fill up the WAL file. <varname>archive_timeout</varname> can be used to make that delay
     shorter. Also note that you can't combine streaming replication with
     this method.
@@ -2225,7 +2225,7 @@ LOG:  database system is ready to accept read only connections
       <itemizedlist>
        <listitem>
         <para>
-         Data Definition Language (DDL) - e.g. <command>CREATE INDEX</command>
+         Data Definition Language (DDL) - e.g., <command>CREATE INDEX</command>
         </para>
        </listitem>
        <listitem>
@@ -2291,7 +2291,7 @@ LOG:  database system is ready to accept read only connections
 
    <para>
     WAL file control commands will not work during recovery,
-    e.g. <function>pg_start_backup</function>, <function>pg_switch_wal</function> etc.
+    e.g., <function>pg_start_backup</function>, <function>pg_switch_wal</function> etc.
    </para>
 
    <para>
@@ -2373,9 +2373,10 @@ LOG:  database system is ready to accept read only connections
    </para>
 
    <para>
-    The background writer is active during recovery and will perform
-    restartpoints (similar to checkpoints on the primary) and normal block
-    cleaning activities. This can include updates of the hint bit
+    The checkpointer process and the background writer process are active during
+    recovery. The checkpointer process will perform restartpoints (similar to
+    checkpoints on the primary) and the background writer process will perform
+    normal block cleaning activities. This can include updates of the hint bit
     information stored on the standby server.
     The <command>CHECKPOINT</command> command is accepted during recovery,
     though it performs a restartpoint rather than a new checkpoint.

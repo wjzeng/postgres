@@ -122,7 +122,8 @@ SELECT (timestamp with time zone 'tomorrow' = (timestamp with time zone 'yesterd
 SELECT (timestamp with time zone 'tomorrow' > 'now') as "True";
 
 -- timestamp with time zone, interval arithmetic around DST change
-SET TIME ZONE 'CST7CDT';
+-- (just for fun, let's use an intentionally nonstandard POSIX zone spec)
+SET TIME ZONE 'CST7CDT,M4.1.0,M10.5.0';
 SELECT timestamp with time zone '2005-04-02 12:00-07' + interval '1 day' as "Apr 3, 12:00";
 SELECT timestamp with time zone '2005-04-02 12:00-07' + interval '24 hours' as "Apr 3, 13:00";
 SELECT timestamp with time zone '2005-04-03 12:00-06' - interval '1 day' as "Apr 2, 12:00";
@@ -467,6 +468,17 @@ SELECT to_date('3 4 21 01', 'W MM CC YY');
 SELECT to_date('2458872', 'J');
 
 --
+-- Check handling of BC dates
+--
+
+SELECT to_date('44-02-01 BC','YYYY-MM-DD BC');
+SELECT to_date('-44-02-01','YYYY-MM-DD');
+SELECT to_date('-44-02-01 BC','YYYY-MM-DD BC');
+SELECT to_timestamp('44-02-01 11:12:13 BC','YYYY-MM-DD HH24:MI:SS BC');
+SELECT to_timestamp('-44-02-01 11:12:13','YYYY-MM-DD HH24:MI:SS');
+SELECT to_timestamp('-44-02-01 11:12:13 BC','YYYY-MM-DD HH24:MI:SS BC');
+
+--
 -- Check handling of multiple spaces in format and/or input
 --
 
@@ -534,6 +546,7 @@ SELECT to_date('2015 366', 'YYYY DDD');
 SELECT to_date('2016 365', 'YYYY DDD');  -- ok
 SELECT to_date('2016 366', 'YYYY DDD');  -- ok
 SELECT to_date('2016 367', 'YYYY DDD');
+SELECT to_date('0000-02-01','YYYY-MM-DD');  -- allowed, though it shouldn't be
 
 --
 -- Check behavior with SQL-style fixed-GMT-offset time zone (cf bug #8572)

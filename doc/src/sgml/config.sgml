@@ -408,7 +408,7 @@ include_dir 'directory'
       start with the <literal>.</literal> character are also ignored, to
       prevent mistakes since such files are hidden on some platforms.  Multiple
       files within an include directory are processed in file name order
-      (according to C locale rules, i.e. numbers before letters, and
+      (according to C locale rules, i.e., numbers before letters, and
       uppercase letters before lowercase ones).
      </para>
 
@@ -1047,7 +1047,7 @@ include_dir 'conf.d'
        <para>
         With this parameter enabled, you can still create ordinary global
         users.  Simply append <literal>@</literal> when specifying the user
-        name in the client, e.g. <literal>joe@</literal>.  The <literal>@</literal>
+        name in the client, e.g., <literal>joe@</literal>.  The <literal>@</literal>
         will be stripped off before the user name is looked up by the
         server.
        </para>
@@ -1178,16 +1178,22 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies a list of <acronym>SSL</acronym> cipher suites that are allowed to be
-        used on secure connections.  See
-        the <citerefentry><refentrytitle>ciphers</refentrytitle></citerefentry> manual page
-        in the <application>OpenSSL</application> package for the syntax of this setting
-        and a list of supported values.
-        This parameter can only be set in the <filename>postgresql.conf</filename>
-        file or on the server command line.
-        The default value is <literal>HIGH:MEDIUM:+3DES:!aNULL</literal>.  The
-        default is usually a reasonable choice unless you have specific
-        security requirements.
+        Specifies a list of <acronym>SSL</acronym> cipher suites that are
+        allowed to be used by SSL connections.  See the
+        <citerefentry><refentrytitle>ciphers</refentrytitle></citerefentry>
+        manual page in the <application>OpenSSL</application> package for the
+        syntax of this setting and a list of supported values.  Only
+        connections using TLS version 1.2 and lower are affected.  There is
+        currently no setting that controls the cipher choices used by TLS
+        version 1.3 connections.  The default value is
+        <literal>HIGH:MEDIUM:+3DES:!aNULL</literal>.  The default is usually a
+        reasonable choice unless you have specific security requirements.
+       </para>
+
+       <para>
+        This parameter can only be set in the
+        <filename>postgresql.conf</filename> file or on the server command
+        line.
        </para>
 
        <para>
@@ -1903,8 +1909,11 @@ include_dir 'conf.d'
       There is a separate server
       process called the <firstterm>background writer</firstterm>, whose function
       is to issue writes of <quote>dirty</quote> (new or modified) shared
-      buffers.  It writes shared buffers so server processes handling
-      user queries seldom or never need to wait for a write to occur.
+      buffers.  When the number of clean shared buffers appears to be
+      insufficient, the background writer writes some dirty buffers to the
+      file system and marks them as clean.  This reduces the likelihood
+      that server processes handling user queries will be unable to find
+      clean buffers and have to write dirty buffers themselves.
       However, the background writer does cause a net overall
       increase in I/O load, because while a repeatedly-dirtied page might
       otherwise be written only once per checkpoint interval, the
@@ -2426,14 +2435,26 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies whether transaction commit will wait for WAL records
-        to be written to disk before the command returns a <quote>success</quote>
-        indication to the client.  Valid values are <literal>on</literal>,
-        <literal>remote_apply</literal>, <literal>remote_write</literal>, <literal>local</literal>,
-        and <literal>off</literal>.  The default, and safe, setting
-        is <literal>on</literal>.  When <literal>off</literal>, there can be a delay between
-        when success is reported to the client and when the transaction is
-        really guaranteed to be safe against a server crash.  (The maximum
+        Specifies how much WAL processing must complete before
+        the database server returns a <quote>success</quote>
+        indication to the client.  Valid values are
+        <literal>remote_apply</literal>, <literal>on</literal>
+        (the default), <literal>remote_write</literal>,
+        <literal>local</literal>, and <literal>off</literal>.
+       </para>
+
+       <para>
+        If <varname>synchronous_standby_names</varname> is empty,
+        the only meaningful settings are <literal>on</literal> and
+        <literal>off</literal>;  <literal>remote_apply</literal>,
+        <literal>remote_write</literal> and <literal>local</literal>
+        all provide the same local synchronization level
+        as <literal>on</literal>.  The local behavior of all
+        non-<literal>off</literal> modes is to wait for local flush of WAL
+        to disk.  In <literal>off</literal> mode, there is no waiting,
+        so there can be a delay between when success is reported to the
+        client and when the transaction is later guaranteed to be safe
+        against a server crash.  (The maximum
         delay is three times <xref linkend="guc-wal-writer-delay"/>.)  Unlike
         <xref linkend="guc-fsync"/>, setting this parameter to <literal>off</literal>
         does not create any risk of database inconsistency: an operating
@@ -2445,38 +2466,40 @@ include_dir 'conf.d'
         exact certainty about the durability of a transaction.  For more
         discussion see <xref linkend="wal-async-commit"/>.
        </para>
+
        <para>
-        If <xref linkend="guc-synchronous-standby-names"/> is non-empty, this
-        parameter also controls whether or not transaction commits will wait
-        for their WAL records to be replicated to the standby server(s).
-        When set to <literal>on</literal>, commits will wait until replies
+        If <xref linkend="guc-synchronous-standby-names"/> is non-empty,
+        <varname>synchronous_commit</varname> also controls whether
+        transaction commits will wait for their WAL records to be
+        processed on the standby server(s).
+       </para>
+
+       <para>
+        When set to <literal>remote_apply</literal>, commits will wait
+        until replies from the current synchronous standby(s) indicate they
+        have received the commit record of the transaction and applied
+        it, so that it has become visible to queries on the standby(s),
+        and also written to durable storage on the standbys.  This will
+        cause much larger commit delays than previous settings since
+        it waits for WAL replay.  When set to <literal>on</literal>,
+        commits wait until replies
         from the current synchronous standby(s) indicate they have received
-        the commit record of the transaction and flushed it to disk.  This
+        the commit record of the transaction and flushed it to durable storage.  This
         ensures the transaction will not be lost unless both the primary and
         all synchronous standbys suffer corruption of their database storage.
-        When set to <literal>remote_apply</literal>, commits will wait until replies
-        from the current synchronous standby(s) indicate they have received the
-        commit record of the transaction and applied it, so that it has become
-        visible to queries on the standby(s).
         When set to <literal>remote_write</literal>, commits will wait until replies
         from the current synchronous standby(s) indicate they have
-        received the commit record of the transaction and written it out to
-        their operating system. This setting is sufficient to
-        ensure data preservation even if a standby instance of
-        <productname>PostgreSQL</productname> were to crash, but not if the standby
-        suffers an operating-system-level crash, since the data has not
-        necessarily reached stable storage on the standby.
-        Finally, the setting <literal>local</literal> causes commits to wait for
-        local flush to disk, but not for replication.  This is not usually
+        received the commit record of the transaction and written it to
+        their file systems. This setting ensures data preservation if a standby instance of
+        <productname>PostgreSQL</productname> crashes, but not if the standby
+        suffers an operating-system-level crash because the data has not
+        necessarily reached durable storage on the standby.
+        The setting <literal>local</literal> causes commits to wait for
+        local flush to disk, but not for replication.  This is usually not
         desirable when synchronous replication is in use, but is provided for
         completeness.
        </para>
-       <para>
-        If <varname>synchronous_standby_names</varname> is empty, the settings
-        <literal>on</literal>, <literal>remote_apply</literal>, <literal>remote_write</literal>
-        and <literal>local</literal> all provide the same synchronization level:
-        transaction commits only wait for local flush to disk.
-       </para>
+
        <para>
         This parameter can be changed at any time; the behavior for any
         one transaction is determined by the setting in effect when it
@@ -2486,6 +2509,76 @@ include_dir 'conf.d'
         asynchronously when the default is the opposite, issue <command>SET
         LOCAL synchronous_commit TO OFF</command> within the transaction.
        </para>
+
+       <para>
+        <xref linkend="synchronous-commit-matrix"/> summarizes the
+        capabilities of the <varname>synchronous_commit</varname> settings.
+       </para>
+
+       <table id="synchronous-commit-matrix">
+        <title>synchronous_commit Modes</title>
+        <tgroup cols="5">
+         <colspec colname="col1" colwidth="1.5*"/>
+         <colspec colname="col2" colwidth="1*"/>
+         <colspec colname="col3" colwidth="1*"/>
+         <colspec colname="col4" colwidth="1*"/>
+         <colspec colname="col5" colwidth="1*"/>
+         <thead>
+          <row>
+           <entry>synchronous_commit setting</entry>
+           <entry>local durable commit</entry>
+           <entry>standby durable commit after PG crash</entry>
+           <entry>standby durable commit after OS crash</entry>
+           <entry>standby query consistency</entry>
+          </row>
+         </thead>
+
+         <tbody>
+
+          <row>
+           <entry>remote_apply</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+          </row>
+
+          <row>
+           <entry>on</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>remote_write</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>local</entry>
+           <entry align="center">&bull;</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+          <row>
+           <entry>off</entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+           <entry align="center"></entry>
+          </row>
+
+         </tbody>
+        </tgroup>
+       </table>
+
       </listitem>
      </varlistentry>
 
@@ -2534,7 +2627,7 @@ include_dir 'conf.d'
         Not all of these choices are available on all platforms.
         The default is the first method in the above list that is supported
         by the platform, except that <literal>fdatasync</literal> is the default on
-        Linux.  The default is not necessarily ideal; it might be
+        Linux and FreeBSD.  The default is not necessarily ideal; it might be
         necessary to change this setting or other aspects of your system
         configuration in order to create a crash-safe configuration or
         achieve optimal performance.
@@ -2873,7 +2966,7 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Maximum size to let the WAL grow to between automatic WAL
+        Maximum size to let the WAL grow during automatic
         checkpoints. This is a soft limit; WAL size can exceed
         <varname>max_wal_size</varname> under special circumstances, like
         under heavy load, a failing <varname>archive_command</varname>, or a high
@@ -2969,7 +3062,7 @@ include_dir 'conf.d'
         disabled, but the server continues to accumulate WAL segment files in
         the expectation that a command will soon be provided.  Setting
         <varname>archive_command</varname> to a command that does nothing but
-        return true, e.g. <literal>/bin/true</literal> (<literal>REM</literal> on
+        return true, e.g., <literal>/bin/true</literal> (<literal>REM</literal> on
         Windows), effectively disables
         archiving, but also breaks the chain of WAL files needed for
         archive recovery, so it should only be used in unusual circumstances.
@@ -3090,6 +3183,17 @@ include_dir 'conf.d'
          Also, <varname>wal_level</varname> must be set
          to <literal>replica</literal> or higher to allow replication slots to
          be used.
+        </para>
+
+        <para>
+         On the subscriber side, specifies how many replication origins (see
+         <xref linkend="replication-origins"/>) can be tracked simultaneously,
+         effectively limiting how many logical replication subscriptions can
+         be created on the server. Setting it a lower value than the current
+         number of tracked replication origins (reflected in
+         <link linkend="view-pg-replication-origin-status">pg_replication_origin_status</link>,
+         not <link linkend="catalog-pg-replication-origin">pg_replication_origin</link>)
+         will prevent the server from starting.
         </para>
        </listitem>
       </varlistentry>
@@ -4011,8 +4115,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         if your data is likely to be completely in cache, such as when
         the database is smaller than the total server memory, decreasing
         random_page_cost can be appropriate.  Storage that has a low random
-        read cost relative to sequential, e.g. solid-state drives, might
-        also be better modeled with a lower value for random_page_cost.
+        read cost relative to sequential, e.g., solid-state drives, might
+        also be better modeled with a lower value for random_page_cost,
+        e.g., <literal>1.1</literal>.
        </para>
 
        <tip>
@@ -4823,7 +4928,7 @@ local0.*    /var/log/postgresql
         by <xref linkend="guc-log-timezone"/>.)
         The supported <literal>%</literal>-escapes are similar to those
         listed in the Open Group's <ulink
-        url="http://pubs.opengroup.org/onlinepubs/009695399/functions/strftime.html">strftime
+        url="https://pubs.opengroup.org/onlinepubs/009695399/functions/strftime.html">strftime
         </ulink> specification.
         Note that the system's <function>strftime</function> is not used
         directly, so platform-specific (nonstandard) extensions do not work.
@@ -5863,6 +5968,8 @@ CREATE TABLE postgres_log
 <programlisting>
 COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
 </programlisting>
+        It is also possible to access the file as a foreign table, using
+        the supplied <xref linkend="file-fdw"/> module.
        </para>
 
        <para>
@@ -7745,7 +7852,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         rows that can be locked; that value is unlimited.  The default,
         64, has historically proven sufficient, but you might need to
         raise this value if you have queries that touch many different
-        tables in a single transaction, e.g. query of a parent table with
+        tables in a single transaction, e.g., query of a parent table with
         many children.  This parameter can only be set at server start.
        </para>
 
@@ -8270,7 +8377,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         with assertions enabled. That is the case if the
         macro <symbol>USE_ASSERT_CHECKING</symbol> is defined
         when <productname>PostgreSQL</productname> is built (accomplished
-        e.g. by the <command>configure</command> option
+        e.g., by the <command>configure</command> option
         <option>--enable-cassert</option>). By
         default <productname>PostgreSQL</productname> is built without
         assertions.
@@ -8724,8 +8831,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </term>
       <listitem>
        <para>
-        If set, do not trace locks for tables below this OID. (use to avoid
-        output on system tables)
+        If set, do not trace locks for tables below this OID (used to avoid
+        output on system tables).
        </para>
        <para>
         This parameter is only available if the <symbol>LOCK_DEBUG</symbol>

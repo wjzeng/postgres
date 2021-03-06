@@ -575,8 +575,14 @@ heapgettup(HeapScanDesc scan,
 			 * forward scanners.
 			 */
 			scan->rs_syncscan = false;
-			/* start from last page of the scan */
-			if (scan->rs_startblock > 0)
+
+			/*
+			 * Start from last page of the scan.  Ensure we take into account
+			 * rs_numblocks if it's been adjusted by heap_setscanlimits().
+			 */
+			if (scan->rs_numblocks != InvalidBlockNumber)
+				page = (scan->rs_startblock + scan->rs_numblocks - 1) % scan->rs_nblocks;
+			else if (scan->rs_startblock > 0)
 				page = scan->rs_startblock - 1;
 			else
 				page = scan->rs_nblocks - 1;
@@ -876,8 +882,14 @@ heapgettup_pagemode(HeapScanDesc scan,
 			 * forward scanners.
 			 */
 			scan->rs_syncscan = false;
-			/* start from last page of the scan */
-			if (scan->rs_startblock > 0)
+
+			/*
+			 * Start from last page of the scan.  Ensure we take into account
+			 * rs_numblocks if it's been adjusted by heap_setscanlimits().
+			 */
+			if (scan->rs_numblocks != InvalidBlockNumber)
+				page = (scan->rs_startblock + scan->rs_numblocks - 1) % scan->rs_nblocks;
+			else if (scan->rs_startblock > 0)
 				page = scan->rs_startblock - 1;
 			else
 				page = scan->rs_nblocks - 1;
@@ -6278,6 +6290,7 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 	Page		page;
 	BlockNumber block;
 	Buffer		buffer;
+	TransactionId prune_xid;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -6320,13 +6333,21 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 	START_CRIT_SECTION();
 
 	/*
-	 * The tuple will become DEAD immediately.  Flag that this page
-	 * immediately is a candidate for pruning by setting xmin to
-	 * RecentGlobalXmin.  That's not pretty, but it doesn't seem worth
-	 * inventing a nicer API for this.
+	 * The tuple will become DEAD immediately.  Flag that this page is a
+	 * candidate for pruning by setting xmin to TransactionXmin. While not
+	 * immediately prunable, it is the oldest xid we can cheaply determine
+	 * that's safe against wraparound / being older than the table's
+	 * relfrozenxid.  To defend against the unlikely case of a new relation
+	 * having a newer relfrozenxid than our TransactionXmin, use relfrozenxid
+	 * if so (vacuum can't subsequently move relfrozenxid to beyond
+	 * TransactionXmin, so there's no race here).
 	 */
-	Assert(TransactionIdIsValid(RecentGlobalXmin));
-	PageSetPrunable(page, RecentGlobalXmin);
+	Assert(TransactionIdIsValid(TransactionXmin));
+	if (TransactionIdPrecedes(TransactionXmin, relation->rd_rel->relfrozenxid))
+		prune_xid = relation->rd_rel->relfrozenxid;
+	else
+		prune_xid = TransactionXmin;
+	PageSetPrunable(page, prune_xid);
 
 	/* store transaction information of xact deleting the tuple */
 	tp.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
