@@ -314,6 +314,7 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_BITMAPSET_FIELD(rewindPlanIDs);
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_NODE_FIELD(relationOids);
+	WRITE_NODE_FIELD(partitionOids);
 	WRITE_NODE_FIELD(invalItems);
 	WRITE_NODE_FIELD(paramExecTypes);
 	WRITE_NODE_FIELD(utilityStmt);
@@ -2221,6 +2222,7 @@ _outPlannerGlobal(StringInfo str, const PlannerGlobal *node)
 	WRITE_NODE_FIELD(resultRelations);
 	WRITE_NODE_FIELD(appendRelations);
 	WRITE_NODE_FIELD(relationOids);
+	WRITE_NODE_FIELD(partitionOids);
 	WRITE_NODE_FIELD(invalItems);
 	WRITE_NODE_FIELD(paramExecTypes);
 	WRITE_UINT_FIELD(lastPHId);
@@ -2769,6 +2771,7 @@ _outSelectStmt(StringInfo str, const SelectStmt *node)
 	WRITE_NODE_FIELD(fromClause);
 	WRITE_NODE_FIELD(whereClause);
 	WRITE_NODE_FIELD(groupClause);
+	WRITE_BOOL_FIELD(groupDistinct);
 	WRITE_NODE_FIELD(havingClause);
 	WRITE_NODE_FIELD(windowClause);
 	WRITE_NODE_FIELD(valuesLists);
@@ -2994,6 +2997,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_NODE_FIELD(onConflict);
 	WRITE_NODE_FIELD(returningList);
 	WRITE_NODE_FIELD(groupClause);
+	WRITE_BOOL_FIELD(groupDistinct);
 	WRITE_NODE_FIELD(groupingSets);
 	WRITE_NODE_FIELD(havingQual);
 	WRITE_NODE_FIELD(windowClause);

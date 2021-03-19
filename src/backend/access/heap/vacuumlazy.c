@@ -61,6 +61,7 @@
 #include "access/visibilitymap.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "catalog/index.h"
 #include "catalog/storage.h"
 #include "commands/dbcommands.h"
 #include "commands/progress.h"
@@ -440,6 +441,8 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 	TransactionId new_frozen_xid;
 	MultiXactId new_min_multi;
 	ErrorContextCallback errcallback;
+	PgStat_Counter startreadtime = 0;
+	PgStat_Counter startwritetime = 0;
 
 	Assert(params != NULL);
 	Assert(params->index_cleanup != VACOPT_TERNARY_DEFAULT);
@@ -454,6 +457,11 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 	{
 		pg_rusage_init(&ru0);
 		starttime = GetCurrentTimestamp();
+		if (track_io_timing)
+		{
+			startreadtime = pgStatBlockReadTime;
+			startwritetime = pgStatBlockWriteTime;
+		}
 	}
 
 	if (params->options & VACOPT_VERBOSE)
@@ -674,6 +682,17 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 							 (long long) VacuumPageDirty);
 			appendStringInfo(&buf, _("avg read rate: %.3f MB/s, avg write rate: %.3f MB/s\n"),
 							 read_rate, write_rate);
+			if (track_io_timing)
+			{
+				appendStringInfoString(&buf, _("I/O Timings:"));
+				if (pgStatBlockReadTime - startreadtime > 0)
+					appendStringInfo(&buf, _(" read=%.3f"),
+									 (double) (pgStatBlockReadTime - startreadtime) / 1000);
+				if (pgStatBlockWriteTime - startwritetime > 0)
+					appendStringInfo(&buf, _(" write=%.3f"),
+									 (double) (pgStatBlockWriteTime - startwritetime) / 1000);
+				appendStringInfoChar(&buf, '\n');
+			}
 			appendStringInfo(&buf, _("system usage: %s\n"), pg_rusage_show(&ru0));
 			appendStringInfo(&buf,
 							 _("WAL usage: %ld records, %ld full page images, %llu bytes"),
@@ -944,7 +963,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		bool		all_visible_according_to_vm = false;
 		bool		all_visible;
 		bool		all_frozen = true;	/* provided all_visible is also true */
-		bool		has_dead_tuples;
+		bool		has_dead_items;		/* includes existing LP_DEAD items */
 		TransactionId visibility_cutoff_xid = InvalidTransactionId;
 
 		/* see note above about forcing scanning of last page */
@@ -1247,7 +1266,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		 * requiring freezing.
 		 */
 		all_visible = true;
-		has_dead_tuples = false;
+		has_dead_items = false;
 		nfrozen = 0;
 		hastup = false;
 		prev_dead_count = dead_tuples->num_tuples;
@@ -1299,6 +1318,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 			{
 				lazy_record_dead_tuple(dead_tuples, &(tuple.t_self));
 				all_visible = false;
+				has_dead_items = true;
 				continue;
 			}
 
@@ -1447,7 +1467,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 				HeapTupleHeaderAdvanceLatestRemovedXid(tuple.t_data,
 													   &vacrelstats->latestRemovedXid);
 				tups_vacuumed += 1;
-				has_dead_tuples = true;
+				has_dead_items = true;
 			}
 			else
 			{
@@ -1526,7 +1546,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 				/* Remove tuples from heap if the table has no index */
 				lazy_vacuum_page(onerel, blkno, buf, 0, vacrelstats, &vmbuffer);
 				vacuumed_pages++;
-				has_dead_tuples = false;
+				has_dead_items = false;
 			}
 			else
 			{
@@ -1624,7 +1644,7 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		 * There should never be dead tuples on a page with PD_ALL_VISIBLE
 		 * set, however.
 		 */
-		else if (PageIsAllVisible(page) && has_dead_tuples)
+		else if (PageIsAllVisible(page) && has_dead_items)
 		{
 			elog(WARNING, "page containing dead tuples is marked as all-visible in relation \"%s\" page %u",
 				 vacrelstats->relname, blkno);
@@ -1737,7 +1757,8 @@ lazy_scan_heap(Relation onerel, VacuumParams *params, LVRelStats *vacrelstats,
 		end_parallel_vacuum(indstats, lps, nindexes);
 
 	/* Update index statistics */
-	update_index_statistics(Irel, indstats, nindexes);
+	if (vacrelstats->useindex)
+		update_index_statistics(Irel, indstats, nindexes);
 
 	/* If no indexes, make log report that lazy_vacuum_heap would've made */
 	if (vacuumed_pages)
@@ -2923,7 +2944,23 @@ static bool
 lazy_tid_reaped(ItemPointer itemptr, void *state)
 {
 	LVDeadTuples *dead_tuples = (LVDeadTuples *) state;
+	int64		litem,
+				ritem,
+				item;
 	ItemPointer res;
+
+	litem = itemptr_encode(&dead_tuples->itemptrs[0]);
+	ritem = itemptr_encode(&dead_tuples->itemptrs[dead_tuples->num_tuples - 1]);
+	item = itemptr_encode(itemptr);
+
+	/*
+	 * Doing a simple bound check before bsearch() is useful to avoid the
+	 * extra cost of bsearch(), especially if dead tuples on the heap are
+	 * concentrated in a certain range.  Since this function is called for
+	 * every index tuple, it pays to be really fast.
+	 */
+	if (item < litem || item > ritem)
+		return false;
 
 	res = (ItemPointer) bsearch((void *) itemptr,
 								(void *) dead_tuples->itemptrs,

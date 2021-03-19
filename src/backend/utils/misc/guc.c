@@ -1123,6 +1123,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_parallel_insert", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of parallel plans for INSERT commands."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_parallel_insert,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		/* Not for general use --- used by SET SESSION AUTHORIZATION */
 		{"is_superuser", PGC_INTERNAL, UNGROUPED,
 			gettext_noop("Shows whether the current user is a superuser."),
@@ -1361,6 +1371,15 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+	{
+		{"remove_temp_files_after_crash", PGC_SIGHUP, ERROR_HANDLING_OPTIONS,
+			gettext_noop("Remove temporary files after backend crash."),
+			NULL
+		},
+		&remove_temp_files_after_crash,
+		true,
+		NULL, NULL, NULL
+	},
 
 	{
 		{"log_duration", PGC_SUSET, LOGGING_WHAT,
@@ -1482,6 +1501,15 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&track_io_timing,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"track_wal_io_timing", PGC_SUSET, STATS_COLLECTOR,
+			gettext_noop("Collects timing statistics for WAL I/O activity."),
+			NULL
+		},
+		&track_wal_io_timing,
 		false,
 		NULL, NULL, NULL
 	},
@@ -3691,16 +3719,6 @@ static struct config_real ConfigureNamesReal[] =
 		},
 		&CheckPointCompletionTarget,
 		0.5, 0.0, 1.0,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"vacuum_cleanup_index_scale_factor", PGC_USERSET, CLIENT_CONN_STATEMENT,
-			gettext_noop("Number of tuple inserts prior to index cleanup as a fraction of reltuples."),
-			NULL
-		},
-		&vacuum_cleanup_index_scale_factor,
-		0.1, 0.0, 1e10,
 		NULL, NULL, NULL
 	},
 
@@ -10755,6 +10773,8 @@ ProcessGUCArray(ArrayType *array,
 		char	   *s;
 		char	   *name;
 		char	   *value;
+		char	   *namecopy;
+		char	   *valuecopy;
 
 		d = array_ref(array, 1, &i,
 					  -1 /* varlenarray */ ,
@@ -10779,13 +10799,18 @@ ProcessGUCArray(ArrayType *array,
 			continue;
 		}
 
-		(void) set_config_option(name, value,
+		/* free malloc'd strings immediately to avoid leak upon error */
+		namecopy = pstrdup(name);
+		free(name);
+		valuecopy = pstrdup(value);
+		free(value);
+
+		(void) set_config_option(namecopy, valuecopy,
 								 context, source,
 								 action, true, 0, false);
 
-		free(name);
-		if (value)
-			free(value);
+		pfree(namecopy);
+		pfree(valuecopy);
 		pfree(s);
 	}
 }
@@ -11217,34 +11242,50 @@ static bool
 call_string_check_hook(struct config_string *conf, char **newval, void **extra,
 					   GucSource source, int elevel)
 {
+	volatile bool result = true;
+
 	/* Quick success if no hook */
 	if (!conf->check_hook)
 		return true;
 
-	/* Reset variables that might be set by hook */
-	GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
-	GUC_check_errmsg_string = NULL;
-	GUC_check_errdetail_string = NULL;
-	GUC_check_errhint_string = NULL;
-
-	if (!conf->check_hook(newval, extra, source))
+	/*
+	 * If elevel is ERROR, or if the check_hook itself throws an elog
+	 * (undesirable, but not always avoidable), make sure we don't leak the
+	 * already-malloc'd newval string.
+	 */
+	PG_TRY();
 	{
-		ereport(elevel,
-				(errcode(GUC_check_errcode_value),
-				 GUC_check_errmsg_string ?
-				 errmsg_internal("%s", GUC_check_errmsg_string) :
-				 errmsg("invalid value for parameter \"%s\": \"%s\"",
-						conf->gen.name, *newval ? *newval : ""),
-				 GUC_check_errdetail_string ?
-				 errdetail_internal("%s", GUC_check_errdetail_string) : 0,
-				 GUC_check_errhint_string ?
-				 errhint("%s", GUC_check_errhint_string) : 0));
-		/* Flush any strings created in ErrorContext */
-		FlushErrorState();
-		return false;
-	}
+		/* Reset variables that might be set by hook */
+		GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
+		GUC_check_errmsg_string = NULL;
+		GUC_check_errdetail_string = NULL;
+		GUC_check_errhint_string = NULL;
 
-	return true;
+		if (!conf->check_hook(newval, extra, source))
+		{
+			ereport(elevel,
+					(errcode(GUC_check_errcode_value),
+					 GUC_check_errmsg_string ?
+					 errmsg_internal("%s", GUC_check_errmsg_string) :
+					 errmsg("invalid value for parameter \"%s\": \"%s\"",
+							conf->gen.name, *newval ? *newval : ""),
+					 GUC_check_errdetail_string ?
+					 errdetail_internal("%s", GUC_check_errdetail_string) : 0,
+					 GUC_check_errhint_string ?
+					 errhint("%s", GUC_check_errhint_string) : 0));
+			/* Flush any strings created in ErrorContext */
+			FlushErrorState();
+			result = false;
+		}
+	}
+	PG_CATCH();
+	{
+		free(*newval);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return result;
 }
 
 static bool

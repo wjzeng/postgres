@@ -1155,6 +1155,10 @@ AC_SEARCH_LIBS(shmget, cygipc)
 # *BSD:
 AC_SEARCH_LIBS(backtrace_symbols, execinfo)
 
+if test "$enable_thread_safety" = yes; then
+  AC_SEARCH_LIBS(pthread_barrier_wait, pthread)
+fi
+
 if test "$with_readline" = yes; then
   PGAC_CHECK_READLINE
   if test x"$pgac_cv_check_readline" = x"no"; then
@@ -1752,6 +1756,10 @@ AC_REPLACE_FUNCS(m4_normalize([
 	strnlen
 	strtof
 ]))
+
+if test "$enable_thread_safety" = yes; then
+  AC_REPLACE_FUNCS(pthread_barrier_wait)
+fi
 
 if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both

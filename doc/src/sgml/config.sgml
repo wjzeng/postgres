@@ -5072,6 +5072,29 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-enable-parallel-insert" xreflabel="enable_parallel_insert">
+      <term><varname>enable_parallel_insert</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_parallel_insert</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of parallel plans for
+        <command>INSERT</command> commands. The default is <literal>on</literal>.
+        When enabled, the planner performs additional parallel-safety checks
+        on the target table's attributes and indexes, in order to determine
+        if it's safe to use a parallel plan for <command>INSERT</command>. In
+        cases such as when the target table has a large number of partitions,
+        and particularly also when that table uses something parallel-unsafe
+        that prevents parallelism, the overhead of these checks may become
+        prohibitively high. To address this potential overhead in these cases,
+        this option can be used to disable the use of parallel plans for
+        <command>INSERT</command>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
      </sect2>
      <sect2 id="runtime-config-query-constants">
@@ -7450,15 +7473,38 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <listitem>
        <para>
         Enables timing of database I/O calls.  This parameter is off by
-        default, because it will repeatedly query the operating system for
+        default, as it will repeatedly query the operating system for
         the current time, which may cause significant overhead on some
         platforms.  You can use the <xref linkend="pgtesttiming"/> tool to
         measure the overhead of timing on your system.
         I/O timing information is
         displayed in <link linkend="monitoring-pg-stat-database-view">
         <structname>pg_stat_database</structname></link>, in the output of
-        <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option is
-        used, and by <xref linkend="pgstatstatements"/>.  Only superusers can
+        <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option
+        is used, by autovacuum for auto-vacuums and auto-analyzes, when
+        <xref linkend="guc-log-autovacuum-min-duration"/> is set and by
+        <xref linkend="pgstatstatements"/>.  Only superusers can change this
+        setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-track-wal-io-timing" xreflabel="track_wal_io_timing">
+      <term><varname>track_wal_io_timing</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>track_wal_io_timing</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables timing of WAL I/O calls. This parameter is off by default,
+        as it will repeatedly query the operating system for the current time,
+        which may cause significant overhead on some platforms.
+        You can use the <application>pg_test_timing</application> tool to
+        measure the overhead of timing on your system.
+        I/O timing information is
+        displayed in <link linkend="monitoring-pg-stat-wal-view">
+        <structname>pg_stat_wal</structname></link>.  Only superusers can
         change this setting.
        </para>
       </listitem>
@@ -8520,46 +8566,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         autovacuums.
         For more information see <xref linkend="vacuum-for-multixact-wraparound"/>.
        </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-vacuum-cleanup-index-scale-factor" xreflabel="vacuum_cleanup_index_scale_factor">
-      <term><varname>vacuum_cleanup_index_scale_factor</varname> (<type>floating point</type>)
-      <indexterm>
-       <primary><varname>vacuum_cleanup_index_scale_factor</varname></primary>
-       <secondary>configuration parameter</secondary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Specifies the fraction of the total number of heap tuples counted in
-        the previous statistics collection that can be inserted without
-        incurring an index scan at the <command>VACUUM</command> cleanup stage.
-        This setting currently applies to B-tree indexes only.
-       </para>
-
-       <para>
-        If no tuples were deleted from the heap, B-tree indexes are still
-        scanned at the <command>VACUUM</command> cleanup stage when the
-        index's statistics are stale.  Index statistics are considered
-        stale if the number of newly inserted tuples exceeds the
-        <varname>vacuum_cleanup_index_scale_factor</varname>
-        fraction of the total number of heap tuples detected by the previous
-        statistics collection. The total number of heap tuples is stored in
-        the index meta-page. Note that the meta-page does not include this data
-        until <command>VACUUM</command> finds no dead tuples, so B-tree index
-        scan at the cleanup stage can only be skipped if the second and
-        subsequent <command>VACUUM</command> cycles detect no dead tuples.
-       </para>
-
-       <para>
-        The value can range from <literal>0</literal> to
-        <literal>10000000000</literal>.
-        When <varname>vacuum_cleanup_index_scale_factor</varname> is set to
-        <literal>0</literal>, index scans are never skipped during
-        <command>VACUUM</command> cleanup. The default value is <literal>0.1</literal>.
-       </para>
-
       </listitem>
      </varlistentry>
 
@@ -9661,6 +9667,23 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         <productname>PostgreSQL</productname> is being invoked by clusterware, it may be
         useful to disable the restart so that the clusterware can gain
         control and take any actions it deems appropriate.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-remove-temp-files-after-crash" xreflabel="remove_temp_files_after_crash">
+      <term><varname>remove_temp_files_after_crash</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>remove_temp_files_after_crash</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>on</literal>, which is the default,
+        <productname>PostgreSQL</productname> will automatically remove
+        temporary files after a backend crash. If disabled, the files will be
+        retained and may be used for debugging, for example. Repeated crashes 
+        may however result in accumulation of useless files.
        </para>
       </listitem>
      </varlistentry>
