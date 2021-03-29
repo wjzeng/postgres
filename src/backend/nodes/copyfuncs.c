@@ -96,7 +96,6 @@ _copyPlannedStmt(const PlannedStmt *from)
 	COPY_BITMAPSET_FIELD(rewindPlanIDs);
 	COPY_NODE_FIELD(rowMarks);
 	COPY_NODE_FIELD(relationOids);
-	COPY_NODE_FIELD(partitionOids);
 	COPY_NODE_FIELD(invalItems);
 	COPY_NODE_FIELD(paramExecTypes);
 	COPY_NODE_FIELD(utilityStmt);
@@ -2310,6 +2309,7 @@ _copyRestrictInfo(const RestrictInfo *from)
 	COPY_SCALAR_FIELD(can_join);
 	COPY_SCALAR_FIELD(pseudoconstant);
 	COPY_SCALAR_FIELD(leakproof);
+	COPY_SCALAR_FIELD(has_volatile);
 	COPY_SCALAR_FIELD(security_level);
 	COPY_BITMAPSET_FIELD(clause_relids);
 	COPY_BITMAPSET_FIELD(required_relids);
@@ -2981,6 +2981,17 @@ _copyIndexElem(const IndexElem *from)
 	return newnode;
 }
 
+static StatsElem *
+_copyStatsElem(const StatsElem *from)
+{
+	StatsElem  *newnode = makeNode(StatsElem);
+
+	COPY_STRING_FIELD(name);
+	COPY_NODE_FIELD(expr);
+
+	return newnode;
+}
+
 static ColumnDef *
 _copyColumnDef(const ColumnDef *from)
 {
@@ -2988,6 +2999,7 @@ _copyColumnDef(const ColumnDef *from)
 
 	COPY_STRING_FIELD(colname);
 	COPY_NODE_FIELD(typeName);
+	COPY_STRING_FIELD(compression);
 	COPY_SCALAR_FIELD(inhcount);
 	COPY_SCALAR_FIELD(is_local);
 	COPY_SCALAR_FIELD(is_not_null);
@@ -4737,6 +4749,7 @@ _copyPartitionCmd(const PartitionCmd *from)
 
 	COPY_NODE_FIELD(name);
 	COPY_NODE_FIELD(bound);
+	COPY_SCALAR_FIELD(concurrent);
 
 	return newnode;
 }
@@ -5697,6 +5710,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_IndexElem:
 			retval = _copyIndexElem(from);
+			break;
+		case T_StatsElem:
+			retval = _copyStatsElem(from);
 			break;
 		case T_ColumnDef:
 			retval = _copyColumnDef(from);

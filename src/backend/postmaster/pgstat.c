@@ -3970,9 +3970,6 @@ pgstat_get_wait_client(WaitEventClient w)
 		case WAIT_EVENT_SSL_OPEN_SERVER:
 			event_name = "SSLOpenServer";
 			break;
-		case WAIT_EVENT_WAL_RECEIVER_WAIT_START:
-			event_name = "WalReceiverWaitStart";
-			break;
 		case WAIT_EVENT_WAL_SENDER_WAIT_WAL:
 			event_name = "WalSenderWaitForWAL";
 			break;
@@ -4124,8 +4121,11 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_SYNC_REP:
 			event_name = "SyncRep";
 			break;
-		case WAIT_EVENT_WALRCV_EXIT:
-			event_name = "WalrcvExit";
+		case WAIT_EVENT_WAL_RECEIVER_EXIT:
+			event_name = "WalReceiverExit";
+			break;
+		case WAIT_EVENT_WAL_RECEIVER_WAIT_START:
+			event_name = "WalReceiverWaitStart";
 			break;
 		case WAIT_EVENT_XACT_GROUP_UPDATE:
 			event_name = "XactGroupUpdate";

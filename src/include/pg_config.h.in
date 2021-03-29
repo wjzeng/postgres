@@ -319,6 +319,9 @@
 /* Define to 1 if you have the `ldap_r' library (-lldap_r). */
 #undef HAVE_LIBLDAP_R
 
+/* Define to 1 if you have the `lz4' library (-llz4). */
+#undef HAVE_LIBLZ4
+
 /* Define to 1 if you have the `m' library (-lm). */
 #undef HAVE_LIBM
 
@@ -357,6 +360,9 @@
 
 /* Define to 1 if `long long int' works and is 64 bits. */
 #undef HAVE_LONG_LONG_INT_64
+
+/* Define to 1 if you have the <lz4.h> header file. */
+#undef HAVE_LZ4_H
 
 /* Define to 1 if you have the <mbarrier.h> header file. */
 #undef HAVE_MBARRIER_H
@@ -589,6 +595,9 @@
 
 /* Define to 1 if you have the `symlink' function. */
 #undef HAVE_SYMLINK
+
+/* Define to 1 if you have the `syncfs' function. */
+#undef HAVE_SYNCFS
 
 /* Define to 1 if you have the `sync_file_range' function. */
 #undef HAVE_SYNC_FILE_RANGE
@@ -898,6 +907,9 @@
 
 /* Define to 1 to build with LLVM based JIT support. (--with-llvm) */
 #undef USE_LLVM
+
+/* Define to 1 to build with LZ4 support. (--with-lz4) */
+#undef USE_LZ4
 
 /* Define to select named POSIX semaphores. */
 #undef USE_NAMED_POSIX_SEMAPHORES

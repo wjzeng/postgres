@@ -3302,9 +3302,15 @@ include_dir 'conf.d'
       <listitem>
        <para>
         Specifies the target of checkpoint completion, as a fraction of
-        total time between checkpoints. The default is 0.5.
-        This parameter can only be set in the <filename>postgresql.conf</filename>
-        file or on the server command line.
+        total time between checkpoints. The default is 0.9, which spreads the
+        checkpoint across almost all of the available interval, providing fairly
+        consistent I/O load while also leaving some time for checkpoint
+        completion overhead.  Reducing this parameter is not recommended because
+        it causes the checkpoint to complete faster.  This results in a higher
+        rate of I/O during the checkpoint followed by a period of less I/O between
+        the checkpoint completion and the next scheduled checkpoint.  This
+        parameter can only be set in the <filename>postgresql.conf</filename> file
+        or on the server command line.
        </para>
       </listitem>
      </varlistentry>
@@ -5068,29 +5074,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of <acronym>TID</acronym>
         scan plan types. The default is <literal>on</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-enable-parallel-insert" xreflabel="enable_parallel_insert">
-      <term><varname>enable_parallel_insert</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>enable_parallel_insert</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Enables or disables the query planner's use of parallel plans for
-        <command>INSERT</command> commands. The default is <literal>on</literal>.
-        When enabled, the planner performs additional parallel-safety checks
-        on the target table's attributes and indexes, in order to determine
-        if it's safe to use a parallel plan for <command>INSERT</command>. In
-        cases such as when the target table has a large number of partitions,
-        and particularly also when that table uses something parallel-unsafe
-        that prevents parallelism, the overhead of these checks may become
-        prohibitively high. To address this potential overhead in these cases,
-        this option can be used to disable the use of parallel plans for
-        <command>INSERT</command>.
        </para>
       </listitem>
      </varlistentry>
@@ -8151,6 +8134,28 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-default-toast-compression" xreflabel="default_toast_compression">
+      <term><varname>default_toast_compression</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>default_toast_compression</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This variable sets the default
+        <link linkend="storage-toast">TOAST</link>
+        compression method for columns of newly-created tables. The
+        <command>CREATE TABLE</command> statement can override this default
+        by specifying the <literal>COMPRESSION</literal> column option.
+
+        The supported compression methods are <literal>pglz</literal> and
+        (if configured at the time <productname>PostgreSQL</productname> was
+        built) <literal>lz4</literal>.
+        The default is <literal>pglz</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-temp-tablespaces" xreflabel="temp_tablespaces">
       <term><varname>temp_tablespaces</varname> (<type>string</type>)
       <indexterm>
@@ -9717,6 +9722,41 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         operation can be retried in a later checkpoint.  Only set it to on
         after investigating the operating system's treatment of buffered data
         in case of write-back failure.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-init-sync-method" xreflabel="recovery_init_sync_method">
+      <term><varname>recovery_init_sync_method</varname> (<type>enum</type>)
+       <indexterm>
+        <primary><varname>recovery_init_sync_method</varname> configuration parameter</primary>
+       </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>fsync</literal>, which is the default,
+        <productname>PostgreSQL</productname> will recursively open and
+        synchronize all files in the data directory before crash recovery
+        begins.  The search for files will follow symbolic links for the WAL
+        directory and each configured tablespace (but not any other symbolic
+        links).  This is intended to make sure that all WAL and data files are
+        durably stored on disk before replaying changes.  This applies whenever
+        starting a database cluster that did not shut down cleanly, including
+        copies created with <application>pg_basebackup</application>.
+       </para>
+       <para>
+        On Linux, <literal>syncfs</literal> may be used instead, to ask the
+        operating system to synchronize the whole file systems that contain the
+        data directory, the WAL files and each tablespace (but not any other
+        file systems that may be reachable through symbolic links).  This may
+        be a lot faster than the <literal>fsync</literal> setting, because it
+        doesn't need to open each file one by one.  On the other hand, it may
+        be slower if a file system is shared by other applications that
+        modify a lot of files, since those files will also be written to disk.
+        Furthermore, on versions of Linux before 5.8, I/O errors encountered
+        while writing data to disk may not be reported to
+        <productname>PostgreSQL</productname>, and relevant error messages may
+        appear only in kernel logs.
        </para>
       </listitem>
      </varlistentry>
