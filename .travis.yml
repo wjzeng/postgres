@@ -1,0 +1,75 @@
+
+language: c
+
+sudo: required 
+
+cache: ccache
+
+os:
+  - linux
+
+compiler:
+  - gcc
+
+python:
+  - "2.7"
+
+branches:
+  only:
+  - build_master
+
+env:
+  global:
+  - secure: gLyiDZf8GdrAhmv3i8XcBKPV4Z1m+eOh523iYyQkWoieTF+Kxcr/MaEIuppF1l3uQeze5+UmwKbYUUtfxmrgSXv6A0lsfQP9yC5ZHrKw5q78w9l/fpfhhYI/y2BaAdwtXvO2TAYZ/WMlO8rAFGCqfuEBRp8MO9sBIUSj0gGroAOHS1DYLFw84KQY4DvSjdixk+Vx8DeAaM7GnPpl7mgAXJLMISr5uCX/dk71i51UX+Iwsvt/lC3E33CvY53sh/7EaYOj2vhE5AYYOIybTSCoRUE5LsH8D67fBOoFutcTHP91T8mVdH59fOGCyK9ofuAc/A2jZz0gqjui5UWT0BPBp8Wb0sC3AgfPXOon+pM550JxGUskZ7NF2lLHc3zIg/HylrtQ0rSbB1jjK5kdSf14xT2zOkSZGb7R2B0h5C8epN1sv/Bl/8LpB13qlkFnmgpNyYJl+qea8PrCoxCmEvk0KByz3cS2s4/OEKD+KHhv/Zdw/r6ICAsJAIF/82uJBsYnGWGAzWjhXjCmP6i5cZlInKrYJeG7DoJYcJc198No0DIInFXhs8sjgDziHU28MCIUwO1EFf6/PZbJUOibGzy92bkIE0eSQZcwQu8YURnfzmgjYZ1j5c1gqfyH5qCjNe+GMxUO1f4KN4rbTWtHf3f006WEaximo+olxZkgq7Kqz84=
+  - secure: gjtGbI7Jn5rV9ufJlyOL2zCCSXIjGziXwBz8J8J5px+CMiadHFavdPVHCfQ623CuIOSzDkP77b8dL3iq87wNFGKOY1YN/K//8rQv4r/ER2xsnHPmt1aXKlleb6zjSAmhcAk2c4YOCb0+nZyBjrbHBccGXGjPvsrHHKWv5K+aGvnoylqsBfmQc1i6DSm3F0Dl7uuTsFqcvKiuwusX9LUKf51Q/rI7VMwVw2NAnI+5fwPJYnOPPMkJEfBt2Evg1WSd7PiW0f183g2i5IsVp3xMYmvzjuMQ7A20oRXBqjNr0KVwYBzF97Gsgg7yDiSq9VoHqp9OWFndO0jlr8C7v5jWNDHjItAtS/kAS+UEvySyS7cwRnn4aK9Ia8AlTnZyzKHTAiUNmhtaaoENki53EukTCMUQmksaDSEHCB+XcY2Uanb258NLogfcyeVwCa6sAowUSoeDN5YKFGkCM6vFHe048ZTgb6+aOdTJssDL/tO0+bDQw/35oEDxUZro1bLTIeYiyNi1cU2lRjYSjh/BVUXd8ln9oHAuWMZPWnD4BP+xq+MpXaWZ3nklJVWe4W8MqedTBBK8jYluC4YKF9VZAFsWpBG1W+AmtPA5nvcGDlO8phFv55LrAjbx3rrs9ZirjuDv/i4Yr1GLAqSqULdAJn7etmI/Ob3fmhyE9a+a0S74rRo=
+  - PG_TEST_EXTRA="ssl ldap kerberos"
+
+addons:
+  apt:
+    packages:
+      - gdb
+      - lcov
+      - libipc-run-perl
+      - libperl-dev
+      - libpython-dev
+      - tcl-dev
+      - libldap2-dev
+      - libicu-dev
+      - docbook
+      - docbook-xml
+      - docbook-dsssl
+      - docbook-xsl
+      - libxml2-utils
+      - openjade1.3
+      - opensp
+      - xsltproc
+      - krb5-admin-server
+      - krb5-kdc
+      - krb5-user
+      - slapd
+      - ldap-utils
+      - libssl-dev
+
+before_install:
+  - echo '/tmp/%e-%s-%p.core' | sudo tee /proc/sys/kernel/core_pattern
+
+script: ./configure --prefix=$HOME/install --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-perl --with-ldap --with-openssl --with-gssapi --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom && make -j4 all contrib docs && make install && make check-world
+
+after_failure:
+  - for f in $(find . -name regression.diffs) ; do echo "========= Contents of $f" ; head -1000 $f ; done
+  - for f in $(find . -name install.log) ; do echo "========= Contents of $f" ; tail -100 $f ; done
+  - |
+    for corefile in $(find /tmp/ -name '*.core' 2>/dev/null) ; do
+      binary=$(gdb -quiet -core $corefile -batch -ex 'info auxv' | grep AT_EXECFN | perl -pe "s/^.*\"(.*)\"\$/\$1/g")
+      echo dumping $corefile for $binary
+      gdb --batch --quiet -ex "thread apply all bt full" -ex "quit" $binary $corefile
+    done
+
+notifications:
+  email:
+    recipients:
+      - wjzeng2012@gmail.com
+    on_success: change
+    on_failure: always
+
+after_script: ccache -s
