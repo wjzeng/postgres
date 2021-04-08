@@ -153,9 +153,8 @@ create_logical_replication_slot(char *name, char *plugin,
 	ctx = CreateInitDecodingContext(plugin, NIL,
 									false,	/* just catalogs is OK */
 									restart_lsn,
-									XL_ROUTINE(.page_read = read_local_xlog_page,
-											   .segment_open = wal_segment_open,
-											   .segment_close = wal_segment_close),
+									read_local_xlog_page,
+									wal_segment_close,
 									NULL, NULL, NULL);
 
 	/*
@@ -512,9 +511,8 @@ pg_logical_replication_slot_advance(XLogRecPtr moveto)
 		ctx = CreateDecodingContext(InvalidXLogRecPtr,
 									NIL,
 									true,	/* fast_forward */
-									XL_ROUTINE(.page_read = read_local_xlog_page,
-											   .segment_open = wal_segment_open,
-											   .segment_close = wal_segment_close),
+									read_local_xlog_page,
+									wal_segment_close,
 									NULL, NULL, NULL);
 
 		/*
@@ -536,7 +534,13 @@ pg_logical_replication_slot_advance(XLogRecPtr moveto)
 			 * Read records.  No changes are generated in fast_forward mode,
 			 * but snapbuilder/slot statuses are updated properly.
 			 */
-			record = XLogReadRecord(ctx->reader, &errm);
+			while (XLogReadRecord(ctx->reader, &record, &errm) ==
+				   XLREAD_NEED_DATA)
+			{
+				if (!ctx->page_read(ctx->reader))
+					break;
+			}
+
 			if (errm)
 				elog(ERROR, "%s", errm);
 
@@ -647,7 +651,7 @@ pg_replication_slot_advance(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("replication slot \"%s\" cannot be advanced",
 						NameStr(*slotname)),
-				 errdetail("This slot has never previously reserved WAL, or has been invalidated.")));
+				 errdetail("This slot has never previously reserved WAL, or it has been invalidated.")));
 
 	/*
 	 * Check if the slot is not moving backwards.  Physical slots rely simply

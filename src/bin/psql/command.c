@@ -72,6 +72,9 @@ static backslashResult exec_command_copyright(PsqlScanState scan_state, bool act
 static backslashResult exec_command_crosstabview(PsqlScanState scan_state, bool active_branch);
 static backslashResult exec_command_d(PsqlScanState scan_state, bool active_branch,
 									  const char *cmd);
+static bool exec_command_dfo(PsqlScanState scan_state, const char *cmd,
+							 const char *pattern,
+							 bool show_verbose, bool show_system);
 static backslashResult exec_command_edit(PsqlScanState scan_state, bool active_branch,
 										 PQExpBuffer query_buf, PQExpBuffer previous_buf);
 static backslashResult exec_command_ef_ev(PsqlScanState scan_state, bool active_branch,
@@ -148,11 +151,11 @@ static void save_query_text_state(PsqlScanState scan_state, ConditionalStack cst
 								  PQExpBuffer query_buf);
 static void discard_query_text(PsqlScanState scan_state, ConditionalStack cstack,
 							   PQExpBuffer query_buf);
-static void copy_previous_query(PQExpBuffer query_buf, PQExpBuffer previous_buf);
+static bool copy_previous_query(PQExpBuffer query_buf, PQExpBuffer previous_buf);
 static bool do_connect(enum trivalue reuse_previous_specification,
 					   char *dbname, char *user, char *host, char *port);
 static bool do_edit(const char *filename_arg, PQExpBuffer query_buf,
-					int lineno, bool *edited);
+					int lineno, bool discard_on_quit, bool *edited);
 static bool do_shell(const char *command);
 static bool do_watch(PQExpBuffer query_buf, double sleep);
 static bool lookup_object_oid(EditableObjectType obj_type, const char *desc,
@@ -418,7 +421,7 @@ exec_command(const char *cmd,
 	 * the individual command subroutines.
 	 */
 	if (status == PSQL_CMD_SEND)
-		copy_previous_query(query_buf, previous_buf);
+		(void) copy_previous_query(query_buf, previous_buf);
 
 	return status;
 }
@@ -790,7 +793,8 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 					case 'p':
 					case 't':
 					case 'w':
-						success = describeFunctions(&cmd[2], pattern, show_verbose, show_system);
+						success = exec_command_dfo(scan_state, cmd, pattern,
+												   show_verbose, show_system);
 						break;
 					default:
 						status = PSQL_CMD_UNKNOWN;
@@ -811,7 +815,8 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 				success = listSchemas(pattern, show_verbose, show_system);
 				break;
 			case 'o':
-				success = describeOperators(pattern, show_verbose, show_system);
+				success = exec_command_dfo(scan_state, cmd, pattern,
+										   show_verbose, show_system);
 				break;
 			case 'O':
 				success = listCollations(pattern, show_verbose, show_system);
@@ -951,6 +956,45 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 	return status;
 }
 
+/* \df and \do; messy enough to split out of exec_command_d */
+static bool
+exec_command_dfo(PsqlScanState scan_state, const char *cmd,
+				 const char *pattern,
+				 bool show_verbose, bool show_system)
+{
+	bool		success;
+	char	   *arg_patterns[FUNC_MAX_ARGS];
+	int			num_arg_patterns = 0;
+
+	/* Collect argument-type patterns too */
+	if (pattern)				/* otherwise it was just \df or \do */
+	{
+		char	   *ap;
+
+		while ((ap = psql_scan_slash_option(scan_state,
+											OT_NORMAL, NULL, true)) != NULL)
+		{
+			arg_patterns[num_arg_patterns++] = ap;
+			if (num_arg_patterns >= FUNC_MAX_ARGS)
+				break;			/* protect limited-size array */
+		}
+	}
+
+	if (cmd[1] == 'f')
+		success = describeFunctions(&cmd[2], pattern,
+									arg_patterns, num_arg_patterns,
+									show_verbose, show_system);
+	else
+		success = describeOperators(pattern,
+									arg_patterns, num_arg_patterns,
+									show_verbose, show_system);
+
+	while (--num_arg_patterns >= 0)
+		free(arg_patterns[num_arg_patterns]);
+
+	return success;
+}
+
 /*
  * \e or \edit -- edit the current query buffer, or edit a file and
  * make it the query buffer
@@ -1004,14 +1048,27 @@ exec_command_edit(PsqlScanState scan_state, bool active_branch,
 			}
 			if (status != PSQL_CMD_ERROR)
 			{
+				bool		discard_on_quit;
+
 				expand_tilde(&fname);
 				if (fname)
+				{
 					canonicalize_path(fname);
+					/* Always clear buffer if the file isn't modified */
+					discard_on_quit = true;
+				}
+				else
+				{
+					/*
+					 * If query_buf is empty, recall previous query for
+					 * editing.  But in that case, the query buffer should be
+					 * emptied if editing doesn't modify the file.
+					 */
+					discard_on_quit = copy_previous_query(query_buf,
+														  previous_buf);
+				}
 
-				/* If query_buf is empty, recall previous query for editing */
-				copy_previous_query(query_buf, previous_buf);
-
-				if (do_edit(fname, query_buf, lineno, NULL))
+				if (do_edit(fname, query_buf, lineno, discard_on_quit, NULL))
 					status = PSQL_CMD_NEWEDIT;
 				else
 					status = PSQL_CMD_ERROR;
@@ -1134,7 +1191,7 @@ exec_command_ef_ev(PsqlScanState scan_state, bool active_branch,
 		{
 			bool		edited = false;
 
-			if (!do_edit(NULL, query_buf, lineno, &edited))
+			if (!do_edit(NULL, query_buf, lineno, true, &edited))
 				status = PSQL_CMD_ERROR;
 			else if (!edited)
 				puts(_("No changes"));
@@ -2637,7 +2694,7 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 		}
 
 		/* If query_buf is empty, recall and execute previous query */
-		copy_previous_query(query_buf, previous_buf);
+		(void) copy_previous_query(query_buf, previous_buf);
 
 		success = do_watch(query_buf, sleep);
 
@@ -2961,12 +3018,19 @@ discard_query_text(PsqlScanState scan_state, ConditionalStack cstack,
  * This is used by various slash commands for which re-execution of a
  * previous query is a common usage.  For convenience, we allow the
  * case of query_buf == NULL (and do nothing).
+ *
+ * Returns "true" if the previous query was copied into the query
+ * buffer, else "false".
  */
-static void
+static bool
 copy_previous_query(PQExpBuffer query_buf, PQExpBuffer previous_buf)
 {
 	if (query_buf && query_buf->len == 0)
+	{
 		appendPQExpBufferStr(query_buf, previous_buf->data);
+		return true;
+	}
+	return false;
 }
 
 /*
@@ -3647,10 +3711,11 @@ UnsyncVariables(void)
 
 
 /*
- * do_edit -- handler for \e
+ * helper for do_edit(): actually invoke the editor
  *
- * If you do not specify a filename, the current query buffer will be copied
- * into a temporary one.
+ * Returns true on success, false if we failed to invoke the editor or
+ * it returned nonzero status.  (An error message is printed for failed-
+ * to-invoke cases, but not if the editor returns nonzero status.)
  */
 static bool
 editFile(const char *fname, int lineno)
@@ -3719,10 +3784,23 @@ editFile(const char *fname, int lineno)
 }
 
 
-/* call this one */
+/*
+ * do_edit -- handler for \e
+ *
+ * If you do not specify a filename, the current query buffer will be copied
+ * into a temporary file.
+ *
+ * After this function is done, the resulting file will be copied back into the
+ * query buffer.  As an exception to this, the query buffer will be emptied
+ * if the file was not modified (or the editor failed) and the caller passes
+ * "discard_on_quit" = true.
+ *
+ * If "edited" isn't NULL, *edited will be set to true if the query buffer
+ * is successfully replaced.
+ */
 static bool
 do_edit(const char *filename_arg, PQExpBuffer query_buf,
-		int lineno, bool *edited)
+		int lineno, bool discard_on_quit, bool *edited)
 {
 	char		fnametmp[MAXPGPATH];
 	FILE	   *stream = NULL;
@@ -3870,6 +3948,7 @@ do_edit(const char *filename_arg, PQExpBuffer query_buf,
 			{
 				pg_log_error("%s: %m", fname);
 				error = true;
+				resetPQExpBuffer(query_buf);
 			}
 			else if (edited)
 			{
@@ -3878,6 +3957,15 @@ do_edit(const char *filename_arg, PQExpBuffer query_buf,
 
 			fclose(stream);
 		}
+	}
+	else
+	{
+		/*
+		 * If the file was not modified, and the caller requested it, discard
+		 * the query buffer.
+		 */
+		if (discard_on_quit)
+			resetPQExpBuffer(query_buf);
 	}
 
 	/* remove temp file */

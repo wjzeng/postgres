@@ -123,6 +123,9 @@ static SimpleOidList tabledata_exclude_oids = {NULL, NULL};
 static SimpleStringList foreign_servers_include_patterns = {NULL, NULL};
 static SimpleOidList foreign_servers_include_oids = {NULL, NULL};
 
+static SimpleStringList extension_include_patterns = {NULL, NULL};
+static SimpleOidList extension_include_oids = {NULL, NULL};
+
 static const CatalogId nilCatalogId = {0, 0};
 
 /* override for standard extra_float_digits setting */
@@ -151,6 +154,10 @@ static void expand_schema_name_patterns(Archive *fout,
 										SimpleStringList *patterns,
 										SimpleOidList *oids,
 										bool strict_names);
+static void expand_extension_name_patterns(Archive *fout,
+										   SimpleStringList *patterns,
+										   SimpleOidList *oids,
+										   bool strict_names);
 static void expand_foreign_server_name_patterns(Archive *fout,
 												SimpleStringList *patterns,
 												SimpleOidList *oids);
@@ -335,6 +342,7 @@ main(int argc, char **argv)
 		{"clean", no_argument, NULL, 'c'},
 		{"create", no_argument, NULL, 'C'},
 		{"dbname", required_argument, NULL, 'd'},
+		{"extension", required_argument, NULL, 'e'},
 		{"file", required_argument, NULL, 'f'},
 		{"format", required_argument, NULL, 'F'},
 		{"host", required_argument, NULL, 'h'},
@@ -426,7 +434,7 @@ main(int argc, char **argv)
 
 	InitDumpOptions(&dopt);
 
-	while ((c = getopt_long(argc, argv, "abBcCd:E:f:F:h:j:n:N:Op:RsS:t:T:U:vwWxZ:",
+	while ((c = getopt_long(argc, argv, "abBcCd:e:E:f:F:h:j:n:N:Op:RsS:t:T:U:vwWxZ:",
 							long_options, &optindex)) != -1)
 	{
 		switch (c)
@@ -453,6 +461,11 @@ main(int argc, char **argv)
 
 			case 'd':			/* database name */
 				dopt.cparams.dbname = pg_strdup(optarg);
+				break;
+
+			case 'e':			/* include extension(s) */
+				simple_string_list_append(&extension_include_patterns, optarg);
+				dopt.include_everything = false;
 				break;
 
 			case 'E':			/* Dump encoding */
@@ -834,6 +847,16 @@ main(int argc, char **argv)
 
 	/* non-matching exclusion patterns aren't an error */
 
+	/* Expand extension selection patterns into OID lists */
+	if (extension_include_patterns.head != NULL)
+	{
+		expand_extension_name_patterns(fout, &extension_include_patterns,
+									   &extension_include_oids,
+									   strict_names);
+		if (extension_include_oids.head == NULL)
+			fatal("no matching extensions were found");
+	}
+
 	/*
 	 * Dumping blobs is the default for dumps where an inclusion switch is not
 	 * used (an "include everything" dump).  -B can be used to exclude blobs
@@ -1025,6 +1048,7 @@ help(const char *progname)
 	printf(_("  -B, --no-blobs               exclude large objects in dump\n"));
 	printf(_("  -c, --clean                  clean (drop) database objects before recreating\n"));
 	printf(_("  -C, --create                 include commands to create database in dump\n"));
+	printf(_("  -e, --extension=PATTERN      dump the specified extension(s) only\n"));
 	printf(_("  -E, --encoding=ENCODING      dump the data in encoding ENCODING\n"));
 	printf(_("  -n, --schema=PATTERN         dump the specified schema(s) only\n"));
 	printf(_("  -N, --exclude-schema=PATTERN do NOT dump the specified schema(s)\n"));
@@ -1354,6 +1378,53 @@ expand_schema_name_patterns(Archive *fout,
 		res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 		if (strict_names && PQntuples(res) == 0)
 			fatal("no matching schemas were found for pattern \"%s\"", cell->val);
+
+		for (i = 0; i < PQntuples(res); i++)
+		{
+			simple_oid_list_append(oids, atooid(PQgetvalue(res, i, 0)));
+		}
+
+		PQclear(res);
+		resetPQExpBuffer(query);
+	}
+
+	destroyPQExpBuffer(query);
+}
+
+/*
+ * Find the OIDs of all extensions matching the given list of patterns,
+ * and append them to the given OID list.
+ */
+static void
+expand_extension_name_patterns(Archive *fout,
+							   SimpleStringList *patterns,
+							   SimpleOidList *oids,
+							   bool strict_names)
+{
+	PQExpBuffer query;
+	PGresult   *res;
+	SimpleStringListCell *cell;
+	int			i;
+
+	if (patterns->head == NULL)
+		return;					/* nothing to do */
+
+	query = createPQExpBuffer();
+
+	/*
+	 * The loop below runs multiple SELECTs might sometimes result in
+	 * duplicate entries in the OID list, but we don't care.
+	 */
+	for (cell = patterns->head; cell; cell = cell->next)
+	{
+		appendPQExpBufferStr(query,
+							 "SELECT oid FROM pg_catalog.pg_extension e\n");
+		processSQLNamePattern(GetConnection(fout), query, cell->val, false,
+							  false, NULL, "e.extname", NULL, NULL);
+
+		res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
+		if (strict_names && PQntuples(res) == 0)
+			fatal("no matching extensions were found for pattern \"%s\"", cell->val);
 
 		for (i = 0; i < PQntuples(res); i++)
 		{
@@ -1793,8 +1864,9 @@ selectDumpableAccessMethod(AccessMethodInfo *method, Archive *fout)
  * Built-in extensions should be skipped except for checking ACLs, since we
  * assume those will already be installed in the target database.  We identify
  * such extensions by their having OIDs in the range reserved for initdb.
- * We dump all user-added extensions by default, or none of them if
- * include_everything is false (i.e., a --schema or --table switch was given).
+ * We dump all user-added extensions by default.  No extensions are dumped
+ * if include_everything is false (i.e., a --schema or --table switch was
+ * given), except if --extension specifies a list of extensions to dump.
  */
 static void
 selectDumpableExtension(ExtensionInfo *extinfo, DumpOptions *dopt)
@@ -1807,9 +1879,18 @@ selectDumpableExtension(ExtensionInfo *extinfo, DumpOptions *dopt)
 	if (extinfo->dobj.catId.oid <= (Oid) g_last_builtin_oid)
 		extinfo->dobj.dump = extinfo->dobj.dump_contains = DUMP_COMPONENT_ACL;
 	else
-		extinfo->dobj.dump = extinfo->dobj.dump_contains =
-			dopt->include_everything ? DUMP_COMPONENT_ALL :
-			DUMP_COMPONENT_NONE;
+	{
+		/* check if there is a list of extensions to dump */
+		if (extension_include_oids.head != NULL)
+			extinfo->dobj.dump = extinfo->dobj.dump_contains =
+				simple_oid_list_member(&extension_include_oids,
+									   extinfo->dobj.catId.oid) ?
+				DUMP_COMPONENT_ALL : DUMP_COMPONENT_NONE;
+		else
+			extinfo->dobj.dump = extinfo->dobj.dump_contains =
+				dopt->include_everything ?
+				DUMP_COMPONENT_ALL : DUMP_COMPONENT_NONE;
+	}
 }
 
 /*
@@ -3333,18 +3414,28 @@ dumpSearchPath(Archive *AH)
 static void
 dumpToastCompression(Archive *AH)
 {
-	const char *toast_compression;
+	char	   *toast_compression;
 	PQExpBuffer qry;
-	PGresult   *res;
 
-	if (AH->remoteVersion < 140000 || AH->dopt->no_toast_compression)
+	if (AH->dopt->no_toast_compression)
 	{
-		/* server doesn't support compression, or we don't care */
+		/* we don't intend to dump the info, so no need to fetch it either */
 		return;
 	}
 
-	res = ExecuteSqlQueryForSingleRow(AH, "SHOW default_toast_compression");
-	toast_compression = PQgetvalue(res, 0, 0);
+	if (AH->remoteVersion < 140000)
+	{
+		/* pre-v14, the only method was pglz */
+		toast_compression = pg_strdup("pglz");
+	}
+	else
+	{
+		PGresult   *res;
+
+		res = ExecuteSqlQueryForSingleRow(AH, "SHOW default_toast_compression");
+		toast_compression = pg_strdup(PQgetvalue(res, 0, 0));
+		PQclear(res);
+	}
 
 	qry = createPQExpBuffer();
 	appendPQExpBufferStr(qry, "SET default_toast_compression = ");
@@ -3363,9 +3454,8 @@ dumpToastCompression(Archive *AH)
 	 * Also save it in AH->default_toast_compression, in case we're doing
 	 * plain text dump.
 	 */
-	AH->default_toast_compression = pg_strdup(toast_compression);
+	AH->default_toast_compression = toast_compression;
 
-	PQclear(res);
 	destroyPQExpBuffer(qry);
 }
 
@@ -12038,6 +12128,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	char	   *proretset;
 	char	   *prosrc;
 	char	   *probin;
+	char	   *prosqlbody;
 	char	   *funcargs;
 	char	   *funciargs;
 	char	   *funcresult;
@@ -12084,7 +12175,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 						 "provolatile,\n"
 						 "proisstrict,\n"
 						 "prosecdef,\n"
-						 "(SELECT lanname FROM pg_catalog.pg_language WHERE oid = prolang) AS lanname,\n");
+						 "lanname,\n");
 
 	if (fout->remoteVersion >= 80300)
 		appendPQExpBufferStr(query,
@@ -12104,9 +12195,9 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 		 * pg_get_function_result instead of examining proallargtypes etc.
 		 */
 		appendPQExpBufferStr(query,
-							 "pg_catalog.pg_get_function_arguments(oid) AS funcargs,\n"
-							 "pg_catalog.pg_get_function_identity_arguments(oid) AS funciargs,\n"
-							 "pg_catalog.pg_get_function_result(oid) AS funcresult,\n");
+							 "pg_catalog.pg_get_function_arguments(p.oid) AS funcargs,\n"
+							 "pg_catalog.pg_get_function_identity_arguments(p.oid) AS funciargs,\n"
+							 "pg_catalog.pg_get_function_result(p.oid) AS funcresult,\n");
 	}
 	else if (fout->remoteVersion >= 80100)
 		appendPQExpBufferStr(query,
@@ -12149,21 +12240,39 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 
 	if (fout->remoteVersion >= 120000)
 		appendPQExpBufferStr(query,
-							 "prosupport\n");
+							 "prosupport,\n");
 	else
 		appendPQExpBufferStr(query,
-							 "'-' AS prosupport\n");
+							 "'-' AS prosupport,\n");
+
+	if (fout->remoteVersion >= 140000)
+		appendPQExpBufferStr(query,
+							 "CASE WHEN prosrc IS NULL AND lanname = 'sql' THEN pg_get_function_sqlbody(p.oid) END AS prosqlbody\n");
+	else
+		appendPQExpBufferStr(query,
+							 "NULL AS prosqlbody\n");
 
 	appendPQExpBuffer(query,
-					  "FROM pg_catalog.pg_proc "
-					  "WHERE oid = '%u'::pg_catalog.oid",
+					  "FROM pg_catalog.pg_proc p, pg_catalog.pg_language l\n"
+					  "WHERE p.oid = '%u'::pg_catalog.oid "
+					  "AND l.oid = p.prolang",
 					  finfo->dobj.catId.oid);
 
 	res = ExecuteSqlQueryForSingleRow(fout, query->data);
 
 	proretset = PQgetvalue(res, 0, PQfnumber(res, "proretset"));
-	prosrc = PQgetvalue(res, 0, PQfnumber(res, "prosrc"));
-	probin = PQgetvalue(res, 0, PQfnumber(res, "probin"));
+	if (PQgetisnull(res, 0, PQfnumber(res, "prosqlbody")))
+	{
+		prosrc = PQgetvalue(res, 0, PQfnumber(res, "prosrc"));
+		probin = PQgetvalue(res, 0, PQfnumber(res, "probin"));
+		prosqlbody = NULL;
+	}
+	else
+	{
+		prosrc = NULL;
+		probin = NULL;
+		prosqlbody = PQgetvalue(res, 0, PQfnumber(res, "prosqlbody"));
+	}
 	if (fout->remoteVersion >= 80400)
 	{
 		funcargs = PQgetvalue(res, 0, PQfnumber(res, "funcargs"));
@@ -12200,7 +12309,11 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	 * versions would set it to "-".  There are no known cases in which prosrc
 	 * is unused, so the tests below for "-" are probably useless.
 	 */
-	if (probin[0] != '\0' && strcmp(probin, "-") != 0)
+	if (prosqlbody)
+	{
+		appendPQExpBufferStr(asPart, prosqlbody);
+	}
+	else if (probin[0] != '\0' && strcmp(probin, "-") != 0)
 	{
 		appendPQExpBufferStr(asPart, "AS ");
 		appendStringLiteralAH(asPart, probin, fout);

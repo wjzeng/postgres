@@ -1753,6 +1753,37 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 			return false;
 		}
 	}
+	else if (strcmp(name, "clientname") == 0)
+	{
+		if (hbaline->conntype != ctHostSSL)
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("clientname can only be configured for \"hostssl\" rows"),
+					 errcontext("line %d of configuration file \"%s\"",
+								line_num, HbaFileName)));
+			*err_msg = "clientname can only be configured for \"hostssl\" rows";
+			return false;
+		}
+
+		if (strcmp(val, "CN") == 0)
+		{
+			hbaline->clientcertname = clientCertCN;
+		}
+		else if (strcmp(val, "DN") == 0)
+		{
+			hbaline->clientcertname = clientCertDN;
+		}
+		else
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("invalid value for clientname: \"%s\"", val),
+					 errcontext("line %d of configuration file \"%s\"",
+								line_num, HbaFileName)));
+			return false;
+		}
+	}
 	else if (strcmp(name, "pamservice") == 0)
 	{
 		REQUIRE_AUTH_OPTION(uaPAM, "pamservice", "pam");
@@ -2576,14 +2607,8 @@ fill_hba_line(Tuplestorestate *tuple_store, TupleDesc tupdesc,
 		else
 			nulls[index++] = true;
 
-		/*
-		 * Make sure UserAuthName[] tracks additions to the UserAuth enum
-		 */
-		StaticAssertStmt(lengthof(UserAuthName) == USER_AUTH_LAST + 1,
-						 "UserAuthName[] must match the UserAuth enum");
-
 		/* auth_method */
-		values[index++] = CStringGetTextDatum(UserAuthName[hba->auth_method]);
+		values[index++] = CStringGetTextDatum(hba_authname(hba->auth_method));
 
 		/* options */
 		options = gethba_options(hba);
@@ -3109,4 +3134,23 @@ void
 hba_getauthmethod(hbaPort *port)
 {
 	check_hba(port);
+}
+
+
+/*
+ * Return the name of the auth method in use ("gss", "md5", "trust", etc.).
+ *
+ * The return value is statically allocated (see the UserAuthName array) and
+ * should not be freed.
+ */
+const char *
+hba_authname(UserAuth auth_method)
+{
+	/*
+	 * Make sure UserAuthName[] tracks additions to the UserAuth enum
+	 */
+	StaticAssertStmt(lengthof(UserAuthName) == USER_AUTH_LAST + 1,
+					 "UserAuthName[] must match the UserAuth enum");
+
+	return UserAuthName[auth_method];
 }

@@ -172,6 +172,10 @@ typedef struct
 	List	   *outer_tlist;	/* referent for OUTER_VAR Vars */
 	List	   *inner_tlist;	/* referent for INNER_VAR Vars */
 	List	   *index_tlist;	/* referent for INDEX_VAR Vars */
+	/* Special namespace representing a function signature: */
+	char	   *funcname;
+	int			numargs;
+	char	  **argnames;
 } deparse_namespace;
 
 /*
@@ -348,6 +352,7 @@ static int	print_function_arguments(StringInfo buf, HeapTuple proctup,
 									 bool print_table_args, bool print_defaults);
 static void print_function_rettype(StringInfo buf, HeapTuple proctup);
 static void print_function_trftypes(StringInfo buf, HeapTuple proctup);
+static void print_function_sqlbody(StringInfo buf, HeapTuple proctup);
 static void set_rtable_names(deparse_namespace *dpns, List *parent_namespaces,
 							 Bitmapset *rels_used);
 static void set_deparse_for_query(deparse_namespace *dpns, Query *query,
@@ -2968,6 +2973,13 @@ pg_get_functiondef(PG_FUNCTION_ARGS)
 	}
 
 	/* And finally the function definition ... */
+	tmp = SysCacheGetAttr(PROCOID, proctup, Anum_pg_proc_prosqlbody, &isnull);
+	if (proc->prolang == SQLlanguageId && !isnull)
+	{
+		print_function_sqlbody(&buf, proctup);
+	}
+	else
+	{
 	appendStringInfoString(&buf, "AS ");
 
 	tmp = SysCacheGetAttr(PROCOID, proctup, Anum_pg_proc_probin, &isnull);
@@ -2999,6 +3011,7 @@ pg_get_functiondef(PG_FUNCTION_ARGS)
 	appendBinaryStringInfo(&buf, dq.data, dq.len);
 	appendStringInfoString(&buf, prosrc);
 	appendBinaryStringInfo(&buf, dq.data, dq.len);
+	}
 
 	appendStringInfoChar(&buf, '\n');
 
@@ -3380,6 +3393,83 @@ pg_get_function_arg_default(PG_FUNCTION_ARGS)
 	ReleaseSysCache(proctup);
 
 	PG_RETURN_TEXT_P(string_to_text(str));
+}
+
+static void
+print_function_sqlbody(StringInfo buf, HeapTuple proctup)
+{
+	int			numargs;
+	Oid		   *argtypes;
+	char	  **argnames;
+	char	   *argmodes;
+	deparse_namespace dpns = {0};
+	Datum		tmp;
+	bool		isnull;
+	Node	   *n;
+
+	dpns.funcname = pstrdup(NameStr(((Form_pg_proc) GETSTRUCT(proctup))->proname));
+	numargs = get_func_arg_info(proctup,
+								&argtypes, &argnames, &argmodes);
+	dpns.numargs = numargs;
+	dpns.argnames = argnames;
+
+	tmp = SysCacheGetAttr(PROCOID, proctup, Anum_pg_proc_prosqlbody, &isnull);
+	Assert(!isnull);
+	n = stringToNode(TextDatumGetCString(tmp));
+
+	if (IsA(n, List))
+	{
+		List	   *stmts;
+		ListCell   *lc;
+
+		stmts = linitial(castNode(List, n));
+
+		appendStringInfoString(buf, "BEGIN ATOMIC\n");
+
+		foreach(lc, stmts)
+		{
+			Query	   *query = lfirst_node(Query, lc);
+
+			get_query_def(query, buf, list_make1(&dpns), NULL, PRETTYFLAG_INDENT, WRAP_COLUMN_DEFAULT, 1);
+			appendStringInfoChar(buf, ';');
+			appendStringInfoChar(buf, '\n');
+		}
+
+		appendStringInfoString(buf, "END");
+	}
+	else
+	{
+		get_query_def(castNode(Query, n), buf, list_make1(&dpns), NULL, 0, WRAP_COLUMN_DEFAULT, 0);
+	}
+}
+
+Datum
+pg_get_function_sqlbody(PG_FUNCTION_ARGS)
+{
+	Oid			funcid = PG_GETARG_OID(0);
+	StringInfoData buf;
+	HeapTuple	proctup;
+	bool		isnull;
+
+	initStringInfo(&buf);
+
+	/* Look up the function */
+	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
+	if (!HeapTupleIsValid(proctup))
+		PG_RETURN_NULL();
+
+	SysCacheGetAttr(PROCOID, proctup, Anum_pg_proc_prosqlbody, &isnull);
+	if (isnull)
+	{
+		ReleaseSysCache(proctup);
+		PG_RETURN_NULL();
+	}
+
+	print_function_sqlbody(&buf, proctup);
+
+	ReleaseSysCache(proctup);
+
+	PG_RETURN_TEXT_P(cstring_to_text(buf.data));
 }
 
 
@@ -4741,16 +4831,12 @@ set_deparse_plan(deparse_namespace *dpns, Plan *plan)
 	 * We special-case Append and MergeAppend to pretend that the first child
 	 * plan is the OUTER referent; we have to interpret OUTER Vars in their
 	 * tlists according to one of the children, and the first one is the most
-	 * natural choice.  Likewise special-case ModifyTable to pretend that the
-	 * first child plan is the OUTER referent; this is to support RETURNING
-	 * lists containing references to non-target relations.
+	 * natural choice.
 	 */
 	if (IsA(plan, Append))
 		dpns->outer_plan = linitial(((Append *) plan)->appendplans);
 	else if (IsA(plan, MergeAppend))
 		dpns->outer_plan = linitial(((MergeAppend *) plan)->mergeplans);
-	else if (IsA(plan, ModifyTable))
-		dpns->outer_plan = linitial(((ModifyTable *) plan)->plans);
 	else
 		dpns->outer_plan = outerPlan(plan);
 
@@ -5641,7 +5727,10 @@ get_basic_select_query(Query *query, deparse_context *context,
 	/*
 	 * Build up the query string - first we say SELECT
 	 */
-	appendStringInfoString(buf, "SELECT");
+	if (query->isReturn)
+		appendStringInfoString(buf, "RETURN");
+	else
+		appendStringInfoString(buf, "SELECT");
 
 	/* Add the DISTINCT clause if given */
 	if (query->distinctClause != NIL)
@@ -7776,6 +7865,50 @@ get_parameter(Param *param, deparse_context *context)
 	}
 
 	/*
+	 * If it's an external parameter, see if the outermost namespace provides
+	 * function argument names.
+	 */
+	if (param->paramkind == PARAM_EXTERN)
+	{
+		dpns = lfirst(list_tail(context->namespaces));
+		if (dpns->argnames)
+		{
+			char	   *argname = dpns->argnames[param->paramid - 1];
+
+			if (argname)
+			{
+				bool		should_qualify = false;
+				ListCell   *lc;
+
+				/*
+				 * Qualify the parameter name if there are any other deparse
+				 * namespaces with range tables.  This avoids qualifying in
+				 * trivial cases like "RETURN a + b", but makes it safe in all
+				 * other cases.
+				 */
+				foreach(lc, context->namespaces)
+				{
+					deparse_namespace *dpns = lfirst(lc);
+
+					if (list_length(dpns->rtable_names) > 0)
+					{
+						should_qualify = true;
+						break;
+					}
+				}
+				if (should_qualify)
+				{
+					appendStringInfoString(context->buf, quote_identifier(dpns->funcname));
+					appendStringInfoChar(context->buf, '.');
+				}
+
+				appendStringInfoString(context->buf, quote_identifier(argname));
+				return;
+			}
+		}
+	}
+
+	/*
 	 * Not PARAM_EXEC, or couldn't find referent: just print $N.
 	 */
 	appendStringInfo(context->buf, "$%d", param->paramid);
@@ -9786,6 +9919,27 @@ get_func_sql_syntax(FuncExpr *expr, deparse_context *context)
 			appendStringInfoString(buf, "))");
 			return true;
 
+		case F_EXTRACT_TEXT_DATE:
+		case F_EXTRACT_TEXT_TIME:
+		case F_EXTRACT_TEXT_TIMETZ:
+		case F_EXTRACT_TEXT_TIMESTAMP:
+		case F_EXTRACT_TEXT_TIMESTAMPTZ:
+		case F_EXTRACT_TEXT_INTERVAL:
+			/* EXTRACT (x FROM y) */
+			appendStringInfoString(buf, "EXTRACT(");
+			{
+				Const	   *con = (Const *) linitial(expr->args);
+
+				Assert(IsA(con, Const) &&
+					   con->consttype == TEXTOID &&
+					   !con->constisnull);
+				appendStringInfoString(buf, TextDatumGetCString(con->constvalue));
+			}
+			appendStringInfoString(buf, " FROM ");
+			get_rule_expr((Node *) lsecond(expr->args), context, false);
+			appendStringInfoChar(buf, ')');
+			return true;
+
 		case F_IS_NORMALIZED:
 			/* IS xxx NORMALIZED */
 			appendStringInfoString(buf, "((");
@@ -10813,6 +10967,10 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 				appendStringInfoString(buf, quote_identifier(colname));
 			}
 			appendStringInfoChar(buf, ')');
+
+			if (j->join_using_alias)
+				appendStringInfo(buf, " AS %s",
+								 quote_identifier(j->join_using_alias->aliasname));
 		}
 		else if (j->quals)
 		{

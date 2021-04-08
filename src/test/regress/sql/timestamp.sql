@@ -137,10 +137,11 @@ INSERT INTO TIMESTAMP_TBL VALUES ('Feb 16 17:32:01 5097 BC');
 
 SELECT d1 FROM TIMESTAMP_TBL;
 
--- Check behavior at the lower boundary of the timestamp range
+-- Check behavior at the boundaries of the timestamp range
 SELECT '4714-11-24 00:00:00 BC'::timestamp;
 SELECT '4714-11-23 23:59:59 BC'::timestamp;  -- out of range
--- The upper boundary differs between integer and float timestamps, so no check
+SELECT '294276-12-31 23:59:59'::timestamp;
+SELECT '294277-01-01 00:00:00'::timestamp;  -- out of range
 
 -- Demonstrate functions and operators
 SELECT d1 FROM TIMESTAMP_TBL
@@ -256,8 +257,25 @@ SELECT d1 as "timestamp",
    date_part( 'decade', d1) AS decade,
    date_part( 'century', d1) AS century,
    date_part( 'millennium', d1) AS millennium,
-   round(date_part( 'julian', d1)) AS julian
+   round(date_part( 'julian', d1)) AS julian,
+   date_part( 'epoch', d1) AS epoch
    FROM TIMESTAMP_TBL;
+
+-- extract implementation is mostly the same as date_part, so only
+-- test a few cases for additional coverage.
+SELECT d1 as "timestamp",
+   extract(microseconds from d1) AS microseconds,
+   extract(milliseconds from d1) AS milliseconds,
+   extract(seconds from d1) AS seconds,
+   round(extract(julian from d1)) AS julian,
+   extract(epoch from d1) AS epoch
+   FROM TIMESTAMP_TBL;
+
+-- value near upper bound uses special case in code
+SELECT date_part('epoch', '294270-01-01 00:00:00'::timestamp);
+SELECT extract(epoch from '294270-01-01 00:00:00'::timestamp);
+-- another internal overflow test case
+SELECT extract(epoch from '5000-01-01 00:00:00'::timestamp);
 
 -- TO_CHAR()
 SELECT to_char(d1, 'DAY Day day DY Dy dy MONTH Month month RM MON Mon mon')
