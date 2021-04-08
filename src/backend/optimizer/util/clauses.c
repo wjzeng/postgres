@@ -106,6 +106,7 @@ static bool contain_leaked_vars_walker(Node *node, void *context);
 static Relids find_nonnullable_rels_walker(Node *node, bool top_level);
 static List *find_nonnullable_vars_walker(Node *node, bool top_level);
 static bool is_strict_saop(ScalarArrayOpExpr *expr, bool falseOK);
+static bool convert_saop_to_hashed_saop_walker(Node *node, void *context);
 static Node *eval_const_expressions_mutator(Node *node,
 											eval_const_expressions_context *context);
 static bool contain_non_const_walker(Node *node, void *context);
@@ -2101,6 +2102,69 @@ eval_const_expressions(PlannerInfo *root, Node *node)
 	return eval_const_expressions_mutator(node, &context);
 }
 
+#define MIN_ARRAY_SIZE_FOR_HASHED_SAOP 9
+/*--------------------
+ * convert_saop_to_hashed_saop
+ *
+ * Recursively search 'node' for ScalarArrayOpExprs and fill in the hash
+ * function for any ScalarArrayOpExpr that looks like it would be useful to
+ * evaluate using a hash table rather than a linear search.
+ *
+ * We'll use a hash table if all of the following conditions are met:
+ * 1. The 2nd argument of the array contain only Consts.
+ * 2. useOr is true.
+ * 3. There's valid hash function for both left and righthand operands and
+ *	  these hash functions are the same.
+ * 4. If the array contains enough elements for us to consider it to be
+ *	  worthwhile using a hash table rather than a linear search.
+ */
+void
+convert_saop_to_hashed_saop(Node *node)
+{
+	(void) convert_saop_to_hashed_saop_walker(node, NULL);
+}
+
+static bool
+convert_saop_to_hashed_saop_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) node;
+		Expr	   *arrayarg = (Expr *) lsecond(saop->args);
+		Oid			lefthashfunc;
+		Oid			righthashfunc;
+
+		if (saop->useOr && arrayarg && IsA(arrayarg, Const) &&
+			!((Const *) arrayarg)->constisnull &&
+			get_op_hash_functions(saop->opno, &lefthashfunc, &righthashfunc) &&
+			lefthashfunc == righthashfunc)
+		{
+			Datum		arrdatum = ((Const *) arrayarg)->constvalue;
+			ArrayType  *arr = (ArrayType *) DatumGetPointer(arrdatum);
+			int			nitems;
+
+			/*
+			 * Only fill in the hash functions if the array looks large enough
+			 * for it to be worth hashing instead of doing a linear search.
+			 */
+			nitems = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+
+			if (nitems >= MIN_ARRAY_SIZE_FOR_HASHED_SAOP)
+			{
+				/* Looks good. Fill in the hash functions */
+				saop->hashfuncid = lefthashfunc;
+			}
+			return true;
+		}
+	}
+
+	return expression_tree_walker(node, convert_saop_to_hashed_saop_walker, NULL);
+}
+
+
 /*--------------------
  * estimate_expression_value
  *
@@ -2496,6 +2560,36 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->args = args;
 				newexpr->location = expr->location;
 				return (Node *) newexpr;
+			}
+		case T_NullIfExpr:
+			{
+				NullIfExpr	   *expr;
+				ListCell	   *arg;
+				bool			has_nonconst_input = false;
+
+				/* Copy the node and const-simplify its arguments */
+				expr = (NullIfExpr *) ece_generic_processing(node);
+
+				/* If either argument is NULL they can't be equal */
+				foreach(arg, expr->args)
+				{
+					if (!IsA(lfirst(arg), Const))
+						has_nonconst_input = true;
+					else if (((Const *) lfirst(arg))->constisnull)
+						return (Node *) linitial(expr->args);
+				}
+
+				/*
+				 * Need to get OID of underlying function before checking if
+				 * the function is OK to evaluate.
+				 */
+				set_opfuncid((OpExpr *) expr);
+
+				if (!has_nonconst_input &&
+					ece_function_is_safe(expr->opfuncid, context))
+					return ece_evaluate_expr(expr);
+
+				return (Node *) expr;
 			}
 		case T_ScalarArrayOpExpr:
 			{
@@ -4223,26 +4317,46 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 								  ALLOCSET_DEFAULT_SIZES);
 	oldcxt = MemoryContextSwitchTo(mycxt);
 
+	/*
+	 * Setup error traceback support for ereport().  This is so that we can
+	 * finger the function that bad information came from.
+	 */
+	callback_arg.proname = NameStr(funcform->proname);
+	callback_arg.prosrc = NULL;
+
+	sqlerrcontext.callback = sql_inline_error_callback;
+	sqlerrcontext.arg = (void *) &callback_arg;
+	sqlerrcontext.previous = error_context_stack;
+	error_context_stack = &sqlerrcontext;
+
 	/* Fetch the function body */
 	tmp = SysCacheGetAttr(PROCOID,
 						  func_tuple,
 						  Anum_pg_proc_prosrc,
 						  &isNull);
 	if (isNull)
-		elog(ERROR, "null prosrc for function %u", funcid);
+	{
+		Node	   *n;
+		List	   *querytree_list;
+
+		tmp = SysCacheGetAttr(PROCOID, func_tuple, Anum_pg_proc_prosqlbody, &isNull);
+		if (isNull)
+			elog(ERROR, "null prosrc and prosqlbody for function %u", funcid);
+
+		n = stringToNode(TextDatumGetCString(tmp));
+		if (IsA(n, List))
+			querytree_list = linitial_node(List, castNode(List, n));
+		else
+			querytree_list = list_make1(n);
+		if (list_length(querytree_list) != 1)
+			goto fail;
+		querytree = linitial(querytree_list);
+	}
+	else
+	{
 	src = TextDatumGetCString(tmp);
 
-	/*
-	 * Setup error traceback support for ereport().  This is so that we can
-	 * finger the function that bad information came from.
-	 */
-	callback_arg.proname = NameStr(funcform->proname);
 	callback_arg.prosrc = src;
-
-	sqlerrcontext.callback = sql_inline_error_callback;
-	sqlerrcontext.arg = (void *) &callback_arg;
-	sqlerrcontext.previous = error_context_stack;
-	error_context_stack = &sqlerrcontext;
 
 	/*
 	 * Set up to handle parameters while parsing the function body.  We need a
@@ -4287,6 +4401,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	querytree = transformTopLevelStmt(pstate, linitial(raw_parsetree_list));
 
 	free_parsestate(pstate);
+	}
 
 	/*
 	 * The single command must be a simple "SELECT expression".
@@ -4543,12 +4658,15 @@ sql_inline_error_callback(void *arg)
 	int			syntaxerrposition;
 
 	/* If it's a syntax error, convert to internal syntax error report */
-	syntaxerrposition = geterrposition();
-	if (syntaxerrposition > 0)
+	if (callback_arg->prosrc)
 	{
-		errposition(0);
-		internalerrposition(syntaxerrposition);
-		internalerrquery(callback_arg->prosrc);
+		syntaxerrposition = geterrposition();
+		if (syntaxerrposition > 0)
+		{
+			errposition(0);
+			internalerrposition(syntaxerrposition);
+			internalerrquery(callback_arg->prosrc);
+		}
 	}
 
 	errcontext("SQL function \"%s\" during inlining", callback_arg->proname);
@@ -4660,7 +4778,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	Oid			func_oid;
 	HeapTuple	func_tuple;
 	Form_pg_proc funcform;
-	char	   *src;
 	Datum		tmp;
 	bool		isNull;
 	MemoryContext oldcxt;
@@ -4769,26 +4886,52 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 								  ALLOCSET_DEFAULT_SIZES);
 	oldcxt = MemoryContextSwitchTo(mycxt);
 
+	/*
+	 * Setup error traceback support for ereport().  This is so that we can
+	 * finger the function that bad information came from.
+	 */
+	callback_arg.proname = NameStr(funcform->proname);
+	callback_arg.prosrc = NULL;
+
+	sqlerrcontext.callback = sql_inline_error_callback;
+	sqlerrcontext.arg = (void *) &callback_arg;
+	sqlerrcontext.previous = error_context_stack;
+	error_context_stack = &sqlerrcontext;
+
 	/* Fetch the function body */
 	tmp = SysCacheGetAttr(PROCOID,
 						  func_tuple,
 						  Anum_pg_proc_prosrc,
 						  &isNull);
 	if (isNull)
-		elog(ERROR, "null prosrc for function %u", func_oid);
+	{
+		Node	   *n;
+
+		tmp = SysCacheGetAttr(PROCOID, func_tuple, Anum_pg_proc_prosqlbody, &isNull);
+		if (isNull)
+			elog(ERROR, "null prosrc and prosqlbody for function %u", func_oid);
+
+		n = stringToNode(TextDatumGetCString(tmp));
+		if (IsA(n, List))
+			querytree_list = linitial_node(List, castNode(List, n));
+		else
+			querytree_list = list_make1(n);
+		if (list_length(querytree_list) != 1)
+			goto fail;
+		querytree = linitial(querytree_list);
+
+		querytree_list = pg_rewrite_query(querytree);
+		if (list_length(querytree_list) != 1)
+			goto fail;
+		querytree = linitial(querytree_list);
+	}
+	else
+	{
+	char	   *src;
+
 	src = TextDatumGetCString(tmp);
 
-	/*
-	 * Setup error traceback support for ereport().  This is so that we can
-	 * finger the function that bad information came from.
-	 */
-	callback_arg.proname = NameStr(funcform->proname);
 	callback_arg.prosrc = src;
-
-	sqlerrcontext.callback = sql_inline_error_callback;
-	sqlerrcontext.arg = (void *) &callback_arg;
-	sqlerrcontext.previous = error_context_stack;
-	error_context_stack = &sqlerrcontext;
 
 	/*
 	 * Set up to handle parameters while parsing the function body.  We can
@@ -4798,18 +4941,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	pinfo = prepare_sql_fn_parse_info(func_tuple,
 									  (Node *) fexpr,
 									  fexpr->inputcollid);
-
-	/*
-	 * Also resolve the actual function result tupdesc, if composite.  If the
-	 * function is just declared to return RECORD, dig the info out of the AS
-	 * clause.
-	 */
-	functypclass = get_expr_result_type((Node *) fexpr, NULL, &rettupdesc);
-	if (functypclass == TYPEFUNC_RECORD)
-		rettupdesc = BuildDescFromLists(rtfunc->funccolnames,
-										rtfunc->funccoltypes,
-										rtfunc->funccoltypmods,
-										rtfunc->funccolcollations);
 
 	/*
 	 * Parse, analyze, and rewrite (unlike inline_function(), we can't skip
@@ -4827,6 +4958,19 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	if (list_length(querytree_list) != 1)
 		goto fail;
 	querytree = linitial(querytree_list);
+	}
+
+	/*
+	 * Also resolve the actual function result tupdesc, if composite.  If the
+	 * function is just declared to return RECORD, dig the info out of the AS
+	 * clause.
+	 */
+	functypclass = get_expr_result_type((Node *) fexpr, NULL, &rettupdesc);
+	if (functypclass == TYPEFUNC_RECORD)
+		rettupdesc = BuildDescFromLists(rtfunc->funccolnames,
+										rtfunc->funccoltypes,
+										rtfunc->funccoltypmods,
+										rtfunc->funccolcollations);
 
 	/*
 	 * The single command must be a plain SELECT.

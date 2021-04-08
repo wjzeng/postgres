@@ -1149,7 +1149,7 @@ set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
 			Var		   *parentvar = (Var *) lfirst(parentvars);
 			Node	   *childvar = (Node *) lfirst(childvars);
 
-			if (IsA(parentvar, Var))
+			if (IsA(parentvar, Var) && parentvar->varno == parentRTindex)
 			{
 				int			pndx = parentvar->varattno - rel->min_attr;
 				int32		child_width = 0;
@@ -4031,6 +4031,10 @@ print_path(PlannerInfo *root, Path *path, int indent)
 		case T_MaterialPath:
 			ptype = "Material";
 			subpath = ((MaterialPath *) path)->subpath;
+			break;
+		case T_ResultCachePath:
+			ptype = "ResultCache";
+			subpath = ((ResultCachePath *) path)->subpath;
 			break;
 		case T_UniquePath:
 			ptype = "Unique";

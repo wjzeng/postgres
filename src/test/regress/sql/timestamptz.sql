@@ -158,12 +158,15 @@ SELECT 'Wed Jul 11 10:51:14 PST+03:00 2001'::timestamptz;
 
 SELECT d1 FROM TIMESTAMPTZ_TBL;
 
--- Check behavior at the lower boundary of the timestamp range
+-- Check behavior at the boundaries of the timestamp range
 SELECT '4714-11-24 00:00:00+00 BC'::timestamptz;
 SELECT '4714-11-23 16:00:00-08 BC'::timestamptz;
 SELECT 'Sun Nov 23 16:00:00 4714 PST BC'::timestamptz;
 SELECT '4714-11-23 23:59:59+00 BC'::timestamptz;  -- out of range
--- The upper boundary differs between integer and float timestamps, so no check
+SELECT '294276-12-31 23:59:59+00'::timestamptz;
+SELECT '294276-12-31 15:59:59-08'::timestamptz;
+SELECT '294277-01-01 00:00:00+00'::timestamptz;  -- out of range
+SELECT '294277-12-31 16:00:00-08'::timestamptz;  -- out of range
 
 -- Demonstrate functions and operators
 SELECT d1 FROM TIMESTAMPTZ_TBL
@@ -262,7 +265,8 @@ SELECT d1 as timestamptz,
    date_part( 'decade', d1) AS decade,
    date_part( 'century', d1) AS century,
    date_part( 'millennium', d1) AS millennium,
-   round(date_part( 'julian', d1)) AS julian
+   round(date_part( 'julian', d1)) AS julian,
+   date_part( 'epoch', d1) AS epoch
    FROM TIMESTAMPTZ_TBL;
 
 SELECT d1 as timestamptz,
@@ -270,6 +274,22 @@ SELECT d1 as timestamptz,
    date_part( 'timezone_hour', d1) AS timezone_hour,
    date_part( 'timezone_minute', d1) AS timezone_minute
    FROM TIMESTAMPTZ_TBL;
+
+-- extract implementation is mostly the same as date_part, so only
+-- test a few cases for additional coverage.
+SELECT d1 as "timestamp",
+   extract(microseconds from d1) AS microseconds,
+   extract(milliseconds from d1) AS milliseconds,
+   extract(seconds from d1) AS seconds,
+   round(extract(julian from d1)) AS julian,
+   extract(epoch from d1) AS epoch
+   FROM TIMESTAMPTZ_TBL;
+
+-- value near upper bound uses special case in code
+SELECT date_part('epoch', '294270-01-01 00:00:00+00'::timestamptz);
+SELECT extract(epoch from '294270-01-01 00:00:00+00'::timestamptz);
+-- another internal overflow test case
+SELECT extract(epoch from '5000-01-01 00:00:00+00'::timestamptz);
 
 -- TO_CHAR()
 SELECT to_char(d1, 'DAY Day day DY Dy dy MONTH Month month RM MON Mon mon')

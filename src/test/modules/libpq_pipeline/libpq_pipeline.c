@@ -23,6 +23,7 @@
 #include "catalog/pg_type_d.h"
 #include "common/fe_memutils.h"
 #include "libpq-fe.h"
+#include "pg_getopt.h"
 #include "portability/instr_time.h"
 
 
@@ -30,9 +31,11 @@ static void exit_nicely(PGconn *conn);
 
 const char *const progname = "libpq_pipeline";
 
+/* Options and defaults */
+char	   *tracefile = NULL;	/* path to PQtrace() file */
 
-#define DEBUG
-#ifdef DEBUG
+
+#ifdef DEBUG_OUTPUT
 #define	pg_debug(...)  do { fprintf(stderr, __VA_ARGS__); } while (0)
 #else
 #define pg_debug(...)
@@ -41,12 +44,16 @@ const char *const progname = "libpq_pipeline";
 static const char *const drop_table_sql =
 "DROP TABLE IF EXISTS pq_pipeline_demo";
 static const char *const create_table_sql =
-"CREATE UNLOGGED TABLE pq_pipeline_demo(id serial primary key, itemno integer);";
+"CREATE UNLOGGED TABLE pq_pipeline_demo(id serial primary key, itemno integer,"
+"int8filler int8);";
 static const char *const insert_sql =
-"INSERT INTO pq_pipeline_demo(itemno) VALUES ($1);";
+"INSERT INTO pq_pipeline_demo(itemno) VALUES ($1)";
+static const char *const insert_sql2 =
+"INSERT INTO pq_pipeline_demo(itemno,int8filler) VALUES ($1, $2)";
 
-/* max char length of an int32, plus sign and null terminator */
+/* max char length of an int32/64, plus sign and null terminator */
 #define MAXINTLEN 12
+#define MAXINT8LEN 20
 
 static void
 exit_nicely(PGconn *conn)
@@ -239,6 +246,7 @@ test_pipeline_abort(PGconn *conn)
 	const char *dummy_params[1] = {"1"};
 	Oid			dummy_param_oids[1] = {INT4OID};
 	int			i;
+	int			gotrows;
 	bool		goterror;
 
 	fprintf(stderr, "aborted pipeline... ");
@@ -429,6 +437,7 @@ test_pipeline_abort(PGconn *conn)
 	if (PQresultStatus(res) != PGRES_PIPELINE_SYNC)
 		pg_fatal("Unexpected result code %s from pipeline sync",
 				 PQresStatus(PQresultStatus(res)));
+	fprintf(stderr, "ok\n");
 
 	/* Test single-row mode with an error partways */
 	if (PQsendQuery(conn, "SELECT 1.0/g FROM generate_series(3, -1, -1) g") != 1)
@@ -437,12 +446,14 @@ test_pipeline_abort(PGconn *conn)
 		pg_fatal("pipeline sync failed: %s", PQerrorMessage(conn));
 	PQsetSingleRowMode(conn);
 	goterror = false;
+	gotrows = 0;
 	while ((res = PQgetResult(conn)) != NULL)
 	{
 		switch (PQresultStatus(res))
 		{
 			case PGRES_SINGLE_TUPLE:
 				printf("got row: %s\n", PQgetvalue(res, 0, 0));
+				gotrows++;
 				break;
 			case PGRES_FATAL_ERROR:
 				if (strcmp(PQresultErrorField(res, PG_DIAG_SQLSTATE), "22012") != 0)
@@ -459,6 +470,8 @@ test_pipeline_abort(PGconn *conn)
 	}
 	if (!goterror)
 		pg_fatal("did not get division-by-zero error");
+	if (gotrows != 3)
+		pg_fatal("did not get three rows");
 	/* the third pipeline sync */
 	if ((res = PQgetResult(conn)) == NULL)
 		pg_fatal("Unexpected NULL result: %s", PQerrorMessage(conn));
@@ -530,15 +543,17 @@ enum PipelineInsertStep
 static void
 test_pipelined_insert(PGconn *conn, int n_rows)
 {
-	const char *insert_params[1];
-	Oid			insert_param_oids[1] = {INT4OID};
+	Oid			insert_param_oids[2] = {INT4OID, INT8OID};
+	const char *insert_params[2];
 	char		insert_param_0[MAXINTLEN];
+	char		insert_param_1[MAXINT8LEN];
 	enum PipelineInsertStep send_step = BI_BEGIN_TX,
 				recv_step = BI_BEGIN_TX;
 	int			rows_to_send,
 				rows_to_receive;
 
-	insert_params[0] = &insert_param_0[0];
+	insert_params[0] = insert_param_0;
+	insert_params[1] = insert_param_1;
 
 	rows_to_send = rows_to_receive = n_rows;
 
@@ -581,8 +596,8 @@ test_pipelined_insert(PGconn *conn, int n_rows)
 	}
 
 	Assert(send_step == BI_PREPARE);
-	pg_debug("sending: %s\n", insert_sql);
-	if (PQsendPrepare(conn, "my_insert", insert_sql, 1, insert_param_oids) != 1)
+	pg_debug("sending: %s\n", insert_sql2);
+	if (PQsendPrepare(conn, "my_insert", insert_sql2, 2, insert_param_oids) != 1)
 		pg_fatal("dispatching PREPARE failed: %s", PQerrorMessage(conn));
 	send_step = BI_INSERT_ROWS;
 
@@ -631,7 +646,7 @@ test_pipelined_insert(PGconn *conn, int n_rows)
 			while (!PQisBusy(conn) && recv_step < BI_DONE)
 			{
 				PGresult   *res;
-				const char *cmdtag;
+				const char *cmdtag = "";
 				const char *description = "";
 				int			status;
 
@@ -682,7 +697,6 @@ test_pipelined_insert(PGconn *conn, int n_rows)
 					case BI_DONE:
 						/* unreachable */
 						pg_fatal("unreachable state");
-						cmdtag = NULL;	/* keep compiler quiet */
 				}
 
 				if (PQresultStatus(res) != status)
@@ -708,10 +722,12 @@ test_pipelined_insert(PGconn *conn, int n_rows)
 
 			if (send_step == BI_INSERT_ROWS)
 			{
-				snprintf(&insert_param_0[0], MAXINTLEN, "%d", rows_to_send);
+				snprintf(insert_param_0, MAXINTLEN, "%d", rows_to_send);
+				/* use up some buffer space with a wide value */
+				snprintf(insert_param_1, MAXINT8LEN, "%lld", 1LL << 62);
 
 				if (PQsendQueryPrepared(conn, "my_insert",
-										1, insert_params, NULL, NULL, 0) == 1)
+										2, insert_params, NULL, NULL, 0) == 1)
 				{
 					pg_debug("sent row %d\n", rows_to_send);
 
@@ -1209,8 +1225,11 @@ usage(const char *progname)
 {
 	fprintf(stderr, "%s tests libpq's pipeline mode.\n\n", progname);
 	fprintf(stderr, "Usage:\n");
-	fprintf(stderr, "  %s tests", progname);
-	fprintf(stderr, "  %s testname [conninfo [number_of_rows]]\n", progname);
+	fprintf(stderr, "  %s [OPTION] tests\n", progname);
+	fprintf(stderr, "  %s [OPTION] TESTNAME [CONNINFO]\n", progname);
+	fprintf(stderr, "\nOptions:\n");
+	fprintf(stderr, "  -t TRACEFILE       generate a libpq trace to TRACEFILE\n");
+	fprintf(stderr, "  -r NUMROWS         use NUMROWS as the test size\n");
 }
 
 static void
@@ -1231,37 +1250,53 @@ main(int argc, char **argv)
 {
 	const char *conninfo = "";
 	PGconn	   *conn;
+	FILE	   *trace;
+	char	   *testname;
 	int			numrows = 10000;
 	PGresult   *res;
+	int			c;
 
-	if (strcmp(argv[1], "tests") == 0)
+	while ((c = getopt(argc, argv, "t:r:")) != -1)
 	{
-		print_test_list();
-		exit(0);
+		switch (c)
+		{
+			case 't':			/* trace file */
+				tracefile = pg_strdup(optarg);
+				break;
+			case 'r':			/* numrows */
+				errno = 0;
+				numrows = strtol(optarg, NULL, 10);
+				if (errno != 0 || numrows <= 0)
+				{
+					fprintf(stderr, "couldn't parse \"%s\" as a positive integer\n",
+							optarg);
+					exit(1);
+				}
+				break;
+		}
 	}
 
-	/*
-	 * The testname parameter is mandatory; it can be followed by a conninfo
-	 * string and number of rows.
-	 */
-	if (argc < 2 || argc > 4)
+	if (optind < argc)
+	{
+		testname = pg_strdup(argv[optind]);
+		optind++;
+	}
+	else
 	{
 		usage(argv[0]);
 		exit(1);
 	}
 
-	if (argc >= 3)
-		conninfo = pg_strdup(argv[2]);
-
-	if (argc >= 4)
+	if (strcmp(testname, "tests") == 0)
 	{
-		errno = 0;
-		numrows = strtol(argv[3], NULL, 10);
-		if (errno != 0 || numrows <= 0)
-		{
-			fprintf(stderr, "couldn't parse \"%s\" as a positive integer\n", argv[3]);
-			exit(1);
-		}
+		print_test_list();
+		exit(0);
+	}
+
+	if (optind < argc)
+	{
+		conninfo = pg_strdup(argv[optind]);
+		optind++;
 	}
 
 	/* Make a connection to the database */
@@ -1272,30 +1307,48 @@ main(int argc, char **argv)
 				PQerrorMessage(conn));
 		exit_nicely(conn);
 	}
+
 	res = PQexec(conn, "SET lc_messages TO \"C\"");
 	if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		pg_fatal("failed to set lc_messages: %s", PQerrorMessage(conn));
+	res = PQexec(conn, "SET force_parallel_mode = off");
+	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		pg_fatal("failed to set force_parallel_mode: %s", PQerrorMessage(conn));
 
-	if (strcmp(argv[1], "disallowed_in_pipeline") == 0)
+	/* Set the trace file, if requested */
+	if (tracefile != NULL)
+	{
+		trace = fopen(tracefile, "w");
+		if (trace == NULL)
+			pg_fatal("could not open file \"%s\": %m", tracefile);
+
+		/* Make it line-buffered */
+		setvbuf(trace, NULL, PG_IOLBF, 0);
+
+		PQtrace(conn, trace);
+		PQtraceSetFlags(conn,
+						PQTRACE_SUPPRESS_TIMESTAMPS | PQTRACE_REGRESS_MODE);
+	}
+
+	if (strcmp(testname, "disallowed_in_pipeline") == 0)
 		test_disallowed_in_pipeline(conn);
-	else if (strcmp(argv[1], "multi_pipelines") == 0)
+	else if (strcmp(testname, "multi_pipelines") == 0)
 		test_multi_pipelines(conn);
-	else if (strcmp(argv[1], "pipeline_abort") == 0)
+	else if (strcmp(testname, "pipeline_abort") == 0)
 		test_pipeline_abort(conn);
-	else if (strcmp(argv[1], "pipelined_insert") == 0)
+	else if (strcmp(testname, "pipelined_insert") == 0)
 		test_pipelined_insert(conn, numrows);
-	else if (strcmp(argv[1], "prepared") == 0)
+	else if (strcmp(testname, "prepared") == 0)
 		test_prepared(conn);
-	else if (strcmp(argv[1], "simple_pipeline") == 0)
+	else if (strcmp(testname, "simple_pipeline") == 0)
 		test_simple_pipeline(conn);
-	else if (strcmp(argv[1], "singlerow") == 0)
+	else if (strcmp(testname, "singlerow") == 0)
 		test_singlerowmode(conn);
-	else if (strcmp(argv[1], "transaction") == 0)
+	else if (strcmp(testname, "transaction") == 0)
 		test_transaction(conn);
 	else
 	{
-		fprintf(stderr, "\"%s\" is not a recognized test name\n", argv[1]);
-		usage(argv[0]);
+		fprintf(stderr, "\"%s\" is not a recognized test name\n", testname);
 		exit(1);
 	}
 

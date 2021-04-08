@@ -56,6 +56,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+#include "commands/tablecmds.h"
 
 /*
  * Global context for foreign_expr_walker's search of an expression tree.
@@ -1275,7 +1276,7 @@ deparseLockingClause(deparse_expr_cxt *context)
 		 * that DECLARE CURSOR ... FOR UPDATE is supported, which it isn't
 		 * before 8.3.
 		 */
-		if (relid == root->parse->resultRelation &&
+		if (bms_is_member(relid, root->all_result_relids) &&
 			(root->parse->commandType == CMD_UPDATE ||
 			 root->parse->commandType == CMD_DELETE))
 		{
@@ -1867,6 +1868,7 @@ deparseUpdateSql(StringInfo buf, RangeTblEntry *rte,
  * 'foreignrel' is the RelOptInfo for the target relation or the join relation
  *		containing all base relations in the query
  * 'targetlist' is the tlist of the underlying foreign-scan plan node
+ *		(note that this only contains new-value expressions and junk attrs)
  * 'targetAttrs' is the target columns of the UPDATE
  * 'remote_conds' is the qual clauses that must be evaluated remotely
  * '*params_list' is an output list of exprs that will become remote Params
@@ -1888,8 +1890,9 @@ deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 	deparse_expr_cxt context;
 	int			nestlevel;
 	bool		first;
-	ListCell   *lc;
 	RangeTblEntry *rte = planner_rt_fetch(rtindex, root);
+	ListCell   *lc,
+			   *lc2;
 
 	/* Set up context struct for recursion */
 	context.root = root;
@@ -1908,14 +1911,13 @@ deparseDirectUpdateSql(StringInfo buf, PlannerInfo *root,
 	nestlevel = set_transmission_modes();
 
 	first = true;
-	foreach(lc, targetAttrs)
+	forboth(lc, targetlist, lc2, targetAttrs)
 	{
-		int			attnum = lfirst_int(lc);
-		TargetEntry *tle = get_tle_by_resno(targetlist, attnum);
+		TargetEntry *tle = lfirst_node(TargetEntry, lc);
+		int			attnum = lfirst_int(lc2);
 
-		if (!tle)
-			elog(ERROR, "attribute number %d not found in UPDATE targetlist",
-				 attnum);
+		/* update's new-value expressions shouldn't be resjunk */
+		Assert(!tle->resjunk);
 
 		if (!first)
 			appendStringInfoString(buf, ", ");
@@ -2169,6 +2171,43 @@ deparseAnalyzeSql(StringInfo buf, Relation rel, List **retrieved_attrs)
 	 */
 	appendStringInfoString(buf, " FROM ");
 	deparseRelation(buf, rel);
+}
+
+/*
+ * Construct a simple "TRUNCATE rel" statement
+ */
+void
+deparseTruncateSql(StringInfo buf,
+				   List *rels,
+				   List *rels_extra,
+				   DropBehavior behavior,
+				   bool restart_seqs)
+{
+	ListCell   *lc1,
+			   *lc2;
+
+	appendStringInfoString(buf, "TRUNCATE ");
+
+	forboth(lc1, rels, lc2, rels_extra)
+	{
+		Relation	rel = lfirst(lc1);
+		int			extra = lfirst_int(lc2);
+
+		if (lc1 != list_head(rels))
+			appendStringInfoString(buf, ", ");
+		if (extra & TRUNCATE_REL_CONTEXT_ONLY)
+			appendStringInfoString(buf, "ONLY ");
+
+		deparseRelation(buf, rel);
+	}
+
+	appendStringInfo(buf, " %s IDENTITY",
+					 restart_seqs ? "RESTART" : "CONTINUE");
+
+	if (behavior == DROP_RESTRICT)
+		appendStringInfoString(buf, " RESTRICT");
+	else if (behavior == DROP_CASCADE)
+		appendStringInfoString(buf, " CASCADE");
 }
 
 /*

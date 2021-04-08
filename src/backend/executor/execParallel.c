@@ -35,6 +35,7 @@
 #include "executor/nodeIncrementalSort.h"
 #include "executor/nodeIndexonlyscan.h"
 #include "executor/nodeIndexscan.h"
+#include "executor/nodeResultCache.h"
 #include "executor/nodeSeqscan.h"
 #include "executor/nodeSort.h"
 #include "executor/nodeSubplan.h"
@@ -174,7 +175,7 @@ ExecSerializePlan(Plan *plan, EState *estate)
 	 */
 	pstmt = makeNode(PlannedStmt);
 	pstmt->commandType = CMD_SELECT;
-	pstmt->queryId = UINT64CONST(0);
+	pstmt->queryId = pgstat_get_my_queryid();
 	pstmt->hasReturning = false;
 	pstmt->hasModifyingCTE = false;
 	pstmt->canSetTag = true;
@@ -291,6 +292,10 @@ ExecParallelEstimate(PlanState *planstate, ExecParallelEstimateContext *e)
 		case T_AggState:
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecAggEstimate((AggState *) planstate, e->pcxt);
+			break;
+		case T_ResultCacheState:
+			/* even when not parallel-aware, for EXPLAIN ANALYZE */
+			ExecResultCacheEstimate((ResultCacheState *) planstate, e->pcxt);
 			break;
 		default:
 			break;
@@ -512,6 +517,10 @@ ExecParallelInitializeDSM(PlanState *planstate,
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecAggInitializeDSM((AggState *) planstate, d->pcxt);
 			break;
+		case T_ResultCacheState:
+			/* even when not parallel-aware, for EXPLAIN ANALYZE */
+			ExecResultCacheInitializeDSM((ResultCacheState *) planstate, d->pcxt);
+			break;
 		default:
 			break;
 	}
@@ -638,7 +647,7 @@ ExecInitParallelPlan(PlanState *planstate, EState *estate,
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
 	/* Estimate space for query text. */
-	query_len = strlen(estate->es_sourceText);
+	query_len = estate->es_sourceText ? strlen(estate->es_sourceText) : 0;
 	shm_toc_estimate_chunk(&pcxt->estimator, query_len + 1);
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
@@ -733,7 +742,10 @@ ExecInitParallelPlan(PlanState *planstate, EState *estate,
 
 	/* Store query string */
 	query_string = shm_toc_allocate(pcxt->toc, query_len + 1);
-	memcpy(query_string, estate->es_sourceText, query_len + 1);
+	if (query_len == 0)
+		query_string[0] = 0;
+	else
+		memcpy(query_string, estate->es_sourceText, query_len + 1);
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_QUERY_TEXT, query_string);
 
 	/* Store serialized PlannedStmt. */
@@ -988,6 +1000,7 @@ ExecParallelReInitializeDSM(PlanState *planstate,
 		case T_HashState:
 		case T_SortState:
 		case T_IncrementalSortState:
+		case T_ResultCacheState:
 			/* these nodes have DSM state, but no reinitialization is required */
 			break;
 
@@ -1056,6 +1069,9 @@ ExecParallelRetrieveInstrumentation(PlanState *planstate,
 			break;
 		case T_AggState:
 			ExecAggRetrieveInstrumentation((AggState *) planstate);
+			break;
+		case T_ResultCacheState:
+			ExecResultCacheRetrieveInstrumentation((ResultCacheState *) planstate);
 			break;
 		default:
 			break;
@@ -1349,6 +1365,11 @@ ExecParallelInitializeWorker(PlanState *planstate, ParallelWorkerContext *pwcxt)
 			/* even when not parallel-aware, for EXPLAIN ANALYZE */
 			ExecAggInitializeWorker((AggState *) planstate, pwcxt);
 			break;
+		case T_ResultCacheState:
+			/* even when not parallel-aware, for EXPLAIN ANALYZE */
+			ExecResultCacheInitializeWorker((ResultCacheState *) planstate,
+											pwcxt);
+			break;
 		default:
 			break;
 	}
@@ -1403,8 +1424,9 @@ ParallelQueryMain(dsm_segment *seg, shm_toc *toc)
 	/* Setting debug_query_string for individual workers */
 	debug_query_string = queryDesc->sourceText;
 
-	/* Report workers' query for monitoring purposes */
+	/* Report workers' query and queryId for monitoring purposes */
 	pgstat_report_activity(STATE_RUNNING, debug_query_string);
+	pgstat_report_queryid(queryDesc->plannedstmt->queryId, false);
 
 	/* Attach to the dynamic shared memory area. */
 	area_space = shm_toc_lookup(toc, PARALLEL_KEY_DSA, false);

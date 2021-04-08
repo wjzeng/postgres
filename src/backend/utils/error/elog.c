@@ -529,6 +529,10 @@ errfinish(const char *filename, int lineno, const char *funcname)
 		slash = strrchr(filename, '/');
 		if (slash)
 			filename = slash + 1;
+		/* Some Windows compilers use backslashes in __FILE__ strings */
+		slash = strrchr(filename, '\\');
+		if (slash)
+			filename = slash + 1;
 	}
 
 	edata->filename = filename;
@@ -1159,6 +1163,29 @@ errhint(const char *fmt,...)
 	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
 
 	EVALUATE_MESSAGE(edata->domain, hint, false, true);
+
+	MemoryContextSwitchTo(oldcontext);
+	recursion_depth--;
+	return 0;					/* return value does not matter */
+}
+
+
+/*
+ * errhint_plural --- add a hint error message text to the current error,
+ * with support for pluralization of the message text
+ */
+int
+errhint_plural(const char *fmt_singular, const char *fmt_plural,
+			   unsigned long n,...)
+{
+	ErrorData  *edata = &errordata[errordata_stack_depth];
+	MemoryContext oldcontext;
+
+	recursion_depth++;
+	CHECK_STACK_DEPTH();
+	oldcontext = MemoryContextSwitchTo(edata->assoc_context);
+
+	EVALUATE_MESSAGE_PLURAL(edata->domain, hint, false);
 
 	MemoryContextSwitchTo(oldcontext);
 	recursion_depth--;
@@ -2248,6 +2275,8 @@ write_console(const char *line, int len)
 	 * Conversion on non-win32 platforms is not implemented yet. It requires
 	 * non-throw version of pg_do_encoding_conversion(), that converts
 	 * unconvertable characters to '?' without errors.
+	 *
+	 * XXX: We have a no-throw version now. It doesn't convert to '?' though.
 	 */
 #endif
 
@@ -2685,6 +2714,14 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 				else
 					appendStringInfoString(buf, unpack_sql_state(edata->sqlerrcode));
 				break;
+			case 'Q':
+				if (padding != 0)
+					appendStringInfo(buf, "%*lld", padding,
+							(long long) pgstat_get_my_queryid());
+				else
+					appendStringInfo(buf, "%lld",
+							(long long) pgstat_get_my_queryid());
+				break;
 			default:
 				/* format error - ignore it */
 				break;
@@ -2927,6 +2964,10 @@ write_csvlog(ErrorData *edata)
 		if (leader && leader->pid != MyProcPid)
 			appendStringInfo(&buf, "%d", leader->pid);
 	}
+	appendStringInfoChar(&buf, ',');
+
+	/* query id */
+	appendStringInfo(&buf, "%lld", (long long) pgstat_get_my_queryid());
 
 	appendStringInfoChar(&buf, '\n');
 
