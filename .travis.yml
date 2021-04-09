@@ -53,7 +53,10 @@ addons:
 before_install:
   - echo '/tmp/%e-%s-%p.core' | sudo tee /proc/sys/kernel/core_pattern
 
-script: ./configure --prefix=$HOME/install --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-perl --with-ldap --with-openssl --with-gssapi --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom && make -j4 all contrib docs && make install && make check-world
+script:
+  - patch -p1 < gtt.patch 
+  - git status
+  - ./configure --prefix=$HOME/install --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-perl --with-ldap --with-openssl --with-gssapi --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom && make -j4 all contrib docs && make install && make check-world
 
 after_failure:
   - for f in $(find . -name regression.diffs) ; do echo "========= Contents of $f" ; head -1000 $f ; done
