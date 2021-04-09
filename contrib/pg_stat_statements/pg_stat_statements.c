@@ -47,6 +47,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/parallel.h"
 #include "catalog/pg_authid.h"
 #include "common/hashfn.h"
 #include "executor/instrument.h"
@@ -120,7 +121,7 @@ typedef enum pgssVersion
 	PGSS_V1_2,
 	PGSS_V1_3,
 	PGSS_V1_8,
-	PGSS_V1_10
+	PGSS_V1_9
 } pgssVersion;
 
 typedef enum pgssStoreKind
@@ -278,8 +279,9 @@ static bool pgss_save;			/* whether to save stats across shutdown */
 
 
 #define pgss_enabled(level) \
+	(!IsParallelWorker() && \
 	(pgss_track == PGSS_TRACK_ALL || \
-	(pgss_track == PGSS_TRACK_TOP && (level) == 0))
+	(pgss_track == PGSS_TRACK_TOP && (level) == 0)))
 
 #define record_gc_qtexts() \
 	do { \
@@ -299,7 +301,7 @@ PG_FUNCTION_INFO_V1(pg_stat_statements_reset_1_7);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_2);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_3);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_8);
-PG_FUNCTION_INFO_V1(pg_stat_statements_1_10);
+PG_FUNCTION_INFO_V1(pg_stat_statements_1_9);
 PG_FUNCTION_INFO_V1(pg_stat_statements);
 PG_FUNCTION_INFO_V1(pg_stat_statements_info);
 
@@ -1414,7 +1416,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 #define PG_STAT_STATEMENTS_COLS_V1_2	19
 #define PG_STAT_STATEMENTS_COLS_V1_3	23
 #define PG_STAT_STATEMENTS_COLS_V1_8	32
-#define PG_STAT_STATEMENTS_COLS_V1_10	33
+#define PG_STAT_STATEMENTS_COLS_V1_9	33
 #define PG_STAT_STATEMENTS_COLS			33	/* maximum of above */
 
 /*
@@ -1428,11 +1430,11 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
  * function.  Unfortunately we weren't bright enough to do that for 1.1.
  */
 Datum
-pg_stat_statements_1_10(PG_FUNCTION_ARGS)
+pg_stat_statements_1_9(PG_FUNCTION_ARGS)
 {
 	bool		showtext = PG_GETARG_BOOL(0);
 
-	pg_stat_statements_internal(fcinfo, PGSS_V1_10, showtext);
+	pg_stat_statements_internal(fcinfo, PGSS_V1_9, showtext);
 
 	return (Datum) 0;
 }
@@ -1556,8 +1558,8 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 			if (api_version != PGSS_V1_8)
 				elog(ERROR, "incorrect number of output arguments");
 			break;
-		case PG_STAT_STATEMENTS_COLS_V1_10:
-			if (api_version != PGSS_V1_10)
+		case PG_STAT_STATEMENTS_COLS_V1_9:
+			if (api_version != PGSS_V1_9)
 				elog(ERROR, "incorrect number of output arguments");
 			break;
 		default:
@@ -1651,7 +1653,7 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 
 		values[i++] = ObjectIdGetDatum(entry->key.userid);
 		values[i++] = ObjectIdGetDatum(entry->key.dbid);
-		if (api_version >= PGSS_V1_10)
+		if (api_version >= PGSS_V1_9)
 			values[i++] = BoolGetDatum(entry->key.toplevel);
 
 		if (is_allowed_role || entry->key.userid == userid)
@@ -1790,7 +1792,7 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 					 api_version == PGSS_V1_2 ? PG_STAT_STATEMENTS_COLS_V1_2 :
 					 api_version == PGSS_V1_3 ? PG_STAT_STATEMENTS_COLS_V1_3 :
 					 api_version == PGSS_V1_8 ? PG_STAT_STATEMENTS_COLS_V1_8 :
-					 api_version == PGSS_V1_10 ? PG_STAT_STATEMENTS_COLS_V1_10 :
+					 api_version == PGSS_V1_9 ? PG_STAT_STATEMENTS_COLS_V1_9 :
 					 -1 /* fail if you forget to update this assert */ ));
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
