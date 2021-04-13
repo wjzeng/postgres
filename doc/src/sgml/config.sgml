@@ -6812,6 +6812,34 @@ local0.*    /var/log/postgresql
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-log-autovacuum-min-duration" xreflabel="log_autovacuum_min_duration">
+      <term><varname>log_autovacuum_min_duration</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>log_autovacuum_min_duration</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Causes each action executed by autovacuum to be logged if it ran for at
+        least the specified amount of time.  Setting this to zero logs
+        all autovacuum actions. <literal>-1</literal> (the default) disables
+        logging autovacuum actions.
+        If this value is specified without units, it is taken as milliseconds.
+        For example, if you set this to
+        <literal>250ms</literal> then all automatic vacuums and analyzes that run
+        250ms or longer will be logged.  In addition, when this parameter is
+        set to any value other than <literal>-1</literal>, a message will be
+        logged if an autovacuum action is skipped due to a conflicting lock or a
+        concurrently dropped relation.  Enabling this parameter can be helpful
+        in tracking autovacuum activity.  This parameter can only be set in
+        the <filename>postgresql.conf</filename> file or on the server command line;
+        but the setting can be overridden for individual tables by
+        changing table storage parameters.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-log-checkpoints" xreflabel="log_checkpoints">
       <term><varname>log_checkpoints</varname> (<type>boolean</type>)
       <indexterm>
@@ -7827,34 +7855,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-log-autovacuum-min-duration" xreflabel="log_autovacuum_min_duration">
-      <term><varname>log_autovacuum_min_duration</varname> (<type>integer</type>)
-      <indexterm>
-       <primary><varname>log_autovacuum_min_duration</varname></primary>
-       <secondary>configuration parameter</secondary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Causes each action executed by autovacuum to be logged if it ran for at
-        least the specified amount of time.  Setting this to zero logs
-        all autovacuum actions. <literal>-1</literal> (the default) disables
-        logging autovacuum actions.
-        If this value is specified without units, it is taken as milliseconds.
-        For example, if you set this to
-        <literal>250ms</literal> then all automatic vacuums and analyzes that run
-        250ms or longer will be logged.  In addition, when this parameter is
-        set to any value other than <literal>-1</literal>, a message will be
-        logged if an autovacuum action is skipped due to a conflicting lock or a
-        concurrently dropped relation.  Enabling this parameter can be helpful
-        in tracking autovacuum activity.  This parameter can only be set in
-        the <filename>postgresql.conf</filename> file or on the server command line;
-        but the setting can be overridden for individual tables by
-        changing table storage parameters.
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-autovacuum-max-workers" xreflabel="autovacuum_max_workers">
       <term><varname>autovacuum_max_workers</varname> (<type>integer</type>)
       <indexterm>
@@ -8415,10 +8415,12 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <listitem>
        <para>
         This parameter is normally on. When set to <literal>off</literal>, it
-        disables validation of the function body string during <xref
-        linkend="sql-createfunction"/>.  Disabling validation avoids side
-        effects of the validation process and avoids false positives due
-        to problems such as forward references.  Set this parameter
+        disables validation of the routine body string during <xref
+        linkend="sql-createfunction"/> and <xref
+        linkend="sql-createprocedure"/>.  Disabling validation avoids side
+        effects of the validation process, in particular preventing false
+        positives due to problems such as forward references.
+        Set this parameter
         to <literal>off</literal> before loading functions on behalf of other
         users; <application>pg_dump</application> does so automatically.
        </para>
@@ -9954,7 +9956,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         When set to <literal>on</literal>, which is the default,
         <productname>PostgreSQL</productname> will automatically remove
         temporary files after a backend crash. If disabled, the files will be
-        retained and may be used for debugging, for example. Repeated crashes 
+        retained and may be used for debugging, for example. Repeated crashes
         may however result in accumulation of useless files.
        </para>
       </listitem>
