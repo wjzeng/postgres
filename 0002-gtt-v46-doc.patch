@@ -1,32 +1,41 @@
 diff --git a/doc/src/sgml/ref/create_table.sgml b/doc/src/sgml/ref/create_table.sgml
-index b6cf9adcb2..c620d1a044 100644
+index a8c5e4028af..40261a44bcd 100644
 --- a/doc/src/sgml/ref/create_table.sgml
 +++ b/doc/src/sgml/ref/create_table.sgml
-@@ -169,32 +169,61 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
+@@ -169,32 +169,67 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
      <listitem>
       <para>
        If specified, the table is created as a temporary table.
 -      Temporary tables are automatically dropped at the end of a
 -      session, or optionally at the end of the current transaction
 -      (see <literal>ON COMMIT</literal> below).  The default
+-      search_path includes the temporary schema first and so identically
+-      named existing permanent tables are not chosen for new plans
 +      Optionally, <literal>GLOBAL</literal> or <literal>LOCAL</literal>
 +      can be written before <literal>TEMPORARY</literal> or <literal>TEMP</literal>.
-+      This means that <productname>PostgreSQL</productname> supports two types of temporary tables.
-+      One is the Global Temporary table, and the other is the Local Temporary table.
-+      The Local Temporary table is created by default.
++      They represent two types of temporary tables supported by <productname>PostgreSQL</productname>:
++      global temporary table and local temporary table. Without specified
++      GLOBAL or LOCAL, a local temporary table is created by default.
 +     </para>
++
++    <para>
++     Both types of temporary tables’ data are truncated at the
++     end of a session or optionally at the end of the current transaction.
++     (see <literal>ON COMMIT</literal> below). For global temporary table,
++     its schema is reserved and reused by future sessions or transactions.
++     For local temporary table, both its data and its schema are dropped.
++    </para>
 +
 +    <variablelist>
 +     <varlistentry>
 +      <term><literal>Global Temporary Table</literal></term>
 +      <listitem>
 +       <para>
-+        The Global Temporary Table are defined just once and automatically exist
++        Global temporary table are defined just once and automatically exist
 +        (starting with empty contents) in every session that needs them.
-+	This means that the definition of temporary table is persistent
-+        and shared between sessions. When a temporary table is created
-+        and write some data, another newly created session also sees this table,
-+        and found this table is empty.
++        The schema definition of temporary tables is persistent and shared among sessions.
++        However, the data in temporary tables are kept private to sessions themselves,
++        even though they use same name and same schema.
 +       </para>
 +      </listitem>
 +     </varlistentry>
@@ -35,10 +44,13 @@ index b6cf9adcb2..c620d1a044 100644
 +      <term><literal>Local Temporary Table</literal></term>
 +     <listitem>
 +     <para>
-+      The Local Temporary Table are automatically dropped at the end of a
-+      session, The default
-       search_path includes the temporary schema first and so identically
-       named existing permanent tables are not chosen for new plans
++      Local temporary table are automatically dropped at the end of a
++      session (include schema and data). Future sessions need to create
++      their own temporary tables when they are used.
++     </para>
++     <para>
++      The default search_path includes the temporary schema first and so
++      identically named existing permanent tables are not chosen for new plans
        while the temporary table exists, unless they are referenced
        with schema-qualified names. Any indexes created on a temporary
        table are automatically temporary as well.
@@ -64,11 +76,7 @@ index b6cf9adcb2..c620d1a044 100644
 +     <command>ANALYZE</command> on the temporary table after it is populated.
 +    </para>
 +    <para>
-+     The data stored in a temporary table can be cleaned up at the
-+     end of the current transaction. (see <literal>ON COMMIT</literal> below).
-+    </para>
-+    <para>
-+     The Temporary Table resembles the SQL standard, but has some differences.
++     The Temporary table resembles the SQL standard, but has some differences.
 +     see <xref linkend="sql-createtable-compatibility"/> below.
 +    </para>
  
@@ -82,7 +90,7 @@ index b6cf9adcb2..c620d1a044 100644
      </listitem>
     </varlistentry>
  
-@@ -2125,13 +2154,18 @@ CREATE TABLE cities_partdef
+@@ -2125,13 +2160,17 @@ CREATE TABLE cities_partdef
     <title>Temporary Tables</title>
  
     <para>
@@ -94,21 +102,20 @@ index b6cf9adcb2..c620d1a044 100644
 -    <productname>PostgreSQL</productname> instead
 -    requires each session to issue its own <literal>CREATE TEMPORARY
 +    Although the syntax of <literal>CREATE GLOBAL/LOCAL TEMPORARY TABLE</literal>
-+    resembles that of the SQL standard, the effect is not the same. The
-+    SQL standard distinguishes between global and local temporary
-+    tables. The Global Temporary Talbe follows SQL standards very well,
-+    but Local Temporary Talbe does not.
++    resembles that of the SQL standard, the effect is not the same.
++    The global temporary table follows the SQL standards while local temporary
++    table does not.
 +   </para>
 +
 +   <para>
-+    First, in the standard, temporary tables are defined just once and
-+    automatically exist (starting with empty contents) in every session
-+    that needs them. The Local Temporary Table instead
-+    requires each session to issue its own <literal>CREATE LOCAL TEMPORARY
++    First, in the standard, both global and local temporary tables are defined just
++    once and automatically exist (starting with empty contents) in every session
++    that needs them. For local temporary tables, <productname>PostgreSQL</productname>
++    instead requires each session to issue its own <literal>CREATE LOCAL TEMPORARY
      TABLE</literal> command for each temporary table to be used.  This allows
      different sessions to use the same temporary table name for different
      purposes, whereas the standard's approach constrains all instances of a
-@@ -2139,29 +2173,13 @@ CREATE TABLE cities_partdef
+@@ -2139,29 +2178,14 @@ CREATE TABLE cities_partdef
     </para>
  
     <para>
@@ -119,10 +126,11 @@ index b6cf9adcb2..c620d1a044 100644
 -
 -   <para>
 -    The SQL standard also distinguishes between global and local temporary
--    tables, where a local temporary table has a separate set of contents for
-+    Second, a local temporary table has a separate set of contents for
++    Second, the SQL standard distinguishes between global and local temporary
+     tables, where a local temporary table has a separate set of contents for
      each SQL module within each session, though its definition is still shared
-     across sessions.  Since <productname>PostgreSQL</productname> does not
+-    across sessions.  Since <productname>PostgreSQL</productname> does not
++    across sessions. Since <productname>PostgreSQL</productname> does not
      support SQL modules, this distinction is not relevant in
      <productname>PostgreSQL</productname>.
     </para>
@@ -139,16 +147,16 @@ index b6cf9adcb2..c620d1a044 100644
     <para>
      The <literal>ON COMMIT</literal> clause for temporary tables
      also resembles the SQL standard, but has some differences.
-@@ -2169,7 +2187,8 @@ CREATE TABLE cities_partdef
+@@ -2169,7 +2193,8 @@ CREATE TABLE cities_partdef
      default behavior is <literal>ON COMMIT DELETE ROWS</literal>.  However, the
      default behavior in <productname>PostgreSQL</productname> is
      <literal>ON COMMIT PRESERVE ROWS</literal>.  The <literal>ON COMMIT
 -    DROP</literal> option does not exist in SQL.
 +    DROP</literal> option does not exist in SQL and is not supported by
-+    Global Temporary Table.
++    global temporary table.
     </para>
    </refsect2>
  
 -- 
-2.27.0
+2.24.3 (Apple Git-128)
 
