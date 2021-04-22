@@ -1,3 +1,107 @@
+From cd71249a8eed1c4fbe85977288980ccb5d9baec9 Mon Sep 17 00:00:00 2001
+From: wjzeng <wjzeng2012@gmail.com>
+Date: Thu, 22 Apr 2021 14:58:23 +0800
+Subject: [PATCH] gtt v47
+
+---
+ src/backend/access/common/reloptions.c       |   20 +-
+ src/backend/access/gist/gistutil.c           |    2 +-
+ src/backend/access/hash/hash.c               |    2 +-
+ src/backend/access/heap/heapam_handler.c     |    4 +-
+ src/backend/access/heap/vacuumlazy.c         |    9 +
+ src/backend/access/nbtree/nbtpage.c          |    9 +
+ src/backend/bootstrap/bootparse.y            |    3 +-
+ src/backend/catalog/Makefile                 |    1 +
+ src/backend/catalog/README.gtt               |  166 ++
+ src/backend/catalog/catalog.c                |    1 +
+ src/backend/catalog/heap.c                   |   91 +-
+ src/backend/catalog/index.c                  |  117 +-
+ src/backend/catalog/namespace.c              |    7 +
+ src/backend/catalog/storage.c                |   52 +-
+ src/backend/catalog/storage_gtt.c            | 1651 ++++++++++++++++++
+ src/backend/catalog/system_views.sql         |   85 +
+ src/backend/commands/analyze.c               |   78 +-
+ src/backend/commands/cluster.c               |  235 ++-
+ src/backend/commands/copy.c                  |    2 +-
+ src/backend/commands/copyfrom.c              |    4 +
+ src/backend/commands/indexcmds.c             |    8 +-
+ src/backend/commands/lockcmds.c              |    5 +-
+ src/backend/commands/sequence.c              |   81 +-
+ src/backend/commands/tablecmds.c             |  176 +-
+ src/backend/commands/vacuum.c                |   92 +-
+ src/backend/commands/view.c                  |    6 +
+ src/backend/executor/execMain.c              |    4 +
+ src/backend/executor/execPartition.c         |    4 +
+ src/backend/executor/nodeModifyTable.c       |    5 +
+ src/backend/optimizer/path/allpaths.c        |    4 +-
+ src/backend/optimizer/plan/planner.c         |    2 +-
+ src/backend/optimizer/util/plancat.c         |    9 +
+ src/backend/parser/analyze.c                 |    5 +
+ src/backend/parser/gram.y                    |   20 +-
+ src/backend/parser/parse_relation.c          |   51 +
+ src/backend/parser/parse_utilcmd.c           |    9 +
+ src/backend/postmaster/autovacuum.c          |   10 +-
+ src/backend/storage/buffer/bufmgr.c          |   11 +
+ src/backend/storage/ipc/ipci.c               |    4 +
+ src/backend/storage/ipc/procarray.c          |   76 +
+ src/backend/storage/lmgr/lwlock.c            |    4 +-
+ src/backend/storage/lmgr/proc.c              |    2 +
+ src/backend/utils/adt/dbsize.c               |    7 +
+ src/backend/utils/adt/selfuncs.c             |   99 +-
+ src/backend/utils/cache/lsyscache.c          |   14 +
+ src/backend/utils/cache/relcache.c           |  106 +-
+ src/backend/utils/misc/guc.c                 |   32 +
+ src/bin/pg_dump/pg_dump.c                    |   49 +-
+ src/bin/pg_upgrade/check.c                   |    4 +-
+ src/bin/pg_upgrade/info.c                    |   21 +-
+ src/bin/pg_upgrade/pg_upgrade.c              |   12 +-
+ src/bin/pg_upgrade/pg_upgrade.h              |    2 +-
+ src/bin/psql/describe.c                      |    3 +-
+ src/bin/psql/tab-complete.c                  |    7 +
+ src/include/catalog/heap.h                   |    3 +-
+ src/include/catalog/pg_class.h               |    1 +
+ src/include/catalog/pg_proc.dat              |   34 +
+ src/include/catalog/storage.h                |    2 +-
+ src/include/catalog/storage_gtt.h            |   46 +
+ src/include/commands/sequence.h              |    1 +
+ src/include/parser/parse_relation.h          |    3 +
+ src/include/storage/bufpage.h                |    2 +
+ src/include/storage/lwlock.h                 |    1 +
+ src/include/storage/proc.h                   |    2 +
+ src/include/storage/procarray.h              |    2 +
+ src/include/utils/guc.h                      |    4 +
+ src/include/utils/rel.h                      |   47 +-
+ src/test/regress/expected/gtt_clean.out      |   14 +
+ src/test/regress/expected/gtt_function.out   |  381 ++++
+ src/test/regress/expected/gtt_parallel_1.out |   90 +
+ src/test/regress/expected/gtt_parallel_2.out |  343 ++++
+ src/test/regress/expected/gtt_prepare.out    |   10 +
+ src/test/regress/expected/gtt_stats.out      |   80 +
+ src/test/regress/expected/rules.out          |   88 +
+ src/test/regress/parallel_schedule           |    7 +
+ src/test/regress/sql/gtt_clean.sql           |    8 +
+ src/test/regress/sql/gtt_function.sql        |  253 +++
+ src/test/regress/sql/gtt_parallel_1.sql      |   44 +
+ src/test/regress/sql/gtt_parallel_2.sql      |  154 ++
+ src/test/regress/sql/gtt_prepare.sql         |   19 +
+ src/test/regress/sql/gtt_stats.sql           |   46 +
+ 81 files changed, 4987 insertions(+), 181 deletions(-)
+ create mode 100644 src/backend/catalog/README.gtt
+ create mode 100644 src/backend/catalog/storage_gtt.c
+ create mode 100644 src/include/catalog/storage_gtt.h
+ create mode 100644 src/test/regress/expected/gtt_clean.out
+ create mode 100644 src/test/regress/expected/gtt_function.out
+ create mode 100644 src/test/regress/expected/gtt_parallel_1.out
+ create mode 100644 src/test/regress/expected/gtt_parallel_2.out
+ create mode 100644 src/test/regress/expected/gtt_prepare.out
+ create mode 100644 src/test/regress/expected/gtt_stats.out
+ create mode 100644 src/test/regress/sql/gtt_clean.sql
+ create mode 100644 src/test/regress/sql/gtt_function.sql
+ create mode 100644 src/test/regress/sql/gtt_parallel_1.sql
+ create mode 100644 src/test/regress/sql/gtt_parallel_2.sql
+ create mode 100644 src/test/regress/sql/gtt_prepare.sql
+ create mode 100644 src/test/regress/sql/gtt_stats.sql
+
 diff --git a/src/backend/access/common/reloptions.c b/src/backend/access/common/reloptions.c
 index 5554275e64..1d3e992cb8 100644
 --- a/src/backend/access/common/reloptions.c
@@ -92,7 +196,7 @@ index 7a9a640989..67fcc75438 100644
  	/* copy main fork */
  	RelationCopyStorage(rel->rd_smgr, dstrel, MAIN_FORKNUM,
 diff --git a/src/backend/access/heap/vacuumlazy.c b/src/backend/access/heap/vacuumlazy.c
-index 9f9ba5d308..b4ccc86757 100644
+index c3fc12d76c..3c7f969724 100644
 --- a/src/backend/access/heap/vacuumlazy.c
 +++ b/src/backend/access/heap/vacuumlazy.c
 @@ -63,6 +63,7 @@
@@ -119,7 +223,7 @@ index 9f9ba5d308..b4ccc86757 100644
  	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
  	{
 diff --git a/src/backend/access/nbtree/nbtpage.c b/src/backend/access/nbtree/nbtpage.c
-index ef48679cc2..df0e843e87 100644
+index 706e16ae94..1cbd83d802 100644
 --- a/src/backend/access/nbtree/nbtpage.c
 +++ b/src/backend/access/nbtree/nbtpage.c
 @@ -28,6 +28,7 @@
@@ -160,7 +264,7 @@ index 5fcd004e1b..58b994cef5 100644
  					}
  					else
 diff --git a/src/backend/catalog/Makefile b/src/backend/catalog/Makefile
-index e36a9602c1..be0b600ca5 100644
+index 69f9dd51a7..9ed7dd3b3d 100644
 --- a/src/backend/catalog/Makefile
 +++ b/src/backend/catalog/Makefile
 @@ -43,6 +43,7 @@ OBJS = \
@@ -921,10 +1025,10 @@ index cba7a9ada0..9cf6802f9b 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 0000000000..ec10a2df03
+index 0000000000..6aec275c73
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
-@@ -0,0 +1,1648 @@
+@@ -0,0 +1,1651 @@
 +/*-------------------------------------------------------------------------
 + *
 + * storage_gtt.c
@@ -1683,6 +1787,9 @@ index 0000000000..ec10a2df03
 +	/* drop local buffer and storage */
 +	if (nfiles > 0)
 +	{
++		/* Need to ensure we have a usable transaction. */
++                AbortOutOfAnyTransaction();
++
 +		smgrdounlinkall(srels, nfiles, false);
 +		for (i = 0; i < nfiles; i++)
 +			smgrclose(srels[i]);
@@ -2574,10 +2681,10 @@ index 0000000000..ec10a2df03
 +}
 +
 diff --git a/src/backend/catalog/system_views.sql b/src/backend/catalog/system_views.sql
-index 451db2ee0a..95e25af49e 100644
+index 70e578894f..a1cefcf108 100644
 --- a/src/backend/catalog/system_views.sql
 +++ b/src/backend/catalog/system_views.sql
-@@ -186,6 +186,91 @@ CREATE OR REPLACE VIEW pg_sequences AS
+@@ -186,6 +186,91 @@ CREATE VIEW pg_sequences AS
      WHERE NOT pg_is_other_temp_schema(N.oid)
            AND relkind = 'S';
  
@@ -2670,7 +2777,7 @@ index 451db2ee0a..95e25af49e 100644
      SELECT
          nspname AS schemaname,
 diff --git a/src/backend/commands/analyze.c b/src/backend/commands/analyze.c
-index cffcd54302..e97b30ae99 100644
+index 8aa329a2a0..9c7b156fdd 100644
 --- a/src/backend/commands/analyze.c
 +++ b/src/backend/commands/analyze.c
 @@ -34,6 +34,7 @@
@@ -3344,7 +3451,7 @@ index 0415df9ccb..39f82bc278 100644
 +}
 +
 diff --git a/src/backend/commands/tablecmds.c b/src/backend/commands/tablecmds.c
-index 096a6f2891..fb758ad064 100644
+index 97cc9fd6ec..f66fb8bb78 100644
 --- a/src/backend/commands/tablecmds.c
 +++ b/src/backend/commands/tablecmds.c
 @@ -47,6 +47,7 @@
@@ -3598,7 +3705,7 @@ index 096a6f2891..fb758ad064 100644
  			ereport(ERROR,
  					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
  					 errmsg("cannot change logged status of table \"%s\" because it is temporary",
-@@ -18504,3 +18633,40 @@ GetAttributeCompression(Form_pg_attribute att, char *compression)
+@@ -18499,3 +18628,40 @@ GetAttributeCompression(Form_pg_attribute att, char *compression)
  
  	return cmethod;
  }
@@ -3817,10 +3924,10 @@ index f2642dba6c..e088101ccd 100644
  	 * If the user didn't explicitly ask for a temporary view, check whether
  	 * we need one implicitly.  We allow TEMP to be inserted automatically as
 diff --git a/src/backend/executor/execMain.c b/src/backend/executor/execMain.c
-index b2e2df8773..88fb86265a 100644
+index 8d0f3de76e..8c5f8c631e 100644
 --- a/src/backend/executor/execMain.c
 +++ b/src/backend/executor/execMain.c
-@@ -782,6 +782,10 @@ ExecCheckXactReadOnly(PlannedStmt *plannedstmt)
+@@ -784,6 +784,10 @@ ExecCheckXactReadOnly(PlannedStmt *plannedstmt)
  		if (isTempNamespace(get_rel_namespace(rte->relid)))
  			continue;
  
@@ -3884,7 +3991,7 @@ index c5a2a9a054..e473524f16 100644
  	 * Now we may initialize the subplan.
  	 */
 diff --git a/src/backend/optimizer/path/allpaths.c b/src/backend/optimizer/path/allpaths.c
-index edba5e49a8..2ae3a6d4a8 100644
+index 353454b183..b6c30e88e0 100644
 --- a/src/backend/optimizer/path/allpaths.c
 +++ b/src/backend/optimizer/path/allpaths.c
 @@ -48,7 +48,7 @@
@@ -3946,7 +4053,7 @@ index 345c7425f6..e3a3836b3d 100644
  			 * If the index is valid, but cannot yet be used, ignore it; but
  			 * mark the plan we are generating as transient. See
 diff --git a/src/backend/parser/analyze.c b/src/backend/parser/analyze.c
-index 862f18a92f..8c314b584a 100644
+index e415bc3df0..2b0cbbf952 100644
 --- a/src/backend/parser/analyze.c
 +++ b/src/backend/parser/analyze.c
 @@ -2892,6 +2892,11 @@ transformCreateTableAsStmt(ParseState *pstate, CreateTableAsStmt *stmt)
@@ -4101,7 +4208,7 @@ index 9dd30370da..a67823df93 100644
  	cxt.inhRelations = NIL;
  	cxt.isalter = true;
 diff --git a/src/backend/postmaster/autovacuum.c b/src/backend/postmaster/autovacuum.c
-index a799544738..fbd0351283 100644
+index d516df0ac5..5a2dc7c3c4 100644
 --- a/src/backend/postmaster/autovacuum.c
 +++ b/src/backend/postmaster/autovacuum.c
 @@ -2158,6 +2158,14 @@ do_autovacuum(void)
@@ -4187,7 +4294,7 @@ index 47847563ef..1fb33ce4a3 100644
  	/*
  	 * Set up lock manager
 diff --git a/src/backend/storage/ipc/procarray.c b/src/backend/storage/ipc/procarray.c
-index bf776286de..b949cdc362 100644
+index 5ff8cab394..07385c09da 100644
 --- a/src/backend/storage/ipc/procarray.c
 +++ b/src/backend/storage/ipc/procarray.c
 @@ -65,6 +65,7 @@
@@ -4331,7 +4438,7 @@ index da1a879f1f..d4d40a0302 100644
  			elog(ERROR, "invalid relpersistence: %c", relform->relpersistence);
  			backend = InvalidBackendId; /* placate compiler */
 diff --git a/src/backend/utils/adt/selfuncs.c b/src/backend/utils/adt/selfuncs.c
-index 0963e2701c..70c5e52ff1 100644
+index 3d4304cce7..19a3daf73b 100644
 --- a/src/backend/utils/adt/selfuncs.c
 +++ b/src/backend/utils/adt/selfuncs.c
 @@ -108,6 +108,7 @@
@@ -4805,7 +4912,7 @@ index b130874bdc..cd53576768 100644
  	 * See also CheckRequiredParameterValues() if this parameter changes
  	 */
 diff --git a/src/bin/pg_dump/pg_dump.c b/src/bin/pg_dump/pg_dump.c
-index 391947340f..0a46ac2f0f 100644
+index e397b76356..301bf4ea8d 100644
 --- a/src/bin/pg_dump/pg_dump.c
 +++ b/src/bin/pg_dump/pg_dump.c
 @@ -2522,6 +2522,10 @@ makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
@@ -5057,7 +5164,7 @@ index 919a7849fd..486d01fcae 100644
  					   const char *db_name);
  
 diff --git a/src/bin/psql/describe.c b/src/bin/psql/describe.c
-index fdc2a89085..da0f0f3d6e 100644
+index 3e39fdb545..f9c17d0d12 100644
 --- a/src/bin/psql/describe.c
 +++ b/src/bin/psql/describe.c
 @@ -4067,7 +4067,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
@@ -5071,10 +5178,10 @@ index fdc2a89085..da0f0f3d6e 100644
  							  gettext_noop("temporary"),
  							  gettext_noop("unlogged"),
 diff --git a/src/bin/psql/tab-complete.c b/src/bin/psql/tab-complete.c
-index d34271e3b8..d0fec3959e 100644
+index ed84b3789c..3b03966b68 100644
 --- a/src/bin/psql/tab-complete.c
 +++ b/src/bin/psql/tab-complete.c
-@@ -1069,6 +1069,8 @@ static const pgsql_thing_t words_after_create[] = {
+@@ -1070,6 +1070,8 @@ static const pgsql_thing_t words_after_create[] = {
  	{"FOREIGN TABLE", NULL, NULL, NULL},
  	{"FUNCTION", NULL, NULL, Query_for_list_of_functions},
  	{"GROUP", Query_for_list_of_roles},
@@ -5083,7 +5190,7 @@ index d34271e3b8..d0fec3959e 100644
  	{"INDEX", NULL, NULL, &Query_for_list_of_indexes},
  	{"LANGUAGE", Query_for_list_of_languages},
  	{"LARGE OBJECT", NULL, NULL, NULL, THING_NO_CREATE | THING_NO_DROP},
-@@ -2502,6 +2504,9 @@ psql_completion(const char *text, int start, int end)
+@@ -2503,6 +2505,9 @@ psql_completion(const char *text, int start, int end)
  	/* CREATE FOREIGN DATA WRAPPER */
  	else if (Matches("CREATE", "FOREIGN", "DATA", "WRAPPER", MatchAny))
  		COMPLETE_WITH("HANDLER", "VALIDATOR", "OPTIONS");
@@ -5093,7 +5200,7 @@ index d34271e3b8..d0fec3959e 100644
  
  	/* CREATE INDEX --- is allowed inside CREATE SCHEMA, so use TailMatches */
  	/* First off we complete CREATE UNIQUE with "INDEX" */
-@@ -2710,6 +2715,8 @@ psql_completion(const char *text, int start, int end)
+@@ -2711,6 +2716,8 @@ psql_completion(const char *text, int start, int end)
  	/* Complete "CREATE TEMP/TEMPORARY" with the possible temp objects */
  	else if (TailMatches("CREATE", "TEMP|TEMPORARY"))
  		COMPLETE_WITH("SEQUENCE", "TABLE", "VIEW");
@@ -5129,10 +5236,10 @@ index 3e37729436..67652c21b5 100644
  /* default selection for replica identity (primary key or nothing) */
  #define		  REPLICA_IDENTITY_DEFAULT	'd'
 diff --git a/src/include/catalog/pg_proc.dat b/src/include/catalog/pg_proc.dat
-index f4957653ae..b119d27dab 100644
+index b1ee078a1d..346fd3c6c0 100644
 --- a/src/include/catalog/pg_proc.dat
 +++ b/src/include/catalog/pg_proc.dat
-@@ -5669,6 +5669,40 @@
+@@ -5666,6 +5666,40 @@
    proparallel => 'r', prorettype => 'float8', proargtypes => 'oid',
    prosrc => 'pg_stat_get_xact_function_self_time' },
  
@@ -6376,7 +6483,7 @@ index 0000000000..4420fdbd8f
 +drop schema gtt_stats cascade;
 +NOTICE:  drop cascades to table gtt_stats.gtt
 diff --git a/src/test/regress/expected/rules.out b/src/test/regress/expected/rules.out
-index 186e6c966c..0e931b5c4e 100644
+index 6dff5439e0..784f275906 100644
 --- a/src/test/regress/expected/rules.out
 +++ b/src/test/regress/expected/rules.out
 @@ -1359,6 +1359,94 @@ pg_group| SELECT pg_authid.rolname AS groname,
