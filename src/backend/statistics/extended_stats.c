@@ -358,7 +358,7 @@ statext_compute_stattarget(int stattarget, int nattrs, VacAttrStats **stats)
 	 */
 	for (i = 0; i < nattrs; i++)
 	{
-		/* keep the maximmum statistics target */
+		/* keep the maximum statistics target */
 		if (stats[i]->attr->attstattarget > stattarget)
 			stattarget = stats[i]->attr->attstattarget;
 	}
@@ -2420,6 +2420,8 @@ statext_expressions_load(Oid stxoid, int idx)
 
 	/* Build a temporary HeapTuple control structure */
 	tmptup.t_len = HeapTupleHeaderGetDatumLength(td);
+	ItemPointerSetInvalid(&(tmptup.t_self));
+	tmptup.t_tableOid = InvalidOid;
 	tmptup.t_data = td;
 
 	tup = heap_copytuple(&tmptup);

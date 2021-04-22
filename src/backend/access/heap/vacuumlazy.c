@@ -686,7 +686,16 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 						new_min_multi,
 						false);
 
-	/* report results to the stats collector, too */
+	/*
+	 * Report results to the stats collector, too.
+	 *
+	 * Deliberately avoid telling the stats collector about LP_DEAD items that
+	 * remain in the table due to VACUUM bypassing index and heap vacuuming.
+	 * ANALYZE will consider the remaining LP_DEAD items to be dead tuples.
+	 * It seems like a good idea to err on the side of not vacuuming again too
+	 * soon in cases where the failsafe prevented significant amounts of heap
+	 * vacuuming.
+	 */
 	pgstat_report_vacuum(RelationGetRelid(rel),
 						 rel->rd_rel->relisshared,
 						 Max(new_live_tuples, 0),
@@ -1334,6 +1343,9 @@ lazy_scan_heap(LVRelState *vacrel, VacuumParams *params, bool aggressive)
 		 */
 		lazy_scan_prune(vacrel, buf, blkno, page, vistest, &prunestate);
 
+		Assert(!prunestate.all_visible || !prunestate.has_lpdead_items);
+		Assert(!all_visible_according_to_vm || prunestate.all_visible);
+
 		/* Remember the location of the last page with nonremovable tuples */
 		if (prunestate.hastup)
 			vacrel->nonempty_pages = blkno + 1;
@@ -1404,7 +1416,6 @@ lazy_scan_heap(LVRelState *vacrel, VacuumParams *params, bool aggressive)
 		 * Handle setting visibility map bit based on what the VM said about
 		 * the page before pruning started, and using prunestate
 		 */
-		Assert(!prunestate.all_visible || !prunestate.has_lpdead_items);
 		if (!all_visible_according_to_vm && prunestate.all_visible)
 		{
 			uint8		flags = VISIBILITYMAP_ALL_VISIBLE;
@@ -1786,6 +1797,14 @@ retry:
 		 * The logic here is a bit simpler than acquire_sample_rows(), as
 		 * VACUUM can't run inside a transaction block, which makes some cases
 		 * impossible (e.g. in-progress insert from the same transaction).
+		 *
+		 * We treat LP_DEAD items a little differently, too -- we don't count
+		 * them as dead_tuples at all (we only consider new_dead_tuples).  The
+		 * outcome is no different because we assume that any LP_DEAD items we
+		 * encounter here will become LP_UNUSED inside lazy_vacuum_heap_page()
+		 * before we report anything to the stats collector. (Cases where we
+		 * bypass index vacuuming will violate our assumption, but the overall
+		 * impact of that should be negligible.)
 		 */
 		switch (res)
 		{
@@ -1901,9 +1920,6 @@ retry:
 	 * that will need to be vacuumed in indexes later, or a LP_NORMAL tuple
 	 * that remains and needs to be considered for freezing now (LP_UNUSED and
 	 * LP_REDIRECT items also remain, but are of no further interest to us).
-	 *
-	 * Add page level counters to caller's counts, and then actually process
-	 * LP_DEAD and LP_NORMAL items.
 	 */
 	vacrel->offnum = InvalidOffsetNumber;
 
@@ -1988,13 +2004,6 @@ retry:
 	}
 #endif
 
-	/* Add page-local counts to whole-VACUUM counts */
-	vacrel->tuples_deleted += tuples_deleted;
-	vacrel->lpdead_items += lpdead_items;
-	vacrel->new_dead_tuples += new_dead_tuples;
-	vacrel->num_tuples += num_tuples;
-	vacrel->live_tuples += live_tuples;
-
 	/*
 	 * Now save details of the LP_DEAD items from the page in the dead_tuples
 	 * array.  Also record that page has dead items in per-page prunestate.
@@ -2021,6 +2030,13 @@ retry:
 		pgstat_progress_update_param(PROGRESS_VACUUM_NUM_DEAD_TUPLES,
 									 dead_tuples->num_tuples);
 	}
+
+	/* Finally, add page-local counts to whole-VACUUM counts */
+	vacrel->tuples_deleted += tuples_deleted;
+	vacrel->lpdead_items += lpdead_items;
+	vacrel->new_dead_tuples += new_dead_tuples;
+	vacrel->num_tuples += num_tuples;
+	vacrel->live_tuples += live_tuples;
 }
 
 /*
@@ -2095,6 +2111,14 @@ lazy_vacuum(LVRelState *vacrel, bool onecall)
 		 * not exceed 32MB.  This limits the risk that we will bypass index
 		 * vacuuming again and again until eventually there is a VACUUM whose
 		 * dead_tuples space is not CPU cache resident.
+		 *
+		 * We don't take any special steps to remember the LP_DEAD items (such
+		 * as counting them in new_dead_tuples report to the stats collector)
+		 * when the optimization is applied.  Though the accounting used in
+		 * analyze.c's acquire_sample_rows() will recognize the same LP_DEAD
+		 * items as dead rows in its own stats collector report, that's okay.
+		 * The discrepancy should be negligible.  If this optimization is ever
+		 * expanded to cover more cases then this may need to be reconsidered.
 		 */
 		threshold = (double) vacrel->rel_pages * BYPASS_THRESHOLD_PAGES;
 		do_bypass_optimization =
@@ -2139,15 +2163,15 @@ lazy_vacuum(LVRelState *vacrel, bool onecall)
 		 * far in the past.
 		 *
 		 * From this point on the VACUUM operation will do no further index
-		 * vacuuming or heap vacuuming.  It will do any remaining pruning that
-		 * may be required, plus other heap-related and relation-level
-		 * maintenance tasks.  But that's it.
+		 * vacuuming or heap vacuuming.  This VACUUM operation won't end up
+		 * back here again.
 		 */
 		Assert(vacrel->do_failsafe);
 	}
 
 	/*
-	 * Forget the now-vacuumed tuples -- just press on
+	 * Forget the LP_DEAD items that we just vacuumed (or just decided to not
+	 * vacuum)
 	 */
 	vacrel->dead_tuples->num_tuples = 0;
 }
@@ -2261,7 +2285,7 @@ static void
 lazy_vacuum_heap_rel(LVRelState *vacrel)
 {
 	int			tupindex;
-	int			vacuumed_pages;
+	BlockNumber	vacuumed_pages;
 	PGRUsage	ru0;
 	Buffer		vmbuffer = InvalidBuffer;
 	LVSavedErrInfo saved_err_info;
@@ -2534,8 +2558,11 @@ lazy_check_needs_freeze(Buffer buf, bool *hastup, LVRelState *vacrel)
  * relfrozenxid and/or relminmxid that is dangerously far in the past.
  *
  * Triggering the failsafe makes the ongoing VACUUM bypass any further index
- * vacuuming and heap vacuuming.  It also stops the ongoing VACUUM from
- * applying any cost-based delay that may be in effect.
+ * vacuuming and heap vacuuming.  Truncating the heap is also bypassed.
+ *
+ * Any remaining work (work that VACUUM cannot just bypass) is typically sped
+ * up when the failsafe triggers.  VACUUM stops applying any cost-based delay
+ * that it started out with.
  *
  * Returns true when failsafe has been triggered.
  *
@@ -3097,14 +3124,16 @@ lazy_cleanup_one_index(Relation indrel, IndexBulkDeleteResult *istat,
  * Don't even think about it unless we have a shot at releasing a goodly
  * number of pages.  Otherwise, the time taken isn't worth it.
  *
+ * Also don't attempt it if wraparound failsafe is in effect.  It's hard to
+ * predict how long lazy_truncate_heap will take.  Don't take any chances.
+ * There is very little chance of truncation working out when the failsafe is
+ * in effect in any case.  lazy_scan_prune makes the optimistic assumption
+ * that any LP_DEAD items it encounters will always be LP_UNUSED by the time
+ * we're called.
+ *
  * Also don't attempt it if we are doing early pruning/vacuuming, because a
  * scan which cannot find a truncated heap page cannot determine that the
- * snapshot is too old to read that page.  We might be able to get away with
- * truncating all except one of the pages, setting its LSN to (at least) the
- * maximum of the truncated range if we also treated an index leaf tuple
- * pointing to a missing heap page as something to trigger the "snapshot too
- * old" error, but that seems fragile and seems like it deserves its own patch
- * if we consider it.
+ * snapshot is too old to read that page.
  *
  * This is split out so that we can test whether truncation is going to be
  * called for before we actually do it.  If you change the logic here, be
@@ -3116,6 +3145,9 @@ should_attempt_truncation(LVRelState *vacrel, VacuumParams *params)
 	BlockNumber possibly_freeable;
 
 	if (params->truncate == VACOPT_TERNARY_DISABLED)
+		return false;
+
+	if (vacrel->do_failsafe)
 		return false;
 
 	possibly_freeable = vacrel->rel_pages - vacrel->nonempty_pages;

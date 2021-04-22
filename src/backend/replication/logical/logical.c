@@ -1773,30 +1773,41 @@ void
 UpdateDecodingStats(LogicalDecodingContext *ctx)
 {
 	ReorderBuffer *rb = ctx->reorder;
+	PgStat_ReplSlotStats repSlotStat;
 
-	/*
-	 * Nothing to do if we haven't spilled or streamed anything since the last
-	 * time the stats has been sent.
-	 */
-	if (rb->spillBytes <= 0 && rb->streamBytes <= 0)
+	/* Nothing to do if we don't have any replication stats to be sent. */
+	if (rb->spillBytes <= 0 && rb->streamBytes <= 0 && rb->totalBytes <= 0)
 		return;
 
-	elog(DEBUG2, "UpdateDecodingStats: updating stats %p %lld %lld %lld %lld %lld %lld",
+	elog(DEBUG2, "UpdateDecodingStats: updating stats %p %lld %lld %lld %lld %lld %lld %lld %lld",
 		 rb,
 		 (long long) rb->spillTxns,
 		 (long long) rb->spillCount,
 		 (long long) rb->spillBytes,
 		 (long long) rb->streamTxns,
 		 (long long) rb->streamCount,
-		 (long long) rb->streamBytes);
+		 (long long) rb->streamBytes,
+		 (long long) rb->totalTxns,
+		 (long long) rb->totalBytes);
 
-	pgstat_report_replslot(NameStr(ctx->slot->data.name),
-						   rb->spillTxns, rb->spillCount, rb->spillBytes,
-						   rb->streamTxns, rb->streamCount, rb->streamBytes);
+	namestrcpy(&repSlotStat.slotname, NameStr(ctx->slot->data.name));
+	repSlotStat.spill_txns = rb->spillTxns;
+	repSlotStat.spill_count = rb->spillCount;
+	repSlotStat.spill_bytes = rb->spillBytes;
+	repSlotStat.stream_txns = rb->streamTxns;
+	repSlotStat.stream_count = rb->streamCount;
+	repSlotStat.stream_bytes = rb->streamBytes;
+	repSlotStat.total_txns = rb->totalTxns;
+	repSlotStat.total_bytes = rb->totalBytes;
+
+	pgstat_report_replslot(&repSlotStat);
+
 	rb->spillTxns = 0;
 	rb->spillCount = 0;
 	rb->spillBytes = 0;
 	rb->streamTxns = 0;
 	rb->streamCount = 0;
 	rb->streamBytes = 0;
+	rb->totalTxns = 0;
+	rb->totalBytes = 0;
 }

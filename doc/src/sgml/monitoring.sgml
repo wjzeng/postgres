@@ -919,7 +919,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
 
     <row>
      <entry role="catalog_table_entry"><para role="column_definition">
-      <structfield>queryid</structfield> <type>bigint</type>
+      <structfield>query_id</structfield> <type>bigint</type>
      </para>
      <para>
       Identifier of this backend's most recent query. If
@@ -2712,6 +2712,31 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
         output plugin while decoding changes from WAL for this slot. This and other
         streaming counters for this slot can be used to gauge the network I/O which
         occurred during logical decoding and allow tuning <literal>logical_decoding_work_mem</literal>.
+       </para>
+      </entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>total_txns</structfield> <type>bigint</type>
+       </para>
+       <para>
+        Number of decoded transactions sent to the decoding output plugin for
+        this slot. This counts toplevel transactions only, and is not incremented
+        for subtransactions. Note that this includes the transactions that are
+        streamed and/or spilled.
+       </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+        <structfield>total_bytes</structfield><type>bigint</type>
+       </para>
+       <para>
+        Amount of decoded transaction data sent to the decoding output plugin
+        while decoding the changes from WAL for this slot. This can be used to
+        gauge the total amount of data sent during logical decoding. Note that
+        this includes data that is streamed and/or spilled.
        </para>
       </entry>
      </row>

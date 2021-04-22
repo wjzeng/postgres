@@ -512,7 +512,7 @@ describeFunctions(const char *functypes, const char *func_pattern,
 						  gettext_noop("Language"));
 		if (pset.sversion >= 140000)
 			appendPQExpBuffer(&buf,
-							  ",\n COALESCE(p.prosrc, pg_catalog.pg_get_function_sqlbody(p.oid)) as \"%s\"",
+							  ",\n COALESCE(pg_catalog.pg_get_function_sqlbody(p.oid), p.prosrc) as \"%s\"",
 							  gettext_noop("Source code"));
 		else
 			appendPQExpBuffer(&buf,
@@ -4088,7 +4088,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 			(showTables || showMatViews || showIndexes))
 			appendPQExpBuffer(&buf,
 							  ",\n  am.amname as \"%s\"",
-							  gettext_noop("Access Method"));
+							  gettext_noop("Access method"));
 
 		/*
 		 * As of PostgreSQL 9.0, use pg_table_size() to show a more accurate
