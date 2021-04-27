@@ -1867,7 +1867,7 @@ ReorderBufferStreamCommit(ReorderBuffer *rb, ReorderBufferTXN *txn)
  * to truncate the changes in the subscriber. Similarly, for prepared
  * transactions, we stop decoding if concurrent abort is detected and then
  * rollback the changes when rollback prepared is encountered. See
- * DecodePreare.
+ * DecodePrepare.
  */
 static inline void
 SetupCheckXidLive(TransactionId xid)
@@ -2690,8 +2690,11 @@ ReorderBufferPrepare(ReorderBuffer *rb, TransactionId xid,
 	 * We send the prepare for the concurrently aborted xacts so that later
 	 * when rollback prepared is decoded and sent, the downstream should be
 	 * able to rollback such a xact. See comments atop DecodePrepare.
+	 *
+	 * Note, for the concurrent_abort + streaming case a stream_prepare was
+	 * already sent within the ReorderBufferReplay call above.
 	 */
-	if (txn->concurrent_abort)
+	if (txn->concurrent_abort && !rbtxn_is_streamed(txn))
 		rb->prepare(rb, txn, txn->final_lsn);
 }
 
