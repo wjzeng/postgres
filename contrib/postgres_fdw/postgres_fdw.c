@@ -401,7 +401,6 @@ static void postgresExplainForeignModify(ModifyTableState *mtstate,
 static void postgresExplainDirectModify(ForeignScanState *node,
 										ExplainState *es);
 static void postgresExecForeignTruncate(List *rels,
-										List *rels_extra,
 										DropBehavior behavior,
 										bool restart_seqs);
 static bool postgresAnalyzeForeignTable(Relation relation,
@@ -2881,7 +2880,6 @@ postgresExplainDirectModify(ForeignScanState *node, ExplainState *es)
  */
 static void
 postgresExecForeignTruncate(List *rels,
-							List *rels_extra,
 							DropBehavior behavior,
 							bool restart_seqs)
 {
@@ -2964,7 +2962,7 @@ postgresExecForeignTruncate(List *rels,
 
 	/* Construct the TRUNCATE command string */
 	initStringInfo(&sql);
-	deparseTruncateSql(&sql, rels, rels_extra, behavior, restart_seqs);
+	deparseTruncateSql(&sql, rels, behavior, restart_seqs);
 
 	/* Issue the TRUNCATE command to remote server */
 	do_sql_command(conn, sql.data);
@@ -3905,7 +3903,10 @@ create_foreign_modify(EState *estate,
 	/* Set up remote query information. */
 	fmstate->query = query;
 	if (operation == CMD_INSERT)
+	{
+		fmstate->query = pstrdup(fmstate->query);
 		fmstate->orig_query = pstrdup(fmstate->query);
+	}
 	fmstate->target_attrs = target_attrs;
 	fmstate->values_end = values_end;
 	fmstate->has_returning = has_returning;
@@ -5835,7 +5836,10 @@ merge_fdw_options(PgFdwRelationInfo *fpinfo,
 
 		/*
 		 * We'll prefer to consider this join async-capable if any table from
-		 * either side of the join is considered async-capable.
+		 * either side of the join is considered async-capable.  This would be
+		 * reasonable because in that case the foreign server would have its
+		 * own resources to scan that table asynchronously, and the join could
+		 * also be computed asynchronously using the resources.
 		 */
 		fpinfo->async_capable = fpinfo_o->async_capable ||
 			fpinfo_i->async_capable;
@@ -6892,6 +6896,9 @@ produce_tuple_asynchronously(AsyncRequest *areq, bool fetch)
 
 /*
  * Begin an asynchronous data fetch.
+ *
+ * Note: this function assumes there is no currently-in-progress asynchronous
+ * data fetch.
  *
  * Note: fetch_more_data must be called to fetch the result.
  */

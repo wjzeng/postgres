@@ -1870,12 +1870,12 @@ PgStat_MsgTabstat
 PgStat_MsgTempFile
 PgStat_MsgVacuum
 PgStat_MsgWal
-PgStat_ReplSlotStats
 PgStat_SLRUStats
 PgStat_Shared_Reset_Target
 PgStat_Single_Reset_Type
 PgStat_StatDBEntry
 PgStat_StatFuncEntry
+PgStat_StatReplSlotEntry
 PgStat_StatTabEntry
 PgStat_SubXactStatus
 PgStat_TableCounts
@@ -2804,10 +2804,6 @@ XLogPageHeader
 XLogPageHeaderData
 XLogPageReadCB
 XLogPageReadPrivate
-XLogPrefetcher
-XLogPrefetcherFilter
-XLogPrefetchState
-XLogPrefetchStats
 XLogReaderRoutine
 XLogReaderState
 XLogRecData
@@ -2948,8 +2944,6 @@ dlist_head
 dlist_iter
 dlist_mutable_iter
 dlist_node
-do_collation_version_check_context
-do_collation_version_update_context
 ds_state
 dsa_area
 dsa_area_control

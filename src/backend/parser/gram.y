@@ -263,7 +263,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 }
 
 %type <node>	stmt toplevel_stmt schema_stmt routine_body_stmt
-		AlterEventTrigStmt
+		AlterEventTrigStmt AlterCollationStmt
 		AlterDatabaseStmt AlterDatabaseSetStmt AlterDomainStmt AlterEnumStmt
 		AlterFdwStmt AlterForeignServerStmt AlterGroupStmt
 		AlterObjectDependsStmt AlterObjectSchemaStmt AlterOwnerStmt
@@ -902,6 +902,7 @@ toplevel_stmt:
 
 stmt:
 			AlterEventTrigStmt
+			| AlterCollationStmt
 			| AlterDatabaseStmt
 			| AlterDatabaseSetStmt
 			| AlterDefaultPrivilegesStmt
@@ -2682,14 +2683,6 @@ alter_table_cmd:
 					n->subtype = AT_NoForceRowSecurity;
 					$$ = (Node *)n;
 				}
-			/* ALTER INDEX <name> ALTER COLLATION ... REFRESH VERSION */
-			| ALTER COLLATION any_name REFRESH VERSION_P
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_AlterCollationRefreshVersion;
-					n->object = $3;
-					$$ = (Node *)n;
-				}
 			| alter_generic_options
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
@@ -3760,6 +3753,7 @@ TableLikeOptionList:
 
 TableLikeOption:
 				COMMENTS			{ $$ = CREATE_TABLE_LIKE_COMMENTS; }
+				| COMPRESSION		{ $$ = CREATE_TABLE_LIKE_COMPRESSION; }
 				| CONSTRAINTS		{ $$ = CREATE_TABLE_LIKE_CONSTRAINTS; }
 				| DEFAULTS			{ $$ = CREATE_TABLE_LIKE_DEFAULTS; }
 				| IDENTITY_P		{ $$ = CREATE_TABLE_LIKE_IDENTITY; }
@@ -3767,7 +3761,6 @@ TableLikeOption:
 				| INDEXES			{ $$ = CREATE_TABLE_LIKE_INDEXES; }
 				| STATISTICS		{ $$ = CREATE_TABLE_LIKE_STATISTICS; }
 				| STORAGE			{ $$ = CREATE_TABLE_LIKE_STORAGE; }
-				| COMPRESSION		{ $$ = CREATE_TABLE_LIKE_COMPRESSION; }
 				| ALL				{ $$ = CREATE_TABLE_LIKE_ALL; }
 		;
 
@@ -10376,6 +10369,21 @@ drop_option:
 					$$ = makeDefElem("force", NULL, @1);
 				}
 		;
+
+/*****************************************************************************
+ *
+ *		ALTER COLLATION
+ *
+ *****************************************************************************/
+
+AlterCollationStmt: ALTER COLLATION any_name REFRESH VERSION_P
+				{
+					AlterCollationStmt *n = makeNode(AlterCollationStmt);
+					n->collname = $3;
+					$$ = (Node *)n;
+				}
+		;
+
 
 /*****************************************************************************
  *

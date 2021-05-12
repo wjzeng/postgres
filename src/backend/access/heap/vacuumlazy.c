@@ -830,9 +830,9 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 			}
 			appendStringInfo(&buf, _("system usage: %s\n"), pg_rusage_show(&ru0));
 			appendStringInfo(&buf,
-							 _("WAL usage: %ld records, %ld full page images, %llu bytes"),
-							 walusage.wal_records,
-							 walusage.wal_fpi,
+							 _("WAL usage: %lld records, %lld full page images, %llu bytes"),
+							 (long long) walusage.wal_records,
+							 (long long) walusage.wal_fpi,
 							 (unsigned long long) walusage.wal_bytes);
 
 			ereport(LOG,
@@ -1344,7 +1344,6 @@ lazy_scan_heap(LVRelState *vacrel, VacuumParams *params, bool aggressive)
 		lazy_scan_prune(vacrel, buf, blkno, page, vistest, &prunestate);
 
 		Assert(!prunestate.all_visible || !prunestate.has_lpdead_items);
-		Assert(!all_visible_according_to_vm || prunestate.all_visible);
 
 		/* Remember the location of the last page with nonremovable tuples */
 		if (prunestate.hastup)

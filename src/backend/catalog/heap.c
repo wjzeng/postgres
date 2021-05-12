@@ -2357,7 +2357,7 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 		 */
 		recordDependencyOnSingleRelExpr(&colobject, expr, RelationGetRelid(rel),
 										DEPENDENCY_AUTO,
-										DEPENDENCY_AUTO, false, false);
+										DEPENDENCY_AUTO, false);
 	}
 	else
 	{
@@ -2367,7 +2367,7 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 		 */
 		recordDependencyOnSingleRelExpr(&defobject, expr, RelationGetRelid(rel),
 										DEPENDENCY_NORMAL,
-										DEPENDENCY_NORMAL, false, false);
+										DEPENDENCY_NORMAL, false);
 	}
 
 	/*
@@ -3729,8 +3729,7 @@ StorePartitionKey(Relation rel,
 										RelationGetRelid(rel),
 										DEPENDENCY_NORMAL,
 										DEPENDENCY_INTERNAL,
-										true /* reverse the self-deps */ ,
-										false /* don't track versions */ );
+										true /* reverse the self-deps */ );
 
 	/*
 	 * We must invalidate the relcache so that the next
@@ -3840,7 +3839,7 @@ StorePartitionBound(Relation rel, Relation parent, PartitionBoundSpec *bound)
 	 * removed.
 	 */
 	defaultPartOid =
-		get_default_oid_from_partdesc(RelationGetPartitionDesc(parent, false));
+		get_default_oid_from_partdesc(RelationGetPartitionDesc(parent, true));
 	if (OidIsValid(defaultPartOid))
 		CacheInvalidateRelcacheByRelid(defaultPartOid);
 
