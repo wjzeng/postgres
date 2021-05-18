@@ -915,3 +915,18 @@ select * from (with x as (select 2 as y) select * from x) ss;
 explain (verbose, costs off)
 with x as (select * from subselect_tbl)
 select * from x for update;
+
+--
+-- Test case for EXPR_SUBLINK pullup
+--
+explain (verbose, costs off)
+select * from subselect_tbl t1 where t1.f3 >
+  (select avg(t2.f3) from subselect_tbl t2 where t1.f1 = t2.f1 and t2.f2 = 3);
+select * from subselect_tbl t1 where t1.f3 >
+  (select avg(t2.f3) from subselect_tbl t2 where t1.f1 = t2.f1 and t2.f2 = 3);
+
+explain (verbose, costs off)
+select * from subselect_tbl t1 left join subselect_tbl t2 on t2.f3 >
+  (select avg(t3.f3) from subselect_tbl t3 where t2.f1 = t3.f1 and t3.f2 = 3);
+select * from subselect_tbl t1 left join subselect_tbl t2 on t2.f3 >
+  (select avg(t3.f3) from subselect_tbl t3 where t2.f1 = t3.f1 and t3.f2 = 3);

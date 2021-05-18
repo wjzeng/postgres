@@ -605,7 +605,75 @@ pull_up_sublinks_qual_recurse(PlannerInfo *root, Node *node,
 		else
 			return (Node *) make_andclause(newclauses);
 	}
-	/* Stop if not an AND */
+	if (IsA(node, OpExpr))
+	{
+		OpExpr	*expr = (OpExpr *) node;
+
+		if (list_length(expr->args) == 2)
+		{
+			Node	*rarg = lsecond(expr->args);
+			JoinExpr	*j;
+			Relids		child_rels;
+
+			if (IsA(rarg, SubLink))
+			{
+				if ((j = convert_EXPR_sublink_to_join(root, expr,
+													 available_rels1)) != NULL)
+				{
+					/* Yes; insert the new join node into the join tree */
+					j->larg = *jtlink1;
+					*jtlink1 = (Node *) j;
+					/* Recursively process pulled-up jointree nodes */
+					j->rarg = pull_up_sublinks_jointree_recurse(root,
+																j->rarg,
+																&child_rels);
+
+					/*
+					 * Now recursively process the pulled-up quals.  Any inserted
+					 * joins can get stacked onto either j->larg or j->rarg,
+					 * depending on which rels they reference.
+					 */
+					j->quals = pull_up_sublinks_qual_recurse(root,
+															 j->quals,
+															 &j->larg,
+															 available_rels1,
+															 &j->rarg,
+															 child_rels);
+					/* Return NULL representing constant TRUE */
+					return NULL;
+				}
+				if (available_rels2 != NULL &&
+					(j = convert_EXPR_sublink_to_join(root, expr,
+													 available_rels2)) != NULL)
+				{
+					/* Yes; insert the new join node into the join tree */
+					j->larg = *jtlink2;
+					*jtlink2 = (Node *) j;
+					/* Recursively process pulled-up jointree nodes */
+					j->rarg = pull_up_sublinks_jointree_recurse(root,
+																j->rarg,
+																&child_rels);
+
+					/*
+					 * Now recursively process the pulled-up quals.  Any inserted
+					 * joins can get stacked onto either j->larg or j->rarg,
+					 * depending on which rels they reference.
+					 */
+					j->quals = pull_up_sublinks_qual_recurse(root,
+															 j->quals,
+															 &j->larg,
+															 available_rels2,
+															 &j->rarg,
+															 child_rels);
+					/* Return NULL representing constant TRUE */
+					return NULL;
+				}
+			}
+		}
+		/* Else return it unmodified */
+		return node;
+	}
+	/* Stop if not an OpExpr */
 	return node;
 }
 

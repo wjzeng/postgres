@@ -32,6 +32,7 @@
 #include "optimizer/planner.h"
 #include "optimizer/prep.h"
 #include "optimizer/subselect.h"
+#include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
@@ -65,6 +66,14 @@ typedef struct inline_cte_walker_context
 	Query	   *ctequery;		/* query to substitute */
 } inline_cte_walker_context;
 
+typedef struct convert_expr_sublink_context
+{
+	bool	safe;
+	Node	*joinQual;
+	Node	*innerQual;
+	List	*targetList;
+	List	*groupClause;
+} convert_expr_sublink_context;
 
 static Node *build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 						   List *plan_params,
@@ -105,6 +114,14 @@ static Bitmapset *finalize_plan(PlannerInfo *root,
 static bool finalize_primnode(Node *node, finalize_primnode_context *context);
 static bool finalize_agg_primnode(Node *node, finalize_primnode_context *context);
 
+static void process_EXPR_sublink(Query *subselect,
+								 convert_expr_sublink_context *context);
+static void process_EXPR_sublink_recurse(Node *node,
+										 convert_expr_sublink_context *context);
+static bool check_correlated_equality(OpExpr *opexpr, Expr **outerExpr,
+									  Expr **innerExpr, Oid *eqOp,
+									  Oid *sortOp, bool *hashable);
+static void initConvertExprSublinkContext(convert_expr_sublink_context *ctx);
 
 /*
  * Get the datatype/typmod/collation of the first column of the plan's output.
@@ -1522,6 +1539,401 @@ convert_EXISTS_sublink_to_join(PlannerInfo *root, SubLink *sublink,
 	result->usingClause = NIL;
 	result->join_using_alias = NULL;
 	result->quals = whereClause;
+	result->alias = NULL;
+	result->rtindex = 0;		/* we don't need an RTE for it */
+
+	return result;
+}
+
+static void
+initConvertExprSublinkContext(convert_expr_sublink_context *ctx)
+{
+	ctx->safe = true;
+	ctx->joinQual = NULL;
+	ctx->innerQual = NULL;
+	ctx->targetList = NIL;
+	ctx->groupClause = NIL;
+}
+
+/*
+ * Perform a more fine grained check to see if the sub-select can be pulled
+ * up and extract necessary information for the pull-up.
+ */
+static void
+process_EXPR_sublink(Query *subselect, convert_expr_sublink_context *context)
+{
+	Node		*jtnode;
+	FromExpr	*f = (FromExpr *) subselect->jointree;
+
+	Assert(list_length(f->fromlist) == 1);
+
+	/*
+	 * For now we limit the jointree to be one element of type RangeTblRef.
+	 * We can relax this limit in the future.
+	 */
+	jtnode = (Node *) linitial(f->fromlist);
+	if (IsA(jtnode, JoinExpr))
+	{
+		context->safe = false;
+		return;
+	}
+
+	process_EXPR_sublink_recurse(f->quals, context);
+
+	if (!context->joinQual)
+		context->safe = false;
+}
+
+/*
+ * Recurse through nodes for process_EXPR_sublink()
+ */
+static void
+process_EXPR_sublink_recurse(Node *node, convert_expr_sublink_context *context)
+{
+	if (node == NULL)
+		return;
+
+	if (IsA(node, BoolExpr))
+	{
+		BoolExpr	*blexpr = (BoolExpr *) node;
+		ListCell	*lc = NULL;
+
+		/*
+		 * Don't bother if there are any outer vars under an NOT or OR
+		 * clause.
+		 */
+		if (is_notclause(node) || is_orclause(node))
+		{
+			if (contain_vars_of_level(node, 1))
+			{
+				context->safe = false;
+				return;
+			}
+			context->innerQual = make_and_qual(context->innerQual, node);
+			return;
+		}
+
+		Assert(is_andclause(node));
+
+		foreach(lc, blexpr->args)
+		{
+			Node	*arg = (Node *) lfirst(lc);
+
+			if (contain_vars_of_level(arg, 1))
+			{
+				process_EXPR_sublink_recurse(arg, context);
+
+				if (!context->safe)
+					return;
+			}
+			else
+			{
+				context->innerQual = make_and_qual(context->innerQual, arg);
+			}
+		}
+	}
+	else if (IsA(node, OpExpr))
+	{
+
+		OpExpr	*opexpr = (OpExpr *) node;
+		Oid		eqOp = InvalidOid;
+		Oid		sortOp = InvalidOid;
+		bool	hashable = false;
+		Expr	*outerExpr = NULL;
+		Expr	*innerExpr = NULL;
+
+		Assert(contain_vars_of_level(node, 1));
+
+		/*
+		 * Check if the OpExpr is of form 'foo(outervar) = bar(innervar)'.
+		 */
+		if (check_correlated_equality(opexpr, &outerExpr, &innerExpr,
+									  &eqOp, &sortOp, &hashable))
+		{
+			SortGroupClause	*gc;
+			TargetEntry		*tle;
+			Expr		*newInnerVar;
+			Expr		*newOpExpr = NULL;
+
+			tle = makeTargetEntry(innerExpr,
+								  list_length(context->targetList) + 1,
+								  NULL,
+								  false);
+			tle->ressortgroupref = list_length(context->targetList) + 1;
+			context->targetList = lappend(context->targetList, tle);
+
+			gc = makeNode(SortGroupClause);
+			gc->tleSortGroupRef = list_length(context->groupClause) + 1;
+			gc->eqop = eqOp;
+			gc->sortop = sortOp;
+			gc->hashable = hashable;
+			context->groupClause = lappend(context->groupClause, gc);
+
+			Assert(list_length(context->groupClause) ==
+					list_length(context->targetList));
+
+			/*
+			 * Set the varno to 0 temporarily and adjust it later.
+			 */
+			newInnerVar = (Expr *)makeVarFromTargetEntry(0, tle);
+			newOpExpr = make_opclause(opexpr->opno,
+									  opexpr->opresulttype,
+									  opexpr->opretset,
+									  outerExpr,
+									  newInnerVar,
+									  opexpr->opcollid,
+									  opexpr->inputcollid);
+
+			context->joinQual = make_and_qual(context->joinQual,
+											  (Node *)newOpExpr);
+		}
+		else
+		{
+			context->safe = false;
+		}
+	}
+	else
+	{
+		context->safe = false;
+	}
+}
+
+/*
+ * Check if the OpExpr is of form 'foo(outervar) = bar(innervar)'.
+ */
+static bool
+check_correlated_equality(OpExpr *opexpr, Expr **outerExpr, Expr **innerExpr,
+						  Oid *eqOp, Oid *sortOp, bool *hashable)
+{
+	Expr	*left;
+	Expr	*right;
+	Oid		lefttype;
+	Oid		righttype;
+	List	*opfamilies;
+	Oid		opfamily;
+
+	if (list_length(opexpr->args) != 2)
+		return false;
+
+	left = linitial(opexpr->args);
+	lefttype = exprType((Node *)left);
+
+	right = lsecond(opexpr->args);
+	righttype = exprType((Node *)right);
+
+	if (!op_mergejoinable(opexpr->opno, lefttype))
+		return false;
+
+	opfamilies = get_mergejoin_opfamilies(opexpr->opno);
+	if (!opfamilies)
+		return false;
+
+	opfamily = linitial_oid(opfamilies);
+
+	*eqOp = get_opfamily_member(opfamily,
+								lefttype,
+								righttype,
+								BTEqualStrategyNumber);
+	if (!OidIsValid(*eqOp))
+		elog(ERROR, "missing operator %d(%u,%u) in opfamily %u",
+			 BTEqualStrategyNumber, lefttype, righttype, opfamily);
+
+	*sortOp = get_opfamily_member(opfamily,
+								  lefttype,
+								  righttype,
+								  BTLessStrategyNumber);
+	if (!OidIsValid(*sortOp))
+		elog(ERROR, "missing operator %d(%u,%u) in opfamily %u",
+			 BTLessStrategyNumber, lefttype, righttype, opfamily);
+
+	*hashable = op_hashjoinable(*eqOp, lefttype);
+
+	if (contain_vars_of_level((Node *)left, 1) &&
+			!contain_vars_of_level((Node *)left, 0) &&
+			contain_vars_of_level((Node *)right, 0) &&
+			!contain_vars_of_level((Node *)right, 1))
+	{
+		*outerExpr = (Expr *) copyObject(left);
+		*innerExpr = (Expr *) copyObject(right);
+
+		return true;
+	}
+
+	if (contain_vars_of_level((Node *)left, 0) &&
+			!contain_vars_of_level((Node *)left, 1) &&
+			contain_vars_of_level((Node *)right, 1) &&
+			!contain_vars_of_level((Node *)right, 0))
+	{
+		*outerExpr = (Expr *) copyObject(right);
+		*innerExpr = (Expr *) copyObject(left);
+
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * convert_EXPR_sublink_to_join: try to convert an EXPR SubLink to a join
+ *
+ * The API of this function is identical to convert_ANY_sublink_to_join's,
+ * except that the second input parameter is OpExpr rather than SubLink,
+ * becuase we need its first argument.
+ */
+JoinExpr *
+convert_EXPR_sublink_to_join(PlannerInfo *root, OpExpr *opexpr,
+							Relids available_rels)
+{
+	JoinExpr	*result;
+	Expr		*leftarg = (Expr *) linitial(opexpr->args);
+	SubLink		*sublink = (SubLink *) lsecond(opexpr->args);
+	Query		*subselect = (Query *) sublink->subselect;
+	Relids		upper_varnos;
+	ParseNamespaceItem	*nsitem;
+	ParseState			*pstate;
+	int			rtindex;
+	RangeTblRef	*rtr;
+	Var			*aggVar;
+	TargetEntry	*origSubqueryTle;
+	Expr		*newOpExpr;
+	convert_expr_sublink_context	ctx;
+
+	ListCell	*lc = NULL;
+	int			teNum = 0;
+
+	/*
+	 * The sub-select must contain some Vars of the parent query, else it's
+	 * not gonna be a join.
+	 */
+	if (!contain_vars_of_level((Node *) subselect, 1))
+		return NULL;
+
+	/*
+	 * The OpExpr must not refer to anything outside available_rels.
+	 */
+	upper_varnos = pull_varnos(root, (Node *)opexpr);
+	if (bms_is_empty(upper_varnos))
+		return NULL;
+
+	if (!bms_is_subset(upper_varnos, available_rels))
+		return NULL;
+
+	/*
+	 * To start with, we only handle one element targetList.
+	 */
+	if (list_length(subselect->targetList) != 1)
+		return NULL;
+
+	/*
+	 * To start with, we only handle one element jointree.
+	 */
+	if (list_length(subselect->jointree->fromlist) != 1)
+		return NULL;
+
+	/*
+	 * Don't bother if the sub-select does not have aggs.
+	 */
+	if (!subselect->hasAggs)
+		return NULL;
+
+	/*
+	 * Don't bother if the sub-select contains SRF in its targetList.
+	 */
+	if (expression_returns_set((Node *) subselect->targetList))
+		return NULL;
+
+	/*
+	 * Currently we cannot handle grouping clause, having qual, limit clause
+	 * or set operations.
+	 */
+	if (subselect->groupClause ||
+			subselect->havingQual ||
+			subselect->limitOffset ||
+			subselect->limitCount ||
+			subselect->setOperations)
+		return NULL;
+
+	initConvertExprSublinkContext(&ctx);
+
+	process_EXPR_sublink(subselect, &ctx);
+
+	if(!ctx.safe)
+		return NULL;
+
+	/*
+	 * Construct the new targetList and groupClause for sub-select.
+	 */
+	origSubqueryTle = (TargetEntry *) linitial(subselect->targetList);
+
+	subselect->targetList = add_to_flat_tlist(copyObject(ctx.targetList),
+							list_make1(origSubqueryTle->expr));
+	subselect->groupClause = ctx.groupClause;
+	subselect->jointree->quals = ctx.innerQual;
+
+	// TODO how to keep the old column names?
+	foreach(lc, subselect->targetList)
+	{
+		TargetEntry *te = (TargetEntry *) lfirst(lc);
+		char		resname[32];
+
+		snprintf(resname, sizeof(resname), "c%d", teNum++);
+		te->resname = pstrdup(resname);
+	}
+
+	/*
+	 * Pull up the sub-select into upper range table.
+	 */
+	pstate = make_parsestate(NULL);
+	nsitem = addRangeTableEntryForSubquery(pstate,
+										   subselect,
+										   makeAlias("EXPR_subquery", NIL),
+										   false,
+										   false);
+	root->parse->rtable = lappend(root->parse->rtable, nsitem->p_rte);
+	rtindex = list_length(root->parse->rtable);
+
+	/*
+	 * Form a RangeTblRef for the pulled-up sub-select.
+	 */
+	rtr = makeNode(RangeTblRef);
+	rtr->rtindex = rtindex;
+
+	/*
+	 * Adjust the varno for Vars of levelsup 0 in the new join qual.
+	 */
+	OffsetVarNodes((Node *)ctx.joinQual, rtindex, 0);
+
+	/*
+	 * Adjust the sublevelsup in the new join qual.
+	 */
+	IncrementVarSublevelsUp(ctx.joinQual, -1, 1);
+
+	/*
+	 * Construct a new OpExpr with Var referring to the pulled up sub-select
+	 * and use it to replace the origin OpExpr.
+	 */
+	aggVar = makeVarFromTargetEntry(rtindex,
+			(TargetEntry *) llast(subselect->targetList));
+
+	newOpExpr = make_opclause(opexpr->opno,
+							  opexpr->opresulttype,
+							  opexpr->opretset,
+							  leftarg,
+							  (Expr *)aggVar,
+							  opexpr->opcollid,
+							  opexpr->inputcollid);
+	ctx.joinQual = make_and_qual(ctx.joinQual, (Node *)newOpExpr);
+
+	/*
+	 * And finally, build the JoinExpr node.
+	 */
+	result = makeNode(JoinExpr);
+	result->jointype = JOIN_INNER;
+	result->isNatural = false;
+	result->larg = NULL;		/* caller must fill this in */
+	result->rarg = (Node *) rtr;
+	result->usingClause = NIL;
+	result->quals = ctx.joinQual;
 	result->alias = NULL;
 	result->rtindex = 0;		/* we don't need an RTE for it */
 
