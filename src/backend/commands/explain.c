@@ -167,7 +167,7 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 	ExplainState *es = NewExplainState();
 	TupOutputState *tstate;
 	JumbleState *jstate = NULL;
-	Query		*query;
+	Query	   *query;
 	List	   *rewritten;
 	ListCell   *lc;
 	bool		timing_set = false;
@@ -245,7 +245,7 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 	es->summary = (summary_set) ? es->summary : es->analyze;
 
 	query = castNode(Query, stmt->query);
-	if (compute_query_id)
+	if (IsQueryIdEnabled())
 		jstate = JumbleQuery(query, pstate->p_sourcetext);
 
 	if (post_parse_analyze_hook)
@@ -458,7 +458,7 @@ ExplainOneUtility(Node *utilityStmt, IntoClause *into, ExplainState *es,
 			else if (ctas->objtype == OBJECT_MATVIEW)
 				ExplainDummyGroup("CREATE MATERIALIZED VIEW", NULL, es);
 			else
-				elog(ERROR,	"unexpected object type: %d",
+				elog(ERROR, "unexpected object type: %d",
 					 (int) ctas->objtype);
 			return;
 		}
@@ -612,7 +612,7 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 
 	if (es->verbose && plannedstmt->queryId != UINT64CONST(0))
 	{
-		char	buf[MAXINT8LEN+1];
+		char		buf[MAXINT8LEN + 1];
 
 		pg_lltoa(plannedstmt->queryId, buf);
 		ExplainPropertyText("Query Identifier", buf, es);
@@ -3298,7 +3298,7 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 			if (aggstate->hash_batches_used > 1)
 			{
 				appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB",
-					aggstate->hash_disk_used);
+								 aggstate->hash_disk_used);
 			}
 		}
 
