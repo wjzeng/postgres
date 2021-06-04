@@ -2,7 +2,7 @@
  * brin_minmax_multi.c
  *		Implementation of Multi Min/Max opclass for BRIN
  *
- * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -3084,7 +3084,7 @@ brin_minmax_multi_summary_out(PG_FUNCTION_ARGS)
 
 		a = FunctionCall1(&fmgrinfo, ranges_deserialized->values[idx++]);
 
-		appendStringInfo(&str, "%s", DatumGetPointer(a));
+		appendStringInfoString(&str, DatumGetPointer(a));
 
 		b = cstring_to_text(str.data);
 
