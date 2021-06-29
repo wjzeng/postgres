@@ -540,6 +540,22 @@ static struct config_enum_entry default_toast_compression_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry wal_compression_options[] = {
+	{"pglz", WAL_COMPRESSION_PGLZ, false},
+#ifdef USE_LZ4
+	{"lz4", WAL_COMPRESSION_LZ4, false},
+#endif
+	{"on", WAL_COMPRESSION_PGLZ, false},
+	{"off", WAL_COMPRESSION_NONE, false},
+	{"true", WAL_COMPRESSION_PGLZ, true},
+	{"false", WAL_COMPRESSION_NONE, true},
+	{"yes", WAL_COMPRESSION_PGLZ, true},
+	{"no", WAL_COMPRESSION_NONE, true},
+	{"1", WAL_COMPRESSION_PGLZ, true},
+	{"0", WAL_COMPRESSION_NONE, true},
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */
@@ -1300,16 +1316,6 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&wal_log_hints,
-		false,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"wal_compression", PGC_SUSET, WAL_SETTINGS,
-			gettext_noop("Compresses full-page writes written in WAL file."),
-			NULL
-		},
-		&wal_compression,
 		false,
 		NULL, NULL, NULL
 	},
@@ -4817,6 +4823,16 @@ static struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
+		{"wal_compression", PGC_SUSET, WAL_SETTINGS,
+			gettext_noop("Compresses full-page writes written in WAL file with specified method."),
+			NULL
+		},
+		&wal_compression,
+		WAL_COMPRESSION_NONE, wal_compression_options,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"wal_level", PGC_POSTMASTER, WAL_SETTINGS,
 			gettext_noop("Sets the level of information written to the WAL."),
 			NULL
@@ -4946,7 +4962,7 @@ static struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
-		{"recovery_init_sync_method", PGC_POSTMASTER, ERROR_HANDLING_OPTIONS,
+		{"recovery_init_sync_method", PGC_SIGHUP, ERROR_HANDLING_OPTIONS,
 			gettext_noop("Sets the method for synchronizing the data directory before crash recovery."),
 		},
 		&recovery_init_sync_method,
