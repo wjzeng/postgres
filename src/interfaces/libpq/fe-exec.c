@@ -1375,8 +1375,7 @@ PQsendQueryInternal(PGconn *conn, const char *query, bool newQuery)
 
 	/* OK, it's launched! */
 	pqAppendCmdQueueEntry(conn, entry);
-	if (conn->pipelineStatus == PQ_PIPELINE_OFF)
-		conn->asyncStatus = PGASYNC_BUSY;
+	conn->asyncStatus = PGASYNC_BUSY;
 	return 1;
 
 sendFailed:
@@ -1513,8 +1512,7 @@ PQsendPrepare(PGconn *conn,
 
 	pqAppendCmdQueueEntry(conn, entry);
 
-	if (conn->pipelineStatus == PQ_PIPELINE_OFF)
-		conn->asyncStatus = PGASYNC_BUSY;
+	conn->asyncStatus = PGASYNC_BUSY;
 
 	/*
 	 * Give the data a push (in pipeline mode, only if we're past the size
@@ -1817,8 +1815,7 @@ PQsendQueryGuts(PGconn *conn,
 
 	/* OK, it's launched! */
 	pqAppendCmdQueueEntry(conn, entry);
-	if (conn->pipelineStatus == PQ_PIPELINE_OFF)
-		conn->asyncStatus = PGASYNC_BUSY;
+	conn->asyncStatus = PGASYNC_BUSY;
 	return 1;
 
 sendFailed:
@@ -2448,8 +2445,7 @@ PQsendDescribe(PGconn *conn, char desc_type, const char *desc_target)
 
 	/* OK, it's launched! */
 	pqAppendCmdQueueEntry(conn, entry);
-	if (conn->pipelineStatus == PQ_PIPELINE_OFF)
-		conn->asyncStatus = PGASYNC_BUSY;
+	conn->asyncStatus = PGASYNC_BUSY;
 	return 1;
 
 sendFailed:
@@ -3084,12 +3080,7 @@ PQpipelineSync(PGconn *conn)
 	 */
 	if (PQflush(conn) < 0)
 		goto sendFailed;
-
-	/*
-	 * Call pqPipelineProcessQueue so the user can call start calling
-	 * PQgetResult.
-	 */
-	pqPipelineProcessQueue(conn);
+	conn->asyncStatus = PGASYNC_BUSY;
 
 	return 1;
 
@@ -3099,6 +3090,42 @@ sendFailed:
 	return 0;
 }
 
+/*
+ * PQsendFlushRequest
+ *		Send request for server to flush its buffer.  Useful in pipeline
+ *		mode when a sync point is not desired.
+ */
+int
+PQsendFlushRequest(PGconn *conn)
+{
+	if (!conn)
+		return 0;
+
+	/* Don't try to send if we know there's no live connection. */
+	if (conn->status != CONNECTION_OK)
+	{
+		appendPQExpBufferStr(&conn->errorMessage,
+							 libpq_gettext("no connection to the server\n"));
+		return 0;
+	}
+
+	/* Can't send while already busy, either, unless enqueuing for later */
+	if (conn->asyncStatus != PGASYNC_IDLE &&
+		conn->pipelineStatus == PQ_PIPELINE_OFF)
+	{
+		appendPQExpBufferStr(&conn->errorMessage,
+							 libpq_gettext("another command is already in progress\n"));
+		return false;
+	}
+
+	if (pqPutMsgStart('H', conn) < 0 ||
+		pqPutMsgEnd(conn) < 0)
+	{
+		return 0;
+	}
+
+	return 1;
+}
 
 /* ====== accessor funcs for PGresult ======== */
 
