@@ -12876,7 +12876,8 @@ fi
 
 fi
 
-# Note: We can test for libldap_r only after we know PTHREAD_LIBS
+# Note: We can test for libldap_r only after we know PTHREAD_LIBS;
+# also, on AIX, we may need to have openssl in LIBS for this step.
 if test "$with_ldap" = yes ; then
   _LIBS="$LIBS"
   if test "$PORTNAME" != "win32"; then
@@ -12929,10 +12930,12 @@ fi
 
     LDAP_LIBS_BE="-lldap $EXTRA_LDAP_LIBS"
     if test "$enable_thread_safety" = yes; then
-      # on some platforms ldap_r fails to link without PTHREAD_LIBS
-      { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ldap_simple_bind in -lldap_r" >&5
-$as_echo_n "checking for ldap_simple_bind in -lldap_r... " >&6; }
-if ${ac_cv_lib_ldap_r_ldap_simple_bind+:} false; then :
+      # Use ldap_r for FE if available, else assume ldap is thread-safe.
+      # On some platforms ldap_r fails to link without PTHREAD_LIBS.
+      LIBS="$_LIBS"
+      { $as_echo "$as_me:${as_lineno-$LINENO}: checking for ldap_bind in -lldap_r" >&5
+$as_echo_n "checking for ldap_bind in -lldap_r... " >&6; }
+if ${ac_cv_lib_ldap_r_ldap_bind+:} false; then :
   $as_echo_n "(cached) " >&6
 else
   ac_check_lib_save_LIBS=$LIBS
@@ -12946,38 +12949,32 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 #ifdef __cplusplus
 extern "C"
 #endif
-char ldap_simple_bind ();
+char ldap_bind ();
 int
 main ()
 {
-return ldap_simple_bind ();
+return ldap_bind ();
   ;
   return 0;
 }
 _ACEOF
 if ac_fn_c_try_link "$LINENO"; then :
-  ac_cv_lib_ldap_r_ldap_simple_bind=yes
+  ac_cv_lib_ldap_r_ldap_bind=yes
 else
-  ac_cv_lib_ldap_r_ldap_simple_bind=no
+  ac_cv_lib_ldap_r_ldap_bind=no
 fi
 rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext conftest.$ac_ext
 LIBS=$ac_check_lib_save_LIBS
 fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_ldap_r_ldap_simple_bind" >&5
-$as_echo "$ac_cv_lib_ldap_r_ldap_simple_bind" >&6; }
-if test "x$ac_cv_lib_ldap_r_ldap_simple_bind" = xyes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_LIBLDAP_R 1
-_ACEOF
-
-  LIBS="-lldap_r $LIBS"
-
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_ldap_r_ldap_bind" >&5
+$as_echo "$ac_cv_lib_ldap_r_ldap_bind" >&6; }
+if test "x$ac_cv_lib_ldap_r_ldap_bind" = xyes; then :
+  LDAP_LIBS_FE="-lldap_r $EXTRA_LDAP_LIBS"
 else
-  as_fn_error $? "library 'ldap_r' is required for LDAP" "$LINENO" 5
+  LDAP_LIBS_FE="-lldap $EXTRA_LDAP_LIBS"
 fi
 
-      LDAP_LIBS_FE="-lldap_r $EXTRA_LDAP_LIBS"
     else
       LDAP_LIBS_FE="-lldap $EXTRA_LDAP_LIBS"
     fi

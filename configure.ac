@@ -1285,7 +1285,8 @@ if test "$with_lz4" = yes ; then
   AC_CHECK_LIB(lz4, LZ4_compress_default, [], [AC_MSG_ERROR([library 'lz4' is required for LZ4 support])])
 fi
 
-# Note: We can test for libldap_r only after we know PTHREAD_LIBS
+# Note: We can test for libldap_r only after we know PTHREAD_LIBS;
+# also, on AIX, we may need to have openssl in LIBS for this step.
 if test "$with_ldap" = yes ; then
   _LIBS="$LIBS"
   if test "$PORTNAME" != "win32"; then
@@ -1294,11 +1295,13 @@ if test "$with_ldap" = yes ; then
 		 [$EXTRA_LDAP_LIBS])
     LDAP_LIBS_BE="-lldap $EXTRA_LDAP_LIBS"
     if test "$enable_thread_safety" = yes; then
-      # on some platforms ldap_r fails to link without PTHREAD_LIBS
-      AC_CHECK_LIB(ldap_r, ldap_simple_bind, [],
-		   [AC_MSG_ERROR([library 'ldap_r' is required for LDAP])],
+      # Use ldap_r for FE if available, else assume ldap is thread-safe.
+      # On some platforms ldap_r fails to link without PTHREAD_LIBS.
+      LIBS="$_LIBS"
+      AC_CHECK_LIB(ldap_r, ldap_bind,
+		   [LDAP_LIBS_FE="-lldap_r $EXTRA_LDAP_LIBS"],
+		   [LDAP_LIBS_FE="-lldap $EXTRA_LDAP_LIBS"],
 		   [$PTHREAD_CFLAGS $PTHREAD_LIBS $EXTRA_LDAP_LIBS])
-      LDAP_LIBS_FE="-lldap_r $EXTRA_LDAP_LIBS"
     else
       LDAP_LIBS_FE="-lldap $EXTRA_LDAP_LIBS"
     fi
