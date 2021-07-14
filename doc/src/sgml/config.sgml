@@ -5018,15 +5018,15 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-enable-resultcache" xreflabel="enable_resultcache">
-      <term><varname>enable_resultcache</varname> (<type>boolean</type>)
+     <varlistentry id="guc-enable-memoize" xreflabel="enable_memoize">
+      <term><varname>enable_memoize</varname> (<type>boolean</type>)
       <indexterm>
-       <primary><varname>enable_resultcache</varname> configuration parameter</primary>
+       <primary><varname>enable_memoize</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
        <para>
-        Enables or disables the query planner's use of result cache plans for
+        Enables or disables the query planner's use of memoize plans for
         caching results from parameterized scans inside nested-loop joins.
         This plan type allows scans to the underlying plans to be skipped when
         the results for the current parameters are already in the cache.  Less
@@ -10341,10 +10341,10 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-debug-invalidate-system-caches-always" xreflabel="debug_invalidate_system_caches_always">
-      <term><varname>debug_invalidate_system_caches_always</varname> (<type>integer</type>)
+     <varlistentry id="guc-debug-discard-caches" xreflabel="debug_discard_caches">
+      <term><varname>debug_discard_caches</varname> (<type>integer</type>)
       <indexterm>
-       <primary><varname>debug_invalidate_system_caches_always</varname> configuration parameter</primary>
+       <primary><varname>debug_discard_caches</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
@@ -10369,7 +10369,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
 
        <para>
         This parameter is supported when
-        <symbol>CLOBBER_CACHE_ENABLED</symbol> was defined at compile time
+        <symbol>DISCARD_CACHES_ENABLED</symbol> was defined at compile time
         (which happens automatically when using the
         <application>configure</application> option
         <option>--enable-cassert</option>).  In production builds, its value
