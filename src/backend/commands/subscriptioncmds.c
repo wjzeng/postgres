@@ -59,6 +59,7 @@
 #define SUBOPT_REFRESH				0x00000040
 #define SUBOPT_BINARY				0x00000080
 #define SUBOPT_STREAMING			0x00000100
+#define SUBOPT_TWOPHASE_COMMIT		0x00000200
 
 /* check if the 'val' has 'bits' set */
 #define IsSet(val, bits)  (((val) & (bits)) == (bits))
@@ -79,6 +80,7 @@ typedef struct SubOpts
 	bool		refresh;
 	bool		binary;
 	bool		streaming;
+	bool		twophase;
 } SubOpts;
 
 static List *fetch_table_list(WalReceiverConn *wrconn, List *publications);
@@ -96,7 +98,8 @@ static void ReportSlotConnectionError(List *rstates, Oid subid, char *slotname, 
  * Caller is expected to have cleared 'opts'.
  */
 static void
-parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *opts)
+parse_subscription_options(ParseState *pstate, List *stmt_options,
+						   bits32 supported_opts, SubOpts *opts)
 {
 	ListCell   *lc;
 
@@ -123,6 +126,8 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 		opts->binary = false;
 	if (IsSet(supported_opts, SUBOPT_STREAMING))
 		opts->streaming = false;
+	if (IsSet(supported_opts, SUBOPT_TWOPHASE_COMMIT))
+		opts->twophase = false;
 
 	/* Parse options */
 	foreach(lc, stmt_options)
@@ -133,9 +138,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 			strcmp(defel->defname, "connect") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_CONNECT))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_CONNECT;
 			opts->connect = defGetBoolean(defel);
@@ -144,9 +147,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "enabled") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_ENABLED))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_ENABLED;
 			opts->enabled = defGetBoolean(defel);
@@ -155,9 +156,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "create_slot") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_CREATE_SLOT))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_CREATE_SLOT;
 			opts->create_slot = defGetBoolean(defel);
@@ -166,9 +165,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "slot_name") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_SLOT_NAME))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_SLOT_NAME;
 			opts->slot_name = defGetString(defel);
@@ -181,9 +178,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "copy_data") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_COPY_DATA))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_COPY_DATA;
 			opts->copy_data = defGetBoolean(defel);
@@ -192,9 +187,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "synchronous_commit") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_SYNCHRONOUS_COMMIT))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_SYNCHRONOUS_COMMIT;
 			opts->synchronous_commit = defGetString(defel);
@@ -208,9 +201,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "refresh") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_REFRESH))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_REFRESH;
 			opts->refresh = defGetBoolean(defel);
@@ -219,9 +210,7 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "binary") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_BINARY))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_BINARY;
 			opts->binary = defGetBoolean(defel);
@@ -230,12 +219,31 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 				 strcmp(defel->defname, "streaming") == 0)
 		{
 			if (IsSet(opts->specified_opts, SUBOPT_STREAMING))
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_STREAMING;
 			opts->streaming = defGetBoolean(defel);
+		}
+		else if (strcmp(defel->defname, "two_phase") == 0)
+		{
+			/*
+			 * Do not allow toggling of two_phase option. Doing so could cause
+			 * missing of transactions and lead to an inconsistent replica.
+			 * See comments atop worker.c
+			 *
+			 * Note: Unsupported twophase indicates that this call originated
+			 * from AlterSubscription.
+			 */
+			if (!IsSet(supported_opts, SUBOPT_TWOPHASE_COMMIT))
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("unrecognized subscription parameter: \"%s\"", defel->defname)));
+
+			if (IsSet(opts->specified_opts, SUBOPT_TWOPHASE_COMMIT))
+				errorConflictingDefElem(defel, pstate);
+
+			opts->specified_opts |= SUBOPT_TWOPHASE_COMMIT;
+			opts->twophase = defGetBoolean(defel);
 		}
 		else
 			ereport(ERROR,
@@ -325,6 +333,25 @@ parse_subscription_options(List *stmt_options, bits32 supported_opts, SubOpts *o
 					 errmsg("subscription with %s must also set %s",
 							"slot_name = NONE", "create_slot = false")));
 	}
+
+	/*
+	 * Do additional checking for the disallowed combination of two_phase and
+	 * streaming. While streaming and two_phase can theoretically be
+	 * supported, it needs more analysis to allow them together.
+	 */
+	if (opts->twophase &&
+		IsSet(supported_opts, SUBOPT_TWOPHASE_COMMIT) &&
+		IsSet(opts->specified_opts, SUBOPT_TWOPHASE_COMMIT))
+	{
+		if (opts->streaming &&
+			IsSet(supported_opts, SUBOPT_STREAMING) &&
+			IsSet(opts->specified_opts, SUBOPT_STREAMING))
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+			/*- translator: both %s are strings of the form "option = value" */
+					 errmsg("%s and %s are mutually exclusive options",
+							"two_phase = true", "streaming = true")));
+	}
 }
 
 /*
@@ -362,7 +389,8 @@ publicationListToArray(List *publist)
  * Create new subscription.
  */
 ObjectAddress
-CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
+CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
+				   bool isTopLevel)
 {
 	Relation	rel;
 	ObjectAddress myself;
@@ -385,8 +413,8 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	supported_opts = (SUBOPT_CONNECT | SUBOPT_ENABLED | SUBOPT_CREATE_SLOT |
 					  SUBOPT_SLOT_NAME | SUBOPT_COPY_DATA |
 					  SUBOPT_SYNCHRONOUS_COMMIT | SUBOPT_BINARY |
-					  SUBOPT_STREAMING);
-	parse_subscription_options(stmt->options, supported_opts, &opts);
+					  SUBOPT_STREAMING | SUBOPT_TWOPHASE_COMMIT);
+	parse_subscription_options(pstate, stmt->options, supported_opts, &opts);
 
 	/*
 	 * Since creating a replication slot is not transactional, rolling back
@@ -455,6 +483,10 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	values[Anum_pg_subscription_subenabled - 1] = BoolGetDatum(opts.enabled);
 	values[Anum_pg_subscription_subbinary - 1] = BoolGetDatum(opts.binary);
 	values[Anum_pg_subscription_substream - 1] = BoolGetDatum(opts.streaming);
+	values[Anum_pg_subscription_subtwophasestate - 1] =
+		CharGetDatum(opts.twophase ?
+					 LOGICALREP_TWOPHASE_STATE_PENDING :
+					 LOGICALREP_TWOPHASE_STATE_DISABLED);
 	values[Anum_pg_subscription_subconninfo - 1] =
 		CStringGetTextDatum(conninfo);
 	if (opts.slot_name)
@@ -532,10 +564,35 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 			 */
 			if (opts.create_slot)
 			{
+				bool		twophase_enabled = false;
+
 				Assert(opts.slot_name);
 
-				walrcv_create_slot(wrconn, opts.slot_name, false,
+				/*
+				 * Even if two_phase is set, don't create the slot with
+				 * two-phase enabled. Will enable it once all the tables are
+				 * synced and ready. This avoids race-conditions like prepared
+				 * transactions being skipped due to changes not being applied
+				 * due to checks in should_apply_changes_for_rel() when
+				 * tablesync for the corresponding tables are in progress. See
+				 * comments atop worker.c.
+				 *
+				 * Note that if tables were specified but copy_data is false
+				 * then it is safe to enable two_phase up-front because those
+				 * tables are already initially in READY state. When the
+				 * subscription has no tables, we leave the twophase state as
+				 * PENDING, to allow ALTER SUBSCRIPTION ... REFRESH
+				 * PUBLICATION to work.
+				 */
+				if (opts.twophase && !opts.copy_data && tables != NIL)
+					twophase_enabled = true;
+
+				walrcv_create_slot(wrconn, opts.slot_name, false, twophase_enabled,
 								   CRS_NOEXPORT_SNAPSHOT, NULL);
+
+				if (twophase_enabled)
+					UpdateTwoPhaseState(subid, LOGICALREP_TWOPHASE_STATE_ENABLED);
+
 				ereport(NOTICE,
 						(errmsg("created replication slot \"%s\" on publisher",
 								opts.slot_name)));
@@ -778,7 +835,8 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data)
  * Alter the existing subscription.
  */
 ObjectAddress
-AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
+AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
+				  bool isTopLevel)
 {
 	Relation	rel;
 	ObjectAddress myself;
@@ -831,7 +889,8 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 								  SUBOPT_SYNCHRONOUS_COMMIT | SUBOPT_BINARY |
 								  SUBOPT_STREAMING);
 
-				parse_subscription_options(stmt->options, supported_opts, &opts);
+				parse_subscription_options(pstate, stmt->options,
+										   supported_opts, &opts);
 
 				if (IsSet(opts.specified_opts, SUBOPT_SLOT_NAME))
 				{
@@ -865,6 +924,12 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 
 				if (IsSet(opts.specified_opts, SUBOPT_STREAMING))
 				{
+					if ((sub->twophasestate != LOGICALREP_TWOPHASE_STATE_DISABLED) && opts.streaming)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("cannot set %s for two-phase enabled subscription",
+										"streaming = true")));
+
 					values[Anum_pg_subscription_substream - 1] =
 						BoolGetDatum(opts.streaming);
 					replaces[Anum_pg_subscription_substream - 1] = true;
@@ -876,7 +941,8 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 
 		case ALTER_SUBSCRIPTION_ENABLED:
 			{
-				parse_subscription_options(stmt->options, SUBOPT_ENABLED, &opts);
+				parse_subscription_options(pstate, stmt->options,
+										   SUBOPT_ENABLED, &opts);
 				Assert(IsSet(opts.specified_opts, SUBOPT_ENABLED));
 
 				if (!sub->slotname && opts.enabled)
@@ -910,7 +976,8 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 		case ALTER_SUBSCRIPTION_SET_PUBLICATION:
 			{
 				supported_opts = SUBOPT_COPY_DATA | SUBOPT_REFRESH;
-				parse_subscription_options(stmt->options, supported_opts, &opts);
+				parse_subscription_options(pstate, stmt->options,
+										   supported_opts, &opts);
 
 				values[Anum_pg_subscription_subpublications - 1] =
 					publicationListToArray(stmt->publication);
@@ -926,6 +993,17 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 								(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 								 errmsg("ALTER SUBSCRIPTION with refresh is not allowed for disabled subscriptions"),
 								 errhint("Use ALTER SUBSCRIPTION ... SET PUBLICATION ... WITH (refresh = false).")));
+
+					/*
+					 * See ALTER_SUBSCRIPTION_REFRESH for details why this is
+					 * not allowed.
+					 */
+					if (sub->twophasestate == LOGICALREP_TWOPHASE_STATE_ENABLED && opts.copy_data)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("ALTER SUBSCRIPTION with refresh and copy_data is not allowed when two_phase is enabled"),
+								 errhint("Use ALTER SUBSCRIPTION ...SET PUBLICATION with refresh = false, or with copy_data = false"
+										 ", or use DROP/CREATE SUBSCRIPTION.")));
 
 					PreventInTransactionBlock(isTopLevel, "ALTER SUBSCRIPTION with refresh");
 
@@ -948,7 +1026,8 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 				if (isadd)
 					supported_opts |= SUBOPT_COPY_DATA;
 
-				parse_subscription_options(stmt->options, supported_opts, &opts);
+				parse_subscription_options(pstate, stmt->options,
+										   supported_opts, &opts);
 
 				publist = merge_publications(sub->publications, stmt->publication, isadd, stmt->subname);
 				values[Anum_pg_subscription_subpublications - 1] =
@@ -965,6 +1044,17 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 								(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 								 errmsg("ALTER SUBSCRIPTION with refresh is not allowed for disabled subscriptions"),
 								 errhint("Use ALTER SUBSCRIPTION ... SET PUBLICATION ... WITH (refresh = false).")));
+
+					/*
+					 * See ALTER_SUBSCRIPTION_REFRESH for details why this is
+					 * not allowed.
+					 */
+					if (sub->twophasestate == LOGICALREP_TWOPHASE_STATE_ENABLED && opts.copy_data)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("ALTER SUBSCRIPTION with refresh and copy_data is not allowed when two_phase is enabled"),
+								 errhint("Use ALTER SUBSCRIPTION ...SET PUBLICATION with refresh = false, or with copy_data = false"
+										 ", or use DROP/CREATE SUBSCRIPTION.")));
 
 					PreventInTransactionBlock(isTopLevel, "ALTER SUBSCRIPTION with refresh");
 
@@ -984,7 +1074,32 @@ AlterSubscription(AlterSubscriptionStmt *stmt, bool isTopLevel)
 							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 							 errmsg("ALTER SUBSCRIPTION ... REFRESH is not allowed for disabled subscriptions")));
 
-				parse_subscription_options(stmt->options, SUBOPT_COPY_DATA, &opts);
+				parse_subscription_options(pstate, stmt->options,
+										   SUBOPT_COPY_DATA, &opts);
+
+				/*
+				 * The subscription option "two_phase" requires that
+				 * replication has passed the initial table synchronization
+				 * phase before the two_phase becomes properly enabled.
+				 *
+				 * But, having reached this two-phase commit "enabled" state
+				 * we must not allow any subsequent table initialization to
+				 * occur. So the ALTER SUBSCRIPTION ... REFRESH is disallowed
+				 * when the user had requested two_phase = on mode.
+				 *
+				 * The exception to this restriction is when copy_data =
+				 * false, because when copy_data is false the tablesync will
+				 * start already in READY state and will exit directly without
+				 * doing anything.
+				 *
+				 * For more details see comments atop worker.c.
+				 */
+				if (sub->twophasestate == LOGICALREP_TWOPHASE_STATE_ENABLED && opts.copy_data)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("ALTER SUBSCRIPTION ... REFRESH with copy_data is not allowed when two_phase is enabled"),
+							 errhint("Use ALTER SUBSCRIPTION ... REFRESH with copy_data = false"
+									 ", or use DROP/CREATE SUBSCRIPTION.")));
 
 				PreventInTransactionBlock(isTopLevel, "ALTER SUBSCRIPTION ... REFRESH");
 
