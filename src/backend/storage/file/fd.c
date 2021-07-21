@@ -1065,15 +1065,23 @@ tryAgain:
 	 */
 	StaticAssertStmt((PG_O_DIRECT &
 					  (O_APPEND |
-					   O_CLOEXEC |
 					   O_CREAT |
-					   O_DSYNC |
+					   O_EXCL |
 					   O_RDWR |
 					   O_RDONLY |
 					   O_SYNC |
 					   O_TRUNC |
 					   O_WRONLY)) == 0,
 					 "PG_O_DIRECT value collides with standard flag");
+#if defined(O_CLOEXEC)
+	StaticAssertStmt((PG_O_DIRECT & O_CLOEXEC) == 0,
+					 "PG_O_DIRECT value collides with O_CLOEXEC");
+#endif
+#if defined(O_DSYNC)
+	StaticAssertStmt((PG_O_DIRECT & O_DSYNC) == 0,
+					 "PG_O_DIRECT value collides with O_DSYNC");
+#endif
+
 	fd = open(fileName, fileFlags & ~PG_O_DIRECT, fileMode);
 #else
 	fd = open(fileName, fileFlags, fileMode);
