@@ -1,3 +1,37 @@
+From ff66e52776c3868fffdec98dda426fdad7374f1d Mon Sep 17 00:00:00 2001
+From: wenjing <wjzeng2012@gmail.com>
+Date: Thu, 22 Jul 2021 16:53:39 +0800
+Subject: [PATCH] gtt v51 regress
+
+---
+ src/test/regress/expected/gtt_clean.out      |  14 +
+ src/test/regress/expected/gtt_function.out   | 381 +++++++++++++++++++
+ src/test/regress/expected/gtt_parallel_1.out |  90 +++++
+ src/test/regress/expected/gtt_parallel_2.out | 343 +++++++++++++++++
+ src/test/regress/expected/gtt_prepare.out    |  10 +
+ src/test/regress/expected/gtt_stats.out      |  80 ++++
+ src/test/regress/expected/rules.out          |  88 +++++
+ src/test/regress/parallel_schedule           |   7 +
+ src/test/regress/sql/gtt_clean.sql           |   8 +
+ src/test/regress/sql/gtt_function.sql        | 253 ++++++++++++
+ src/test/regress/sql/gtt_parallel_1.sql      |  44 +++
+ src/test/regress/sql/gtt_parallel_2.sql      | 154 ++++++++
+ src/test/regress/sql/gtt_prepare.sql         |  19 +
+ src/test/regress/sql/gtt_stats.sql           |  46 +++
+ 14 files changed, 1537 insertions(+)
+ create mode 100644 src/test/regress/expected/gtt_clean.out
+ create mode 100644 src/test/regress/expected/gtt_function.out
+ create mode 100644 src/test/regress/expected/gtt_parallel_1.out
+ create mode 100644 src/test/regress/expected/gtt_parallel_2.out
+ create mode 100644 src/test/regress/expected/gtt_prepare.out
+ create mode 100644 src/test/regress/expected/gtt_stats.out
+ create mode 100644 src/test/regress/sql/gtt_clean.sql
+ create mode 100644 src/test/regress/sql/gtt_function.sql
+ create mode 100644 src/test/regress/sql/gtt_parallel_1.sql
+ create mode 100644 src/test/regress/sql/gtt_parallel_2.sql
+ create mode 100644 src/test/regress/sql/gtt_prepare.sql
+ create mode 100644 src/test/regress/sql/gtt_stats.sql
+
 diff --git a/src/test/regress/expected/gtt_clean.out b/src/test/regress/expected/gtt_clean.out
 new file mode 100644
 index 0000000000..ca2d135056
@@ -1052,7 +1086,7 @@ index e5ab11275d..23b2863fec 100644
      a.type,
      a.database,
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 22b0d3584d..3a6fc341eb 100644
+index 7be89178f0..d039f0fbb1 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
 @@ -130,3 +130,10 @@ test: fast_default

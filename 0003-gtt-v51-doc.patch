@@ -1,5 +1,14 @@
+From 33a24edb99a096089837ef546cdfc501bb9152b3 Mon Sep 17 00:00:00 2001
+From: wenjing <wjzeng2012@gmail.com>
+Date: Thu, 22 Jul 2021 16:55:38 +0800
+Subject: [PATCH] gtt v51 doc
+
+---
+ doc/src/sgml/ref/create_table.sgml | 115 ++++++++++++++++++-----------
+ 1 file changed, 70 insertions(+), 45 deletions(-)
+
 diff --git a/doc/src/sgml/ref/create_table.sgml b/doc/src/sgml/ref/create_table.sgml
-index a8c5e4028af..40261a44bcd 100644
+index 15aed2f251..d2fa2219cf 100644
 --- a/doc/src/sgml/ref/create_table.sgml
 +++ b/doc/src/sgml/ref/create_table.sgml
 @@ -169,32 +169,67 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
@@ -90,7 +99,7 @@ index a8c5e4028af..40261a44bcd 100644
      </listitem>
     </varlistentry>
  
-@@ -2125,13 +2160,17 @@ CREATE TABLE cities_partdef
+@@ -2137,13 +2172,17 @@ CREATE TABLE cities_partdef
     <title>Temporary Tables</title>
  
     <para>
@@ -115,7 +124,7 @@ index a8c5e4028af..40261a44bcd 100644
      TABLE</literal> command for each temporary table to be used.  This allows
      different sessions to use the same temporary table name for different
      purposes, whereas the standard's approach constrains all instances of a
-@@ -2139,29 +2178,14 @@ CREATE TABLE cities_partdef
+@@ -2151,29 +2190,14 @@ CREATE TABLE cities_partdef
     </para>
  
     <para>
@@ -147,7 +156,7 @@ index a8c5e4028af..40261a44bcd 100644
     <para>
      The <literal>ON COMMIT</literal> clause for temporary tables
      also resembles the SQL standard, but has some differences.
-@@ -2169,7 +2193,8 @@ CREATE TABLE cities_partdef
+@@ -2181,7 +2205,8 @@ CREATE TABLE cities_partdef
      default behavior is <literal>ON COMMIT DELETE ROWS</literal>.  However, the
      default behavior in <productname>PostgreSQL</productname> is
      <literal>ON COMMIT PRESERVE ROWS</literal>.  The <literal>ON COMMIT
@@ -158,5 +167,5 @@ index a8c5e4028af..40261a44bcd 100644
    </refsect2>
  
 -- 
-2.24.3 (Apple Git-128)
+2.27.0
 

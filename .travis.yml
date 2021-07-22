@@ -54,11 +54,11 @@ before_install:
   - echo '/tmp/%e-%s-%p.core' | sudo tee /proc/sys/kernel/core_pattern
 
 script:
-  - patch -p1 < 0001-gtt-v50.patch
+  - patch -p1 < 0001-gtt-v51.patch
   - git status
-  - patch -p1 < 0002-gtt-v50-regress.patch
+  - patch -p1 < 0002-gtt-v51-regress.patch
   - git status
-  - patch -p1 < 0003-gtt-v50-doc.patch
+  - patch -p1 < 0003-gtt-v51-doc.patch
   - git status
   - ./configure --prefix=$HOME/install --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-perl --with-ldap --with-openssl --with-gssapi --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom && make -j4 all contrib docs && make install && make check-world
 
