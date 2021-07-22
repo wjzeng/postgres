@@ -270,7 +270,8 @@ su - postgres
      <para>
       You need <productname>LZ4</productname>, if you want to support
       compression of data with this method; see
-      <xref linkend="guc-default-toast-compression"/>.
+      <xref linkend="guc-default-toast-compression"/> and
+      <xref linkend="guc-wal-compression"/>.
      </para>
     </listitem>
 
@@ -353,31 +354,36 @@ su - postgres
   <title>Getting the Source</title>
 
   <para>
-   The <productname>PostgreSQL</productname> &version; sources can be obtained from the
-   download section of our
-   website: <ulink url="https://www.postgresql.org/download/"></ulink>.  You
-   should get a file named <filename>postgresql-&version;.tar.gz</filename>
-   or <filename>postgresql-&version;.tar.bz2</filename>. After
-   you have obtained the file, unpack it:
+   The version control repository for <productname>PostgreSQL</productname>
+   can be obtained from
+   <ulink url="https://git.postgresql.org/gitweb/?p=postgresql.git;a=summary"></ulink>;
+   this is the recommended way to obtain the
+   <productname>PostgreSQL</productname> source code.
+   You can obtain a clone of the repository by running
 <screen>
-<userinput>gunzip postgresql-&version;.tar.gz</userinput>
-<userinput>tar xf postgresql-&version;.tar</userinput>
+<userinput>git clone https://git.postgresql.org/git/postgresql.git</userinput>
 </screen>
-   (Use <command>bunzip2</command> instead of <command>gunzip</command> if
-   you have the <filename>.bz2</filename> file.  Also, note that most
-   modern versions of <command>tar</command> can unpack compressed archives
-   directly, so you don't really need the
-   separate <command>gunzip</command> or <command>bunzip2</command> step.)
-   This will create a directory
-   <filename>postgresql-&version;</filename> under the current directory
-   with the <productname>PostgreSQL</productname> sources.
-   Change into that directory for the rest
-   of the installation procedure.
+   This will create a directory <filename>postgresql</filename> under the current
+   directory with the <productname>PostgreSQL</productname> sources.
+   Change into that directory for the rest of the installation procedure.
+   See <xref linkend="git"/> for further information.
   </para>
 
   <para>
-   You can also get the source directly from the version control repository, see
-   <xref linkend="sourcerepo"/>.
+   Alternatively, source code for the released versions can be obtained
+   from the download section of our website:
+   <ulink url="https://www.postgresql.org/ftp/source/"></ulink>.
+   Download then
+   <filename>postgresql-<replaceable>version</replaceable>.tar.gz</filename>
+   or <filename>postgresql-<replaceable>version</replaceable>.tar.bz2</filename>
+   you're interested in, then unpack it:
+<screen>
+<userinput>tar xf postgresql-<replaceable>version</replaceable>.tar.bz2</userinput>
+</screen>
+   This will create a directory
+   <filename>postgresql-<replaceable>version</replaceable></filename> under
+   the current directory with the <productname>PostgreSQL</productname> sources.
+   Change into that directory for the rest of the installation procedure.
   </para>
  </sect1>
 
@@ -456,10 +462,7 @@ su - postgres
 </screen>
     (Remember to use <acronym>GNU</acronym> <application>make</application>.)
     The build will take a few minutes depending on your
-    hardware. The last line displayed should be:
-<screen>
-All of PostgreSQL successfully made. Ready to install.
-</screen>
+    hardware.
    </para>
 
   <para>
@@ -469,9 +472,14 @@ All of PostgreSQL successfully made. Ready to install.
 <screen>
 <userinput>make world</userinput>
 </screen>
-   The last line displayed should be:
+  </para>
+
+  <para>
+   If you want to build everything that can be built, including the
+   additional modules (<filename>contrib</filename>), but without
+   the documentation, type instead:
 <screen>
-PostgreSQL, contrib, and documentation successfully made. Ready to install.
+<userinput>make world-bin</userinput>
 </screen>
    </para>
 
@@ -549,6 +557,13 @@ build-postgresql:
 <userinput>make install-world</userinput>
 </screen>
     This also installs the documentation.
+   </para>
+
+   <para>
+    If you built the world without the documentation above, type instead:
+<screen>
+<userinput>make install-world-bin</userinput>
+</screen>
    </para>
 
    <para>
@@ -980,7 +995,7 @@ build-postgresql:
         <para>
          Build with <productname>LZ4</productname> compression support.
          This allows the use of <productname>LZ4</productname> for
-         compression of table data.
+         compression of table and WAL data.
         </para>
        </listitem>
       </varlistentry>

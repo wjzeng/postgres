@@ -701,6 +701,7 @@ _outForeignScan(StringInfo str, const ForeignScan *node)
 	_outScanInfo(str, (const Scan *) node);
 
 	WRITE_ENUM_FIELD(operation, CmdType);
+	WRITE_UINT_FIELD(resultRelation);
 	WRITE_OID_FIELD(fs_server);
 	WRITE_NODE_FIELD(fdw_exprs);
 	WRITE_NODE_FIELD(fdw_private);
@@ -708,7 +709,6 @@ _outForeignScan(StringInfo str, const ForeignScan *node)
 	WRITE_NODE_FIELD(fdw_recheck_quals);
 	WRITE_BITMAPSET_FIELD(fs_relids);
 	WRITE_BOOL_FIELD(fsSystemCol);
-	WRITE_INT_FIELD(resultRelation);
 }
 
 static void
@@ -848,9 +848,9 @@ _outMaterial(StringInfo str, const Material *node)
 }
 
 static void
-_outResultCache(StringInfo str, const ResultCache *node)
+_outMemoize(StringInfo str, const Memoize *node)
 {
-	WRITE_NODE_TYPE("RESULTCACHE");
+	WRITE_NODE_TYPE("MEMOIZE");
 
 	_outPlanInfo(str, (const Plan *) node);
 
@@ -1311,6 +1311,7 @@ _outScalarArrayOpExpr(StringInfo str, const ScalarArrayOpExpr *node)
 	WRITE_OID_FIELD(opno);
 	WRITE_OID_FIELD(opfuncid);
 	WRITE_OID_FIELD(hashfuncid);
+	WRITE_OID_FIELD(negfuncid);
 	WRITE_BOOL_FIELD(useOr);
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
@@ -1860,6 +1861,16 @@ _outTidPath(StringInfo str, const TidPath *node)
 }
 
 static void
+_outTidRangePath(StringInfo str, const TidRangePath *node)
+{
+	WRITE_NODE_TYPE("TIDRANGEPATH");
+
+	_outPathInfo(str, (const Path *) node);
+
+	WRITE_NODE_FIELD(tidrangequals);
+}
+
+static void
 _outSubqueryScanPath(StringInfo str, const SubqueryScanPath *node)
 {
 	WRITE_NODE_TYPE("SUBQUERYSCANPATH");
@@ -1938,9 +1949,9 @@ _outMaterialPath(StringInfo str, const MaterialPath *node)
 }
 
 static void
-_outResultCachePath(StringInfo str, const ResultCachePath *node)
+_outMemoizePath(StringInfo str, const MemoizePath *node)
 {
-	WRITE_NODE_TYPE("RESULTCACHEPATH");
+	WRITE_NODE_TYPE("MEMOIZEPATH");
 
 	_outPathInfo(str, (const Path *) node);
 
@@ -2778,6 +2789,7 @@ _outCreateStatsStmt(StringInfo str, const CreateStatsStmt *node)
 	WRITE_NODE_FIELD(exprs);
 	WRITE_NODE_FIELD(relations);
 	WRITE_STRING_FIELD(stxcomment);
+	WRITE_BOOL_FIELD(transformed);
 	WRITE_BOOL_FIELD(if_not_exists);
 }
 
@@ -3326,7 +3338,7 @@ _outTableSampleClause(StringInfo str, const TableSampleClause *node)
 }
 
 static void
-_outAExpr(StringInfo str, const A_Expr *node)
+_outA_Expr(StringInfo str, const A_Expr *node)
 {
 	WRITE_NODE_TYPE("AEXPR");
 
@@ -3401,12 +3413,12 @@ _outAExpr(StringInfo str, const A_Expr *node)
 }
 
 static void
-_outValue(StringInfo str, const Value *value)
+_outValue(StringInfo str, const Value *node)
 {
-	switch (value->type)
+	switch (node->type)
 	{
 		case T_Integer:
-			appendStringInfo(str, "%d", value->val.ival);
+			appendStringInfo(str, "%d", node->val.ival);
 			break;
 		case T_Float:
 
@@ -3414,7 +3426,7 @@ _outValue(StringInfo str, const Value *value)
 			 * We assume the value is a valid numeric literal and so does not
 			 * need quoting.
 			 */
-			appendStringInfoString(str, value->val.str);
+			appendStringInfoString(str, node->val.str);
 			break;
 		case T_String:
 
@@ -3423,20 +3435,20 @@ _outValue(StringInfo str, const Value *value)
 			 * but we don't want it to do anything with an empty string.
 			 */
 			appendStringInfoChar(str, '"');
-			if (value->val.str[0] != '\0')
-				outToken(str, value->val.str);
+			if (node->val.str[0] != '\0')
+				outToken(str, node->val.str);
 			appendStringInfoChar(str, '"');
 			break;
 		case T_BitString:
 			/* internal representation already has leading 'b' */
-			appendStringInfoString(str, value->val.str);
+			appendStringInfoString(str, node->val.str);
 			break;
 		case T_Null:
 			/* this is seen only within A_Const, not in transformed trees */
 			appendStringInfoString(str, "NULL");
 			break;
 		default:
-			elog(ERROR, "unrecognized node type: %d", (int) value->type);
+			elog(ERROR, "unrecognized node type: %d", (int) node->type);
 			break;
 	}
 }
@@ -3474,7 +3486,7 @@ _outRawStmt(StringInfo str, const RawStmt *node)
 }
 
 static void
-_outAConst(StringInfo str, const A_Const *node)
+_outA_Const(StringInfo str, const A_Const *node)
 {
 	WRITE_NODE_TYPE("A_CONST");
 
@@ -3949,8 +3961,8 @@ outNode(StringInfo str, const void *obj)
 			case T_Material:
 				_outMaterial(str, obj);
 				break;
-			case T_ResultCache:
-				_outResultCache(str, obj);
+			case T_Memoize:
+				_outMemoize(str, obj);
 				break;
 			case T_Sort:
 				_outSort(str, obj);
@@ -4165,6 +4177,9 @@ outNode(StringInfo str, const void *obj)
 			case T_TidPath:
 				_outTidPath(str, obj);
 				break;
+			case T_TidRangePath:
+				_outTidRangePath(str, obj);
+				break;
 			case T_SubqueryScanPath:
 				_outSubqueryScanPath(str, obj);
 				break;
@@ -4186,8 +4201,8 @@ outNode(StringInfo str, const void *obj)
 			case T_MaterialPath:
 				_outMaterialPath(str, obj);
 				break;
-			case T_ResultCachePath:
-				_outResultCachePath(str, obj);
+			case T_MemoizePath:
+				_outMemoizePath(str, obj);
 				break;
 			case T_UniquePath:
 				_outUniquePath(str, obj);
@@ -4415,7 +4430,7 @@ outNode(StringInfo str, const void *obj)
 				_outTableSampleClause(str, obj);
 				break;
 			case T_A_Expr:
-				_outAExpr(str, obj);
+				_outA_Expr(str, obj);
 				break;
 			case T_ColumnRef:
 				_outColumnRef(str, obj);
@@ -4427,7 +4442,7 @@ outNode(StringInfo str, const void *obj)
 				_outRawStmt(str, obj);
 				break;
 			case T_A_Const:
-				_outAConst(str, obj);
+				_outA_Const(str, obj);
 				break;
 			case T_A_Star:
 				_outA_Star(str, obj);

@@ -775,6 +775,7 @@ _copyForeignScan(const ForeignScan *from)
 	 * copy remainder of node
 	 */
 	COPY_SCALAR_FIELD(operation);
+	COPY_SCALAR_FIELD(resultRelation);
 	COPY_SCALAR_FIELD(fs_server);
 	COPY_NODE_FIELD(fdw_exprs);
 	COPY_NODE_FIELD(fdw_private);
@@ -782,7 +783,6 @@ _copyForeignScan(const ForeignScan *from)
 	COPY_NODE_FIELD(fdw_recheck_quals);
 	COPY_BITMAPSET_FIELD(fs_relids);
 	COPY_SCALAR_FIELD(fsSystemCol);
-	COPY_SCALAR_FIELD(resultRelation);
 
 	return newnode;
 }
@@ -950,12 +950,12 @@ _copyMaterial(const Material *from)
 
 
 /*
- * _copyResultCache
+ * _copyMemoize
  */
-static ResultCache *
-_copyResultCache(const ResultCache *from)
+static Memoize *
+_copyMemoize(const Memoize *from)
 {
-	ResultCache *newnode = makeNode(ResultCache);
+	Memoize    *newnode = makeNode(Memoize);
 
 	/*
 	 * copy node superclass fields
@@ -1718,6 +1718,7 @@ _copyScalarArrayOpExpr(const ScalarArrayOpExpr *from)
 	COPY_SCALAR_FIELD(opno);
 	COPY_SCALAR_FIELD(opfuncid);
 	COPY_SCALAR_FIELD(hashfuncid);
+	COPY_SCALAR_FIELD(negfuncid);
 	COPY_SCALAR_FIELD(useOr);
 	COPY_SCALAR_FIELD(inputcollid);
 	COPY_NODE_FIELD(args);
@@ -2700,7 +2701,7 @@ _copyCommonTableExpr(const CommonTableExpr *from)
 }
 
 static A_Expr *
-_copyAExpr(const A_Expr *from)
+_copyA_Expr(const A_Expr *from)
 {
 	A_Expr	   *newnode = makeNode(A_Expr);
 
@@ -2736,7 +2737,7 @@ _copyParamRef(const ParamRef *from)
 }
 
 static A_Const *
-_copyAConst(const A_Const *from)
+_copyA_Const(const A_Const *from)
 {
 	A_Const    *newnode = makeNode(A_Const);
 
@@ -2787,7 +2788,7 @@ _copyFuncCall(const FuncCall *from)
 }
 
 static A_Star *
-_copyAStar(const A_Star *from)
+_copyA_Star(const A_Star *from)
 {
 	A_Star	   *newnode = makeNode(A_Star);
 
@@ -2795,7 +2796,7 @@ _copyAStar(const A_Star *from)
 }
 
 static A_Indices *
-_copyAIndices(const A_Indices *from)
+_copyA_Indices(const A_Indices *from)
 {
 	A_Indices  *newnode = makeNode(A_Indices);
 
@@ -3407,6 +3408,7 @@ _copyObjectWithArgs(const ObjectWithArgs *from)
 
 	COPY_NODE_FIELD(objname);
 	COPY_NODE_FIELD(objargs);
+	COPY_NODE_FIELD(objfuncargs);
 	COPY_SCALAR_FIELD(args_unspecified);
 
 	return newnode;
@@ -3478,6 +3480,7 @@ _copyCallStmt(const CallStmt *from)
 
 	COPY_NODE_FIELD(funccall);
 	COPY_NODE_FIELD(funcexpr);
+	COPY_NODE_FIELD(outargs);
 
 	return newnode;
 }
@@ -3678,6 +3681,7 @@ _copyCreateStatsStmt(const CreateStatsStmt *from)
 	COPY_NODE_FIELD(exprs);
 	COPY_NODE_FIELD(relations);
 	COPY_STRING_FIELD(stxcomment);
+	COPY_SCALAR_FIELD(transformed);
 	COPY_SCALAR_FIELD(if_not_exists);
 
 	return newnode;
@@ -5075,8 +5079,8 @@ copyObjectImpl(const void *from)
 		case T_Material:
 			retval = _copyMaterial(from);
 			break;
-		case T_ResultCache:
-			retval = _copyResultCache(from);
+		case T_Memoize:
+			retval = _copyMemoize(from);
 			break;
 		case T_Sort:
 			retval = _copySort(from);
@@ -5710,7 +5714,7 @@ copyObjectImpl(const void *from)
 			retval = _copyDropSubscriptionStmt(from);
 			break;
 		case T_A_Expr:
-			retval = _copyAExpr(from);
+			retval = _copyA_Expr(from);
 			break;
 		case T_ColumnRef:
 			retval = _copyColumnRef(from);
@@ -5719,16 +5723,16 @@ copyObjectImpl(const void *from)
 			retval = _copyParamRef(from);
 			break;
 		case T_A_Const:
-			retval = _copyAConst(from);
+			retval = _copyA_Const(from);
 			break;
 		case T_FuncCall:
 			retval = _copyFuncCall(from);
 			break;
 		case T_A_Star:
-			retval = _copyAStar(from);
+			retval = _copyA_Star(from);
 			break;
 		case T_A_Indices:
-			retval = _copyAIndices(from);
+			retval = _copyA_Indices(from);
 			break;
 		case T_A_Indirection:
 			retval = _copyA_Indirection(from);
