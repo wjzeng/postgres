@@ -88,10 +88,12 @@ SKIP:
 	$primary->psql('postgres',
 		'INSERT INTO test_table VALUES (generate_series(100,200));');
 
+	# Note the trailing whitespace after the value of --compress, that is
+	# a valid value.
 	$primary->command_ok(
 		[
 			'pg_receivewal', '-D',     $stream_dir,  '--verbose',
-			'--endpos',      $nextlsn, '--compress', '1'
+			'--endpos',      $nextlsn, '--compress', '1 '
 		],
 		"streaming some WAL using ZLIB compression");
 
@@ -109,7 +111,7 @@ SKIP:
 	# of the previous partial, now-completed WAL segment is updated, keeping
 	# its base number.
 	$partial_wals[0] =~ s/\.partial$/.gz/;
-	is($zlib_wals[0] =~ m/$partial_wals[0]/,
+	is($zlib_wals[0] eq $partial_wals[0],
 		1, "one partial WAL segment is now completed");
 	# Update the list of partial wals with the current one.
 	@partial_wals = @zlib_partial_wals;
