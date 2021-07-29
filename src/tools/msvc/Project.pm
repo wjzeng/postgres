@@ -30,7 +30,7 @@ sub _new
 		references            => [],
 		libraries             => [],
 		suffixlib             => [],
-		includes              => '',
+		includes              => [],
 		prefixincludes        => '',
 		defines               => ';',
 		solution              => $solution,
@@ -58,7 +58,7 @@ sub AddFiles
 
 	while (my $f = shift)
 	{
-		$self->{files}->{ $dir . "/" . $f } = 1;
+		$self->AddFile($dir . "/" . $f, 1);
 	}
 	return;
 }
@@ -77,14 +77,14 @@ sub ReplaceFile
 			if ($file eq $filename)
 			{
 				delete $self->{files}{$file};
-				$self->{files}{$newname} = 1;
+				$self->AddFile($newname);
 				return;
 			}
 		}
 		elsif ($file =~ m/($re)/)
 		{
 			delete $self->{files}{$file};
-			$self->{files}{"$newname/$filename"} = 1;
+			$self->AddFile("$newname/$filename");
 			return;
 		}
 	}
@@ -124,7 +124,10 @@ sub AddReference
 
 	while (my $ref = shift)
 	{
-		push @{ $self->{references} }, $ref;
+		if (! grep { $_ eq $ref} @{ $self->{references} })
+		{
+			push @{ $self->{references} }, $ref;
+		}
 		$self->AddLibrary(
 			"__CFGNAME__/" . $ref->{name} . "/" . $ref->{name} . ".lib");
 	}
@@ -141,7 +144,11 @@ sub AddLibrary
 		$lib = '&quot;' . $lib . "&quot;";
 	}
 
-	push @{ $self->{libraries} }, $lib;
+	if (! grep { $_ eq $lib} @{ $self->{libraries} })
+	{
+		push @{ $self->{libraries} }, $lib;
+	}
+
 	if ($dbgsuffix)
 	{
 		push @{ $self->{suffixlib} }, $lib;
@@ -151,13 +158,15 @@ sub AddLibrary
 
 sub AddIncludeDir
 {
-	my ($self, $inc) = @_;
+	my ($self, $incstr) = @_;
 
-	if ($self->{includes} ne '')
+	foreach my $inc (split(/;/, $incstr))
 	{
-		$self->{includes} .= ';';
+		if (! grep { $_ eq $inc} @{ $self->{includes} })
+		{
+			push @{ $self->{includes} }, $inc;
+		}
 	}
-	$self->{includes} .= $inc;
 	return;
 }
 
@@ -259,11 +268,11 @@ sub AddDir
 			if ($f =~ /^\$\(top_builddir\)\/(.*)/)
 			{
 				$f = $1;
-				$self->{files}->{$f} = 1;
+				$self->AddFile($f);
 			}
 			else
 			{
-				$self->{files}->{"$reldir/$f"} = 1;
+				$self->AddFile("$reldir/$f");
 			}
 		}
 		$mf =~ s{OBJS[^=]*=\s*(.*)$}{}m;
