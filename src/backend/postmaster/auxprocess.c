@@ -90,8 +90,6 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	SetProcessingMode(BootstrapProcessing);
 	IgnoreSystemIndexes = true;
 
-	BaseInit();
-
 	/*
 	 * As an auxiliary process, we aren't going to do the full InitPostgres
 	 * pushups, but there are a couple of things that need to get lit up even
@@ -106,6 +104,8 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	InitAuxiliaryProcess();
 #endif
 
+	BaseInit();
+
 	/*
 	 * Assign the ProcSignalSlot for an auxiliary process.  Since it doesn't
 	 * have a BackendId, the slot is statically allocated based on the
@@ -118,9 +118,6 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	 */
 	ProcSignalInit(MaxBackends + MyAuxProcType + 1);
 
-	/* finish setting up bufmgr.c */
-	InitBufferPoolBackend();
-
 	/*
 	 * Auxiliary processes don't run transactions, but they may need a
 	 * resource owner anyway to manage buffer pins acquired outside
@@ -128,8 +125,6 @@ AuxiliaryProcessMain(AuxProcType auxtype)
 	 */
 	CreateAuxProcessResourceOwner();
 
-	/* Initialize statistics reporting */
-	pgstat_initialize();
 
 	/* Initialize backend status information */
 	pgstat_beinit();
