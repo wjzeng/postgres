@@ -347,6 +347,10 @@ RE_compile_and_execute(text *text_re, char *dat, int dat_len,
 {
 	regex_t    *re;
 
+	/* Use REG_NOSUB if caller does not want sub-match details */
+	if (nmatch < 2)
+		cflags |= REG_NOSUB;
+
 	/* Compile RE */
 	re = RE_compile_and_cache(text_re, cflags, collation);
 
@@ -626,11 +630,10 @@ textregexreplace_noopt(PG_FUNCTION_ARGS)
 	text	   *s = PG_GETARG_TEXT_PP(0);
 	text	   *p = PG_GETARG_TEXT_PP(1);
 	text	   *r = PG_GETARG_TEXT_PP(2);
-	regex_t    *re;
 
-	re = RE_compile_and_cache(p, REG_ADVANCED, PG_GET_COLLATION());
-
-	PG_RETURN_TEXT_P(replace_text_regexp(s, (void *) re, r, 0, 1));
+	PG_RETURN_TEXT_P(replace_text_regexp(s, p, r,
+										 REG_ADVANCED, PG_GET_COLLATION(),
+										 0, 1));
 }
 
 /*
@@ -644,7 +647,6 @@ textregexreplace(PG_FUNCTION_ARGS)
 	text	   *p = PG_GETARG_TEXT_PP(1);
 	text	   *r = PG_GETARG_TEXT_PP(2);
 	text	   *opt = PG_GETARG_TEXT_PP(3);
-	regex_t    *re;
 	pg_re_flags flags;
 
 	/*
@@ -668,10 +670,9 @@ textregexreplace(PG_FUNCTION_ARGS)
 
 	parse_re_flags(&flags, opt);
 
-	re = RE_compile_and_cache(p, flags.cflags, PG_GET_COLLATION());
-
-	PG_RETURN_TEXT_P(replace_text_regexp(s, (void *) re, r, 0,
-										 flags.glob ? 0 : 1));
+	PG_RETURN_TEXT_P(replace_text_regexp(s, p, r,
+										 flags.cflags, PG_GET_COLLATION(),
+										 0, flags.glob ? 0 : 1));
 }
 
 /*
@@ -690,7 +691,6 @@ textregexreplace_extended(PG_FUNCTION_ARGS)
 	int			n = 1;
 	text	   *flags = PG_GETARG_TEXT_PP_IF_EXISTS(5);
 	pg_re_flags re_flags;
-	regex_t    *re;
 
 	/* Collect optional parameters */
 	if (PG_NARGS() > 3)
@@ -719,11 +719,10 @@ textregexreplace_extended(PG_FUNCTION_ARGS)
 	if (PG_NARGS() <= 4)
 		n = re_flags.glob ? 0 : 1;
 
-	/* Compile the regular expression */
-	re = RE_compile_and_cache(p, re_flags.cflags, PG_GET_COLLATION());
-
 	/* Do the replacement(s) */
-	PG_RETURN_TEXT_P(replace_text_regexp(s, (void *) re, r, start - 1, n));
+	PG_RETURN_TEXT_P(replace_text_regexp(s, p, r,
+										 re_flags.cflags, PG_GET_COLLATION(),
+										 start - 1, n));
 }
 
 /* This is separate to keep the opr_sanity regression test from complaining */
@@ -1412,6 +1411,7 @@ setup_regexp_matches(text *orig_str, text *pattern, pg_re_flags *re_flags,
 	int			orig_len;
 	pg_wchar   *wide_str;
 	int			wide_len;
+	int			cflags;
 	regex_t    *cpattern;
 	regmatch_t *pmatch;
 	int			pmatch_len;
@@ -1430,7 +1430,10 @@ setup_regexp_matches(text *orig_str, text *pattern, pg_re_flags *re_flags,
 	wide_len = pg_mb2wchar_with_len(VARDATA_ANY(orig_str), wide_str, orig_len);
 
 	/* set up the compiled pattern */
-	cpattern = RE_compile_and_cache(pattern, re_flags->cflags, collation);
+	cflags = re_flags->cflags;
+	if (!use_subpatterns)
+		cflags |= REG_NOSUB;
+	cpattern = RE_compile_and_cache(pattern, cflags, collation);
 
 	/* do we want to remember subpatterns? */
 	if (use_subpatterns && cpattern->re_nsub > 0)
@@ -1952,7 +1955,7 @@ regexp_fixed_prefix(text *text_re, bool case_insensitive, Oid collation,
 	if (case_insensitive)
 		cflags |= REG_ICASE;
 
-	re = RE_compile_and_cache(text_re, cflags, collation);
+	re = RE_compile_and_cache(text_re, cflags | REG_NOSUB, collation);
 
 	/* Examine it to see if there's a fixed prefix */
 	re_result = pg_regprefix(re, &str, &slen);
