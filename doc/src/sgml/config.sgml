@@ -1382,6 +1382,11 @@ include_dir 'conf.d'
         want to set this to a higher value if all software components can
         support the newer protocol versions.
        </para>
+
+       <para>
+        This parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -1399,6 +1404,11 @@ include_dir 'conf.d'
         allow any version.  Setting the maximum protocol version is mainly
         useful for testing or if some component has issues working with a
         newer protocol.
+       </para>
+
+       <para>
+        This parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line.
        </para>
       </listitem>
      </varlistentry>
@@ -1722,6 +1732,11 @@ include_dir 'conf.d'
         too high.  It may be useful to control for this by separately
         setting <xref linkend="guc-autovacuum-work-mem"/>.
        </para>
+       <para>
+        Note that for the collection of dead tuple identifiers,
+        <command>VACUUM</command> is only able to utilize up to a maximum of
+        <literal>1GB</literal> of memory.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -1740,6 +1755,16 @@ include_dir 'conf.d'
         the value of <xref linkend="guc-maintenance-work-mem"/> should
         be used instead.  The setting has no effect on the behavior of
         <command>VACUUM</command> when run in other contexts.
+        This parameter can only be set in the
+        <filename>postgresql.conf</filename> file or on the server command
+        line.
+       </para>
+       <para>
+        For the collection of dead tuple identifiers, autovacuum is only able
+        to utilize up to a maximum of <literal>1GB</literal> of memory, so
+        setting <varname>autovacuum_work_mem</varname> to a value higher than
+        that has no effect on the number of dead tuples that autovacuum can
+        collect while scanning a table.
        </para>
       </listitem>
      </varlistentry>
@@ -4062,8 +4087,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
      <title>Standby Servers</title>
 
      <para>
-      These settings control the behavior of a standby server that is
-      to receive replication data.  Their values on the master server
+      These settings control the behavior of a
+      <link linkend="standby-server-operation">standby server</link>
+      that is to receive replication data.  Their values on the master server
       are irrelevant.
      </para>
 
@@ -4447,7 +4473,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         <varname>max_worker_processes</varname>.
        </para>
        <para>
-        The default value is 4.
+        The default value is 4. This parameter can only be set at server
+        start.
        </para>
       </listitem>
      </varlistentry>
@@ -4472,7 +4499,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         <varname>max_logical_replication_workers</varname>.
        </para>
        <para>
-        The default value is 2.
+        The default value is 2. This parameter can only be set in the
+        <filename>postgresql.conf</filename> file or on the server command
+        line.
        </para>
       </listitem>
      </varlistentry>
@@ -7563,8 +7592,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         This variable specifies the default tablespace in which to create
         objects (tables and indexes) when a <command>CREATE</command> command does
-        not explicitly specify a tablespace.  It also determines the tablespace
-        that a partitioned relation will direct future partitions to.
+        not explicitly specify a tablespace.
        </para>
 
        <para>
@@ -7586,6 +7614,14 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         This variable is also not used when creating databases.
         By default, a new database inherits its tablespace setting from
         the template database it is copied from.
+       </para>
+
+       <para>
+        If this parameter is set to a value other than the empty string
+        when a partitioned table is created, the partitioned table's
+        tablespace will be set to that value, which will be used as
+        the default tablespace for partitions created in the future,
+        even if <varname>default_tablespace</varname> has changed since then.
        </para>
 
        <para>
@@ -7743,6 +7779,66 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
 
        <para>
         Consult <xref linkend="sql-set-transaction"/> for more information.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-transaction-isolation" xreflabel="transaction_isolation">
+      <term><varname>transaction_isolation</varname> (<type>enum</type>)
+      <indexterm>
+       <primary>transaction isolation level</primary>
+      </indexterm>
+      <indexterm>
+       <primary><varname>transaction_isolation</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter reflects the current transaction's isolation level.
+        At the beginning of each transaction, it is set to the current value
+        of <xref linkend="guc-default-transaction-isolation"/>.
+        Any subsequent attempt to change it is equivalent to a <xref
+        linkend="sql-set-transaction"/> command.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-transaction-read-only" xreflabel="transaction_read_only">
+      <term><varname>transaction_read_only</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary>read-only transaction</primary>
+      </indexterm>
+      <indexterm>
+       <primary><varname>transaction_read_only</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter reflects the current transaction's read-only status.
+        At the beginning of each transaction, it is set to the current value
+        of <xref linkend="guc-default-transaction-read-only"/>.
+        Any subsequent attempt to change it is equivalent to a <xref
+        linkend="sql-set-transaction"/> command.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-transaction-deferrable" xreflabel="transaction_deferrable">
+      <term><varname>transaction_deferrable</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary>deferrable transaction</primary>
+      </indexterm>
+      <indexterm>
+       <primary><varname>transaction_deferrable</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter reflects the current transaction's deferrability status.
+        At the beginning of each transaction, it is set to the current value
+        of <xref linkend="guc-default-transaction-deferrable"/>.
+        Any subsequent attempt to change it is equivalent to a <xref
+        linkend="sql-set-transaction"/> command.
        </para>
       </listitem>
      </varlistentry>
@@ -9134,6 +9230,11 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         <productname>PostgreSQL</productname> is being invoked by clusterware, it may be
         useful to disable the restart so that the clusterware can gain
         control and take any actions it deems appropriate.
+       </para>
+
+       <para>
+        This parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line.
        </para>
       </listitem>
      </varlistentry>

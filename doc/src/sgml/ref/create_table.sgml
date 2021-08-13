@@ -840,6 +840,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       column</firstterm>.  It will have an implicit sequence attached to it
       and the column in new rows will automatically have values from the
       sequence assigned to it.
+      Such a column is implicitly <literal>NOT NULL</literal>.
      </para>
 
      <para>
@@ -1477,7 +1478,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     </listitem>
    </varlistentry>
 
-   <varlistentry id="reloption-autovacuum-vauum-scale-factor" xreflabel="autovacuum_vacuum_scale_factor">
+   <varlistentry id="reloption-autovacuum-vacuum-scale-factor" xreflabel="autovacuum_vacuum_scale_factor">
     <term><literal>autovacuum_vacuum_scale_factor</literal>, <literal>toast.autovacuum_vacuum_scale_factor</literal> (<type>floating point</type>)
     <indexterm>
      <primary><varname>autovacuum_vacuum_scale_factor</varname> </primary>
@@ -1537,7 +1538,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     </listitem>
    </varlistentry>
 
-   <varlistentry id="reloption-autovacuum-vauum-cost-limit" xreflabel="autovacuum_vacuum_cost_limit">
+   <varlistentry id="reloption-autovacuum-vacuum-cost-limit" xreflabel="autovacuum_vacuum_cost_limit">
     <term><literal>autovacuum_vacuum_cost_limit</literal>, <literal>toast.autovacuum_vacuum_cost_limit</literal> (<type>integer</type>)
     <indexterm>
      <primary><varname>autovacuum_vacuum_cost_limit</varname></primary>

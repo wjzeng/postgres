@@ -284,16 +284,8 @@ typedef struct
  */
 typedef struct ConversionLocation
 {
-	Relation	rel;			/* foreign table's relcache entry. */
 	AttrNumber	cur_attno;		/* attribute number being processed, or 0 */
-
-	/*
-	 * In case of foreign join push down, fdw_scan_tlist is used to identify
-	 * the Var node corresponding to the error location and
-	 * fsstate->ss.ps.state gives access to the RTEs of corresponding relation
-	 * to get the relation name and attribute name.
-	 */
-	ForeignScanState *fsstate;
+	ForeignScanState *fsstate;	/* plan node being processed */
 } ConversionLocation;
 
 /* Callback argument for ec_member_matches_foreign */
@@ -597,8 +589,9 @@ postgresGetForeignRelSize(PlannerInfo *root,
 	fpinfo->server = GetForeignServer(fpinfo->table->serverid);
 
 	/*
-	 * Extract user-settable option values.  Note that per-table setting of
-	 * use_remote_estimate overrides per-server setting.
+	 * Extract user-settable option values.  Note that per-table settings of
+	 * use_remote_estimate and fetch_size override per-server settings of
+	 * them, respectively.
 	 */
 	fpinfo->use_remote_estimate = false;
 	fpinfo->fdw_startup_cost = DEFAULT_FDW_STARTUP_COST;
@@ -3574,6 +3567,9 @@ create_foreign_modify(EState *estate,
 
 			Assert(!attr->attisdropped);
 
+			/* Ignore generated columns; they are set to DEFAULT */
+			if (attr->attgenerated)
+				continue;
 			getTypeOutputInfo(attr->atttypid, &typefnoid, &isvarlena);
 			fmgr_info(typefnoid, &fmstate->p_flinfo[fmstate->p_nums]);
 			fmstate->p_nums++;
@@ -3759,6 +3755,7 @@ convert_prep_stmt_params(PgFdwModifyState *fmstate,
 	/* get following parameters from slot */
 	if (slot != NULL && fmstate->target_attrs != NIL)
 	{
+		TupleDesc	tupdesc = RelationGetDescr(fmstate->rel);
 		int			nestlevel;
 		ListCell   *lc;
 
@@ -3767,9 +3764,13 @@ convert_prep_stmt_params(PgFdwModifyState *fmstate,
 		foreach(lc, fmstate->target_attrs)
 		{
 			int			attnum = lfirst_int(lc);
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 			Datum		value;
 			bool		isnull;
 
+			/* Ignore generated columns; they are set to DEFAULT */
+			if (attr->attgenerated)
+				continue;
 			value = slot_getattr(slot, attnum, &isnull);
 			if (isnull)
 				p_values[pindex] = NULL;
@@ -4680,6 +4681,7 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 	List	   *commands = NIL;
 	bool		import_collate = true;
 	bool		import_default = false;
+	bool		import_generated = true;
 	bool		import_not_null = true;
 	ForeignServer *server;
 	UserMapping *mapping;
@@ -4699,6 +4701,8 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 			import_collate = defGetBoolean(def);
 		else if (strcmp(def->defname, "import_default") == 0)
 			import_default = defGetBoolean(def);
+		else if (strcmp(def->defname, "import_generated") == 0)
+			import_generated = defGetBoolean(def);
 		else if (strcmp(def->defname, "import_not_null") == 0)
 			import_not_null = defGetBoolean(def);
 		else
@@ -4760,13 +4764,24 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 		 * include a schema name for types/functions in other schemas, which
 		 * is what we want.
 		 */
+		appendStringInfoString(&buf,
+							   "SELECT relname, "
+							   "  attname, "
+							   "  format_type(atttypid, atttypmod), "
+							   "  attnotnull, ");
+
+		/* Generated columns are supported since Postgres 12 */
+		if (PQserverVersion(conn) >= 120000)
+			appendStringInfoString(&buf,
+								   "  attgenerated, "
+								   "  pg_get_expr(adbin, adrelid), ");
+		else
+			appendStringInfoString(&buf,
+								   "  NULL, "
+								   "  pg_get_expr(adbin, adrelid), ");
+
 		if (import_collate)
 			appendStringInfoString(&buf,
-								   "SELECT relname, "
-								   "  attname, "
-								   "  format_type(atttypid, atttypmod), "
-								   "  attnotnull, "
-								   "  pg_get_expr(adbin, adrelid), "
 								   "  collname, "
 								   "  collnsp.nspname "
 								   "FROM pg_class c "
@@ -4783,11 +4798,6 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 								   "    collnsp.oid = collnamespace ");
 		else
 			appendStringInfoString(&buf,
-								   "SELECT relname, "
-								   "  attname, "
-								   "  format_type(atttypid, atttypmod), "
-								   "  attnotnull, "
-								   "  pg_get_expr(adbin, adrelid), "
 								   "  NULL, NULL "
 								   "FROM pg_class c "
 								   "  JOIN pg_namespace n ON "
@@ -4863,6 +4873,7 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 				char	   *attname;
 				char	   *typename;
 				char	   *attnotnull;
+				char	   *attgenerated;
 				char	   *attdefault;
 				char	   *collname;
 				char	   *collnamespace;
@@ -4874,12 +4885,14 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 				attname = PQgetvalue(res, i, 1);
 				typename = PQgetvalue(res, i, 2);
 				attnotnull = PQgetvalue(res, i, 3);
-				attdefault = PQgetisnull(res, i, 4) ? (char *) NULL :
+				attgenerated = PQgetisnull(res, i, 4) ? (char *) NULL :
 					PQgetvalue(res, i, 4);
-				collname = PQgetisnull(res, i, 5) ? (char *) NULL :
+				attdefault = PQgetisnull(res, i, 5) ? (char *) NULL :
 					PQgetvalue(res, i, 5);
-				collnamespace = PQgetisnull(res, i, 6) ? (char *) NULL :
+				collname = PQgetisnull(res, i, 6) ? (char *) NULL :
 					PQgetvalue(res, i, 6);
+				collnamespace = PQgetisnull(res, i, 7) ? (char *) NULL :
+					PQgetvalue(res, i, 7);
 
 				if (first_item)
 					first_item = false;
@@ -4907,8 +4920,19 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 									 quote_identifier(collname));
 
 				/* Add DEFAULT if needed */
-				if (import_default && attdefault != NULL)
+				if (import_default && attdefault != NULL &&
+					(!attgenerated || !attgenerated[0]))
 					appendStringInfo(&buf, " DEFAULT %s", attdefault);
+
+				/* Add GENERATED if needed */
+				if (import_generated && attgenerated != NULL &&
+					attgenerated[0] == ATTRIBUTE_GENERATED_STORED)
+				{
+					Assert(attdefault != NULL);
+					appendStringInfo(&buf,
+									 " GENERATED ALWAYS AS (%s) STORED",
+									 attdefault);
+				}
 
 				/* Add NOT NULL if needed */
 				if (import_not_null && attnotnull[0] == 't')
@@ -6316,7 +6340,6 @@ make_tuple_from_result_row(PGresult *res,
 	/*
 	 * Set up and install callback to report where conversion error occurs.
 	 */
-	errpos.rel = rel;
 	errpos.cur_attno = 0;
 	errpos.fsstate = fsstate;
 	errcallback.callback = conversion_error_callback;
@@ -6419,34 +6442,32 @@ make_tuple_from_result_row(PGresult *res,
 /*
  * Callback function which is called when error occurs during column value
  * conversion.  Print names of column and relation.
+ *
+ * Note that this function mustn't do any catalog lookups, since we are in
+ * an already-failed transaction.  Fortunately, we can get the needed info
+ * from the query's rangetable instead.
  */
 static void
 conversion_error_callback(void *arg)
 {
+	ConversionLocation *errpos = (ConversionLocation *) arg;
+	ForeignScanState *fsstate = errpos->fsstate;
+	ForeignScan *fsplan = castNode(ForeignScan, fsstate->ss.ps.plan);
+	int			varno = 0;
+	AttrNumber	colno = 0;
 	const char *attname = NULL;
 	const char *relname = NULL;
 	bool		is_wholerow = false;
-	ConversionLocation *errpos = (ConversionLocation *) arg;
 
-	if (errpos->rel)
+	if (fsplan->scan.scanrelid > 0)
 	{
 		/* error occurred in a scan against a foreign table */
-		TupleDesc	tupdesc = RelationGetDescr(errpos->rel);
-		Form_pg_attribute attr = TupleDescAttr(tupdesc, errpos->cur_attno - 1);
-
-		if (errpos->cur_attno > 0 && errpos->cur_attno <= tupdesc->natts)
-			attname = NameStr(attr->attname);
-		else if (errpos->cur_attno == SelfItemPointerAttributeNumber)
-			attname = "ctid";
-
-		relname = RelationGetRelationName(errpos->rel);
+		varno = fsplan->scan.scanrelid;
+		colno = errpos->cur_attno;
 	}
 	else
 	{
 		/* error occurred in a scan against a foreign join */
-		ForeignScanState *fsstate = errpos->fsstate;
-		ForeignScan *fsplan = castNode(ForeignScan, fsstate->ss.ps.plan);
-		EState	   *estate = fsstate->ss.ps.state;
 		TargetEntry *tle;
 
 		tle = list_nth_node(TargetEntry, fsplan->fdw_scan_tlist,
@@ -6454,35 +6475,40 @@ conversion_error_callback(void *arg)
 
 		/*
 		 * Target list can have Vars and expressions.  For Vars, we can get
-		 * its relation, however for expressions we can't.  Thus for
+		 * some information, however for expressions we can't.  Thus for
 		 * expressions, just show generic context message.
 		 */
 		if (IsA(tle->expr, Var))
 		{
-			RangeTblEntry *rte;
 			Var		   *var = (Var *) tle->expr;
 
-			rte = exec_rt_fetch(var->varno, estate);
-
-			if (var->varattno == 0)
-				is_wholerow = true;
-			else
-				attname = get_attname(rte->relid, var->varattno, false);
-
-			relname = get_rel_name(rte->relid);
+			varno = var->varno;
+			colno = var->varattno;
 		}
-		else
-			errcontext("processing expression at position %d in select list",
-					   errpos->cur_attno);
 	}
 
-	if (relname)
+	if (varno > 0)
 	{
-		if (is_wholerow)
-			errcontext("whole-row reference to foreign table \"%s\"", relname);
-		else if (attname)
-			errcontext("column \"%s\" of foreign table \"%s\"", attname, relname);
+		EState	   *estate = fsstate->ss.ps.state;
+		RangeTblEntry *rte = exec_rt_fetch(varno, estate);
+
+		relname = rte->eref->aliasname;
+
+		if (colno == 0)
+			is_wholerow = true;
+		else if (colno > 0 && colno <= list_length(rte->eref->colnames))
+			attname = strVal(list_nth(rte->eref->colnames, colno - 1));
+		else if (colno == SelfItemPointerAttributeNumber)
+			attname = "ctid";
 	}
+
+	if (relname && is_wholerow)
+		errcontext("whole-row reference to foreign table \"%s\"", relname);
+	else if (relname && attname)
+		errcontext("column \"%s\" of foreign table \"%s\"", attname, relname);
+	else
+		errcontext("processing expression at position %d in select list",
+				   errpos->cur_attno);
 }
 
 /*
