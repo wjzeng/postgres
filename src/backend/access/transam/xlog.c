@@ -5845,7 +5845,7 @@ recoveryStopsBefore(XLogReaderState *record)
 		xl_xact_abort *xlrec = (xl_xact_abort *) XLogRecGetData(record);
 		xl_xact_parsed_abort parsed;
 
-		isCommit = true;
+		isCommit = false;
 		ParseAbortRecord(XLogRecGetInfo(record),
 						 xlrec,
 						 &parsed);
@@ -11626,7 +11626,7 @@ read_tablespace_map(List **tablespaces)
 		}
 		else if ((ch == '\n' || ch == '\r') && prev_ch == '\\')
 			str[i - 1] = ch;
-		else
+		else if (i < sizeof(str) - 1)
 			str[i++] = ch;
 		prev_ch = ch;
 	}
@@ -12161,6 +12161,9 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 								  wait_time, WAIT_EVENT_RECOVERY_WAL_STREAM);
 						ResetLatch(&XLogCtl->recoveryWakeupLatch);
 						now = GetCurrentTimestamp();
+
+						/* Handle interrupt signals of startup process */
+						HandleStartupProcInterrupts();
 					}
 					last_fail_time = now;
 					currentSource = XLOG_FROM_ARCHIVE;
@@ -12288,11 +12291,19 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						 * pg_wal by now.  Use XLOG_FROM_STREAM so that source
 						 * info is set correctly and XLogReceiptTime isn't
 						 * changed.
+						 *
+						 * NB: We must set readTimeLineHistory based on
+						 * recoveryTargetTLI, not receiveTLI. Normally they'll
+						 * be the same, but if recovery_target_timeline is
+						 * 'latest' and archiving is configured, then it's
+						 * possible that we managed to retrieve one or more
+						 * new timeline history files from the archive,
+						 * updating recoveryTargetTLI.
 						 */
 						if (readFile < 0)
 						{
 							if (!expectedTLEs)
-								expectedTLEs = readTimeLineHistory(receiveTLI);
+								expectedTLEs = readTimeLineHistory(recoveryTargetTLI);
 							readFile = XLogFileRead(readSegNo, PANIC,
 													receiveTLI,
 													XLOG_FROM_STREAM, false);

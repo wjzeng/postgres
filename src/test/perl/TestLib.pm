@@ -13,7 +13,7 @@ use warnings;
 use Config;
 use Cwd;
 use Exporter 'import';
-use Fcntl qw(:mode);
+use Fcntl qw(:mode :seek);
 use File::Basename;
 use File::Find;
 use File::Spec;
@@ -62,16 +62,32 @@ BEGIN
 	delete $ENV{LC_ALL};
 	$ENV{LC_MESSAGES} = 'C';
 
-	delete $ENV{PGCONNECT_TIMEOUT};
-	delete $ENV{PGDATA};
-	delete $ENV{PGDATABASE};
-	delete $ENV{PGHOSTADDR};
-	delete $ENV{PGREQUIRESSL};
-	delete $ENV{PGSERVICE};
-	delete $ENV{PGSSLMODE};
-	delete $ENV{PGUSER};
-	delete $ENV{PGPORT};
-	delete $ENV{PGHOST};
+	# This list should be kept in sync with pg_regress.c.
+	my @envkeys = qw (
+	  PGCLIENTENCODING
+	  PGCONNECT_TIMEOUT
+	  PGDATA
+	  PGDATABASE
+	  PGGSSLIB
+	  PGHOSTADDR
+	  PGKRBSRVNAME
+	  PGPASSFILE
+	  PGPASSWORD
+	  PGREQUIREPEER
+	  PGREQUIRESSL
+	  PGSERVICE
+	  PGSERVICEFILE
+	  PGSSLCERT
+	  PGSSLCRL
+	  PGSSLKEY
+	  PGSSLMODE
+	  PGSSLROOTCERT
+	  PGTARGETSESSIONATTRS
+	  PGUSER
+	  PGPORT
+	  PGHOST
+	);
+	delete @ENV{@envkeys};
 
 	$ENV{PGAPPNAME} = basename($0);
 
@@ -80,7 +96,7 @@ BEGIN
 	if ($windows_os)
 	{
 		require Win32API::File;
-		Win32API::File->import(qw(createFile OsFHandleOpen CloseHandle));
+		Win32API::File->import(qw(createFile OsFHandleOpen CloseHandle setFilePointer));
 	}
 }
 
@@ -253,13 +269,18 @@ sub slurp_dir
 
 sub slurp_file
 {
-	my ($filename) = @_;
+	my ($filename, $offset) = @_;
 	local $/;
 	my $contents;
 	if ($Config{osname} ne 'MSWin32')
 	{
 		open(my $in, '<', $filename)
 		  or die "could not read \"$filename\": $!";
+		if (defined($offset))
+		{
+			seek($in, $offset, SEEK_SET)
+			  or die "could not seek \"$filename\": $!";
+		}
 		$contents = <$in>;
 		close $in;
 	}
@@ -269,6 +290,11 @@ sub slurp_file
 		  or die "could not open \"$filename\": $^E";
 		OsFHandleOpen(my $fh = IO::Handle->new(), $fHandle, 'r')
 		  or die "could not read \"$filename\": $^E\n";
+		if (defined($offset))
+		{
+			setFilePointer($fh, $offset, qw(FILE_BEGIN))
+			  or die "could not seek \"$filename\": $^E\n";
+		}
 		$contents = <$fh>;
 		CloseHandle($fHandle)
 		  or die "could not close \"$filename\": $^E\n";
