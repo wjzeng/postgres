@@ -762,6 +762,9 @@ typedef struct RelOptInfo
 	List	   *partition_qual; /* Partition constraint, if not the root */
 	struct RelOptInfo **part_rels;	/* Array of RelOptInfos of partitions,
 									 * stored in the same order as bounds */
+	Bitmapset  *live_parts;		/* Bitmap with members acting as indexes into
+								 * the part_rels[] array to indicate which
+								 * partitions survived partition pruning. */
 	Relids		all_partrels;	/* Relids set of all partition relids */
 	List	  **partexprs;		/* Non-nullable partition key expressions */
 	List	  **nullable_partexprs; /* Nullable partition key expressions */
@@ -1595,7 +1598,10 @@ typedef struct JoinPath
  * A nested-loop path needs no special fields.
  */
 
-typedef JoinPath NestPath;
+typedef struct NestPath
+{
+	JoinPath	jpath;
+} NestPath;
 
 /*
  * A mergejoin path has these fields.

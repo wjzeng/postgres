@@ -128,7 +128,8 @@ char	   *pgstat_stat_tmpname = NULL;
  * Stored directly in a stats message structure so they can be sent
  * without needing to copy things around.  We assume these init to zeroes.
  */
-PgStat_MsgBgWriter BgWriterStats;
+PgStat_MsgBgWriter PendingBgWriterStats;
+PgStat_MsgCheckpointer PendingCheckpointerStats;
 PgStat_MsgWal WalStats;
 
 /*
@@ -294,6 +295,15 @@ static List *pending_write_requests = NIL;
  */
 static instr_time total_func_time;
 
+/*
+ * For assertions that check pgstat is not used before initialization / after
+ * shutdown.
+ */
+#ifdef USE_ASSERT_CHECKING
+static bool pgstat_is_initialized = false;
+static bool pgstat_is_shutdown = false;
+#endif
+
 
 /* ----------
  * Local function forward declarations
@@ -329,6 +339,7 @@ static void pgstat_send_connstats(bool disconnect, TimestampTz last_report);
 static PgStat_TableStatus *get_tabstat_entry(Oid rel_id, bool isshared);
 
 static void pgstat_setup_memcxt(void);
+static void pgstat_assert_is_up(void);
 
 static void pgstat_setheader(PgStat_MsgHdr *hdr, StatMsgType mtype);
 static void pgstat_send(void *msg, int len);
@@ -348,6 +359,7 @@ static void pgstat_recv_analyze(PgStat_MsgAnalyze *msg, int len);
 static void pgstat_recv_anl_ancestors(PgStat_MsgAnlAncestors *msg, int len);
 static void pgstat_recv_archiver(PgStat_MsgArchiver *msg, int len);
 static void pgstat_recv_bgwriter(PgStat_MsgBgWriter *msg, int len);
+static void pgstat_recv_checkpointer(PgStat_MsgCheckpointer *msg, int len);
 static void pgstat_recv_wal(PgStat_MsgWal *msg, int len);
 static void pgstat_recv_slru(PgStat_MsgSLRU *msg, int len);
 static void pgstat_recv_funcstat(PgStat_MsgFuncstat *msg, int len);
@@ -851,6 +863,8 @@ pgstat_report_stat(bool disconnect)
 	PgStat_MsgTabstat shared_msg;
 	TabStatusArray *tsa;
 	int			i;
+
+	pgstat_assert_is_up();
 
 	/*
 	 * Don't expend a clock check if nothing to do.
@@ -1958,6 +1972,8 @@ pgstat_init_function_usage(FunctionCallInfo fcinfo,
 PgStat_BackendFunctionEntry *
 find_funcstat_entry(Oid func_id)
 {
+	pgstat_assert_is_up();
+
 	if (pgStatFunctions == NULL)
 		return NULL;
 
@@ -2075,6 +2091,8 @@ get_tabstat_entry(Oid rel_id, bool isshared)
 	PgStat_TableStatus *entry;
 	TabStatusArray *tsa;
 	bool		found;
+
+	pgstat_assert_is_up();
 
 	/*
 	 * Create hash table if we don't have it already.
@@ -2830,6 +2848,37 @@ pgstat_fetch_stat_archiver(void)
 	return &archiverStats;
 }
 
+/*
+ * ---------
+ * pgstat_fetch_stat_bgwriter() -
+ *
+ *	Support function for the SQL-callable pgstat* functions. Returns
+ *	a pointer to the bgwriter statistics struct.
+ * ---------
+ */
+PgStat_BgWriterStats *
+pgstat_fetch_stat_bgwriter(void)
+{
+	backend_read_statsfile();
+
+	return &globalStats.bgwriter;
+}
+
+/*
+ * ---------
+ * pgstat_fetch_stat_checkpointer() -
+ *
+ *	Support function for the SQL-callable pgstat* functions. Returns
+ *	a pointer to the checkpointer statistics struct.
+ * ---------
+ */
+PgStat_CheckpointerStats *
+pgstat_fetch_stat_checkpointer(void)
+{
+	backend_read_statsfile();
+
+	return &globalStats.checkpointer;
+}
 
 /*
  * ---------
@@ -2905,6 +2954,8 @@ pgstat_fetch_replslot(NameData slotname)
 static void
 pgstat_shutdown_hook(int code, Datum arg)
 {
+	Assert(!pgstat_is_shutdown);
+
 	/*
 	 * If we got as far as discovering our own database ID, we can report what
 	 * we did to the collector.  Otherwise, we'd be sending an invalid
@@ -2913,13 +2964,17 @@ pgstat_shutdown_hook(int code, Datum arg)
 	 */
 	if (OidIsValid(MyDatabaseId))
 		pgstat_report_stat(true);
+
+#ifdef USE_ASSERT_CHECKING
+	pgstat_is_shutdown = true;
+#endif
 }
 
 /* ----------
  * pgstat_initialize() -
  *
- *	Initialize pgstats state, and set up our on-proc-exit hook.
- *	Called from InitPostgres and AuxiliaryProcessMain.
+ *	Initialize pgstats state, and set up our on-proc-exit hook. Called from
+ *	BaseInit().
  *
  *	NOTE: MyDatabaseId isn't set yet; so the shutdown hook has to be careful.
  * ----------
@@ -2927,6 +2982,8 @@ pgstat_shutdown_hook(int code, Datum arg)
 void
 pgstat_initialize(void)
 {
+	Assert(!pgstat_is_initialized);
+
 	/*
 	 * Initialize prevWalUsage with pgWalUsage so that pgstat_send_wal() can
 	 * calculate how much pgWalUsage counters are increased by subtracting
@@ -2935,7 +2992,11 @@ pgstat_initialize(void)
 	prevWalUsage = pgWalUsage;
 
 	/* Set up a process-exit hook to clean up */
-	on_shmem_exit(pgstat_shutdown_hook, 0);
+	before_shmem_exit(pgstat_shutdown_hook, 0);
+
+#ifdef USE_ASSERT_CHECKING
+	pgstat_is_initialized = true;
+#endif
 }
 
 /* ------------------------------------------------------------
@@ -2967,6 +3028,8 @@ static void
 pgstat_send(void *msg, int len)
 {
 	int			rc;
+
+	pgstat_assert_is_up();
 
 	if (pgStatSock == PGINVALID_SOCKET)
 		return;
@@ -3020,24 +3083,58 @@ pgstat_send_bgwriter(void)
 	/* We assume this initializes to zeroes */
 	static const PgStat_MsgBgWriter all_zeroes;
 
+	pgstat_assert_is_up();
+
 	/*
 	 * This function can be called even if nothing at all has happened. In
 	 * this case, avoid sending a completely empty message to the stats
 	 * collector.
 	 */
-	if (memcmp(&BgWriterStats, &all_zeroes, sizeof(PgStat_MsgBgWriter)) == 0)
+	if (memcmp(&PendingBgWriterStats, &all_zeroes, sizeof(PgStat_MsgBgWriter)) == 0)
 		return;
 
 	/*
 	 * Prepare and send the message
 	 */
-	pgstat_setheader(&BgWriterStats.m_hdr, PGSTAT_MTYPE_BGWRITER);
-	pgstat_send(&BgWriterStats, sizeof(BgWriterStats));
+	pgstat_setheader(&PendingBgWriterStats.m_hdr, PGSTAT_MTYPE_BGWRITER);
+	pgstat_send(&PendingBgWriterStats, sizeof(PendingBgWriterStats));
 
 	/*
 	 * Clear out the statistics buffer, so it can be re-used.
 	 */
-	MemSet(&BgWriterStats, 0, sizeof(BgWriterStats));
+	MemSet(&PendingBgWriterStats, 0, sizeof(PendingBgWriterStats));
+}
+
+/* ----------
+ * pgstat_send_checkpointer() -
+ *
+ *		Send checkpointer statistics to the collector
+ * ----------
+ */
+void
+pgstat_send_checkpointer(void)
+{
+	/* We assume this initializes to zeroes */
+	static const PgStat_MsgCheckpointer all_zeroes;
+
+	/*
+	 * This function can be called even if nothing at all has happened. In
+	 * this case, avoid sending a completely empty message to the stats
+	 * collector.
+	 */
+	if (memcmp(&PendingCheckpointerStats, &all_zeroes, sizeof(PgStat_MsgCheckpointer)) == 0)
+		return;
+
+	/*
+	 * Prepare and send the message
+	 */
+	pgstat_setheader(&PendingCheckpointerStats.m_hdr, PGSTAT_MTYPE_CHECKPOINTER);
+	pgstat_send(&PendingCheckpointerStats, sizeof(PendingCheckpointerStats));
+
+	/*
+	 * Clear out the statistics buffer, so it can be re-used.
+	 */
+	MemSet(&PendingCheckpointerStats, 0, sizeof(PendingCheckpointerStats));
 }
 
 /* ----------
@@ -3380,6 +3477,10 @@ PgstatCollectorMain(int argc, char *argv[])
 
 				case PGSTAT_MTYPE_BGWRITER:
 					pgstat_recv_bgwriter(&msg.msg_bgwriter, len);
+					break;
+
+				case PGSTAT_MTYPE_CHECKPOINTER:
+					pgstat_recv_checkpointer(&msg.msg_checkpointer, len);
 					break;
 
 				case PGSTAT_MTYPE_WAL:
@@ -3934,6 +4035,7 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	bool		found;
 	const char *statfile = permanent ? PGSTAT_STAT_PERMANENT_FILENAME : pgstat_stat_filename;
 	int			i;
+	TimestampTz	ts;
 
 	/*
 	 * The tables will live in pgStatLocalContext.
@@ -3962,15 +4064,16 @@ pgstat_read_statsfiles(Oid onlydb, bool permanent, bool deep)
 	 * Set the current timestamp (will be kept only in case we can't load an
 	 * existing statsfile).
 	 */
-	globalStats.stat_reset_timestamp = GetCurrentTimestamp();
-	archiverStats.stat_reset_timestamp = globalStats.stat_reset_timestamp;
-	walStats.stat_reset_timestamp = globalStats.stat_reset_timestamp;
+	ts = GetCurrentTimestamp();
+	globalStats.bgwriter.stat_reset_timestamp = ts;
+	archiverStats.stat_reset_timestamp = ts;
+	walStats.stat_reset_timestamp = ts;
 
 	/*
 	 * Set the same reset timestamp for all SLRU items too.
 	 */
 	for (i = 0; i < SLRU_NUM_ELEMENTS; i++)
-		slruStats[i].stat_reset_timestamp = globalStats.stat_reset_timestamp;
+		slruStats[i].stat_reset_timestamp = ts;
 
 	/*
 	 * Try to open the stats file. If it doesn't exist, the backends simply
@@ -4558,6 +4661,8 @@ backend_read_statsfile(void)
 	Oid			inquiry_db;
 	int			count;
 
+	pgstat_assert_is_up();
+
 	/* already read it? */
 	if (pgStatDBHash)
 		return;
@@ -4694,6 +4799,17 @@ pgstat_setup_memcxt(void)
 												   ALLOCSET_SMALL_SIZES);
 }
 
+/*
+ * Stats should only be reported after pgstat_initialize() and before
+ * pgstat_shutdown(). This check is put in a few central places to catch
+ * violations of this rule more easily.
+ */
+static void
+pgstat_assert_is_up(void)
+{
+	Assert(pgstat_is_initialized && !pgstat_is_shutdown);
+}
+
 
 /* ----------
  * pgstat_clear_snapshot() -
@@ -4708,6 +4824,8 @@ pgstat_setup_memcxt(void)
 void
 pgstat_clear_snapshot(void)
 {
+	pgstat_assert_is_up();
+
 	/* Release memory, if any was allocated */
 	if (pgStatLocalContext)
 		MemoryContextDelete(pgStatLocalContext);
@@ -5055,9 +5173,9 @@ pgstat_recv_resetsharedcounter(PgStat_MsgResetsharedcounter *msg, int len)
 {
 	if (msg->m_resettarget == RESET_BGWRITER)
 	{
-		/* Reset the global background writer statistics for the cluster. */
+		/* Reset the global, bgwriter and checkpointer statistics for the cluster. */
 		memset(&globalStats, 0, sizeof(globalStats));
-		globalStats.stat_reset_timestamp = GetCurrentTimestamp();
+		globalStats.bgwriter.stat_reset_timestamp = GetCurrentTimestamp();
 	}
 	else if (msg->m_resettarget == RESET_ARCHIVER)
 	{
@@ -5345,16 +5463,27 @@ pgstat_recv_archiver(PgStat_MsgArchiver *msg, int len)
 static void
 pgstat_recv_bgwriter(PgStat_MsgBgWriter *msg, int len)
 {
-	globalStats.timed_checkpoints += msg->m_timed_checkpoints;
-	globalStats.requested_checkpoints += msg->m_requested_checkpoints;
-	globalStats.checkpoint_write_time += msg->m_checkpoint_write_time;
-	globalStats.checkpoint_sync_time += msg->m_checkpoint_sync_time;
-	globalStats.buf_written_checkpoints += msg->m_buf_written_checkpoints;
-	globalStats.buf_written_clean += msg->m_buf_written_clean;
-	globalStats.maxwritten_clean += msg->m_maxwritten_clean;
-	globalStats.buf_written_backend += msg->m_buf_written_backend;
-	globalStats.buf_fsync_backend += msg->m_buf_fsync_backend;
-	globalStats.buf_alloc += msg->m_buf_alloc;
+	globalStats.bgwriter.buf_written_clean += msg->m_buf_written_clean;
+	globalStats.bgwriter.maxwritten_clean += msg->m_maxwritten_clean;
+	globalStats.bgwriter.buf_alloc += msg->m_buf_alloc;
+}
+
+/* ----------
+ * pgstat_recv_checkpointer() -
+ *
+ *	Process a CHECKPOINTER message.
+ * ----------
+ */
+static void
+pgstat_recv_checkpointer(PgStat_MsgCheckpointer *msg, int len)
+{
+	globalStats.checkpointer.timed_checkpoints += msg->m_timed_checkpoints;
+	globalStats.checkpointer.requested_checkpoints += msg->m_requested_checkpoints;
+	globalStats.checkpointer.checkpoint_write_time += msg->m_checkpoint_write_time;
+	globalStats.checkpointer.checkpoint_sync_time += msg->m_checkpoint_sync_time;
+	globalStats.checkpointer.buf_written_checkpoints += msg->m_buf_written_checkpoints;
+	globalStats.checkpointer.buf_written_backend += msg->m_buf_written_backend;
+	globalStats.checkpointer.buf_fsync_backend += msg->m_buf_fsync_backend;
 }
 
 /* ----------
@@ -5815,6 +5944,8 @@ pgstat_slru_name(int slru_idx)
 static inline PgStat_MsgSLRU *
 slru_entry(int slru_idx)
 {
+	pgstat_assert_is_up();
+
 	/*
 	 * The postmaster should never register any SLRU statistics counts; if it
 	 * did, the counts would be duplicated into child processes via fork().
