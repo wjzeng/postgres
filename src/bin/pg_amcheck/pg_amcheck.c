@@ -56,7 +56,6 @@ typedef struct AmcheckOptions
 	bool		dbpattern;
 	bool		alldb;
 	bool		echo;
-	bool		quiet;
 	bool		verbose;
 	bool		strict_names;
 	bool		show_progress;
@@ -112,7 +111,6 @@ static AmcheckOptions opts = {
 	.dbpattern = false,
 	.alldb = false,
 	.echo = false,
-	.quiet = false,
 	.verbose = false,
 	.strict_names = true,
 	.show_progress = false,
@@ -250,7 +248,6 @@ main(int argc, char *argv[])
 		{"exclude-index", required_argument, NULL, 'I'},
 		{"jobs", required_argument, NULL, 'j'},
 		{"progress", no_argument, NULL, 'P'},
-		{"quiet", no_argument, NULL, 'q'},
 		{"relation", required_argument, NULL, 'r'},
 		{"exclude-relation", required_argument, NULL, 'R'},
 		{"schema", required_argument, NULL, 's'},
@@ -294,10 +291,11 @@ main(int argc, char *argv[])
 	handle_help_version_opts(argc, argv, progname, help);
 
 	/* process command-line options */
-	while ((c = getopt_long(argc, argv, "ad:D:eh:Hi:I:j:p:Pqr:R:s:S:t:T:U:wWv",
+	while ((c = getopt_long(argc, argv, "ad:D:eh:Hi:I:j:p:Pr:R:s:S:t:T:U:wWv",
 							long_options, &optindex)) != -1)
 	{
 		char	   *endptr;
+		unsigned long optval;
 
 		switch (c)
 		{
@@ -336,9 +334,6 @@ main(int argc, char *argv[])
 				break;
 			case 'P':
 				opts.show_progress = true;
-				break;
-			case 'q':
-				opts.quiet = true;
 				break;
 			case 'r':
 				opts.allrel = false;
@@ -395,9 +390,11 @@ main(int argc, char *argv[])
 				break;
 			case 6:
 				if (pg_strcasecmp(optarg, "all-visible") == 0)
-					opts.skip = "all visible";
+					opts.skip = "all-visible";
 				else if (pg_strcasecmp(optarg, "all-frozen") == 0)
-					opts.skip = "all frozen";
+					opts.skip = "all-frozen";
+				else if (pg_strcasecmp(optarg, "none") == 0)
+					opts.skip = "none";
 				else
 				{
 					pg_log_error("invalid argument for option %s", "--skip");
@@ -405,30 +402,34 @@ main(int argc, char *argv[])
 				}
 				break;
 			case 7:
-				opts.startblock = strtol(optarg, &endptr, 10);
-				if (*endptr != '\0')
+				errno = 0;
+				optval = strtoul(optarg, &endptr, 10);
+				if (endptr == optarg || *endptr != '\0' || errno != 0)
 				{
 					pg_log_error("invalid start block");
 					exit(1);
 				}
-				if (opts.startblock > MaxBlockNumber || opts.startblock < 0)
+				if (optval > MaxBlockNumber)
 				{
 					pg_log_error("start block out of bounds");
 					exit(1);
 				}
+				opts.startblock = optval;
 				break;
 			case 8:
-				opts.endblock = strtol(optarg, &endptr, 10);
-				if (*endptr != '\0')
+				errno = 0;
+				optval = strtoul(optarg, &endptr, 10);
+				if (endptr == optarg || *endptr != '\0' || errno != 0)
 				{
 					pg_log_error("invalid end block");
 					exit(1);
 				}
-				if (opts.endblock > MaxBlockNumber || opts.endblock < 0)
+				if (optval > MaxBlockNumber)
 				{
 					pg_log_error("end block out of bounds");
 					exit(1);
 				}
+				opts.endblock = optval;
 				break;
 			case 9:
 				opts.rootdescend = true;
@@ -630,21 +631,18 @@ main(int argc, char *argv[])
 		{
 			failed = opts.strict_names;
 
-			if (!opts.quiet || failed)
-			{
-				if (pat->heap_only)
-					log_no_match("no heap tables to check matching \"%s\"",
-								 pat->pattern);
-				else if (pat->btree_only)
-					log_no_match("no btree indexes to check matching \"%s\"",
-								 pat->pattern);
-				else if (pat->rel_regex == NULL)
-					log_no_match("no relations to check in schemas matching \"%s\"",
-								 pat->pattern);
-				else
-					log_no_match("no relations to check matching \"%s\"",
-								 pat->pattern);
-			}
+			if (pat->heap_only)
+				log_no_match("no heap tables to check matching \"%s\"",
+							 pat->pattern);
+			else if (pat->btree_only)
+				log_no_match("no btree indexes to check matching \"%s\"",
+							 pat->pattern);
+			else if (pat->rel_regex == NULL)
+				log_no_match("no relations to check in schemas matching \"%s\"",
+							 pat->pattern);
+			else
+				log_no_match("no relations to check matching \"%s\"",
+							 pat->pattern);
 		}
 	}
 
@@ -742,8 +740,6 @@ main(int argc, char *argv[])
 
 		if (opts.verbose)
 			PQsetErrorVerbosity(free_slot->connection, PQERRORS_VERBOSE);
-		else if (opts.quiet)
-			PQsetErrorVerbosity(free_slot->connection, PQERRORS_TERSE);
 
 		/*
 		 * Execute the appropriate amcheck command for this relation using our
@@ -1185,7 +1181,6 @@ help(const char *progname)
 	printf(_("\nOther options:\n"));
 	printf(_("  -e, --echo                      show the commands being sent to the server\n"));
 	printf(_("  -j, --jobs=NUM                  use this many concurrent connections to the server\n"));
-	printf(_("  -q, --quiet                     don't write any messages\n"));
 	printf(_("  -P, --progress                  show progress information\n"));
 	printf(_("  -v, --verbose                   write a lot of output\n"));
 	printf(_("  -V, --version                   output version information, then exit\n"));
