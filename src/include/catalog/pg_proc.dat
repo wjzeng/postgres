@@ -5754,7 +5754,7 @@
   proname => 'pg_stat_reset_shared', provolatile => 'v', prorettype => 'void',
   proargtypes => 'text', prosrc => 'pg_stat_reset_shared' },
 { oid => '3776',
-  descr => 'statistics: reset collected statistics for a single table or index in the current database',
+  descr => 'statistics: reset collected statistics for a single table or index in the current database or shared across all databases in the cluster',
   proname => 'pg_stat_reset_single_table_counters', provolatile => 'v',
   prorettype => 'void', proargtypes => 'oid',
   prosrc => 'pg_stat_reset_single_table_counters' },
@@ -5912,7 +5912,7 @@
   proargtypes => 'interval timestamp timestamp', prosrc => 'timestamp_bin' },
 { oid => '6178',
   descr => 'bin timestamp with time zone into specified interval',
-  proname => 'date_bin', prorettype => 'timestamptz',
+  proname => 'date_bin', provolatile => 's', prorettype => 'timestamptz',
   proargtypes => 'interval timestamptz timestamptz',
   prosrc => 'timestamptz_bin' },
 
