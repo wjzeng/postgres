@@ -776,6 +776,10 @@ static const SchemaQuery Query_for_list_of_collations = {
 "       and pg_catalog.quote_ident(c1.relname)='%s'"\
 "       and pg_catalog.pg_table_is_visible(c2.oid)"
 
+#define Query_for_unique_index_of_table \
+Query_for_index_of_table \
+"       and i.indisunique"
+
 /* the silly-looking length condition is just to eat up the current word */
 #define Query_for_constraint_of_table \
 "SELECT pg_catalog.quote_ident(conname) "\
@@ -2019,6 +2023,53 @@ psql_completion(const char *text, int start, int end)
 					  "OWNER TO", "SET", "VALIDATE CONSTRAINT",
 					  "REPLICA IDENTITY", "ATTACH PARTITION",
 					  "DETACH PARTITION", "FORCE ROW LEVEL SECURITY");
+	/* ALTER TABLE xxx ADD */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD"))
+	{
+		/* make sure to keep this list and the !Matches() below in sync */
+		COMPLETE_WITH("COLUMN", "CONSTRAINT", "CHECK", "UNIQUE", "PRIMARY KEY",
+					  "EXCLUDE", "FOREIGN KEY");
+	}
+	/* ATER TABLE xxx ADD [COLUMN] yyy */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "COLUMN", MatchAny) ||
+			 (Matches("ALTER", "TABLE", MatchAny, "ADD", MatchAny) &&
+			  !Matches("ALTER", "TABLE", MatchAny, "ADD", "COLUMN|CONSTRAINT|CHECK|UNIQUE|PRIMARY|EXCLUDE|FOREIGN")))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_datatypes, NULL);
+	/* ALTER TABLE xxx ADD CONSTRAINT yyy */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "CONSTRAINT", MatchAny))
+		COMPLETE_WITH("CHECK", "UNIQUE", "PRIMARY KEY", "EXCLUDE", "FOREIGN KEY");
+	/* ALTER TABLE xxx ADD [CONSTRAINT yyy] (PRIMARY KEY|UNIQUE) */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "PRIMARY", "KEY") ||
+			 Matches("ALTER", "TABLE", MatchAny, "ADD", "UNIQUE") ||
+			 Matches("ALTER", "TABLE", MatchAny, "ADD", "CONSTRAINT", MatchAny, "PRIMARY", "KEY") ||
+			 Matches("ALTER", "TABLE", MatchAny, "ADD", "CONSTRAINT", MatchAny, "UNIQUE"))
+		COMPLETE_WITH("(", "USING INDEX");
+	/* ALTER TABLE xxx ADD PRIMARY KEY USING INDEX */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "PRIMARY", "KEY", "USING", "INDEX"))
+	{
+		completion_info_charp = prev6_wd;
+		COMPLETE_WITH_QUERY(Query_for_unique_index_of_table);
+	}
+	/* ALTER TABLE xxx ADD UNIQUE USING INDEX */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "UNIQUE", "USING", "INDEX"))
+	{
+		completion_info_charp = prev5_wd;
+		COMPLETE_WITH_QUERY(Query_for_unique_index_of_table);
+	}
+	/* ALTER TABLE xxx ADD CONSTRAINT yyy PRIMARY KEY USING INDEX */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "CONSTRAINT", MatchAny,
+					 "PRIMARY", "KEY", "USING", "INDEX"))
+	{
+		completion_info_charp = prev8_wd;
+		COMPLETE_WITH_QUERY(Query_for_unique_index_of_table);
+	}
+	/* ALTER TABLE xxx ADD CONSTRAINT yyy UNIQUE USING INDEX */
+	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "CONSTRAINT", MatchAny,
+					 "UNIQUE", "USING", "INDEX"))
+	{
+		completion_info_charp = prev7_wd;
+		COMPLETE_WITH_QUERY(Query_for_unique_index_of_table);
+	}
 	/* ALTER TABLE xxx ENABLE */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ENABLE"))
 		COMPLETE_WITH("ALWAYS", "REPLICA", "ROW LEVEL SECURITY", "RULE",
@@ -2640,8 +2691,13 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("FOR TABLE", "FOR ALL TABLES", "WITH (");
 	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR"))
 		COMPLETE_WITH("TABLE", "ALL TABLES");
-	/* Complete "CREATE PUBLICATION <name> FOR TABLE <table>, ..." */
-	else if (HeadMatches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE"))
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL"))
+		COMPLETE_WITH("TABLES");
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES")
+			 || Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE", MatchAny))
+		COMPLETE_WITH("WITH (");
+	/* Complete "CREATE PUBLICATION <name> FOR TABLE" with "<table>, ..." */
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables, NULL);
 	/* Complete "CREATE PUBLICATION <name> [...] WITH" */
 	else if (HeadMatches("CREATE", "PUBLICATION") && TailMatches("WITH", "("))
@@ -3218,7 +3274,7 @@ psql_completion(const char *text, int start, int end)
  */
 	else if (Matches("EXPLAIN"))
 		COMPLETE_WITH("SELECT", "INSERT INTO", "DELETE FROM", "UPDATE", "DECLARE",
-					  "ANALYZE", "VERBOSE");
+					  "EXECUTE", "ANALYZE", "VERBOSE");
 	else if (HeadMatches("EXPLAIN", "(*") &&
 			 !HeadMatches("EXPLAIN", "(*)"))
 	{
@@ -3237,11 +3293,12 @@ psql_completion(const char *text, int start, int end)
 	}
 	else if (Matches("EXPLAIN", "ANALYZE"))
 		COMPLETE_WITH("SELECT", "INSERT INTO", "DELETE FROM", "UPDATE", "DECLARE",
-					  "VERBOSE");
+					  "EXECUTE", "VERBOSE");
 	else if (Matches("EXPLAIN", "(*)") ||
 			 Matches("EXPLAIN", "VERBOSE") ||
 			 Matches("EXPLAIN", "ANALYZE", "VERBOSE"))
-		COMPLETE_WITH("SELECT", "INSERT INTO", "DELETE FROM", "UPDATE", "DECLARE");
+		COMPLETE_WITH("SELECT", "INSERT INTO", "DELETE FROM", "UPDATE", "DECLARE",
+					  "EXECUTE");
 
 /* FETCH && MOVE */
 

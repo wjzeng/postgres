@@ -3553,8 +3553,12 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 
 				if (is_connect)
 				{
+					pg_time_usec_t start = now;
+
+					pg_time_now_lazy(&start);
 					finishCon(st);
-					now = 0;
+					now = pg_time_now();
+					thread->conn_duration += now - start;
 				}
 
 				if ((st->cnt >= nxacts && duration <= 0) || timer_exceeded)
@@ -3578,6 +3582,19 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				 */
 			case CSTATE_ABORTED:
 			case CSTATE_FINISHED:
+
+				/*
+				 * Don't measure the disconnection delays here even if in
+				 * CSTATE_FINISHED and -C/--connect option is specified.
+				 * Because in this case all the connections that this thread
+				 * established are closed at the end of transactions and the
+				 * disconnection delays should have already been measured at
+				 * that moment.
+				 *
+				 * In CSTATE_ABORTED state, the measurement is no longer
+				 * necessary because we cannot report complete results anyways
+				 * in this case.
+				 */
 				finishCon(st);
 				return;
 		}
@@ -4136,6 +4153,7 @@ initGenerateDataClientSide(PGconn *con)
 	PGresult   *res;
 	int			i;
 	int64		k;
+	char		*copy_statement;
 
 	/* used to track elapsed time and estimate of the remaining time */
 	pg_time_usec_t start;
@@ -4182,7 +4200,15 @@ initGenerateDataClientSide(PGconn *con)
 	/*
 	 * accounts is big enough to be worth using COPY and tracking runtime
 	 */
-	res = PQexec(con, "copy pgbench_accounts from stdin");
+
+	/* use COPY with FREEZE on v14 and later without partioning */
+	if (partitions == 0 && PQserverVersion(con) >= 140000)
+		copy_statement = "copy pgbench_accounts from stdin with (freeze on)";
+	else
+		copy_statement = "copy pgbench_accounts from stdin";
+
+	res = PQexec(con, copy_statement);
+
 	if (PQresultStatus(res) != PGRES_COPY_IN)
 	{
 		pg_log_fatal("unexpected copy in result: %s", PQerrorMessage(con));
@@ -6538,7 +6564,11 @@ main(int argc, char **argv)
 			bench_start = thread->bench_start;
 	}
 
-	/* XXX should this be connection time? */
+	/*
+	 * All connections should be already closed in threadRun(), so this
+	 * disconnect_all() will be a no-op, but clean up the connecions just to
+	 * be sure. We don't need to measure the disconnection delays here.
+	 */
 	disconnect_all(state, nclients);
 
 	/*
@@ -6603,6 +6633,7 @@ threadRun(void *arg)
 
 	thread_start = pg_time_now();
 	thread->started_time = thread_start;
+	thread->conn_duration = 0;
 	last_report = thread_start;
 	next_report = last_report + (int64) 1000000 * progress;
 
@@ -6626,14 +6657,6 @@ threadRun(void *arg)
 				goto done;
 			}
 		}
-
-		/* compute connection delay */
-		thread->conn_duration = pg_time_now() - thread->started_time;
-	}
-	else
-	{
-		/* no connection delay to record */
-		thread->conn_duration = 0;
 	}
 
 	/* GO */
@@ -6834,9 +6857,7 @@ threadRun(void *arg)
 	}
 
 done:
-	start = pg_time_now();
 	disconnect_all(state, nstate);
-	thread->conn_duration += pg_time_now() - start;
 
 	if (thread->logfile)
 	{

@@ -38,6 +38,7 @@
 #include "access/transam.h"
 #include "access/twophase_rmgr.h"
 #include "access/xact.h"
+#include "catalog/catalog.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_proc.h"
 #include "common/ip.h"
@@ -1632,8 +1633,11 @@ pgstat_report_analyze(Relation rel,
 	 * be double-counted after commit.  (This approach also ensures that the
 	 * collector ends up with the right numbers if we abort instead of
 	 * committing.)
+	 *
+	 * Waste no time on partitioned tables, though.
 	 */
-	if (rel->pgstat_info != NULL)
+	if (rel->pgstat_info != NULL &&
+		rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
 	{
 		PgStat_TableXactStatus *trans;
 
@@ -1997,8 +2001,10 @@ pgstat_initstats(Relation rel)
 	Oid			rel_id = rel->rd_id;
 	char		relkind = rel->rd_rel->relkind;
 
-	/* We only count stats for things that have storage */
-	if (!RELKIND_HAS_STORAGE(relkind))
+	/*
+	 * We only count stats for relations with storage and partitioned tables
+	 */
+	if (!RELKIND_HAS_STORAGE(relkind) && relkind != RELKIND_PARTITIONED_TABLE)
 	{
 		rel->pgstat_info = NULL;
 		return;
@@ -5135,7 +5141,8 @@ pgstat_recv_resetsharedcounter(PgStat_MsgResetsharedcounter *msg, int len)
 /* ----------
  * pgstat_recv_resetsinglecounter() -
  *
- *	Reset a statistics for a single object
+ *	Reset a statistics for a single object, which may be of current
+ *	database or shared across all databases in the cluster.
  * ----------
  */
 static void
@@ -5143,7 +5150,10 @@ pgstat_recv_resetsinglecounter(PgStat_MsgResetsinglecounter *msg, int len)
 {
 	PgStat_StatDBEntry *dbentry;
 
-	dbentry = pgstat_get_db_entry(msg->m_databaseid, false);
+	if (IsSharedRelation(msg->m_objectid))
+		dbentry = pgstat_get_db_entry(InvalidOid, false);
+	else
+		dbentry = pgstat_get_db_entry(msg->m_databaseid, false);
 
 	if (!dbentry)
 		return;
