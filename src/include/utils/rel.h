@@ -306,7 +306,15 @@ typedef struct StdRdOptions
 	int			parallel_workers;	/* max number of parallel workers */
 	bool		vacuum_index_cleanup;	/* enables index vacuuming and cleanup */
 	bool		vacuum_truncate;	/* enables vacuum to truncate a relation */
+	/*
+	 * request zedstore_rel_extension_factor #blocks from storage manager
+	 * whenever we need to extend the relation by one block for attribute/tid
+	 * tree pages.
+	 */
+	int 		zedstore_rel_extension_factor;
 } StdRdOptions;
+
+#define ZEDSTORE_DEFAULT_REL_EXTENSION_FACTOR 1
 
 #define HEAP_MIN_FILLFACTOR			10
 #define HEAP_DEFAULT_FILLFACTOR		100
@@ -637,6 +645,20 @@ typedef struct ViewOptions
 	(XLogLogicalInfoActive() && \
 	 RelationNeedsWAL(relation) && \
 	 !IsCatalogRelation(relation))
+
+static inline bool
+contains_whole_row_col(Bitmapset *cols)
+{
+	return bms_is_member(0, cols);
+}
+
+static inline Bitmapset *
+get_ordinal_attnos(Relation rel)
+{
+	Bitmapset *attnos = NULL;
+	attnos = bms_add_range(attnos, 1, RelationGetDescr(rel)->natts);
+	return attnos;
+}
 
 /* routines in utils/cache/relcache.c */
 extern void RelationIncrementReferenceCount(Relation rel);

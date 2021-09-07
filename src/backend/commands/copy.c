@@ -2163,9 +2163,26 @@ CopyTo(CopyState cstate)
 	{
 		TupleTableSlot *slot;
 		TableScanDesc scandesc;
+		Bitmapset *proj = NULL;
 
-		scandesc = table_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
 		slot = table_slot_create(cstate->rel, NULL);
+		if (table_scans_leverage_column_projection(cstate->rel))
+		{
+			foreach(cur, cstate->attnumlist)
+			{
+				int attnum = lfirst_int(cur);
+				Assert(attnum <= slot->tts_tupleDescriptor->natts);
+				proj = bms_add_member(proj, attnum);
+			}
+
+			scandesc = table_beginscan_with_column_projection(cstate->rel,
+															  GetActiveSnapshot(),
+															  0, NULL, proj);
+		}
+		else
+		{
+			scandesc = table_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
+		}
 
 		processed = 0;
 		while (table_scan_getnextslot(scandesc, ForwardScanDirection, slot))
@@ -2182,6 +2199,8 @@ CopyTo(CopyState cstate)
 
 		ExecDropSingleTupleTableSlot(slot);
 		table_endscan(scandesc);
+		if (proj)
+			pfree(proj);
 	}
 	else
 	{

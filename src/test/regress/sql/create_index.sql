@@ -722,7 +722,9 @@ SELECT count(*) FROM dupindexcols
 -- Check ordering of =ANY indexqual results (bug in 9.2.0)
 --
 
-vacuum tenk1;		-- ensure we get consistent plans here
+SET enable_seqscan = OFF;
+SET enable_indexscan = OFF;
+SET enable_bitmapscan = OFF;
 
 explain (costs off)
 SELECT unique1 FROM tenk1
@@ -742,6 +744,7 @@ SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand;
 
+RESET enable_indexscan;
 SET enable_indexonlyscan = OFF;
 
 explain (costs off)
@@ -753,6 +756,8 @@ SELECT thousand, tenthous FROM tenk1
 WHERE thousand < 2 AND tenthous IN (1001,3000)
 ORDER BY thousand;
 
+RESET enable_seqscan;
+RESET enable_bitmapscan;
 RESET enable_indexonlyscan;
 
 --

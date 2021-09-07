@@ -1,0 +1,666 @@
+-- simple tests to iteratively build the zedstore
+-- create and drop works
+create table t_zedstore(c1 int, c2 int, c3 int) USING zedstore;
+drop table t_zedstore;
+-- insert and select works
+create table t_zedstore(c1 int, c2 int, c3 int) USING zedstore;
+insert into t_zedstore select i,i+1,i+2 from generate_series(1, 10)i;
+select * from t_zedstore;
+ c1 | c2 | c3 
+----+----+----
+  1 |  2 |  3
+  2 |  3 |  4
+  3 |  4 |  5
+  4 |  5 |  6
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+(10 rows)
+
+-- selecting only few columns work
+select c1, c3 from t_zedstore;
+ c1 | c3 
+----+----
+  1 |  3
+  2 |  4
+  3 |  5
+  4 |  6
+  5 |  7
+  6 |  8
+  7 |  9
+  8 | 10
+  9 | 11
+ 10 | 12
+(10 rows)
+
+-- only few columns in output and where clause work
+select c3 from t_zedstore where c2 > 5;
+ c3 
+----
+  7
+  8
+  9
+ 10
+ 11
+ 12
+(6 rows)
+
+-- where clause with invalid ctid works
+select * from t_zedstore where ctid = '(0,0)';
+ c1 | c2 | c3 
+----+----+----
+(0 rows)
+
+-- Test abort works
+begin;
+insert into t_zedstore select i,i+1,i+2 from generate_series(21, 25)i;
+abort;
+insert into t_zedstore select i,i+1,i+2 from generate_series(31, 35)i;
+select * from t_zedstore;
+ c1 | c2 | c3 
+----+----+----
+  1 |  2 |  3
+  2 |  3 |  4
+  3 |  4 |  5
+  4 |  5 |  6
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+ 31 | 32 | 33
+ 32 | 33 | 34
+ 33 | 34 | 35
+ 34 | 35 | 36
+ 35 | 36 | 37
+(15 rows)
+
+--
+-- Test indexing
+--
+create index on t_zedstore (c1);
+set enable_seqscan=off;
+set enable_indexscan=on;
+set enable_bitmapscan=off;
+-- index scan
+select * from t_zedstore where c1 = 5;
+ c1 | c2 | c3 
+----+----+----
+  5 |  6 |  7
+(1 row)
+
+-- index-only scan
+select c1 from t_zedstore where c1 = 5;
+ c1 
+----
+  5
+(1 row)
+
+-- bitmap scan
+set enable_indexscan=off;
+set enable_bitmapscan=on;
+select c1, c2 from t_zedstore where c1 between 5 and 10;
+ c1 | c2 
+----+----
+  5 |  6
+  6 |  7
+  7 |  8
+  8 |  9
+  9 | 10
+ 10 | 11
+(6 rows)
+
+--
+-- Test DELETE and UPDATE
+--
+delete from t_zedstore where c2 = 5;
+select * from t_zedstore;
+ c1 | c2 | c3 
+----+----+----
+  1 |  2 |  3
+  2 |  3 |  4
+  3 |  4 |  5
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+ 31 | 32 | 33
+ 32 | 33 | 34
+ 33 | 34 | 35
+ 34 | 35 | 36
+ 35 | 36 | 37
+(14 rows)
+
+delete from t_zedstore where c2 < 5;
+select * from t_zedstore;
+ c1 | c2 | c3 
+----+----+----
+  5 |  6 |  7
+  6 |  7 |  8
+  7 |  8 |  9
+  8 |  9 | 10
+  9 | 10 | 11
+ 10 | 11 | 12
+ 31 | 32 | 33
+ 32 | 33 | 34
+ 33 | 34 | 35
+ 34 | 35 | 36
+ 35 | 36 | 37
+(11 rows)
+
+update t_zedstore set c2 = 100 where c1 = 8;
+select * from t_zedstore;
+ c1 | c2  | c3 
+----+-----+----
+  5 |   6 |  7
+  6 |   7 |  8
+  7 |   8 |  9
+  9 |  10 | 11
+ 10 |  11 | 12
+ 31 |  32 | 33
+ 32 |  33 | 34
+ 33 |  34 | 35
+ 34 |  35 | 36
+ 35 |  36 | 37
+  8 | 100 | 10
+(11 rows)
+
+--
+-- Test page deletion, by deleting a bigger range of values
+--
+insert into t_zedstore select i,i+1,i+2 from generate_series(10000, 15000)i;
+delete from t_zedstore where c1 >= 10000;
+--
+-- Test VACUUM
+--
+vacuum t_zedstore;
+select * from t_zedstore;
+ c1 | c2  | c3 
+----+-----+----
+  5 |   6 |  7
+  6 |   7 |  8
+  7 |   8 |  9
+  9 |  10 | 11
+ 10 |  11 | 12
+ 31 |  32 | 33
+ 32 |  33 | 34
+ 33 |  34 | 35
+ 34 |  35 | 36
+ 35 |  36 | 37
+  8 | 100 | 10
+(11 rows)
+
+--
+-- Test in-line toasting
+--
+create table t_zedtoast(c1 int, t text) USING zedstore;
+insert into t_zedtoast select i, repeat('x', 10000) from generate_series(1, 10) i;
+select c1, length(t) from t_zedtoast;
+ c1 | length 
+----+--------
+  1 |  10000
+  2 |  10000
+  3 |  10000
+  4 |  10000
+  5 |  10000
+  6 |  10000
+  7 |  10000
+  8 |  10000
+  9 |  10000
+ 10 |  10000
+(10 rows)
+
+-- TODO: this test won't actually work when we start using the UNDO framework
+-- because we will not have control over when the undo record will be removed
+delete from t_zedtoast;
+select count(*) > 0 as has_toast_pages from pg_zs_toast_pages('t_zedtoast');
+ has_toast_pages 
+-----------------
+ f
+(1 row)
+
+vacuum t_zedtoast;
+select count(*) > 0 as has_toast_pages from pg_zs_toast_pages('t_zedtoast');
+ has_toast_pages 
+-----------------
+ f
+(1 row)
+
+--
+-- Test out-of-line toasting
+--
+insert into t_zedtoast select i, repeat('x', 1000000) from generate_series(1, 10) i;
+select c1, length(t) from t_zedtoast;
+ c1 | length  
+----+---------
+  1 | 1000000
+  2 | 1000000
+  3 | 1000000
+  4 | 1000000
+  5 | 1000000
+  6 | 1000000
+  7 | 1000000
+  8 | 1000000
+  9 | 1000000
+ 10 | 1000000
+(10 rows)
+
+-- TODO: this test won't actually work when we start using the UNDO framework
+-- because we will not have control over when the undo record will be removed
+delete from t_zedtoast;
+select count(*) > 0 as has_toast_pages from pg_zs_toast_pages('t_zedtoast');
+ has_toast_pages 
+-----------------
+ t
+(1 row)
+
+vacuum t_zedtoast;
+select count(*) > 0 as has_toast_pages from pg_zs_toast_pages('t_zedtoast');
+ has_toast_pages 
+-----------------
+ f
+(1 row)
+
+--
+-- Test NULL values
+--
+create table t_zednullvalues(c1 int, c2 int) USING zedstore;
+insert into t_zednullvalues values(1, NULL), (NULL, 2);
+select * from t_zednullvalues;
+ c1 | c2 
+----+----
+  1 |   
+    |  2
+(2 rows)
+
+select c2 from t_zednullvalues;
+ c2 
+----
+   
+  2
+(2 rows)
+
+update t_zednullvalues set c1 = 1, c2 = NULL;
+select * from t_zednullvalues;
+ c1 | c2 
+----+----
+  1 |   
+  1 |   
+(2 rows)
+
+--
+-- Test COPY
+--
+create table t_zedcopy(a serial, b int, c text not null default 'stuff', d text,e text) USING zedstore;
+COPY t_zedcopy (a, b, c, d, e) from stdin;
+COPY t_zedcopy (b, d) from stdin;
+COPY t_zedcopy (b, d) from stdin;
+COPY t_zedcopy (a, b, c, d, e) from stdin;
+select * from t_zedcopy;
+   a   | b  |   c   |   d    | e  
+-------+----+-------+--------+----
+  9999 |    | \N    | NN     | 
+ 10000 | 21 | 31    | 41     | 51
+     1 |  1 | stuff | test_1 | 
+     2 |  2 | stuff | test_2 | 
+     3 |  3 | stuff | test_3 | 
+     4 |  4 | stuff | test_4 | 
+     5 |  5 | stuff | test_5 | 
+ 10001 | 22 | 32    | 42     | 52
+ 10002 | 23 | 33    | 43     | 53
+ 10003 | 24 | 34    | 44     | 54
+ 10004 | 25 | 35    | 45     | 55
+ 10005 | 26 | 36    | 46     | 56
+(12 rows)
+
+COPY t_zedcopy (a, d, e) to stdout;
+9999	NN	\N
+10000	41	51
+1	test_1	\N
+2	test_2	\N
+3	test_3	\N
+4	test_4	\N
+5	test_5	\N
+10001	42	52
+10002	43	53
+10003	44	54
+10004	45	55
+10005	46	56
+--
+-- Also test delete and update on the table that was populated with COPY.
+-- This exercises splitting the array item. (A table not populated with
+-- COPY only contains single items, at the moment.)
+--
+delete from t_zedcopy where b = 4;
+select * from t_zedcopy;
+   a   | b  |   c   |   d    | e  
+-------+----+-------+--------+----
+  9999 |    | \N    | NN     | 
+ 10000 | 21 | 31    | 41     | 51
+     1 |  1 | stuff | test_1 | 
+     2 |  2 | stuff | test_2 | 
+     3 |  3 | stuff | test_3 | 
+     5 |  5 | stuff | test_5 | 
+ 10001 | 22 | 32    | 42     | 52
+ 10002 | 23 | 33    | 43     | 53
+ 10003 | 24 | 34    | 44     | 54
+ 10004 | 25 | 35    | 45     | 55
+ 10005 | 26 | 36    | 46     | 56
+(11 rows)
+
+delete from t_zedcopy where b < 3;
+select * from t_zedcopy;
+   a   | b  |   c   |   d    | e  
+-------+----+-------+--------+----
+  9999 |    | \N    | NN     | 
+ 10000 | 21 | 31    | 41     | 51
+     3 |  3 | stuff | test_3 | 
+     5 |  5 | stuff | test_5 | 
+ 10001 | 22 | 32    | 42     | 52
+ 10002 | 23 | 33    | 43     | 53
+ 10003 | 24 | 34    | 44     | 54
+ 10004 | 25 | 35    | 45     | 55
+ 10005 | 26 | 36    | 46     | 56
+(9 rows)
+
+update t_zedcopy set b = 100 where b = 5;
+select * from t_zedcopy;
+   a   |  b  |   c   |   d    | e  
+-------+-----+-------+--------+----
+  9999 |     | \N    | NN     | 
+ 10000 |  21 | 31    | 41     | 51
+     3 |   3 | stuff | test_3 | 
+ 10001 |  22 | 32    | 42     | 52
+ 10002 |  23 | 33    | 43     | 53
+ 10003 |  24 | 34    | 44     | 54
+ 10004 |  25 | 35    | 45     | 55
+ 10005 |  26 | 36    | 46     | 56
+     5 | 100 | stuff | test_5 | 
+(9 rows)
+
+-- Test rolling back COPY
+begin;
+COPY t_zedcopy (b, d) from stdin;
+rollback;
+select count(*) from t_zedcopy where b >= 20000;
+ count 
+-------
+     0
+(1 row)
+
+--
+-- Test zero column table
+--
+create table t_zwithzerocols() using zedstore;
+insert into t_zwithzerocols select t.* from t_zwithzerocols t right join generate_series(1,1) on true;
+select count(*) from t_zwithzerocols;
+ count 
+-------
+     1
+(1 row)
+
+-- Test for alter table add column
+create table t_zaddcol(a int) using zedstore;
+insert into t_zaddcol select * from generate_series(1, 3);
+-- rewrite case
+alter table t_zaddcol add column b int generated always as (a + 1) stored;
+select * from t_zaddcol;
+ a | b 
+---+---
+ 1 | 2
+ 2 | 3
+ 3 | 4
+(3 rows)
+
+-- test alter table add column with no default
+create table t_zaddcol_simple(a int) using zedstore;
+insert into t_zaddcol_simple values (1);
+alter table t_zaddcol_simple add b int;
+select * from t_zaddcol_simple;
+ a | b 
+---+---
+ 1 |  
+(1 row)
+
+insert into t_zaddcol_simple values(2,3);
+select * from t_zaddcol_simple;
+ a | b 
+---+---
+ 1 |  
+ 2 | 3
+(2 rows)
+
+-- fixed length default value stored in catalog
+alter table t_zaddcol add column c int default 3;
+select * from t_zaddcol;
+ a | b | c 
+---+---+---
+ 1 | 2 | 3
+ 2 | 3 | 3
+ 3 | 4 | 3
+(3 rows)
+
+-- variable length default value stored in catalog
+alter table t_zaddcol add column d text default 'abcdefgh';
+select d from t_zaddcol;
+    d     
+----------
+ abcdefgh
+ abcdefgh
+ abcdefgh
+(3 rows)
+
+-- insert after add column
+insert into t_zaddcol values (2);
+select * from t_zaddcol;
+ a | b | c |    d     
+---+---+---+----------
+ 1 | 2 | 3 | abcdefgh
+ 2 | 3 | 3 | abcdefgh
+ 3 | 4 | 3 | abcdefgh
+ 2 | 3 | 3 | abcdefgh
+(4 rows)
+
+insert into t_zaddcol (a, c, d) values (3,5, 'test_insert');
+select b,c,d from t_zaddcol;
+ b | c |      d      
+---+---+-------------
+ 2 | 3 | abcdefgh
+ 3 | 3 | abcdefgh
+ 4 | 3 | abcdefgh
+ 3 | 3 | abcdefgh
+ 4 | 5 | test_insert
+(5 rows)
+
+--
+-- Test TABLESAMPLE
+--
+-- regular test tablesample.sql doesn't directly work for zedstore as
+-- its using fillfactor to create specific block layout for
+-- heap. Hence, output differs between heap and zedstore table while
+-- sampling. We need to use many tuples here to have multiple logical
+-- blocks as don't have way to force TIDs spread / jump for zedstore.
+--
+CREATE TABLE t_ztablesample (id int, name text) using zedstore;
+INSERT INTO t_ztablesample
+       SELECT i, repeat(i::text, 2) FROM generate_series(0, 299) s(i);
+-- lets delete half (even numbered ids) rows to limit the output
+DELETE FROM t_ztablesample WHERE id%2 = 0;
+-- should return ALL visible tuples from SOME blocks
+SELECT ctid,t.id FROM t_ztablesample AS t TABLESAMPLE SYSTEM (50) REPEATABLE (0);
+  ctid   | id  
+---------+-----
+ (1,2)   | 129
+ (1,4)   | 131
+ (1,6)   | 133
+ (1,8)   | 135
+ (1,10)  | 137
+ (1,12)  | 139
+ (1,14)  | 141
+ (1,16)  | 143
+ (1,18)  | 145
+ (1,20)  | 147
+ (1,22)  | 149
+ (1,24)  | 151
+ (1,26)  | 153
+ (1,28)  | 155
+ (1,30)  | 157
+ (1,32)  | 159
+ (1,34)  | 161
+ (1,36)  | 163
+ (1,38)  | 165
+ (1,40)  | 167
+ (1,42)  | 169
+ (1,44)  | 171
+ (1,46)  | 173
+ (1,48)  | 175
+ (1,50)  | 177
+ (1,52)  | 179
+ (1,54)  | 181
+ (1,56)  | 183
+ (1,58)  | 185
+ (1,60)  | 187
+ (1,62)  | 189
+ (1,64)  | 191
+ (1,66)  | 193
+ (1,68)  | 195
+ (1,70)  | 197
+ (1,72)  | 199
+ (1,74)  | 201
+ (1,76)  | 203
+ (1,78)  | 205
+ (1,80)  | 207
+ (1,82)  | 209
+ (1,84)  | 211
+ (1,86)  | 213
+ (1,88)  | 215
+ (1,90)  | 217
+ (1,92)  | 219
+ (1,94)  | 221
+ (1,96)  | 223
+ (1,98)  | 225
+ (1,100) | 227
+ (1,102) | 229
+ (1,104) | 231
+ (1,106) | 233
+ (1,108) | 235
+ (1,110) | 237
+ (1,112) | 239
+ (1,114) | 241
+ (1,116) | 243
+ (1,118) | 245
+ (1,120) | 247
+ (1,122) | 249
+ (1,124) | 251
+ (1,126) | 253
+ (1,128) | 255
+ (2,2)   | 257
+ (2,4)   | 259
+ (2,6)   | 261
+ (2,8)   | 263
+ (2,10)  | 265
+ (2,12)  | 267
+ (2,14)  | 269
+ (2,16)  | 271
+ (2,18)  | 273
+ (2,20)  | 275
+ (2,22)  | 277
+ (2,24)  | 279
+ (2,26)  | 281
+ (2,28)  | 283
+ (2,30)  | 285
+ (2,32)  | 287
+ (2,34)  | 289
+ (2,36)  | 291
+ (2,38)  | 293
+ (2,40)  | 295
+ (2,42)  | 297
+ (2,44)  | 299
+(86 rows)
+
+-- should return SOME visible tuples but from ALL the blocks
+SELECT ctid,id FROM t_ztablesample TABLESAMPLE BERNOULLI (50) REPEATABLE (0);
+  ctid   | id  
+---------+-----
+ (0,4)   |   3
+ (0,6)   |   5
+ (0,8)   |   7
+ (0,20)  |  19
+ (0,30)  |  29
+ (0,42)  |  41
+ (0,44)  |  43
+ (0,48)  |  47
+ (0,52)  |  51
+ (0,54)  |  53
+ (0,56)  |  55
+ (0,62)  |  61
+ (0,64)  |  63
+ (0,66)  |  65
+ (0,76)  |  75
+ (0,80)  |  79
+ (0,82)  |  81
+ (0,84)  |  83
+ (0,88)  |  87
+ (0,90)  |  89
+ (0,92)  |  91
+ (0,98)  |  97
+ (0,106) | 105
+ (0,108) | 107
+ (0,122) | 121
+ (0,126) | 125
+ (1,2)   | 129
+ (1,4)   | 131
+ (1,6)   | 133
+ (1,8)   | 135
+ (1,10)  | 137
+ (1,12)  | 139
+ (1,20)  | 147
+ (1,24)  | 151
+ (1,26)  | 153
+ (1,28)  | 155
+ (1,30)  | 157
+ (1,32)  | 159
+ (1,34)  | 161
+ (1,40)  | 167
+ (1,44)  | 171
+ (1,46)  | 173
+ (1,58)  | 185
+ (1,66)  | 193
+ (1,68)  | 195
+ (1,70)  | 197
+ (1,78)  | 205
+ (1,80)  | 207
+ (1,88)  | 215
+ (1,92)  | 219
+ (1,96)  | 223
+ (1,100) | 227
+ (1,102) | 229
+ (1,106) | 233
+ (1,112) | 239
+ (1,116) | 243
+ (1,120) | 247
+ (1,122) | 249
+ (1,126) | 253
+ (2,2)   | 257
+ (2,6)   | 261
+ (2,8)   | 263
+ (2,10)  | 265
+ (2,12)  | 267
+ (2,16)  | 271
+ (2,18)  | 273
+ (2,24)  | 279
+ (2,26)  | 281
+ (2,28)  | 283
+ (2,30)  | 285
+ (2,34)  | 289
+ (2,36)  | 291
+ (2,42)  | 297
+ (2,44)  | 299
+(74 rows)
+

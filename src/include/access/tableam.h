@@ -38,6 +38,66 @@ struct SampleScanState;
 struct TBMIterateResult;
 struct VacuumParams;
 struct ValidateIndexState;
+struct TupleConversionMap;
+
+typedef enum AnalyzeSampleType 
+{
+	ANALYZE_SAMPLE_DATA = 0,	/* real data per column */
+	ANALYZE_SAMPLE_DISKSIZE,	/* physical size per column */
+	MAX_ANALYZE_SAMPLE			/* must be last */
+} AnalyzeSampleType;
+
+typedef struct AnalyzeSampleContext
+{
+	/* Filled when context is created */
+	int		totaltargrows;
+	List	*anl_cols;
+	Relation parent;
+	BufferAccessStrategy bstrategy;
+
+	/* Filled by table AM analyze routines */
+	BlockNumber	totalblocks;
+	TableScanDesc scan;
+
+	/* 
+	 * Acquiring sample rows from a inherited table will invoke
+	 * multiple sampling iterations for each child relation, so
+	 * bellow filed is the statistic for each iteration.
+	 */
+	int		targrows;	/* target number of sample rows */
+	double 	liverows;
+	double 	deadrows;
+	bool	ordered;	/* are sample rows ordered physically */
+
+	/*
+	 * Statistics filed by all sampling iterations.
+	 */
+	int		totalsampledrows; /* total number of sample rows stored */
+	double	totalrows;
+	double	totaldeadrows;
+
+	/* 
+	 * If childrel has different rowtype with parent, we
+	 * need to convert sample tuple to the same rowtype
+	 * with parent
+	 */
+	struct TupleConversionMap *tup_convert_map;
+
+	/*
+	 * Used by table AM analyze routines to store
+	 * the temporary tuple for different types of
+	 * sample rows, the tuple is finally stored to
+	 * sample_rows[] if the tuple is
+	 * randomly selected.
+	 */
+	TupleTableSlot* sample_slots[MAX_ANALYZE_SAMPLE];
+
+	/* 
+	 * stores the final sample rows which will be
+	 * used to compute statistics.
+	 */
+	HeapTuple* sample_rows[MAX_ANALYZE_SAMPLE];
+} AnalyzeSampleContext;
 
 /*
  * Bitmask values for the flags argument to the scan_begin callback.
@@ -164,6 +224,7 @@ typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
+	bool scans_leverage_column_projection;
 
 
 	/* ------------------------------------------------------------------------
@@ -203,6 +264,30 @@ typedef struct TableAmRoutine
 								 int nkeys, struct ScanKeyData *key,
 								 ParallelTableScanDesc pscan,
 								 uint32 flags);
+
+	/*
+	 * Variant of scan_begin() with a column projection bitmap that lists the
+	 * ordinal attribute numbers to be fetched during the scan.
+	 *
+	 * If project_columns is an empty bitmap, none of the data columns are to be
+	 * fetched.
+	 *
+	 * If project_columns is a singleton bitmap with a whole-row reference (0),
+	 * all of the data columns are to be fetched.
+	 *
+	 * Please note: project_cols only deals with non system columns (attnum >= 0)
+	 *
+	 * Please note: Due to the limitations of the slot_get***() APIs, the
+	 * scan_getnextslot() tableAM call must return a TupleTableSlot that is densely
+	 * populated (missing cols indicated with isnull = true upto the largest
+	 * attno in the projection list)
+	 */
+	TableScanDesc (*scan_begin_with_column_projection)(Relation relation,
+													   Snapshot snapshot,
+													   int nkeys, struct ScanKeyData *key,
+													   ParallelTableScanDesc parallel_scan,
+													   uint32 flags,
+													   Bitmapset *project_columns);
 
 	/*
 	 * Release resources and deallocate scan. If TableScanDesc.temp_snap,
@@ -280,6 +365,26 @@ typedef struct TableAmRoutine
 	void		(*index_fetch_end) (struct IndexFetchTableData *data);
 
 	/*
+	 * Set up a column projection list that can be used by index_fetch_tuple()
+	 * to fetch a subset of columns for a tuple.
+	 *
+	 * If project_columns is an empty bitmap, none of the data columns are to be
+	 * fetched.
+	 *
+	 * If project_columns is a singleton bitmap with a whole-row reference (0),
+	 * all of the data columns are to be fetched.
+	 *
+	 * Please note: project_columns only deals with non system columns (attnum >= 0)
+	 *
+	 * Please note: Due to the limitations of the slot_get***() APIs,
+	 * index_fetch_tuple() must return a TupleTableSlot that is densely
+	 * populated (missing cols indicated with isnull = true upto the largest
+	 * attno in the projection list)
+	 */
+	void (*index_fetch_set_column_projection) (struct IndexFetchTableData *data,
+											   Bitmapset *project_columns);
+
+	/*
 	 * Fetch tuple at `tid` into `slot`, after doing a visibility test
 	 * according to `snapshot`. If a tuple was found and passed the visibility
 	 * test, return true, false otherwise.
@@ -315,11 +420,27 @@ typedef struct TableAmRoutine
 	 * Fetch tuple at `tid` into `slot`, after doing a visibility test
 	 * according to `snapshot`. If a tuple was found and passed the visibility
 	 * test, returns true, false otherwise.
+	 *
+	 * project_cols is a set of columns to be fetched for the given row.
+	 *
+	 * If project_cols is an empty bitmap, none of the data columns are to be
+	 * fetched.
+	 *
+	 * If project_cols is a singleton bitmap with a whole-row reference (0),
+	 * all of the data columns are to be fetched.
+	 *
+	 * Please note: project_cols only deals with non system columns (attnum >= 0)
+	 *
+	 * Please note: Due to the limitations of the slot_get***() APIs,
+	 * tuple_fetch_row_version() must return a TupleTableSlot that is densely
+	 * populated (missing cols indicated with isnull = true upto the largest
+	 * attno in the projection list)
 	 */
 	bool		(*tuple_fetch_row_version) (Relation rel,
 											ItemPointer tid,
 											Snapshot snapshot,
-											TupleTableSlot *slot);
+											TupleTableSlot *slot,
+											Bitmapset *project_cols);
 
 	/*
 	 * Is tid valid for a scan of this relation.
@@ -407,7 +528,8 @@ typedef struct TableAmRoutine
 							   LockTupleMode mode,
 							   LockWaitPolicy wait_policy,
 							   uint8 flags,
-							   TM_FailureData *tmfd);
+							   TM_FailureData *tmfd,
+							   Bitmapset *project_cols);
 
 	/*
 	 * Perform operations necessary to complete insertions made via
@@ -518,9 +640,10 @@ typedef struct TableAmRoutine
 	 * clear what a good interface for non block based AMs would be, so there
 	 * isn't one yet.
 	 */
-	bool		(*scan_analyze_next_block) (TableScanDesc scan,
-											BlockNumber blockno,
-											BufferAccessStrategy bstrategy);
+	void		(*scan_analyze_beginscan) (Relation onerel, AnalyzeSampleContext *context);
+
+	bool		(*scan_analyze_next_block) (BlockNumber blockno,
+											AnalyzeSampleContext *context);
 
 	/*
 	 * See table_scan_analyze_next_tuple().
@@ -530,11 +653,13 @@ typedef struct TableAmRoutine
 	 * influence autovacuum scheduling (see comment for relation_vacuum
 	 * callback).
 	 */
-	bool		(*scan_analyze_next_tuple) (TableScanDesc scan,
-											TransactionId OldestXmin,
-											double *liverows,
-											double *deadrows,
-											TupleTableSlot *slot);
+	bool		(*scan_analyze_next_tuple) (TransactionId OldestXmin,
+											AnalyzeSampleContext *context);
+
+	void		(*scan_analyze_sample_tuple) (int pos, bool replace,
+											  AnalyzeSampleContext *context);
+
+	void		(*scan_analyze_endscan) (AnalyzeSampleContext *context);
 
 	/* see table_index_build_range_scan for reference about parameters */
 	double		(*index_build_range_scan) (Relation table_rel,
@@ -761,6 +886,12 @@ table_beginscan(Relation rel, Snapshot snapshot,
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, NULL, flags);
 }
 
+static inline bool
+table_scans_leverage_column_projection(Relation relation)
+{
+	return relation->rd_tableam->scans_leverage_column_projection;
+}
+
 /*
  * Like table_beginscan(), but for scanning catalog. It'll automatically use a
  * snapshot appropriate for scanning catalog relations.
@@ -788,6 +919,19 @@ table_beginscan_strat(Relation rel, Snapshot snapshot,
 		flags |= SO_ALLOW_SYNC;
 
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, NULL, flags);
+}
+
+static inline TableScanDesc
+table_beginscan_with_column_projection(Relation relation, Snapshot snapshot,
+									   int nkeys, struct ScanKeyData *key,
+									   Bitmapset *project_column)
+{
+	uint32		flags = SO_TYPE_SEQSCAN |
+		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
+
+	Assert(relation->rd_tableam->scans_leverage_column_projection);
+	return relation->rd_tableam->scan_begin_with_column_projection(
+		relation, snapshot, nkeys, key, NULL, flags, project_column);
 }
 
 /*
@@ -946,7 +1090,8 @@ extern void table_parallelscan_initialize(Relation rel,
  * Caller must hold a suitable lock on the relation.
  */
 extern TableScanDesc table_beginscan_parallel(Relation rel,
-											  ParallelTableScanDesc pscan);
+											  ParallelTableScanDesc pscan,
+											  Bitmapset *proj);
 
 /*
  * Restart a parallel scan.  Call this in the leader process.  Caller is
@@ -994,6 +1139,13 @@ static inline void
 table_index_fetch_end(struct IndexFetchTableData *scan)
 {
 	scan->rel->rd_tableam->index_fetch_end(scan);
+}
+
+static inline void
+table_index_fetch_set_column_projection(struct IndexFetchTableData *scan,
+										Bitmapset *project_column)
+{
+	scan->rel->rd_tableam->index_fetch_set_column_projection(scan, project_column);
 }
 
 /*
@@ -1071,7 +1223,8 @@ static inline bool
 table_tuple_fetch_row_version(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
-							  TupleTableSlot *slot)
+							  TupleTableSlot *slot,
+							  Bitmapset *project_cols)
 {
 	/*
 	 * We don't expect direct calls to table_tuple_fetch_row_version with
@@ -1081,7 +1234,7 @@ table_tuple_fetch_row_version(Relation rel,
 	if (unlikely(TransactionIdIsValid(CheckXidAlive) && !bsysscan))
 		elog(ERROR, "unexpected table_tuple_fetch_row_version call during logical decoding");
 
-	return rel->rd_tableam->tuple_fetch_row_version(rel, tid, snapshot, slot);
+	return rel->rd_tableam->tuple_fetch_row_version(rel, tid, snapshot, slot, project_cols);
 }
 
 /*
@@ -1335,6 +1488,20 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
  *		also lock descendant tuples if lock modes don't conflict.
  *		If TUPLE_LOCK_FLAG_FIND_LAST_VERSION, follow the update chain and lock
  *		latest version.
+ *	project_cols: It is a set of columns to be fetched for the tuple being locked.
+ *
+ *	 If project_cols is an empty bitmap, none of the data columns are to be
+ *	 fetched.
+ *
+ *	 If project_cols is a singleton bitmap with a whole-row reference (0),
+ *	 all of the data columns are to be fetched.
+ *
+ *	 Please note: project_cols only deals with non system columns (attnum >= 0)
+ *
+ *	 Please note: Due to the limitations of the slot_get***() APIs,
+ *	 tuple_lock() must return a TupleTableSlot that is densely
+ *	 populated (missing cols indicated with isnull = true upto the largest
+ *	 attno in the projection list)
  *
  * Output parameters:
  *	*slot: contains the target tuple
@@ -1356,11 +1523,11 @@ static inline TM_Result
 table_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot,
 				 TupleTableSlot *slot, CommandId cid, LockTupleMode mode,
 				 LockWaitPolicy wait_policy, uint8 flags,
-				 TM_FailureData *tmfd)
+				 TM_FailureData *tmfd, Bitmapset *project_cols)
 {
 	return rel->rd_tableam->tuple_lock(rel, tid, snapshot, slot,
 									   cid, mode, wait_policy,
-									   flags, tmfd);
+									   flags, tmfd, project_cols);
 }
 
 /*
@@ -1485,6 +1652,12 @@ table_relation_vacuum(Relation rel, struct VacuumParams *params,
 	rel->rd_tableam->relation_vacuum(rel, params, bstrategy);
 }
 
+static inline void
+table_scan_analyze_beginscan(Relation rel, struct AnalyzeSampleContext *context)
+{
+	rel->rd_tableam->scan_analyze_beginscan(rel, context);
+}
+
 /*
  * Prepare to analyze block `blockno` of `scan`. The scan needs to have been
  * started with table_beginscan_analyze().  Note that this routine might
@@ -1494,11 +1667,10 @@ table_relation_vacuum(Relation rel, struct VacuumParams *params,
  * Returns false if block is unsuitable for sampling, true otherwise.
  */
 static inline bool
-table_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
-							  BufferAccessStrategy bstrategy)
+table_scan_analyze_next_block(BlockNumber blockno,
+							  struct AnalyzeSampleContext *context)
 {
-	return scan->rs_rd->rd_tableam->scan_analyze_next_block(scan, blockno,
-															bstrategy);
+	return context->scan->rs_rd->rd_tableam->scan_analyze_next_block(blockno, context);
 }
 
 /*
@@ -1512,13 +1684,21 @@ table_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
  * tuples.
  */
 static inline bool
-table_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
-							  double *liverows, double *deadrows,
-							  TupleTableSlot *slot)
+table_scan_analyze_next_tuple(TransactionId OldestXmin, AnalyzeSampleContext *context)
 {
-	return scan->rs_rd->rd_tableam->scan_analyze_next_tuple(scan, OldestXmin,
-															liverows, deadrows,
-															slot);
+	return context->scan->rs_rd->rd_tableam->scan_analyze_next_tuple(OldestXmin, context);
+}
+
+static inline void 
+table_scan_analyze_sample_tuple(Index sample, bool replace, AnalyzeSampleContext *context)
+{
+	context->scan->rs_rd->rd_tableam->scan_analyze_sample_tuple(sample, replace, context);
+}
+
+static inline void
+table_scan_analyze_endscan(AnalyzeSampleContext *context)
+{
+	context->scan->rs_rd->rd_tableam->scan_analyze_endscan(context);
 }
 
 /*
@@ -1868,6 +2048,32 @@ extern void table_block_relation_estimate_size(Relation rel,
 											   double *allvisfrac,
 											   Size overhead_bytes_per_tuple,
 											   Size usable_bytes_per_page);
+
+/* ----------------------------------------------------------------------------
+ * Helper functions to implement analyze scan. 
+j* ----------------------------------------------------------------------------
+ */
+extern AnalyzeSampleContext *
+CreateAnalyzeSampleContext(Relation onerel, List *cols, int targrows,
+						   BufferAccessStrategy strategy);
+extern void DestroyAnalyzeSampleContext(AnalyzeSampleContext *context);
+extern TupleTableSlot * AnalyzeGetSampleSlot(AnalyzeSampleContext *context,
+											 Relation onerel, AnalyzeSampleType type);
+extern void AnalyzeRecordSampleRow(AnalyzeSampleContext *context,
+								   TupleTableSlot *sample_slot,
+								   HeapTuple sample_tuple,
+								   AnalyzeSampleType type, int pos,
+								   bool replace, bool withtid);
+extern void InitAnalyzeSampleContextForChild(AnalyzeSampleContext *context,
+											 Relation child,
+											 int childtargrows);
+extern void AnalyzeGetSampleStats(AnalyzeSampleContext *context,
+								  int *totalsampledrows,
+								  double *totalrows,
+								  double *totaldeadrows);
+extern HeapTuple *
+AnalyzeGetSampleRows(AnalyzeSampleContext *context, AnalyzeSampleType type, int offset);
+extern bool AnalyzeSampleIsValid(AnalyzeSampleContext *context, AnalyzeSampleType type);
 
 /* ----------------------------------------------------------------------------
  * Functions in tableamapi.c

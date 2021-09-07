@@ -1372,6 +1372,7 @@ apply_handle_update_internal(ResultRelInfo *relinfo,
 	found = FindReplTupleInLocalRel(estate, localrel,
 									&relmapentry->remoterel,
 									remoteslot, &localslot);
+
 	ExecClearTuple(remoteslot);
 
 	/*
