@@ -2468,6 +2468,10 @@ ExecBRDeleteTriggers(EState *estate, EPQState *epqstate,
 		if (newtuple != trigtuple)
 			heap_freetuple(newtuple);
 	}
+
+	/* Make sure the the new slot is not dependent on the original tuple */
+	ExecMaterializeSlot(slot);
+
 	if (should_free)
 		heap_freetuple(trigtuple);
 
@@ -2753,6 +2757,10 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 			newtuple = NULL;
 		}
 	}
+
+	/* Make sure the the new slot is not dependent on the original tuple */
+	ExecMaterializeSlot(newslot);
+
 	if (should_free_trig)
 		heap_freetuple(trigtuple);
 
@@ -2959,7 +2967,8 @@ GetTupleForTrigger(EState *estate,
 								estate->es_output_cid,
 								lockmode, LockWaitBlock,
 								lockflags,
-								&tmfd);
+								&tmfd,
+								bms_make_singleton(0));
 
 		switch (test)
 		{
@@ -3034,7 +3043,7 @@ GetTupleForTrigger(EState *estate,
 		 * suffices.
 		 */
 		if (!table_tuple_fetch_row_version(relation, tid, SnapshotAny,
-										   oldslot))
+										   oldslot, bms_make_singleton(0)))
 			elog(ERROR, "failed to fetch tuple for trigger");
 	}
 
@@ -3896,7 +3905,8 @@ AfterTriggerExecute(EState *estate,
 
 				if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid1),
 												   SnapshotAny,
-												   LocTriggerData.tg_trigslot))
+												   LocTriggerData.tg_trigslot,
+												   bms_make_singleton(0)))
 					elog(ERROR, "failed to fetch tuple1 for AFTER trigger");
 				LocTriggerData.tg_trigtuple =
 					ExecFetchSlotHeapTuple(LocTriggerData.tg_trigslot, false, &should_free_trig);
@@ -3915,7 +3925,8 @@ AfterTriggerExecute(EState *estate,
 
 				if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid2),
 												   SnapshotAny,
-												   LocTriggerData.tg_newslot))
+												   LocTriggerData.tg_newslot,
+												   bms_make_singleton(0)))
 					elog(ERROR, "failed to fetch tuple2 for AFTER trigger");
 				LocTriggerData.tg_newtuple =
 					ExecFetchSlotHeapTuple(LocTriggerData.tg_newslot, false, &should_free_new);

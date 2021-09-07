@@ -30,6 +30,7 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "access/zedstoream.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_enum.h"
@@ -2132,6 +2133,13 @@ CommitTransaction(void)
 	AfterTriggerEndXact(true);
 
 	/*
+	 * Flush tuple buffers in zedstore. Cannot insert/update zedstore tables
+	 * in this transaction after this. This must happen before ON COMMIT
+	 * actions, so we don't fail on flushing to ON COMMIT DROP tables.
+	 */
+	AtEOXact_zedstore_tuplebuffers(true);
+
+	/*
 	 * Let ON COMMIT management do its thing (must happen after closing
 	 * cursors, to avoid dangling-reference problems)
 	 */
@@ -2370,6 +2378,13 @@ PrepareTransaction(void)
 
 	/* Shut down the deferred-trigger manager */
 	AfterTriggerEndXact(true);
+
+	/*
+	 * Flush tuple buffers in zedstore. Cannot insert/update zedstore tables
+	 * in this transaction after this. This must happen before ON COMMIT
+	 * actions, so we don't fail on flushing to ON COMMIT DROP tables.
+	 */
+	AtEOXact_zedstore_tuplebuffers(true);
 
 	/*
 	 * Let ON COMMIT management do its thing (must happen after closing
@@ -2708,6 +2723,7 @@ AbortTransaction(void)
 	 */
 	AfterTriggerEndXact(false); /* 'false' means it's abort */
 	AtAbort_Portals();
+	AtEOXact_zedstore_tuplebuffers(false);
 	smgrDoPendingSyncs(false, is_parallel_worker);
 	AtEOXact_LargeObject(false);
 	AtAbort_Notify();
@@ -4798,6 +4814,8 @@ StartSubTransaction(void)
 
 	s->state = TRANS_INPROGRESS;
 
+	AtSubStart_zedstore_tuplebuffers();
+
 	/*
 	 * Call start-of-subxact callbacks
 	 */
@@ -4835,6 +4853,8 @@ CommitSubTransaction(void)
 		AtEOSubXact_Parallel(true, s->subTransactionId);
 		s->parallelModeLevel = 0;
 	}
+
+	AtEOSubXact_zedstore_tuplebuffers(true);
 
 	/* Do the actual "commit", such as it is */
 	s->state = TRANS_COMMIT;
@@ -5019,6 +5039,7 @@ AbortSubTransaction(void)
 						   s->parent->subTransactionId,
 						   s->curTransactionOwner,
 						   s->parent->curTransactionOwner);
+		AtEOSubXact_zedstore_tuplebuffers(false);
 		AtEOSubXact_LargeObject(false, s->subTransactionId,
 								s->parent->subTransactionId);
 		AtSubAbort_Notify();

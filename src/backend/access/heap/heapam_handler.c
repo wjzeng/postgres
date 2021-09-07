@@ -36,6 +36,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "parser/analyze.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/lmgr.h"
@@ -45,6 +46,7 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 
+static int	compare_rows(const void *a, const void *b);
 static void reform_and_rewrite_tuple(HeapTuple tuple,
 									 Relation OldHeap, Relation NewHeap,
 									 Datum *values, bool *isnull, RewriteState rwstate);
@@ -180,7 +182,8 @@ static bool
 heapam_fetch_row_version(Relation relation,
 						 ItemPointer tid,
 						 Snapshot snapshot,
-						 TupleTableSlot *slot)
+						 TupleTableSlot *slot,
+						 Bitmapset *project_cols)
 {
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
 	Buffer		buffer;
@@ -348,7 +351,7 @@ static TM_Result
 heapam_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
 				  TupleTableSlot *slot, CommandId cid, LockTupleMode mode,
 				  LockWaitPolicy wait_policy, uint8 flags,
-				  TM_FailureData *tmfd)
+				  TM_FailureData *tmfd, Bitmapset *project_cols)
 {
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
 	TM_Result	result;
@@ -961,10 +964,25 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	pfree(isnull);
 }
 
-static bool
-heapam_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
-							   BufferAccessStrategy bstrategy)
+static void
+heapam_scan_analyze_beginscan(Relation onerel, AnalyzeSampleContext *context)
 {
+	context->scan = table_beginscan_analyze(onerel);
+
+	/* initialize the totalblocks analyze can scan */
+	context->totalblocks = RelationGetNumberOfBlocks(onerel);
+
+	/* reset the statistic */
+	context->liverows = 0;
+	context->deadrows = 0;
+	context->ordered = true;
+}
+
+static bool
+heapam_scan_analyze_next_block(BlockNumber blockno,
+							   AnalyzeSampleContext *context)
+{
+	TableScanDesc scan = context->scan;
 	HeapScanDesc hscan = (HeapScanDesc) scan;
 
 	/*
@@ -979,7 +997,7 @@ heapam_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
 	hscan->rs_cblock = blockno;
 	hscan->rs_cindex = FirstOffsetNumber;
 	hscan->rs_cbuf = ReadBufferExtended(scan->rs_rd, MAIN_FORKNUM,
-										blockno, RBM_NORMAL, bstrategy);
+										blockno, RBM_NORMAL, context->bstrategy);
 	LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
 
 	/* in heap all blocks can contain tuples, so always return true */
@@ -987,14 +1005,14 @@ heapam_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno,
 }
 
 static bool
-heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
-							   double *liverows, double *deadrows,
-							   TupleTableSlot *slot)
+heapam_scan_analyze_next_tuple(TransactionId OldestXmin, AnalyzeSampleContext *context)
 {
+	TableScanDesc scan = context->scan;
 	HeapScanDesc hscan = (HeapScanDesc) scan;
 	Page		targpage;
 	OffsetNumber maxoffset;
 	BufferHeapTupleTableSlot *hslot;
+	TupleTableSlot *slot = AnalyzeGetSampleSlot(context, scan->rs_rd, ANALYZE_SAMPLE_DATA);
 
 	Assert(TTS_IS_BUFFERTUPLE(slot));
 
@@ -1020,7 +1038,7 @@ heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 		if (!ItemIdIsNormal(itemid))
 		{
 			if (ItemIdIsDead(itemid))
-				*deadrows += 1;
+				context->deadrows += 1;
 			continue;
 		}
 
@@ -1035,13 +1053,13 @@ heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 		{
 			case HEAPTUPLE_LIVE:
 				sample_it = true;
-				*liverows += 1;
+				context->liverows += 1;
 				break;
 
 			case HEAPTUPLE_DEAD:
 			case HEAPTUPLE_RECENTLY_DEAD:
 				/* Count dead and recently-dead rows */
-				*deadrows += 1;
+				context->deadrows += 1;
 				break;
 
 			case HEAPTUPLE_INSERT_IN_PROGRESS:
@@ -1067,7 +1085,7 @@ heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 				if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(targtuple->t_data)))
 				{
 					sample_it = true;
-					*liverows += 1;
+					context->liverows += 1;
 				}
 				break;
 
@@ -1096,11 +1114,11 @@ heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 				 * concurrent transaction never commits.
 				 */
 				if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(targtuple->t_data)))
-					*deadrows += 1;
+					context->deadrows += 1;
 				else
 				{
 					sample_it = true;
-					*liverows += 1;
+					context->liverows += 1;
 				}
 				break;
 
@@ -1127,6 +1145,71 @@ heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 	ExecClearTuple(slot);
 
 	return false;
+}
+
+static void
+heapam_scan_analyze_sample_tuple(int pos, bool replace, AnalyzeSampleContext *context)
+{
+	TupleTableSlot *slot;
+	Relation onerel = context->scan->rs_rd;
+
+	Assert(pos >= 0);
+	/*
+	 * heapam_scan_analyze_next_tuple should already put the tuple
+	 * in the sample slot, just record it into the array of sample
+	 * rows.
+	 */
+	slot = AnalyzeGetSampleSlot(context, onerel, ANALYZE_SAMPLE_DATA);
+	AnalyzeRecordSampleRow(context, slot, NULL, ANALYZE_SAMPLE_DATA, pos, replace, true);
+
+	/*
+	 * if replace happens, the sample rows are no longer ordered
+	 * in physical position.
+	 */
+	if (replace)
+		context->ordered = false;
+}
+
+static void
+heapam_scan_analyze_endscan(AnalyzeSampleContext *context)
+{
+	HeapTuple *rows = AnalyzeGetSampleRows(context, ANALYZE_SAMPLE_DATA, context->totalsampledrows);
+
+	/*
+	 * If we didn't find as many tuples as we wanted then we're done. No sort
+	 * is needed, since they're already in order.
+	 *
+	 * Otherwise we need to sort the collected tuples by position
+	 * (itempointer).
+	 */
+	if (!context->ordered)
+		qsort((void *)rows, context->targrows, sizeof(HeapTuple), compare_rows);
+
+	table_endscan(context->scan);
+}
+
+/*
+ * qsort comparator for sorting rows[] array
+ */
+static int
+compare_rows(const void *a, const void *b)
+{
+	HeapTuple	ha = *(const HeapTuple *) a;
+	HeapTuple	hb = *(const HeapTuple *) b;
+	BlockNumber ba = ItemPointerGetBlockNumber(&ha->t_self);
+	OffsetNumber oa = ItemPointerGetOffsetNumber(&ha->t_self);
+	BlockNumber bb = ItemPointerGetBlockNumber(&hb->t_self);
+	OffsetNumber ob = ItemPointerGetOffsetNumber(&hb->t_self);
+
+	if (ba < bb)
+		return -1;
+	if (ba > bb)
+		return 1;
+	if (oa < ob)
+		return -1;
+	if (oa > ob)
+		return 1;
+	return 0;
 }
 
 static double
@@ -2508,6 +2591,7 @@ SampleHeapTupleVisible(TableScanDesc scan, Buffer buffer,
 
 static const TableAmRoutine heapam_methods = {
 	.type = T_TableAmRoutine,
+	.scans_leverage_column_projection = false,
 
 	.slot_callbacks = heapam_slot_callbacks,
 
@@ -2544,8 +2628,11 @@ static const TableAmRoutine heapam_methods = {
 	.relation_copy_data = heapam_relation_copy_data,
 	.relation_copy_for_cluster = heapam_relation_copy_for_cluster,
 	.relation_vacuum = heap_vacuum_rel,
+	.scan_analyze_beginscan = heapam_scan_analyze_beginscan,
 	.scan_analyze_next_block = heapam_scan_analyze_next_block,
 	.scan_analyze_next_tuple = heapam_scan_analyze_next_tuple,
+	.scan_analyze_sample_tuple = heapam_scan_analyze_sample_tuple,
+	.scan_analyze_endscan = heapam_scan_analyze_endscan,
 	.index_build_range_scan = heapam_index_build_range_scan,
 	.index_validate_scan = heapam_index_validate_scan,
 

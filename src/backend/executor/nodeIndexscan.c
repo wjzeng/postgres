@@ -115,6 +115,16 @@ IndexNext(IndexScanState *node)
 								   node->iss_NumScanKeys,
 								   node->iss_NumOrderByKeys);
 
+		if (table_scans_leverage_column_projection(node->ss.ss_currentRelation))
+		{
+			Bitmapset *proj = NULL;
+			Scan *planNode = (Scan *)node->ss.ps.plan;
+			int rti = planNode->scanrelid;
+			RangeTblEntry *rte = list_nth(estate->es_plannedstmt->rtable, rti - 1);
+			proj = rte->scanCols;
+			table_index_fetch_set_column_projection(scandesc->xs_heapfetch, proj);
+		}
+
 		node->iss_ScanDesc = scandesc;
 
 		/*
@@ -901,6 +911,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 {
 	IndexScanState *indexstate;
 	Relation	currentRelation;
+	const TupleTableSlotOps *table_slot_ops;
 	LOCKMODE	lockmode;
 
 	/*
@@ -927,11 +938,19 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	indexstate->ss.ss_currentScanDesc = NULL;	/* no heap scan here */
 
 	/*
-	 * get the scan type from the relation descriptor.
+	 * Initialize the scan slot.
+	 *
+	 * With the reorder queue, we will sometimes use the reorderqueue's slot,
+	 * which uses heap ops, and sometimes the table AM's slot directly.  We
+	 * have to set scanopsfixed to false, unless the table AM also uses heap
+	 * ops.
 	 */
+	table_slot_ops = table_slot_callbacks(currentRelation);
 	ExecInitScanTupleSlot(estate, &indexstate->ss,
 						  RelationGetDescr(currentRelation),
-						  table_slot_callbacks(currentRelation));
+						  table_slot_ops);
+	if (node->indexorderby && table_slot_ops != &TTSOpsHeapTuple)
+		indexstate->ss.ps.scanopsfixed = false;
 
 	/*
 	 * Initialize result type and projection.

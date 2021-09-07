@@ -29,6 +29,7 @@ OBJS = \
 	standbydesc.o \
 	tblspcdesc.o \
 	xactdesc.o \
-	xlogdesc.o
+	xlogdesc.o \
+	zedstoredesc.o
 
 include $(top_srcdir)/src/backend/common.mk

@@ -138,7 +138,10 @@ test: sysviews
 test: tsrf
 test: tid
 test: tidscan
+test: zstidscan
 test: collate.icu.utf8
+test: tidscan
+test: zedstore
 test: rules
 test: psql
 test: psql_crosstab

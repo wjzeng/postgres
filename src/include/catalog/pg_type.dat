@@ -620,4 +620,10 @@
   typoutput => 'anycompatiblerange_out', typreceive => '-', typsend => '-',
   typalign => 'd', typstorage => 'x' },
 
+
+{ oid => '7050', array_type_oid => '7051',
+  descr => 'zedstore logical tuple id',
+  typname => 'zstid', typlen => '8', typbyval => 'FLOAT8PASSBYVAL',
+  typcategory => 'N', typinput => 'zstidin', typoutput => 'zstidout',
+  typreceive => '-', typsend => '-', typalign => 'd' },
 ]
