@@ -271,7 +271,7 @@ static char *convertRegProcReference(const char *proc);
 static char *getFormattedOperatorName(const char *oproid);
 static char *convertTSFunction(Archive *fout, Oid funcOid);
 static Oid	findLastBuiltinOid_V71(Archive *fout);
-static char *getFormattedTypeName(Archive *fout, Oid oid, OidOptions opts);
+static const char *getFormattedTypeName(Archive *fout, Oid oid, OidOptions opts);
 static void getBlobs(Archive *fout);
 static void dumpBlob(Archive *fout, const BlobInfo *binfo);
 static int	dumpBlobs(Archive *fout, const void *arg);
@@ -1623,11 +1623,12 @@ selectDumpableNamespace(NamespaceInfo *nsinfo, Archive *fout)
 		 * no-mans-land between being a system object and a user object.
 		 * CREATE SCHEMA would fail, so its DUMP_COMPONENT_DEFINITION is just
 		 * a comment and an indication of ownership.  If the owner is the
-		 * default, that DUMP_COMPONENT_DEFINITION is superfluous.
+		 * default, omit that superfluous DUMP_COMPONENT_DEFINITION.  Before
+		 * v15, the default owner was BOOTSTRAP_SUPERUSERID.
 		 */
 		nsinfo->create = false;
 		nsinfo->dobj.dump = DUMP_COMPONENT_ALL;
-		if (nsinfo->nspowner == BOOTSTRAP_SUPERUSERID)
+		if (nsinfo->nspowner == ROLE_PG_DATABASE_OWNER)
 			nsinfo->dobj.dump &= ~DUMP_COMPONENT_DEFINITION;
 		nsinfo->dobj.dump_contains = DUMP_COMPONENT_ALL;
 	}
@@ -4850,21 +4851,26 @@ getNamespaces(Archive *fout, int *numNamespaces)
 		PQExpBuffer init_racl_subquery = createPQExpBuffer();
 
 		/*
-		 * Bypass pg_init_privs.initprivs for the public schema.  Dropping and
-		 * recreating the schema detaches it from its pg_init_privs row, but
-		 * an empty destination database starts with this ACL nonetheless.
-		 * Also, we support dump/reload of public schema ownership changes.
-		 * ALTER SCHEMA OWNER filters nspacl through aclnewowner(), but
-		 * initprivs continues to reflect the initial owner (the bootstrap
-		 * superuser).  Hence, synthesize the value that nspacl will have
-		 * after the restore's ALTER SCHEMA OWNER.
+		 * Bypass pg_init_privs.initprivs for the public schema, for several
+		 * reasons.  First, dropping and recreating the schema detaches it
+		 * from its pg_init_privs row, but an empty destination database
+		 * starts with this ACL nonetheless.  Second, we support dump/reload
+		 * of public schema ownership changes.  ALTER SCHEMA OWNER filters
+		 * nspacl through aclnewowner(), but initprivs continues to reflect
+		 * the initial owner.  Hence, synthesize the value that nspacl will
+		 * have after the restore's ALTER SCHEMA OWNER.  Third, this makes the
+		 * destination database match the source's ACL, even if the latter was
+		 * an initdb-default ACL, which changed in v15.  An upgrade pulls in
+		 * changes to most system object ACLs that the DBA had not customized.
+		 * We've made the public schema depart from that, because changing its
+		 * ACL so easily breaks applications.
 		 */
 		buildACLQueries(acl_subquery, racl_subquery, init_acl_subquery,
 						init_racl_subquery, "n.nspacl", "n.nspowner",
 						"CASE WHEN n.nspname = 'public' THEN array["
 						"  format('%s=UC/%s', "
 						"         n.nspowner::regrole, n.nspowner::regrole),"
-						"  format('=UC/%s', n.nspowner::regrole)]::aclitem[] "
+						"  format('=U/%s', n.nspowner::regrole)]::aclitem[] "
 						"ELSE pip.initprivs END",
 						"'n'", dopt->binary_upgrade);
 
@@ -11252,13 +11258,9 @@ dumpBaseType(Archive *fout, const TypeInfo *tyinfo)
 		appendPQExpBuffer(q, ",\n    SUBSCRIPT = %s", typsubscript);
 
 	if (OidIsValid(tyinfo->typelem))
-	{
-		char	   *elemType;
-
-		elemType = getFormattedTypeName(fout, tyinfo->typelem, zeroIsError);
-		appendPQExpBuffer(q, ",\n    ELEMENT = %s", elemType);
-		free(elemType);
-	}
+		appendPQExpBuffer(q, ",\n    ELEMENT = %s",
+						  getFormattedTypeName(fout, tyinfo->typelem,
+											   zeroIsError));
 
 	if (strcmp(typcategory, "U") != 0)
 	{
@@ -12062,7 +12064,7 @@ format_function_arguments_old(Archive *fout,
 	for (j = 0; j < nallargs; j++)
 	{
 		Oid			typid;
-		char	   *typname;
+		const char *typname;
 		const char *argmode;
 		const char *argname;
 
@@ -12101,7 +12103,6 @@ format_function_arguments_old(Archive *fout,
 						  argname ? fmtId(argname) : "",
 						  argname ? " " : "",
 						  typname);
-		free(typname);
 	}
 	appendPQExpBufferChar(&fn, ')');
 	return fn.data;
@@ -12130,15 +12131,12 @@ format_function_signature(Archive *fout, const FuncInfo *finfo, bool honor_quote
 		appendPQExpBuffer(&fn, "%s(", finfo->dobj.name);
 	for (j = 0; j < finfo->nargs; j++)
 	{
-		char	   *typname;
-
 		if (j > 0)
 			appendPQExpBufferStr(&fn, ", ");
 
-		typname = getFormattedTypeName(fout, finfo->argtypes[j],
-									   zeroIsError);
-		appendPQExpBufferStr(&fn, typname);
-		free(typname);
+		appendPQExpBufferStr(&fn,
+							 getFormattedTypeName(fout, finfo->argtypes[j],
+												  zeroIsError));
 	}
 	appendPQExpBufferChar(&fn, ')');
 	return fn.data;
@@ -12183,7 +12181,6 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	char	   *prosupport;
 	char	   *proparallel;
 	char	   *lanname;
-	char	   *rettypename;
 	int			nallargs;
 	char	  **allargtypes = NULL;
 	char	  **argmodes = NULL;
@@ -12473,14 +12470,10 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	else if (funcresult)
 		appendPQExpBuffer(q, " RETURNS %s", funcresult);
 	else
-	{
-		rettypename = getFormattedTypeName(fout, finfo->prorettype,
-										   zeroIsError);
 		appendPQExpBuffer(q, " RETURNS %s%s",
 						  (proretset[0] == 't') ? "SETOF " : "",
-						  rettypename);
-		free(rettypename);
-	}
+						  getFormattedTypeName(fout, finfo->prorettype,
+											   zeroIsError));
 
 	appendPQExpBuffer(q, "\n    LANGUAGE %s", fmtId(lanname));
 
@@ -12687,8 +12680,8 @@ dumpCast(Archive *fout, const CastInfo *cast)
 	PQExpBuffer labelq;
 	PQExpBuffer castargs;
 	FuncInfo   *funcInfo = NULL;
-	char	   *sourceType;
-	char	   *targetType;
+	const char *sourceType;
+	const char *targetType;
 
 	/* Skip if not to be dumped */
 	if (!cast->dobj.dump || dopt->dataOnly)
@@ -12774,9 +12767,6 @@ dumpCast(Archive *fout, const CastInfo *cast)
 					NULL, "",
 					cast->dobj.catId, 0, cast->dobj.dumpId);
 
-	free(sourceType);
-	free(targetType);
-
 	destroyPQExpBuffer(defqry);
 	destroyPQExpBuffer(delqry);
 	destroyPQExpBuffer(labelq);
@@ -12797,7 +12787,7 @@ dumpTransform(Archive *fout, const TransformInfo *transform)
 	FuncInfo   *fromsqlFuncInfo = NULL;
 	FuncInfo   *tosqlFuncInfo = NULL;
 	char	   *lanname;
-	char	   *transformType;
+	const char *transformType;
 
 	/* Skip if not to be dumped */
 	if (!transform->dobj.dump || dopt->dataOnly)
@@ -12904,7 +12894,6 @@ dumpTransform(Archive *fout, const TransformInfo *transform)
 					transform->dobj.catId, 0, transform->dobj.dumpId);
 
 	free(lanname);
-	free(transformType);
 	destroyPQExpBuffer(defqry);
 	destroyPQExpBuffer(delqry);
 	destroyPQExpBuffer(labelq);
@@ -14202,17 +14191,11 @@ format_aggregate_signature(const AggInfo *agginfo, Archive *fout, bool honor_quo
 	{
 		appendPQExpBufferChar(&buf, '(');
 		for (j = 0; j < agginfo->aggfn.nargs; j++)
-		{
-			char	   *typname;
-
-			typname = getFormattedTypeName(fout, agginfo->aggfn.argtypes[j],
-										   zeroIsError);
-
 			appendPQExpBuffer(&buf, "%s%s",
 							  (j > 0) ? ", " : "",
-							  typname);
-			free(typname);
-		}
+							  getFormattedTypeName(fout,
+												   agginfo->aggfn.argtypes[j],
+												   zeroIsError));
 		appendPQExpBufferChar(&buf, ')');
 	}
 	return buf.data;
@@ -18885,8 +18868,10 @@ findDumpableDependencies(ArchiveHandle *AH, const DumpableObject *dobj,
  *
  * This does not guarantee to schema-qualify the output, so it should not
  * be used to create the target object name for CREATE or ALTER commands.
+ *
+ * Note that the result is cached and must not be freed by the caller.
  */
-static char *
+static const char *
 getFormattedTypeName(Archive *fout, Oid oid, OidOptions opts)
 {
 	TypeInfo   *typeInfo;
@@ -18897,15 +18882,15 @@ getFormattedTypeName(Archive *fout, Oid oid, OidOptions opts)
 	if (oid == 0)
 	{
 		if ((opts & zeroAsStar) != 0)
-			return pg_strdup("*");
+			return "*";
 		else if ((opts & zeroAsNone) != 0)
-			return pg_strdup("NONE");
+			return "NONE";
 	}
 
 	/* see if we have the result cached in the type's TypeInfo record */
 	typeInfo = findTypeByOid(oid);
 	if (typeInfo && typeInfo->ftypname)
-		return pg_strdup(typeInfo->ftypname);
+		return typeInfo->ftypname;
 
 	query = createPQExpBuffer();
 	appendPQExpBuffer(query, "SELECT pg_catalog.format_type('%u'::pg_catalog.oid, NULL)",
@@ -18919,9 +18904,14 @@ getFormattedTypeName(Archive *fout, Oid oid, OidOptions opts)
 	PQclear(res);
 	destroyPQExpBuffer(query);
 
-	/* cache a copy for later requests */
+	/*
+	 * Cache the result for re-use in later requests, if possible.  If we
+	 * don't have a TypeInfo for the type, the string will be leaked once the
+	 * caller is done with it ... but that case really should not happen, so
+	 * leaking if it does seems acceptable.
+	 */
 	if (typeInfo)
-		typeInfo->ftypname = pg_strdup(result);
+		typeInfo->ftypname = result;
 
 	return result;
 }
