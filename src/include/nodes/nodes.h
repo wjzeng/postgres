@@ -153,7 +153,6 @@ typedef enum NodeTag
 	T_Alias,
 	T_RangeVar,
 	T_TableFunc,
-	T_Expr,
 	T_Var,
 	T_Const,
 	T_Param,
@@ -291,12 +290,10 @@ typedef enum NodeTag
 	/*
 	 * TAGS FOR VALUE NODES (value.h)
 	 */
-	T_Value,
 	T_Integer,
 	T_Float,
 	T_String,
 	T_BitString,
-	T_Null,
 
 	/*
 	 * TAGS FOR LIST NODES (pg_list.h)
@@ -490,6 +487,7 @@ typedef enum NodeTag
 	T_PartitionRangeDatum,
 	T_PartitionCmd,
 	T_VacuumRelation,
+	T_PublicationTable,
 
 	/*
 	 * TAGS FOR REPLICATION GRAMMAR PARSE NODES (replnodes.h)
@@ -670,6 +668,7 @@ extern bool equal(const void *a, const void *b);
  */
 typedef double Selectivity;		/* fraction of tuples a qualifier will pass */
 typedef double Cost;			/* execution cost (in page-access units) */
+typedef double Cardinality;		/* (estimated) number of rows or other integer count */
 
 
 /*
