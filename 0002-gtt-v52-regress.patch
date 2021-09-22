@@ -1,6 +1,6 @@
 diff --git a/src/test/isolation/expected/gtt-sequence.out b/src/test/isolation/expected/gtt-sequence.out
 new file mode 100644
-index 00000000000..31db2ebd423
+index 0000000000..31db2ebd42
 --- /dev/null
 +++ b/src/test/isolation/expected/gtt-sequence.out
 @@ -0,0 +1,48 @@
@@ -54,7 +54,7 @@ index 00000000000..31db2ebd423
 +
 diff --git a/src/test/isolation/expected/gtt-table.out b/src/test/isolation/expected/gtt-table.out
 new file mode 100644
-index 00000000000..67cf73e8e6a
+index 0000000000..67cf73e8e6
 --- /dev/null
 +++ b/src/test/isolation/expected/gtt-table.out
 @@ -0,0 +1,633 @@
@@ -692,7 +692,7 @@ index 00000000000..67cf73e8e6a
 +(1 row)
 +
 diff --git a/src/test/isolation/isolation_schedule b/src/test/isolation/isolation_schedule
-index f4c01006fc1..746a17f824c 100644
+index f4c01006fc..746a17f824 100644
 --- a/src/test/isolation/isolation_schedule
 +++ b/src/test/isolation/isolation_schedule
 @@ -96,3 +96,5 @@ test: plpgsql-toast
@@ -702,7 +702,7 @@ index f4c01006fc1..746a17f824c 100644
 +test: gtt-sequence
 +test: gtt-table
 diff --git a/src/test/isolation/isolationtester.c b/src/test/isolation/isolationtester.c
-index 88594a3cb5d..ec643aadb5f 100644
+index 88594a3cb5..ec643aadb5 100644
 --- a/src/test/isolation/isolationtester.c
 +++ b/src/test/isolation/isolationtester.c
 @@ -80,9 +80,30 @@ disconnect_atexit(void)
@@ -763,7 +763,7 @@ index 88594a3cb5d..ec643aadb5f 100644
  	 * Run the permutations specified in the spec, or all if none were
  	 * explicitly specified.
 diff --git a/src/test/isolation/isolationtester.h b/src/test/isolation/isolationtester.h
-index 5f300219c20..b5a29893da9 100644
+index 5f300219c2..b5a29893da 100644
 --- a/src/test/isolation/isolationtester.h
 +++ b/src/test/isolation/isolationtester.h
 @@ -81,6 +81,8 @@ typedef struct
@@ -776,7 +776,7 @@ index 5f300219c20..b5a29893da9 100644
  
  extern TestSpec parseresult;
 diff --git a/src/test/isolation/specparse.y b/src/test/isolation/specparse.y
-index c25aa1a73fa..2784f758ed9 100644
+index c25aa1a73f..2784f758ed 100644
 --- a/src/test/isolation/specparse.y
 +++ b/src/test/isolation/specparse.y
 @@ -39,7 +39,7 @@ TestSpec		parseresult;			/* result of parsing is left here */
@@ -843,10 +843,10 @@ index c25aa1a73fa..2784f758ed9 100644
  			{
 diff --git a/src/test/isolation/specs/gtt-sequence.spec b/src/test/isolation/specs/gtt-sequence.spec
 new file mode 100644
-index 00000000000..759ad8e26c4
+index 0000000000..88eece45e2
 --- /dev/null
 +++ b/src/test/isolation/specs/gtt-sequence.spec
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,39 @@
 +# Tests for global temporary relations
 +
 +initialize
@@ -856,6 +856,9 @@ index 00000000000..759ad8e26c4
 +
 +destroy
 +{
++  /* wait other backend exit */
++  select pg_sleep(1);
++
 +  DROP TABLE gtt_with_seq;
 +}
 +
@@ -885,7 +888,7 @@ index 00000000000..759ad8e26c4
 +
 diff --git a/src/test/isolation/specs/gtt-table.spec b/src/test/isolation/specs/gtt-table.spec
 new file mode 100644
-index 00000000000..4c57b0a2876
+index 0000000000..4c57b0a287
 --- /dev/null
 +++ b/src/test/isolation/specs/gtt-table.spec
 @@ -0,0 +1,130 @@
@@ -1020,7 +1023,7 @@ index 00000000000..4c57b0a2876
 +permutation "s1_begin" "s2_begin" "s1_insert_p" "s2_insert_p" "s1_reindex_i_p" "s2_reindex_i_p" "s1_commit" "s2_commit" "s1_select_p" "s2_select_p" 
 +
 diff --git a/src/test/isolation/specscanner.l b/src/test/isolation/specscanner.l
-index d9fa6a5b54a..697db975479 100644
+index d9fa6a5b54..697db97547 100644
 --- a/src/test/isolation/specscanner.l
 +++ b/src/test/isolation/specscanner.l
 @@ -67,6 +67,8 @@ session			{ return SESSION; }
@@ -1034,7 +1037,7 @@ index d9fa6a5b54a..697db975479 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 00000000000..def015dcbd6
+index 0000000000..def015dcbd
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
 @@ -0,0 +1,506 @@
@@ -1545,7 +1548,7 @@ index 00000000000..def015dcbd6
 +drop cascades to table global_temporary_table.gtt_t_kenyon
 +drop cascades to table global_temporary_table.temp_table_test_systemview
 diff --git a/src/test/regress/expected/rules.out b/src/test/regress/expected/rules.out
-index 2fa00a3c29a..e0001bc3448 100644
+index 2fa00a3c29..e0001bc344 100644
 --- a/src/test/regress/expected/rules.out
 +++ b/src/test/regress/expected/rules.out
 @@ -1359,6 +1359,94 @@ pg_group| SELECT pg_authid.rolname AS groname,
@@ -1644,7 +1647,7 @@ index 2fa00a3c29a..e0001bc3448 100644
      a.type,
      a.database,
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 7be89178f0f..db8095d30bf 100644
+index 7be89178f0..db8095d30b 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
 @@ -130,3 +130,6 @@ test: fast_default
@@ -1656,7 +1659,7 @@ index 7be89178f0f..db8095d30bf 100644
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
-index 00000000000..cb49dc1af57
+index 0000000000..cb49dc1af5
 --- /dev/null
 +++ b/src/test/regress/sql/global_temporary_table.sql
 @@ -0,0 +1,284 @@
@@ -1945,5 +1948,5 @@ index 00000000000..cb49dc1af57
 +drop schema global_temporary_table cascade;
 +
 -- 
-2.30.1 (Apple Git-130)
+2.25.1
 
