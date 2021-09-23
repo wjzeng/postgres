@@ -1,5 +1,5 @@
 diff --git a/doc/src/sgml/ref/create_table.sgml b/doc/src/sgml/ref/create_table.sgml
-index 15aed2f251..d2fa2219cf 100644
+index 473a0a4aeb..e510bde8ac 100644
 --- a/doc/src/sgml/ref/create_table.sgml
 +++ b/doc/src/sgml/ref/create_table.sgml
 @@ -169,32 +169,67 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
@@ -90,7 +90,7 @@ index 15aed2f251..d2fa2219cf 100644
      </listitem>
     </varlistentry>
  
-@@ -2137,13 +2172,17 @@ CREATE TABLE cities_partdef
+@@ -2133,13 +2168,17 @@ CREATE TABLE cities_partdef
     <title>Temporary Tables</title>
  
     <para>
@@ -115,7 +115,7 @@ index 15aed2f251..d2fa2219cf 100644
      TABLE</literal> command for each temporary table to be used.  This allows
      different sessions to use the same temporary table name for different
      purposes, whereas the standard's approach constrains all instances of a
-@@ -2151,29 +2190,14 @@ CREATE TABLE cities_partdef
+@@ -2147,29 +2186,14 @@ CREATE TABLE cities_partdef
     </para>
  
     <para>
@@ -147,7 +147,7 @@ index 15aed2f251..d2fa2219cf 100644
     <para>
      The <literal>ON COMMIT</literal> clause for temporary tables
      also resembles the SQL standard, but has some differences.
-@@ -2181,7 +2205,8 @@ CREATE TABLE cities_partdef
+@@ -2177,7 +2201,8 @@ CREATE TABLE cities_partdef
      default behavior is <literal>ON COMMIT DELETE ROWS</literal>.  However, the
      default behavior in <productname>PostgreSQL</productname> is
      <literal>ON COMMIT PRESERVE ROWS</literal>.  The <literal>ON COMMIT
@@ -158,5 +158,5 @@ index 15aed2f251..d2fa2219cf 100644
    </refsect2>
  
 -- 
-2.27.0
+2.25.1
 
