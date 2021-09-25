@@ -1,6 +1,6 @@
 diff --git a/src/test/isolation/expected/gtt-sequence.out b/src/test/isolation/expected/gtt-sequence.out
 new file mode 100644
-index 0000000000..31db2ebd42
+index 00000000000..31db2ebd423
 --- /dev/null
 +++ b/src/test/isolation/expected/gtt-sequence.out
 @@ -0,0 +1,48 @@
@@ -54,22 +54,10 @@ index 0000000000..31db2ebd42
 +
 diff --git a/src/test/isolation/expected/gtt-table.out b/src/test/isolation/expected/gtt-table.out
 new file mode 100644
-index 0000000000..67cf73e8e6
+index 00000000000..5825773aa12
 --- /dev/null
 +++ b/src/test/isolation/expected/gtt-table.out
-@@ -0,0 +1,633 @@
-+unused step name: s1_analyze_c
-+unused step name: s1_insert_c
-+unused step name: s1_select_c
-+unused step name: s2_analyze_c
-+unused step name: s2_insert_c
-+unused step name: s2_select_c
-+unused step name: s2_select_d
-+unused step name: s2_truncate_d
-+unused step name: s3_analyze_c
-+unused step name: s3_create_c
-+unused step name: s3_insert_c
-+unused step name: s3_select_c
+@@ -0,0 +1,675 @@
 +Parsed test spec with 3 sessions
 +
 +starting permutation: s1_update_d
@@ -691,8 +679,62 @@ index 0000000000..67cf73e8e6
 +1|test10
 +(1 row)
 +
++
++starting permutation: s2_insert_c s3_create_c s3_insert_c s1_insert_c s1_analyze_c s2_analyze_c s3_analyze_c s1_select_c s2_select_c s3_select_c
++step s2_insert_c: insert into gtt_test_createindex(a,b) values(generate_series(1,100000),'test create index')
++step s3_create_c: create unique index idx_temp_table_a on gtt_test_createindex(a)
++step s3_insert_c: insert into gtt_test_createindex(a,b) values(generate_series(1,100000),'test create index')
++step s1_insert_c: insert into gtt_test_createindex(a,b) values(generate_series(1,100000),'test create index')
++step s1_analyze_c: analyze gtt_test_createindex
++step s2_analyze_c: analyze gtt_test_createindex
++step s3_analyze_c: analyze gtt_test_createindex
++step s1_select_c: explain (costs off) select * from gtt_test_createindex where a = 1
++QUERY PLAN                                               
++---------------------------------------------------------
++Index Scan using idx_temp_table_a on gtt_test_createindex
++  Index Cond: (a = 1)                                    
++(2 rows)
++
++step s2_select_c: explain (costs off) select * from gtt_test_createindex where a = 1
++QUERY PLAN                      
++--------------------------------
++Seq Scan on gtt_test_createindex
++  Filter: (a = 1)               
++(2 rows)
++
++step s3_select_c: explain (costs off) select * from gtt_test_createindex where a = 1
++QUERY PLAN                                               
++---------------------------------------------------------
++Index Scan using idx_temp_table_a on gtt_test_createindex
++  Index Cond: (a = 1)                                    
++(2 rows)
++
++
++starting permutation: s1_begin s2_begin s1_lock_p s2_lock_p s1_truncate_p s2_truncate_p s1_insert_p s2_insert_p s1_commit s2_commit s1_select_p s2_select_p
++step s1_begin: begin
++step s2_begin: begin
++step s1_lock_p: LOCK TABLE gtt_on_commit_preserve_row in ACCESS EXCLUSIVE MODE
++step s2_lock_p: LOCK TABLE gtt_on_commit_preserve_row in ACCESS EXCLUSIVE MODE
++step s1_truncate_p: truncate gtt_on_commit_preserve_row
++step s2_truncate_p: truncate gtt_on_commit_preserve_row
++step s1_insert_p: insert into gtt_on_commit_preserve_row (b) values('test20')
++step s2_insert_p: insert into gtt_on_commit_preserve_row (b) values('test10')
++step s1_commit: commit
++step s2_commit: commit
++step s1_select_p: select a,b from gtt_on_commit_preserve_row order by a,b
++a|b     
++-+------
++1|test20
++(1 row)
++
++step s2_select_p: select a,b from gtt_on_commit_preserve_row order by a,b
++a|b     
++-+------
++1|test10
++(1 row)
++
 diff --git a/src/test/isolation/isolation_schedule b/src/test/isolation/isolation_schedule
-index f4c01006fc..746a17f824 100644
+index f4c01006fc1..746a17f824c 100644
 --- a/src/test/isolation/isolation_schedule
 +++ b/src/test/isolation/isolation_schedule
 @@ -96,3 +96,5 @@ test: plpgsql-toast
@@ -702,7 +744,7 @@ index f4c01006fc..746a17f824 100644
 +test: gtt-sequence
 +test: gtt-table
 diff --git a/src/test/isolation/isolationtester.c b/src/test/isolation/isolationtester.c
-index 88594a3cb5..ec643aadb5 100644
+index 88594a3cb5d..ec643aadb5f 100644
 --- a/src/test/isolation/isolationtester.c
 +++ b/src/test/isolation/isolationtester.c
 @@ -80,9 +80,30 @@ disconnect_atexit(void)
@@ -763,7 +805,7 @@ index 88594a3cb5..ec643aadb5 100644
  	 * Run the permutations specified in the spec, or all if none were
  	 * explicitly specified.
 diff --git a/src/test/isolation/isolationtester.h b/src/test/isolation/isolationtester.h
-index 5f300219c2..b5a29893da 100644
+index 5f300219c20..b5a29893da9 100644
 --- a/src/test/isolation/isolationtester.h
 +++ b/src/test/isolation/isolationtester.h
 @@ -81,6 +81,8 @@ typedef struct
@@ -776,7 +818,7 @@ index 5f300219c2..b5a29893da 100644
  
  extern TestSpec parseresult;
 diff --git a/src/test/isolation/specparse.y b/src/test/isolation/specparse.y
-index c25aa1a73f..2784f758ed 100644
+index c25aa1a73fa..2784f758ed9 100644
 --- a/src/test/isolation/specparse.y
 +++ b/src/test/isolation/specparse.y
 @@ -39,7 +39,7 @@ TestSpec		parseresult;			/* result of parsing is left here */
@@ -843,7 +885,7 @@ index c25aa1a73f..2784f758ed 100644
  			{
 diff --git a/src/test/isolation/specs/gtt-sequence.spec b/src/test/isolation/specs/gtt-sequence.spec
 new file mode 100644
-index 0000000000..88eece45e2
+index 00000000000..88eece45e29
 --- /dev/null
 +++ b/src/test/isolation/specs/gtt-sequence.spec
 @@ -0,0 +1,39 @@
@@ -888,10 +930,10 @@ index 0000000000..88eece45e2
 +
 diff --git a/src/test/isolation/specs/gtt-table.spec b/src/test/isolation/specs/gtt-table.spec
 new file mode 100644
-index 0000000000..4c57b0a287
+index 00000000000..e0396b21ef0
 --- /dev/null
 +++ b/src/test/isolation/specs/gtt-table.spec
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,135 @@
 +# Tests for global temporary relations
 +
 +initialize
@@ -922,6 +964,7 @@ index 0000000000..4c57b0a287
 +step "s1_select_p" {select a,b from gtt_on_commit_preserve_row order by a,b}
 +step "s1_truncate_d" {truncate gtt_on_commit_delete_row}
 +step "s1_truncate_p" {truncate gtt_on_commit_preserve_row}
++step "s1_lock_p" {LOCK TABLE gtt_on_commit_preserve_row in ACCESS EXCLUSIVE MODE}
 +step "s1_update_d" {update gtt_on_commit_delete_row set b = 'update'}
 +step "s1_save_1" {SAVEPOINT save1}
 +step "s1_save_2" {SAVEPOINT save2}
@@ -946,10 +989,9 @@ index 0000000000..4c57b0a287
 +step "s2_insert_p" {insert into gtt_on_commit_preserve_row (b) values('test10')}
 +step "s2_select_p" {select a,b from gtt_on_commit_preserve_row order by a,b}
 +step "s2_insert_d" {insert into gtt_on_commit_delete_row (b) values('test1')}
-+step "s2_select_d" {select a,b from gtt_on_commit_delete_row order by a,b}
-+step "s2_truncate_d" {truncate gtt_on_commit_delete_row}
 +step "s2_truncate_p" {truncate gtt_on_commit_preserve_row}
 +step "s2_update_p" {update gtt_on_commit_preserve_row set b = 'update'}
++step "s2_lock_p" {LOCK TABLE gtt_on_commit_preserve_row in ACCESS EXCLUSIVE MODE}
 +step "s2_save_1" {SAVEPOINT save1}
 +step "s2_save_2" {SAVEPOINT save2}
 +step "s2_save_3" {SAVEPOINT save3}
@@ -1022,8 +1064,13 @@ index 0000000000..4c57b0a287
 +#  test concurrent reindex index
 +permutation "s1_begin" "s2_begin" "s1_insert_p" "s2_insert_p" "s1_reindex_i_p" "s2_reindex_i_p" "s1_commit" "s2_commit" "s1_select_p" "s2_select_p" 
 +
++# test create index
++permutation "s2_insert_c" "s3_create_c" "s3_insert_c" "s1_insert_c" "s1_analyze_c" "s2_analyze_c" "s3_analyze_c" "s1_select_c" "s2_select_c" "s3_select_c"
++
++# test lock gtt
++permutation "s1_begin" "s2_begin" "s1_lock_p" "s2_lock_p" "s1_truncate_p" "s2_truncate_p" "s1_insert_p" "s2_insert_p" "s1_commit" "s2_commit" "s1_select_p" "s2_select_p"
 diff --git a/src/test/isolation/specscanner.l b/src/test/isolation/specscanner.l
-index d9fa6a5b54..697db97547 100644
+index d9fa6a5b54a..697db975479 100644
 --- a/src/test/isolation/specscanner.l
 +++ b/src/test/isolation/specscanner.l
 @@ -67,6 +67,8 @@ session			{ return SESSION; }
@@ -1037,7 +1084,7 @@ index d9fa6a5b54..697db97547 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 0000000000..def015dcbd
+index 00000000000..def015dcbd6
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
 @@ -0,0 +1,506 @@
@@ -1548,7 +1595,7 @@ index 0000000000..def015dcbd
 +drop cascades to table global_temporary_table.gtt_t_kenyon
 +drop cascades to table global_temporary_table.temp_table_test_systemview
 diff --git a/src/test/regress/expected/rules.out b/src/test/regress/expected/rules.out
-index 2fa00a3c29..e0001bc344 100644
+index 2fa00a3c29a..e0001bc3448 100644
 --- a/src/test/regress/expected/rules.out
 +++ b/src/test/regress/expected/rules.out
 @@ -1359,6 +1359,94 @@ pg_group| SELECT pg_authid.rolname AS groname,
@@ -1647,7 +1694,7 @@ index 2fa00a3c29..e0001bc344 100644
      a.type,
      a.database,
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 7be89178f0..db8095d30b 100644
+index 7be89178f0f..db8095d30bf 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
 @@ -130,3 +130,6 @@ test: fast_default
@@ -1659,7 +1706,7 @@ index 7be89178f0..db8095d30b 100644
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
-index 0000000000..cb49dc1af5
+index 00000000000..cb49dc1af57
 --- /dev/null
 +++ b/src/test/regress/sql/global_temporary_table.sql
 @@ -0,0 +1,284 @@
@@ -1948,5 +1995,5 @@ index 0000000000..cb49dc1af5
 +drop schema global_temporary_table cascade;
 +
 -- 
-2.25.1
+2.30.1 (Apple Git-130)
 
