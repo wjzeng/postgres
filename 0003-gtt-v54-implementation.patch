@@ -186,8 +186,7 @@ index 83746d3fd91..f93e24e552f 100644
 +	 */
 +	if (relpersistence == RELPERSISTENCE_GLOBAL_TEMP)
 +	{
-+			create_storage = false;
-+
++		create_storage = false;
 +		if (!OidIsValid(relfilenode))
 +			relfilenode = relid;
 +	}
