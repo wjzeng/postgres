@@ -133,20 +133,6 @@ index ebec8fa5b89..84766b3a338 100644
  		metabuf = _bt_getbuf(rel, BTREE_METAPAGE, BT_READ);
  		metad = _bt_getmeta(rel, metabuf);
  
-diff --git a/src/backend/bootstrap/bootparse.y b/src/backend/bootstrap/bootparse.y
-index 5fcd004e1b1..58b994cef57 100644
---- a/src/backend/bootstrap/bootparse.y
-+++ b/src/backend/bootstrap/bootparse.y
-@@ -212,7 +212,8 @@ Boot_CreateStmt:
- 												   mapped_relation,
- 												   true,
- 												   &relfrozenxid,
--												   &relminmxid);
-+												   &relminmxid,
-+												   false);
- 						elog(DEBUG4, "bootstrap relation created");
- 					}
- 					else
 diff --git a/src/backend/catalog/Makefile b/src/backend/catalog/Makefile
 index d297e773612..8c21979625f 100644
 --- a/src/backend/catalog/Makefile
@@ -172,7 +158,7 @@ index aa7d4d5456b..595cb03eb4a 100644
  			break;
  		case RELPERSISTENCE_UNLOGGED:
 diff --git a/src/backend/catalog/heap.c b/src/backend/catalog/heap.c
-index 83746d3fd91..656cc675255 100644
+index 83746d3fd91..f93e24e552f 100644
 --- a/src/backend/catalog/heap.c
 +++ b/src/backend/catalog/heap.c
 @@ -62,6 +62,7 @@
@@ -191,17 +177,7 @@ index 83746d3fd91..656cc675255 100644
  								TransactionId relfrozenxid,
  								TransactionId relminmxid,
  								Datum relacl,
-@@ -306,7 +308,8 @@ heap_create(const char *relname,
- 			bool mapped_relation,
- 			bool allow_system_table_mods,
- 			TransactionId *relfrozenxid,
--			MultiXactId *relminmxid)
-+			MultiXactId *relminmxid,
-+			bool skip_create_storage)
- {
- 	bool		create_storage;
- 	Relation	rel;
-@@ -366,13 +369,26 @@ heap_create(const char *relname,
+@@ -366,13 +368,25 @@ heap_create(const char *relname,
  			break;
  	}
  
@@ -210,7 +186,6 @@ index 83746d3fd91..656cc675255 100644
 +	 */
 +	if (relpersistence == RELPERSISTENCE_GLOBAL_TEMP)
 +	{
-+		if (skip_create_storage)
 +			create_storage = false;
 +
 +		if (!OidIsValid(relfilenode))
@@ -229,7 +204,7 @@ index 83746d3fd91..656cc675255 100644
  	else
  	{
  		create_storage = true;
-@@ -427,7 +443,7 @@ heap_create(const char *relname,
+@@ -427,7 +441,7 @@ heap_create(const char *relname,
  
  			case RELKIND_INDEX:
  			case RELKIND_SEQUENCE:
@@ -238,7 +213,7 @@ index 83746d3fd91..656cc675255 100644
  				break;
  
  			case RELKIND_RELATION:
-@@ -445,7 +461,8 @@ heap_create(const char *relname,
+@@ -445,7 +459,8 @@ heap_create(const char *relname,
  	 * protected by the existence of a physical file; but for relations with
  	 * no files, add a pg_shdepend entry to account for that.
  	 */
@@ -248,7 +223,7 @@ index 83746d3fd91..656cc675255 100644
  		recordDependencyOnTablespace(RelationRelationId, relid,
  									 reltablespace);
  
-@@ -998,6 +1015,7 @@ AddNewRelationTuple(Relation pg_class_desc,
+@@ -998,6 +1013,7 @@ AddNewRelationTuple(Relation pg_class_desc,
  					Oid reloftype,
  					Oid relowner,
  					char relkind,
@@ -256,7 +231,7 @@ index 83746d3fd91..656cc675255 100644
  					TransactionId relfrozenxid,
  					TransactionId relminmxid,
  					Datum relacl,
-@@ -1036,8 +1054,21 @@ AddNewRelationTuple(Relation pg_class_desc,
+@@ -1036,8 +1052,21 @@ AddNewRelationTuple(Relation pg_class_desc,
  			break;
  	}
  
@@ -280,17 +255,7 @@ index 83746d3fd91..656cc675255 100644
  	new_rel_reltup->relowner = relowner;
  	new_rel_reltup->reltype = new_type_oid;
  	new_rel_reltup->reloftype = reloftype;
-@@ -1303,7 +1334,8 @@ heap_create_with_catalog(const char *relname,
- 							   mapped_relation,
- 							   allow_system_table_mods,
- 							   &relfrozenxid,
--							   &relminmxid);
-+							   &relminmxid,
-+							   false);
- 
- 	Assert(relid == RelationGetRelid(new_rel_desc));
- 
-@@ -1410,6 +1442,7 @@ heap_create_with_catalog(const char *relname,
+@@ -1410,6 +1439,7 @@ heap_create_with_catalog(const char *relname,
  						reloftypeid,
  						ownerid,
  						relkind,
@@ -298,7 +263,7 @@ index 83746d3fd91..656cc675255 100644
  						relfrozenxid,
  						relminmxid,
  						PointerGetDatum(relacl),
-@@ -1495,8 +1528,9 @@ heap_create_with_catalog(const char *relname,
+@@ -1495,8 +1525,9 @@ heap_create_with_catalog(const char *relname,
  	/*
  	 * If there's a special on-commit action, remember it
  	 */
@@ -310,7 +275,7 @@ index 83746d3fd91..656cc675255 100644
  
  	/*
  	 * ok, the relation has been cataloged, so close our relations and return
-@@ -1993,6 +2027,19 @@ heap_drop_with_catalog(Oid relid)
+@@ -1993,6 +2024,19 @@ heap_drop_with_catalog(Oid relid)
  	if (relid == defaultPartOid)
  		update_default_partition_oid(parentOid, InvalidOid);
  
@@ -330,7 +295,7 @@ index 83746d3fd91..656cc675255 100644
  	/*
  	 * Schedule unlinking of the relation's physical files at commit.
  	 */
-@@ -3277,7 +3324,7 @@ RemoveStatistics(Oid relid, AttrNumber attnum)
+@@ -3277,7 +3321,7 @@ RemoveStatistics(Oid relid, AttrNumber attnum)
   * the specified relation.  Caller must hold exclusive lock on rel.
   */
  static void
@@ -339,7 +304,7 @@ index 83746d3fd91..656cc675255 100644
  {
  	ListCell   *indlist;
  
-@@ -3289,7 +3336,7 @@ RelationTruncateIndexes(Relation heapRelation)
+@@ -3289,7 +3333,7 @@ RelationTruncateIndexes(Relation heapRelation)
  		IndexInfo  *indexInfo;
  
  		/* Open the index relation; use exclusive lock, just to be sure */
@@ -348,7 +313,7 @@ index 83746d3fd91..656cc675255 100644
  
  		/*
  		 * Fetch info needed for index_build.  Since we know there are no
-@@ -3325,7 +3372,7 @@ RelationTruncateIndexes(Relation heapRelation)
+@@ -3325,7 +3369,7 @@ RelationTruncateIndexes(Relation heapRelation)
   * ON COMMIT truncation of temporary tables, where it doesn't matter.
   */
  void
@@ -357,7 +322,7 @@ index 83746d3fd91..656cc675255 100644
  {
  	List	   *relations = NIL;
  	ListCell   *cell;
-@@ -3335,8 +3382,23 @@ heap_truncate(List *relids)
+@@ -3335,8 +3379,23 @@ heap_truncate(List *relids)
  	{
  		Oid			rid = lfirst_oid(cell);
  		Relation	rel;
@@ -382,7 +347,7 @@ index 83746d3fd91..656cc675255 100644
  		relations = lappend(relations, rel);
  	}
  
-@@ -3369,6 +3431,7 @@ void
+@@ -3369,6 +3428,7 @@ void
  heap_truncate_one_rel(Relation rel)
  {
  	Oid			toastrelid;
@@ -390,7 +355,7 @@ index 83746d3fd91..656cc675255 100644
  
  	/*
  	 * Truncate the relation.  Partitioned tables have no storage, so there is
-@@ -3377,23 +3440,39 @@ heap_truncate_one_rel(Relation rel)
+@@ -3377,23 +3437,39 @@ heap_truncate_one_rel(Relation rel)
  	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
  		return;
  
@@ -434,7 +399,7 @@ index 83746d3fd91..656cc675255 100644
  
  /*
 diff --git a/src/backend/catalog/index.c b/src/backend/catalog/index.c
-index 26bfa74ce75..a957b43dd65 100644
+index 26bfa74ce75..c32b45f9673 100644
 --- a/src/backend/catalog/index.c
 +++ b/src/backend/catalog/index.c
 @@ -54,6 +54,7 @@
@@ -445,12 +410,10 @@ index 26bfa74ce75..a957b43dd65 100644
  #include "commands/event_trigger.h"
  #include "commands/progress.h"
  #include "commands/tablecmds.h"
-@@ -732,6 +733,29 @@ index_create(Relation heapRelation,
- 	char		relkind;
+@@ -733,6 +734,25 @@ index_create(Relation heapRelation,
  	TransactionId relfrozenxid;
  	MultiXactId relminmxid;
-+	bool		skip_create_storage = false;
-+
+ 
 +	/* For global temporary table only */
 +	if (RELATION_IS_GLOBAL_TEMP(heapRelation))
 +	{
@@ -467,25 +430,13 @@ index 26bfa74ce75..a957b43dd65 100644
 +		 * table are also skipped.
 +		 */
 +		if (!gtt_storage_attached(RelationGetRelid(heapRelation)))
-+		{
-+			skip_create_storage = true;
 +			flags |= INDEX_CREATE_SKIP_BUILD;
-+		}
 +	}
- 
++
  	/* constraint flags can only be set when a constraint is requested */
  	Assert((constr_flags == 0) ||
-@@ -939,7 +963,8 @@ index_create(Relation heapRelation,
- 								mapped_relation,
- 								allow_system_table_mods,
- 								&relfrozenxid,
--								&relminmxid);
-+								&relminmxid,
-+								skip_create_storage);
- 
- 	Assert(relfrozenxid == InvalidTransactionId);
- 	Assert(relminmxid == InvalidMultiXactId);
-@@ -2107,7 +2132,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+ 		   ((flags & INDEX_CREATE_ADD_CONSTRAINT) != 0));
+@@ -2107,7 +2127,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 * lock (see comments in RemoveRelations), and a non-concurrent DROP is
  	 * more efficient.
  	 */
@@ -494,7 +445,7 @@ index 26bfa74ce75..a957b43dd65 100644
  		   (!concurrent && !concurrent_lock_mode));
  
  	/*
-@@ -2139,6 +2164,21 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+@@ -2139,6 +2159,21 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 */
  	CheckTableNotInUse(userIndexRelation, "DROP INDEX");
  
@@ -516,7 +467,7 @@ index 26bfa74ce75..a957b43dd65 100644
  	/*
  	 * Drop Index Concurrently is more or less the reverse process of Create
  	 * Index Concurrently.
-@@ -2747,6 +2787,7 @@ index_update_stats(Relation rel,
+@@ -2747,6 +2782,7 @@ index_update_stats(Relation rel,
  	HeapTuple	tuple;
  	Form_pg_class rd_rel;
  	bool		dirty;
@@ -524,19 +475,19 @@ index 26bfa74ce75..a957b43dd65 100644
  
  	/*
  	 * We always update the pg_class row using a non-transactional,
-@@ -2841,20 +2882,37 @@ index_update_stats(Relation rel,
+@@ -2841,20 +2877,37 @@ index_update_stats(Relation rel,
  		else					/* don't bother for indexes */
  			relallvisible = 0;
  
 -		if (rd_rel->relpages != (int32) relpages)
-+		/* For global temporary table */
-+		if (is_gtt)
- 		{
+-		{
 -			rd_rel->relpages = (int32) relpages;
 -			dirty = true;
 -		}
 -		if (rd_rel->reltuples != (float4) reltuples)
--		{
++		/* For global temporary table */
++		if (is_gtt)
+ 		{
 -			rd_rel->reltuples = (float4) reltuples;
 -			dirty = true;
 +			/* Update GTT'statistics into local relcache */
@@ -573,7 +524,7 @@ index 26bfa74ce75..a957b43dd65 100644
  		}
  	}
  
-@@ -2967,6 +3025,26 @@ index_build(Relation heapRelation,
+@@ -2967,6 +3020,26 @@ index_build(Relation heapRelation,
  		pgstat_progress_update_multi_param(6, progress_index, progress_vals);
  	}
  
@@ -600,7 +551,7 @@ index 26bfa74ce75..a957b43dd65 100644
  	/*
  	 * Call the access method's build procedure
  	 */
-@@ -3508,6 +3586,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3508,6 +3581,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	PGRUsage	ru0;
  	bool		progress = ((params->options & REINDEXOPT_REPORT_PROGRESS) != 0);
  	bool		set_tablespace = false;
@@ -609,7 +560,7 @@ index 26bfa74ce75..a957b43dd65 100644
  
  	pg_rusage_init(&ru0);
  
-@@ -3521,10 +3601,29 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3521,10 +3596,29 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	if (!OidIsValid(heapId))
  		return;
  
@@ -641,7 +592,7 @@ index 26bfa74ce75..a957b43dd65 100644
  
  	/* if relation is gone, leave */
  	if (!heapRelation)
-@@ -3550,7 +3649,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3550,7 +3644,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	 * Open the target index relation and get an exclusive lock on it, to
  	 * ensure that no one else is touching this particular index.
  	 */
@@ -650,7 +601,7 @@ index 26bfa74ce75..a957b43dd65 100644
  
  	if (progress)
  		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-@@ -3801,6 +3900,12 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3801,6 +3895,12 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  	bool		result;
  	ListCell   *indexId;
  	int			i;
@@ -663,7 +614,7 @@ index 26bfa74ce75..a957b43dd65 100644
  
  	/*
  	 * Open and lock the relation.  ShareLock is sufficient since we only need
-@@ -3808,9 +3913,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3808,9 +3908,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  	 * should match ReindexTable().
  	 */
  	if ((params->options & REINDEXOPT_MISSING_OK) != 0)
@@ -2909,7 +2860,7 @@ index 62465bacd81..ef37f79ba68 100644
  			LockViewRecurse(reloid, lockstmt->mode, lockstmt->nowait, NIL);
  		else if (recurse)
 diff --git a/src/backend/commands/sequence.c b/src/backend/commands/sequence.c
-index 72bfdc07a49..9849f6bce64 100644
+index 72bfdc07a49..e5257f610f6 100644
 --- a/src/backend/commands/sequence.c
 +++ b/src/backend/commands/sequence.c
 @@ -30,6 +30,8 @@
@@ -3017,7 +2968,7 @@ index 72bfdc07a49..9849f6bce64 100644
  }
  
  
-@@ -1927,3 +1943,51 @@ seq_mask(char *page, BlockNumber blkno)
+@@ -1927,3 +1943,58 @@ seq_mask(char *page, BlockNumber blkno)
  
  	mask_unused_space(page);
  }
@@ -3050,8 +3001,8 @@ index 72bfdc07a49..9849f6bce64 100644
 +void
 +gtt_init_seq(Relation rel)
 +{
-+	Datum		value[SEQ_COL_LASTCOL] = {0};
-+	bool		null[SEQ_COL_LASTCOL] = {false};
++	Datum		value[SEQ_COL_LASTCOL];
++	bool		null[SEQ_COL_LASTCOL];
 +	HeapTuple	tuple;
 +	int64		startv = get_seqence_start_value(RelationGetRelid(rel));
 +
@@ -3060,7 +3011,14 @@ index 72bfdc07a49..9849f6bce64 100644
 +	 * log_cnt = 0
 +	 * is_called = false
 +	 */
-+	value[SEQ_COL_LASTVAL-1] = Int64GetDatumFast(startv); /* start sequence with 1 */
++	value[SEQ_COL_LASTVAL - 1] = Int64GetDatumFast(startv); /* start sequence with 1 */
++	null[SEQ_COL_LASTVAL - 1] = false;
++
++	value[SEQ_COL_LOG - 1] = Int64GetDatum((int64)0);
++	null[SEQ_COL_LOG - 1] = false;
++
++	value[SEQ_COL_CALLED - 1] = BoolGetDatum(false);
++	null[SEQ_COL_CALLED - 1] = false;
 +
 +	tuple = heap_form_tuple(RelationGetDescr(rel), value, null);
 +	fill_seq_with_data(rel, tuple);
@@ -4960,20 +4918,10 @@ index 5cd58386689..e528739a0ca 100644
  	else if (TailMatches("CREATE", "UNLOGGED"))
  		COMPLETE_WITH("TABLE", "MATERIALIZED VIEW");
 diff --git a/src/include/catalog/heap.h b/src/include/catalog/heap.h
-index 6ce480b49c1..415ec38a801 100644
+index 6ce480b49c1..dda3f3c5a60 100644
 --- a/src/include/catalog/heap.h
 +++ b/src/include/catalog/heap.h
-@@ -59,7 +59,8 @@ extern Relation heap_create(const char *relname,
- 							bool mapped_relation,
- 							bool allow_system_table_mods,
- 							TransactionId *relfrozenxid,
--							MultiXactId *relminmxid);
-+							MultiXactId *relminmxid,
-+							bool skip_create_storage);
- 
- extern Oid	heap_create_with_catalog(const char *relname,
- 									 Oid relnamespace,
-@@ -85,7 +86,7 @@ extern Oid	heap_create_with_catalog(const char *relname,
+@@ -85,7 +85,7 @@ extern Oid	heap_create_with_catalog(const char *relname,
  
  extern void heap_drop_with_catalog(Oid relid);
  
