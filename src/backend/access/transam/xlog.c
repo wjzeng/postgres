@@ -8111,13 +8111,6 @@ StartupXLOG(void)
 	/* Reload shared-memory state for prepared transactions */
 	RecoverPreparedTransactions();
 
-	/*
-	 * Shutdown the recovery environment. This must occur after
-	 * RecoverPreparedTransactions(), see notes for lock_twophase_recover()
-	 */
-	if (standbyState != STANDBY_DISABLED)
-		ShutdownRecoveryTransactionEnvironment();
-
 	/* Shut down xlogreader */
 	if (readFile >= 0)
 	{
@@ -8164,6 +8157,18 @@ StartupXLOG(void)
 
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
+
+	/*
+	 * Shutdown the recovery environment.  This must occur after
+	 * RecoverPreparedTransactions() (see notes in lock_twophase_recover())
+	 * and after switching SharedRecoveryState to RECOVERY_STATE_DONE so as
+	 * any session building a snapshot will not rely on KnownAssignedXids as
+	 * RecoveryInProgress() would return false at this stage.  This is
+	 * particularly critical for prepared 2PC transactions, that would still
+	 * need to be included in snapshots once recovery has ended.
+	 */
+	if (standbyState != STANDBY_DISABLED)
+		ShutdownRecoveryTransactionEnvironment();
 
 	/*
 	 * If there were cascading standby servers connected to us, nudge any wal
@@ -10598,7 +10603,7 @@ VerifyOverwriteContrecord(xl_overwrite_contrecord *xlrec, XLogReaderState *state
 			 LSN_FORMAT_ARGS(state->overwrittenRecPtr));
 
 	ereport(LOG,
-			(errmsg("sucessfully skipped missing contrecord at %X/%X, overwritten at %s",
+			(errmsg("successfully skipped missing contrecord at %X/%X, overwritten at %s",
 					LSN_FORMAT_ARGS(xlrec->overwritten_lsn),
 					timestamptz_to_str(xlrec->overwrite_time))));
 
