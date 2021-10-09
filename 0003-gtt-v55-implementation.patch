@@ -80,7 +80,7 @@ index 9befe012a9e..26fce0c4b83 100644
  	/* copy main fork */
  	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
 diff --git a/src/backend/access/heap/vacuumlazy.c b/src/backend/access/heap/vacuumlazy.c
-index 9eaf07649e8..41db273abed 100644
+index 05221cc1d6d..c4a0dc1ac0e 100644
 --- a/src/backend/access/heap/vacuumlazy.c
 +++ b/src/backend/access/heap/vacuumlazy.c
 @@ -63,6 +63,7 @@
@@ -107,7 +107,7 @@ index 9eaf07649e8..41db273abed 100644
  	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
  	{
 diff --git a/src/backend/access/nbtree/nbtpage.c b/src/backend/access/nbtree/nbtpage.c
-index ebec8fa5b89..84766b3a338 100644
+index 5bc7c3616a9..0b261f723d7 100644
 --- a/src/backend/access/nbtree/nbtpage.c
 +++ b/src/backend/access/nbtree/nbtpage.c
 @@ -28,6 +28,7 @@
@@ -158,7 +158,7 @@ index aa7d4d5456b..595cb03eb4a 100644
  			break;
  		case RELPERSISTENCE_UNLOGGED:
 diff --git a/src/backend/catalog/heap.c b/src/backend/catalog/heap.c
-index 83746d3fd91..99b2ad33915 100644
+index 5898203972b..c785d61db20 100644
 --- a/src/backend/catalog/heap.c
 +++ b/src/backend/catalog/heap.c
 @@ -62,6 +62,7 @@
@@ -789,10 +789,10 @@ index c5ad28d71fe..707068a6fd8 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 00000000000..384b4b07af1
+index 00000000000..7d5b5705458
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
-@@ -0,0 +1,1573 @@
+@@ -0,0 +1,1519 @@
 +/*-------------------------------------------------------------------------
 + *
 + * storage_gtt.c
@@ -1449,19 +1449,14 @@ index 00000000000..384b4b07af1
 +static void
 +gtt_storage_removeall(int code, Datum arg)
 +{
-+	HASH_SEQ_STATUS		status;
++	HASH_SEQ_STATUS			status;
 +	gtt_local_hash_entry	*entry;
-+	SMgrRelation		*srels = NULL;
-+	Oid			*relids = NULL;
-+	char			*relkinds = NULL;
-+	int			nrels = 0,
-+				nfiles = 0,
-+				maxrels = 0,
-+				maxfiles = 0,
-+				i = 0;
 +
 +	if (gtt_storage_local_hash == NULL)
 +		return;
++
++	/* Need to ensure we have a usable transaction. */
++	AbortOutOfAnyTransaction();
 +
 +	/* Search all relfilenode for GTT in current backend */
 +	hash_seq_init(&status, gtt_storage_local_hash);
@@ -1471,74 +1466,25 @@ index 00000000000..384b4b07af1
 +
 +		foreach(lc, entry->relfilenode_list)
 +		{
-+			SMgrRelation	srel;
++			SMgrRelation	srel[1];
 +			RelFileNode		rnode;
 +			gtt_relfilenode *gtt_rnode = lfirst(lc);
 +
 +			rnode.spcNode = gtt_rnode->spcnode;
 +			rnode.dbNode = MyDatabaseId;
 +			rnode.relNode = gtt_rnode->relfilenode;
-+			srel = smgropen(rnode, MyBackendId);
-+
-+			if (maxfiles == 0)
-+			{
-+				maxfiles = 32;
-+				srels = palloc(sizeof(SMgrRelation) * maxfiles);
-+			}
-+			else if (maxfiles <= nfiles)
-+			{
-+				maxfiles *= 2;
-+				srels = repalloc(srels, sizeof(SMgrRelation) * maxfiles);
-+			}
-+
-+			srels[nfiles++] = srel;
++			srel[0] = smgropen(rnode, MyBackendId);
++			smgrdounlinkall(srel, 1, false);
++			smgrclose(srel[0]);
 +		}
 +
-+		if (maxrels == 0)
-+		{
-+			maxrels = 32;
-+			relids  = palloc(sizeof(Oid) * maxrels);
-+			relkinds = palloc(sizeof(char) * maxrels);
-+		}
-+		else if (maxrels <= nrels)
-+		{
-+			maxrels *= 2;
-+			relids  = repalloc(relids , sizeof(Oid) * maxrels);
-+			relkinds = repalloc(relkinds, sizeof(char) * maxrels);
-+		}
-+
-+		relkinds[nrels] = entry->relkind;
-+		relids[nrels] = entry->relid;
-+		nrels++;
-+	}
-+
-+	/* drop local buffer and storage */
-+	if (nfiles > 0)
-+	{
-+		/* Need to ensure we have a usable transaction. */
-+                AbortOutOfAnyTransaction();
-+
-+		smgrdounlinkall(srels, nfiles, false);
-+		for (i = 0; i < nfiles; i++)
-+			smgrclose(srels[i]);
-+
-+		pfree(srels);
-+	}
-+
-+	if (nrels)
-+	{
 +		LWLockAcquire(&gtt_shared_ctl->lock, LW_EXCLUSIVE);
-+		for (i = 0; i < nrels; i++)
-+		{
-+			/* tell shared hash */
-+			if (relkinds[i] == RELKIND_RELATION ||
-+				relkinds[i] == RELKIND_SEQUENCE)
-+				gtt_storage_checkout(relids[i], true, false);
-+		}
++		if (entry->relkind == RELKIND_RELATION ||
++			entry->relkind == RELKIND_SEQUENCE)
++			gtt_storage_checkout(entry->relid, true, false);
 +		LWLockRelease(&gtt_shared_ctl->lock);
 +
-+		pfree(relids);
-+		pfree(relkinds);
++		hash_search(gtt_storage_local_hash, (void *) &(entry->relid), HASH_REMOVE, NULL);
 +	}
 +
 +	/* set to global area */
@@ -3027,7 +2973,7 @@ index 72bfdc07a49..e5257f610f6 100644
 +}
 +
 diff --git a/src/backend/commands/tablecmds.c b/src/backend/commands/tablecmds.c
-index dbee6ae199f..a5629506e20 100644
+index ff97b618e63..67f1043d08e 100644
 --- a/src/backend/commands/tablecmds.c
 +++ b/src/backend/commands/tablecmds.c
 @@ -47,6 +47,7 @@
@@ -3775,7 +3721,7 @@ index 146ee8dd1ea..2d4e9393f00 100644
  		 * A materialized view would either need to save parameters for use in
  		 * maintaining/loading the data or prohibit them entirely.  The latter
 diff --git a/src/backend/parser/gram.y b/src/backend/parser/gram.y
-index e3068a374ee..159465e0185 100644
+index 08f1bf1031c..d6048f2ee57 100644
 --- a/src/backend/parser/gram.y
 +++ b/src/backend/parser/gram.y
 @@ -3410,17 +3410,11 @@ OptTemp:	TEMPORARY					{ $$ = RELPERSISTENCE_TEMP; }
@@ -3887,7 +3833,7 @@ index c5c3f26ecf1..2a2b2789077 100644
 +}
 +
 diff --git a/src/backend/parser/parse_utilcmd.c b/src/backend/parser/parse_utilcmd.c
-index 1d3ee53244d..5e4feacd847 100644
+index 313d7b6ff02..38e0e162e82 100644
 --- a/src/backend/parser/parse_utilcmd.c
 +++ b/src/backend/parser/parse_utilcmd.c
 @@ -447,6 +447,13 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
@@ -3942,7 +3888,7 @@ index 3b3df8fa8cc..ca6c68879d2 100644
  
  		relid = classForm->oid;
 diff --git a/src/backend/storage/buffer/bufmgr.c b/src/backend/storage/buffer/bufmgr.c
-index e88e4e918b0..10eaac892a8 100644
+index 08ebabfe96a..c346c59c7f4 100644
 --- a/src/backend/storage/buffer/bufmgr.c
 +++ b/src/backend/storage/buffer/bufmgr.c
 @@ -37,6 +37,7 @@
@@ -4144,7 +4090,7 @@ index d5a7fb13f3c..8225cf6219f 100644
  			elog(ERROR, "invalid relpersistence: %c", relform->relpersistence);
  			backend = InvalidBackendId; /* placate compiler */
 diff --git a/src/backend/utils/adt/selfuncs.c b/src/backend/utils/adt/selfuncs.c
-index 0c8c05f6c2e..699507a24c7 100644
+index 10895fb2876..66255eb7604 100644
 --- a/src/backend/utils/adt/selfuncs.c
 +++ b/src/backend/utils/adt/selfuncs.c
 @@ -108,6 +108,7 @@
@@ -4226,7 +4172,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  
  		if (HeapTupleIsValid(vardata->statsTuple))
  		{
-@@ -6800,6 +6828,7 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -6820,6 +6848,7 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  	{
  		/* Simple variable --- look to stats for the underlying table */
  		RangeTblEntry *rte = planner_rt_fetch(index->rel->relid, root);
@@ -4234,7 +4180,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  
  		Assert(rte->rtekind == RTE_RELATION);
  		relid = rte->relid;
-@@ -6817,6 +6846,14 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -6837,6 +6866,14 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  				!vardata.freefunc)
  				elog(ERROR, "no function provided to release variable stats with");
  		}
@@ -4249,7 +4195,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  		else
  		{
  			vardata.statsTuple = SearchSysCache3(STATRELATTINH,
-@@ -6828,6 +6865,8 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -6848,6 +6885,8 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  	}
  	else
  	{
@@ -4258,7 +4204,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  		/* Expression --- maybe there are stats for the index itself */
  		relid = index->indexoid;
  		colnum = 1;
-@@ -6843,6 +6882,14 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -6863,6 +6902,14 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  				!vardata.freefunc)
  				elog(ERROR, "no function provided to release variable stats with");
  		}
@@ -4273,7 +4219,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  		else
  		{
  			vardata.statsTuple = SearchSysCache3(STATRELATTINH,
-@@ -7761,6 +7808,8 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -7781,6 +7828,8 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  		/* attempt to lookup stats in relation for this index column */
  		if (attnum != 0)
  		{
@@ -4282,7 +4228,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  			/* Simple variable -- look to stats for the underlying table */
  			if (get_relation_stats_hook &&
  				(*get_relation_stats_hook) (root, rte, attnum, &vardata))
-@@ -7773,6 +7822,15 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -7793,6 +7842,15 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  					elog(ERROR,
  						 "no function provided to release variable stats with");
  			}
@@ -4298,7 +4244,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  			else
  			{
  				vardata.statsTuple =
-@@ -7785,6 +7843,8 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -7805,6 +7863,8 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  		}
  		else
  		{
@@ -4307,7 +4253,7 @@ index 0c8c05f6c2e..699507a24c7 100644
  			/*
  			 * Looks like we've found an expression column in the index. Let's
  			 * see if there's any stats for it.
-@@ -7804,6 +7864,15 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+@@ -7824,6 +7884,15 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  					!vardata.freefunc)
  					elog(ERROR, "no function provided to release variable stats with");
  			}
@@ -4871,7 +4817,7 @@ index ca0795f68ff..018a2effd4b 100644
  					   const char *db_name);
  
 diff --git a/src/bin/psql/describe.c b/src/bin/psql/describe.c
-index 90ff649be72..7a50197875b 100644
+index a33d77c0efc..42fd7ec0c70 100644
 --- a/src/bin/psql/describe.c
 +++ b/src/bin/psql/describe.c
 @@ -4067,7 +4067,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
@@ -4885,7 +4831,7 @@ index 90ff649be72..7a50197875b 100644
  							  gettext_noop("temporary"),
  							  gettext_noop("unlogged"),
 diff --git a/src/bin/psql/tab-complete.c b/src/bin/psql/tab-complete.c
-index 5cd58386689..e528739a0ca 100644
+index ecae9df8eda..d226b2dfef9 100644
 --- a/src/bin/psql/tab-complete.c
 +++ b/src/bin/psql/tab-complete.c
 @@ -1059,6 +1059,8 @@ static const pgsql_thing_t words_after_create[] = {
