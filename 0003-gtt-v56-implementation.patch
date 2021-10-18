@@ -789,10 +789,10 @@ index c5ad28d71fe..707068a6fd8 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 00000000000..af8afdb5022
+index 00000000000..e79a90cca56
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
-@@ -0,0 +1,1518 @@
+@@ -0,0 +1,1526 @@
 +/*-------------------------------------------------------------------------
 + *
 + * storage_gtt.c
@@ -2168,17 +2168,22 @@ index 00000000000..af8afdb5022
 +	/* init heap storage */
 +	RelationCreateStorage(relation->rd_node, RELPERSISTENCE_GLOBAL_TEMP, relation);
 +
++	/* rebuild all local index for global temp table */
 +	for (i = 0; i < resultRelInfo->ri_NumIndices; i++)
 +	{
 +		Relation	index = resultRelInfo->ri_IndexRelationDescs[i];
 +		IndexInfo	*info = resultRelInfo->ri_IndexRelationInfo[i];
 +
 +		index_build(relation, index, info, true, false);
++
++		/* after build index, index re-enabled */
 +		Assert(index->rd_index->indisvalid);
 +		Assert(index->rd_index->indislive);
 +		Assert(index->rd_index->indisready);
++		Assert(info->ii_ReadyForInserts);
 +	}
 +
++	/* rebuild index for global temp toast table */
 +	toastrelid = relation->rd_rel->reltoastrelid;
 +	if (OidIsValid(toastrelid))
 +	{
@@ -2200,6 +2205,9 @@ index 00000000000..af8afdb5022
 +			/* build empty index */
 +			indexInfo = BuildDummyIndexInfo(currentIndex);
 +			index_build(toastrel, currentIndex, indexInfo, true, false);
++			Assert(currentIndex->rd_index->indisvalid);
++			Assert(currentIndex->rd_index->indislive);
++			Assert(currentIndex->rd_index->indisready);
 +			index_close(currentIndex, NoLock);
 +		}
 +
@@ -3598,7 +3606,7 @@ index b3ce4bae530..611e3f18a70 100644
  	}
  
 diff --git a/src/backend/executor/execPartition.c b/src/backend/executor/execPartition.c
-index 5c723bc54e1..a7edceb1a5c 100644
+index 5c723bc54e1..191e0f6fd21 100644
 --- a/src/backend/executor/execPartition.c
 +++ b/src/backend/executor/execPartition.c
 @@ -18,6 +18,7 @@
@@ -3609,16 +3617,6 @@ index 5c723bc54e1..a7edceb1a5c 100644
  #include "executor/execPartition.h"
  #include "executor/executor.h"
  #include "foreign/fdwapi.h"
-@@ -533,6 +534,9 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
- 						(node != NULL &&
- 						 node->onConflictAction != ONCONFLICT_NONE));
- 
-+	/* Init storage for partitioned global temporary table in current backend */
-+	init_gtt_storage(mtstate->operation, leaf_part_rri);
-+
- 	/*
- 	 * Build WITH CHECK OPTION constraints for the partition.  Note that we
- 	 * didn't build the withCheckOptionList for partitions within the planner,
 diff --git a/src/backend/executor/nodeModifyTable.c b/src/backend/executor/nodeModifyTable.c
 index d328856ae5b..4e2bbb224cc 100644
 --- a/src/backend/executor/nodeModifyTable.c
