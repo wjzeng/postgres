@@ -789,10 +789,10 @@ index c5ad28d71fe..707068a6fd8 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 00000000000..7d5b5705458
+index 00000000000..af8afdb5022
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
-@@ -0,0 +1,1519 @@
+@@ -0,0 +1,1518 @@
 +/*-------------------------------------------------------------------------
 + *
 + * storage_gtt.c
@@ -2173,11 +2173,10 @@ index 00000000000..7d5b5705458
 +		Relation	index = resultRelInfo->ri_IndexRelationDescs[i];
 +		IndexInfo	*info = resultRelInfo->ri_IndexRelationInfo[i];
 +
++		index_build(relation, index, info, true, false);
 +		Assert(index->rd_index->indisvalid);
 +		Assert(index->rd_index->indislive);
 +		Assert(index->rd_index->indisready);
-+
-+		index_build(relation, index, info, true, false);
 +	}
 +
 +	toastrelid = relation->rd_rel->reltoastrelid;
@@ -2973,7 +2972,7 @@ index 72bfdc07a49..e5257f610f6 100644
 +}
 +
 diff --git a/src/backend/commands/tablecmds.c b/src/backend/commands/tablecmds.c
-index ff97b618e63..67f1043d08e 100644
+index 1c2ebe1bf69..178575e6062 100644
 --- a/src/backend/commands/tablecmds.c
 +++ b/src/backend/commands/tablecmds.c
 @@ -47,6 +47,7 @@
@@ -3665,10 +3664,10 @@ index 296dd75c1b6..d971aea2546 100644
  
  			/*
 diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index 1e42d75465e..15a76b2326b 100644
+index bd01ec0526f..ff4e81ca2cf 100644
 --- a/src/backend/optimizer/plan/planner.c
 +++ b/src/backend/optimizer/plan/planner.c
-@@ -6070,7 +6070,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
+@@ -6071,7 +6071,7 @@ plan_create_index_workers(Oid tableOid, Oid indexOid)
  	 * Furthermore, any index predicate or index expressions must be parallel
  	 * safe.
  	 */
@@ -3860,10 +3859,10 @@ index 313d7b6ff02..38e0e162e82 100644
  	cxt.inhRelations = NIL;
  	cxt.isalter = true;
 diff --git a/src/backend/postmaster/autovacuum.c b/src/backend/postmaster/autovacuum.c
-index 3b3df8fa8cc..ca6c68879d2 100644
+index 96332320a73..75ed4d0ae9e 100644
 --- a/src/backend/postmaster/autovacuum.c
 +++ b/src/backend/postmaster/autovacuum.c
-@@ -2111,6 +2111,14 @@ do_autovacuum(void)
+@@ -2115,6 +2115,14 @@ do_autovacuum(void)
  			}
  			continue;
  		}
@@ -3878,7 +3877,7 @@ index 3b3df8fa8cc..ca6c68879d2 100644
  
  		/* Fetch reloptions and the pgstat entry for this table */
  		relopts = extract_autovac_opts(tuple, pg_class_desc);
-@@ -2177,7 +2185,7 @@ do_autovacuum(void)
+@@ -2181,7 +2189,7 @@ do_autovacuum(void)
  		/*
  		 * We cannot safely process other backends' temp tables, so skip 'em.
  		 */
@@ -4817,10 +4816,10 @@ index ca0795f68ff..018a2effd4b 100644
  					   const char *db_name);
  
 diff --git a/src/bin/psql/describe.c b/src/bin/psql/describe.c
-index a33d77c0efc..42fd7ec0c70 100644
+index ea4ca5c05c2..68d04e554ee 100644
 --- a/src/bin/psql/describe.c
 +++ b/src/bin/psql/describe.c
-@@ -4067,7 +4067,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
+@@ -4066,7 +4066,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
  		if (pset.sversion >= 90100)
  		{
  			appendPQExpBuffer(&buf,
