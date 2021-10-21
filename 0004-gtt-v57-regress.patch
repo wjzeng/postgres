@@ -1084,10 +1084,10 @@ index d9fa6a5b54a..697db975479 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 00000000000..f003581c9de
+index 00000000000..094ad04ce90
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,515 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1597,6 +1597,12 @@ index 00000000000..f003581c9de
 +drop cascades to table global_temporary_table.temp_table_test_statistics
 +drop cascades to table global_temporary_table.gtt_t_kenyon
 +drop cascades to table global_temporary_table.temp_table_test_systemview
++-- should empty
++select * from pg_list_gtt_relfrozenxids();
++ pid | relfrozenxid 
++-----+--------------
++(0 rows)
++
 diff --git a/src/test/regress/expected/rules.out b/src/test/regress/expected/rules.out
 index 2fa00a3c29a..e0001bc3448 100644
 --- a/src/test/regress/expected/rules.out
@@ -1709,10 +1715,10 @@ index 7be89178f0f..db8095d30bf 100644
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
-index 00000000000..3a5e257861d
+index 00000000000..7dfe4446970
 --- /dev/null
 +++ b/src/test/regress/sql/global_temporary_table.sql
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,290 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -2000,6 +2006,7 @@ index 00000000000..3a5e257861d
 +
 +reset search_path;
 +drop schema global_temporary_table cascade;
++-- should empty
 +select * from pg_list_gtt_relfrozenxids();
 +
 -- 
