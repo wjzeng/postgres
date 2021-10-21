@@ -1084,10 +1084,10 @@ index d9fa6a5b54a..697db975479 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 00000000000..def015dcbd6
+index 00000000000..f003581c9de
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,509 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1103,7 +1103,7 @@ index 00000000000..def015dcbd6
 +create global temp table gtt_test_rename(a int primary key, b text);
 +create global temp table gtt_test_createindex(c0 tsvector,c1 varchar(100), c2 int);
 +--
-+-- test DML of temp table
++-- test DML on global temp table
 +--
 +-- update empty temp table
 +update gtt_on_commit_delete set b ='test';
@@ -1454,6 +1454,9 @@ index 00000000000..def015dcbd6
 + idx_gtt_t_kenyon_2 |            40960 |                  |         40960 |               0 |                  40960
 +(3 rows)
 +
++-- test analyze/vacuum on global temp table
++ANALYZE gtt_t_kenyon;
++VACUUM gtt_t_kenyon;
 +--
 +-- test global temp table system view
 +--
@@ -1706,10 +1709,10 @@ index 7be89178f0f..db8095d30bf 100644
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
-index 00000000000..cb49dc1af57
+index 00000000000..3a5e257861d
 --- /dev/null
 +++ b/src/test/regress/sql/global_temporary_table.sql
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,289 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1728,7 +1731,7 @@ index 00000000000..cb49dc1af57
 +create global temp table gtt_test_createindex(c0 tsvector,c1 varchar(100), c2 int);
 +
 +--
-+-- test DML of temp table
++-- test DML on global temp table
 +--
 +
 +-- update empty temp table
@@ -1969,6 +1972,10 @@ index 00000000000..cb49dc1af57
 +rollback;
 +select relname, pg_relation_size(oid),pg_relation_size(reltoastrelid),pg_table_size(oid),pg_indexes_size(oid),pg_total_relation_size(oid) from pg_class where relname like '%t_kenyon%' order by relname;
 +
++-- test analyze/vacuum on global temp table
++ANALYZE gtt_t_kenyon;
++VACUUM gtt_t_kenyon;
++
 +--
 +-- test global temp table system view
 +--
@@ -1993,6 +2000,7 @@ index 00000000000..cb49dc1af57
 +
 +reset search_path;
 +drop schema global_temporary_table cascade;
++select * from pg_list_gtt_relfrozenxids();
 +
 -- 
 2.30.1 (Apple Git-130)
