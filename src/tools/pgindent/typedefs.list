@@ -1093,6 +1093,7 @@ ImportForeignSchemaStmt
 ImportForeignSchemaType
 ImportForeignSchema_function
 ImportQual
+InProgressEnt
 IncludeWal
 InclusionOpaque
 IncrementVarSublevelsUp_context
@@ -2128,6 +2129,7 @@ ReadBufferMode
 ReadBytePtrType
 ReadExtraTocPtrType
 ReadFunc
+ReadReplicationSlotCmd
 ReassignOwnedStmt
 RecheckForeignScan_function
 RecordCacheEntry
