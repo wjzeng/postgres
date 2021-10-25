@@ -6869,7 +6869,6 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	PQExpBuffer query = createPQExpBuffer();
 	PGresult   *res;
 	IndxInfo   *indxinfo;
-	ConstraintInfo *constrinfo;
 	int			i_tableoid,
 				i_oid,
 				i_indexname,
@@ -7133,7 +7132,6 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 
 		tbinfo->indexes = indxinfo =
 			(IndxInfo *) pg_malloc(ntups * sizeof(IndxInfo));
-		constrinfo = (ConstraintInfo *) pg_malloc(ntups * sizeof(ConstraintInfo));
 		tbinfo->numIndexes = ntups;
 
 		for (j = 0; j < ntups; j++)
@@ -7173,28 +7171,31 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				 * If we found a constraint matching the index, create an
 				 * entry for it.
 				 */
-				constrinfo[j].dobj.objType = DO_CONSTRAINT;
-				constrinfo[j].dobj.catId.tableoid = atooid(PQgetvalue(res, j, i_contableoid));
-				constrinfo[j].dobj.catId.oid = atooid(PQgetvalue(res, j, i_conoid));
-				AssignDumpId(&constrinfo[j].dobj);
-				constrinfo[j].dobj.dump = tbinfo->dobj.dump;
-				constrinfo[j].dobj.name = pg_strdup(PQgetvalue(res, j, i_conname));
-				constrinfo[j].dobj.namespace = tbinfo->dobj.namespace;
-				constrinfo[j].contable = tbinfo;
-				constrinfo[j].condomain = NULL;
-				constrinfo[j].contype = contype;
-				if (contype == 'x')
-					constrinfo[j].condef = pg_strdup(PQgetvalue(res, j, i_condef));
-				else
-					constrinfo[j].condef = NULL;
-				constrinfo[j].confrelid = InvalidOid;
-				constrinfo[j].conindex = indxinfo[j].dobj.dumpId;
-				constrinfo[j].condeferrable = *(PQgetvalue(res, j, i_condeferrable)) == 't';
-				constrinfo[j].condeferred = *(PQgetvalue(res, j, i_condeferred)) == 't';
-				constrinfo[j].conislocal = true;
-				constrinfo[j].separate = true;
+				ConstraintInfo *constrinfo;
 
-				indxinfo[j].indexconstraint = constrinfo[j].dobj.dumpId;
+				constrinfo = (ConstraintInfo *) pg_malloc(sizeof(ConstraintInfo));
+				constrinfo->dobj.objType = DO_CONSTRAINT;
+				constrinfo->dobj.catId.tableoid = atooid(PQgetvalue(res, j, i_contableoid));
+				constrinfo->dobj.catId.oid = atooid(PQgetvalue(res, j, i_conoid));
+				AssignDumpId(&constrinfo->dobj);
+				constrinfo->dobj.dump = tbinfo->dobj.dump;
+				constrinfo->dobj.name = pg_strdup(PQgetvalue(res, j, i_conname));
+				constrinfo->dobj.namespace = tbinfo->dobj.namespace;
+				constrinfo->contable = tbinfo;
+				constrinfo->condomain = NULL;
+				constrinfo->contype = contype;
+				if (contype == 'x')
+					constrinfo->condef = pg_strdup(PQgetvalue(res, j, i_condef));
+				else
+					constrinfo->condef = NULL;
+				constrinfo->confrelid = InvalidOid;
+				constrinfo->conindex = indxinfo[j].dobj.dumpId;
+				constrinfo->condeferrable = *(PQgetvalue(res, j, i_condeferrable)) == 't';
+				constrinfo->condeferred = *(PQgetvalue(res, j, i_condeferred)) == 't';
+				constrinfo->conislocal = true;
+				constrinfo->separate = true;
+
+				indxinfo[j].indexconstraint = constrinfo->dobj.dumpId;
 			}
 			else
 			{
@@ -9562,10 +9563,27 @@ getDefaultACLs(Archive *fout, int *numDefaultACLs)
 		PQExpBuffer initacl_subquery = createPQExpBuffer();
 		PQExpBuffer initracl_subquery = createPQExpBuffer();
 
+		/*
+		 * Global entries (with defaclnamespace=0) replace the hard-wired
+		 * default ACL for their object type.  We should dump them as deltas
+		 * from the default ACL, since that will be used as a starting point
+		 * for interpreting the ALTER DEFAULT PRIVILEGES commands.  On the
+		 * other hand, non-global entries can only add privileges not revoke
+		 * them.  We must dump those as-is (i.e., as deltas from an empty
+		 * ACL).  We implement that by passing NULL as the object type for
+		 * acldefault(), which works because acldefault() is STRICT.
+		 *
+		 * We can use defaclobjtype as the object type for acldefault(),
+		 * except for the case of 'S' (DEFACLOBJ_SEQUENCE) which must be
+		 * converted to 's'.
+		 */
 		buildACLQueries(acl_subquery, racl_subquery, initacl_subquery,
 						initracl_subquery, "defaclacl", "defaclrole",
 						"pip.initprivs",
-						"CASE WHEN defaclobjtype = 'S' THEN 's' ELSE defaclobjtype END::\"char\"",
+						"CASE WHEN defaclnamespace = 0 THEN"
+						"	  CASE WHEN defaclobjtype = 'S' THEN 's'::\"char\""
+						"	  ELSE defaclobjtype END "
+						"ELSE NULL END",
 						dopt->binary_upgrade);
 
 		appendPQExpBuffer(query, "SELECT d.oid, d.tableoid, "
@@ -11861,6 +11879,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	char	   *funcsig;		/* identity signature */
 	char	   *funcfullsig = NULL; /* full signature */
 	char	   *funcsig_tag;
+	char	   *qual_funcsig;
 	char	   *proretset;
 	char	   *prosrc;
 	char	   *probin;
@@ -12151,15 +12170,17 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 
 	funcsig_tag = format_function_signature(fout, finfo, false);
 
+	qual_funcsig = psprintf("%s.%s",
+							fmtId(finfo->dobj.namespace->dobj.name),
+							funcsig);
+
 	if (prokind[0] == PROKIND_PROCEDURE)
 		keyword = "PROCEDURE";
 	else
 		keyword = "FUNCTION";	/* works for window functions too */
 
-	appendPQExpBuffer(delqry, "DROP %s %s.%s;\n",
-					  keyword,
-					  fmtId(finfo->dobj.namespace->dobj.name),
-					  funcsig);
+	appendPQExpBuffer(delqry, "DROP %s %s;\n",
+					  keyword, qual_funcsig);
 
 	appendPQExpBuffer(q, "CREATE %s %s.%s",
 					  keyword,
@@ -12312,9 +12333,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 
 	append_depends_on_extension(fout, q, &finfo->dobj,
 								"pg_catalog.pg_proc", keyword,
-								psprintf("%s.%s",
-										 fmtId(finfo->dobj.namespace->dobj.name),
-										 funcsig));
+								qual_funcsig);
 
 	if (dopt->binary_upgrade)
 		binary_upgrade_extension_member(q, &finfo->dobj,
@@ -12359,6 +12378,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	if (funcfullsig)
 		free(funcfullsig);
 	free(funcsig_tag);
+	free(qual_funcsig);
 	if (allargtypes)
 		free(allargtypes);
 	if (argmodes)
@@ -14750,6 +14770,8 @@ dumpForeignServer(Archive *fout, const ForeignServerInfo *srvinfo)
 						 srvinfo->dobj.name, NULL,
 						 srvinfo->rolname,
 						 srvinfo->dobj.catId, srvinfo->dobj.dumpId);
+
+	PQclear(res);
 
 	free(qsrvname);
 
@@ -17901,12 +17923,10 @@ getExtensionMembership(Archive *fout, ExtensionInfo extinfo[],
 	PQExpBuffer query;
 	PGresult   *res;
 	int			ntups,
-				nextmembers,
 				i;
 	int			i_classid,
 				i_objid,
 				i_refobjid;
-	ExtensionMemberId *extmembers;
 	ExtensionInfo *ext;
 
 	/* Nothing to do if no extensions */
@@ -17931,12 +17951,7 @@ getExtensionMembership(Archive *fout, ExtensionInfo extinfo[],
 	i_objid = PQfnumber(res, "objid");
 	i_refobjid = PQfnumber(res, "refobjid");
 
-	extmembers = (ExtensionMemberId *) pg_malloc(ntups * sizeof(ExtensionMemberId));
-	nextmembers = 0;
-
 	/*
-	 * Accumulate data into extmembers[].
-	 *
 	 * Since we ordered the SELECT by referenced ID, we can expect that
 	 * multiple entries for the same extension will appear together; this
 	 * saves on searches.
@@ -17963,15 +17978,10 @@ getExtensionMembership(Archive *fout, ExtensionInfo extinfo[],
 			continue;
 		}
 
-		extmembers[nextmembers].catId = objId;
-		extmembers[nextmembers].ext = ext;
-		nextmembers++;
+		recordExtensionMembership(objId, ext);
 	}
 
 	PQclear(res);
-
-	/* Remember the data for use later */
-	setExtensionMembership(extmembers, nextmembers);
 
 	destroyPQExpBuffer(query);
 }
