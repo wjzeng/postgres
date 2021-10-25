@@ -1084,10 +1084,10 @@ index d9fa6a5b54a..697db975479 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 00000000000..094ad04ce90
+index 00000000000..f85d826269c
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,549 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1393,6 +1393,24 @@ index 00000000000..094ad04ce90
 +         Index Cond: ((a * 10) = 3)
 +(4 rows)
 +
++-- test statistic for whole row
++explain (costs off) select count(*) from temp_table_test_statistics group by temp_table_test_statistics;
++                  QUERY PLAN                  
++----------------------------------------------
++ HashAggregate
++   Group Key: temp_table_test_statistics.*
++   ->  Seq Scan on temp_table_test_statistics
++(3 rows)
++
++-- test statistic for system column
++explain (costs off) select count(*) from temp_table_test_statistics group by tableoid;
++                  QUERY PLAN                  
++----------------------------------------------
++ HashAggregate
++   Group Key: tableoid
++   ->  Seq Scan on temp_table_test_statistics
++(3 rows)
++
 +analyze temp_table_test_statistics;
 +-- indexscan by idx_test_1
 +explain (costs off) select * from temp_table_test_statistics where a=200000;
@@ -1409,6 +1427,22 @@ index 00000000000..094ad04ce90
 + Index Scan using idx_test_2 on temp_table_test_statistics
 +   Index Cond: ((a * 10) = 3)
 +(2 rows)
++
++explain (costs off) select count(*) from temp_table_test_statistics group by temp_table_test_statistics;
++                  QUERY PLAN                  
++----------------------------------------------
++ HashAggregate
++   Group Key: temp_table_test_statistics.*
++   ->  Seq Scan on temp_table_test_statistics
++(3 rows)
++
++explain (costs off) select count(*) from temp_table_test_statistics group by tableoid;
++                  QUERY PLAN                  
++----------------------------------------------
++ HashAggregate
++   Group Key: tableoid
++   ->  Seq Scan on temp_table_test_statistics
++(3 rows)
 +
 +--
 +-- test temp table with toast table
@@ -1715,10 +1749,10 @@ index 7be89178f0f..db8095d30bf 100644
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
-index 00000000000..7dfe4446970
+index 00000000000..53dca816cf3
 --- /dev/null
 +++ b/src/test/regress/sql/global_temporary_table.sql
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,296 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1955,11 +1989,17 @@ index 00000000000..7dfe4446970
 +create index idx_test_2 on temp_table_test_statistics((a*10));
 +explain (costs off) select * from temp_table_test_statistics where a=200000;
 +explain (costs off) select * from temp_table_test_statistics where a*10=3;
++-- test statistic for whole row
++explain (costs off) select count(*) from temp_table_test_statistics group by temp_table_test_statistics;
++-- test statistic for system column
++explain (costs off) select count(*) from temp_table_test_statistics group by tableoid;
 +analyze temp_table_test_statistics;
 +-- indexscan by idx_test_1
 +explain (costs off) select * from temp_table_test_statistics where a=200000;
 +-- indexscan by idx_test_2
 +explain (costs off) select * from temp_table_test_statistics where a*10=3;
++explain (costs off) select count(*) from temp_table_test_statistics group by temp_table_test_statistics;
++explain (costs off) select count(*) from temp_table_test_statistics group by tableoid;
 +
 +--
 +-- test temp table with toast table
