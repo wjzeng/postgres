@@ -47,7 +47,7 @@ my @contrib_excludes = (
 	'hstore_plperl',    'hstore_plpython',
 	'intagg',           'jsonb_plperl',
 	'jsonb_plpython',   'ltree_plpython',
-	'pgcrypto',         'sepgsql',
+	'sepgsql',
 	'brin',             'test_extensions',
 	'test_misc',        'test_pg_dump',
 	'snapshot_too_old', 'unsafe_tests');
@@ -373,7 +373,11 @@ sub mkvcbuild
 	}
 
 	my $pgbasebackup = AddSimpleFrontend('pg_basebackup', 1);
+	# This list of files has to match BBOBJS in pg_basebackup's Makefile.
 	$pgbasebackup->AddFile('src/bin/pg_basebackup/pg_basebackup.c');
+	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_file.c');
+	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_inject.c');
+	$pgbasebackup->AddFile('src/bin/pg_basebackup/bbstreamer_tar.c');
 	$pgbasebackup->AddLibrary('ws2_32.lib');
 
 	my $pgreceivewal = AddSimpleFrontend('pg_basebackup', 1);
