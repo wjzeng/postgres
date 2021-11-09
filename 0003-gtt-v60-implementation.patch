@@ -1,5 +1,5 @@
 diff --git a/contrib/amcheck/verify_heapam.c b/contrib/amcheck/verify_heapam.c
-index e84ecd1c981..c58218b1508 100644
+index 774a70f63df..692455ead0a 100644
 --- a/contrib/amcheck/verify_heapam.c
 +++ b/contrib/amcheck/verify_heapam.c
 @@ -18,6 +18,7 @@
@@ -10,7 +10,7 @@ index e84ecd1c981..c58218b1508 100644
  #include "funcapi.h"
  #include "miscadmin.h"
  #include "storage/bufmgr.h"
-@@ -223,6 +224,8 @@ verify_heapam(PG_FUNCTION_ARGS)
+@@ -226,6 +227,8 @@ verify_heapam(PG_FUNCTION_ARGS)
  	BlockNumber last_block;
  	BlockNumber nblocks;
  	const char *skip;
@@ -19,7 +19,7 @@ index e84ecd1c981..c58218b1508 100644
  
  	/* Check to see if caller supports us returning a tuplestore */
  	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
-@@ -339,6 +342,13 @@ verify_heapam(PG_FUNCTION_ARGS)
+@@ -342,6 +345,13 @@ verify_heapam(PG_FUNCTION_ARGS)
  		PG_RETURN_NULL();
  	}
  
@@ -33,7 +33,7 @@ index e84ecd1c981..c58218b1508 100644
  	/* Early exit if the relation is empty */
  	nblocks = RelationGetNumberOfBlocks(ctx.rel);
  	if (!nblocks)
-@@ -406,9 +416,25 @@ verify_heapam(PG_FUNCTION_ARGS)
+@@ -409,9 +419,25 @@ verify_heapam(PG_FUNCTION_ARGS)
  
  	update_cached_xid_range(&ctx);
  	update_cached_mxid_range(&ctx);
@@ -121,7 +121,7 @@ index eb3810494f2..cbd22909582 100644
  	else
  		sort_threshold = Min(sort_threshold, NLocBuffer);
 diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
-index 2da2be16969..34ecef39de9 100644
+index ec234a5e595..eb9f7f0eb48 100644
 --- a/src/backend/access/heap/heapam.c
 +++ b/src/backend/access/heap/heapam.c
 @@ -52,6 +52,7 @@
@@ -186,7 +186,7 @@ index 9befe012a9e..26fce0c4b83 100644
  	/* copy main fork */
  	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
 diff --git a/src/backend/access/heap/vacuumlazy.c b/src/backend/access/heap/vacuumlazy.c
-index 05221cc1d6d..984e08b4a78 100644
+index 558cc88a08a..0076666971e 100644
 --- a/src/backend/access/heap/vacuumlazy.c
 +++ b/src/backend/access/heap/vacuumlazy.c
 @@ -63,6 +63,7 @@
@@ -542,7 +542,7 @@ index 81cc39fb70e..0bf05f37a80 100644
  
  /*
 diff --git a/src/backend/catalog/index.c b/src/backend/catalog/index.c
-index 26bfa74ce75..c32b45f9673 100644
+index c255806e38c..7a52322ede4 100644
 --- a/src/backend/catalog/index.c
 +++ b/src/backend/catalog/index.c
 @@ -54,6 +54,7 @@
@@ -553,7 +553,7 @@ index 26bfa74ce75..c32b45f9673 100644
  #include "commands/event_trigger.h"
  #include "commands/progress.h"
  #include "commands/tablecmds.h"
-@@ -733,6 +734,25 @@ index_create(Relation heapRelation,
+@@ -734,6 +735,25 @@ index_create(Relation heapRelation,
  	TransactionId relfrozenxid;
  	MultiXactId relminmxid;
  
@@ -579,7 +579,7 @@ index 26bfa74ce75..c32b45f9673 100644
  	/* constraint flags can only be set when a constraint is requested */
  	Assert((constr_flags == 0) ||
  		   ((flags & INDEX_CREATE_ADD_CONSTRAINT) != 0));
-@@ -2107,7 +2127,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+@@ -2117,7 +2137,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 * lock (see comments in RemoveRelations), and a non-concurrent DROP is
  	 * more efficient.
  	 */
@@ -588,7 +588,7 @@ index 26bfa74ce75..c32b45f9673 100644
  		   (!concurrent && !concurrent_lock_mode));
  
  	/*
-@@ -2139,6 +2159,21 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+@@ -2149,6 +2169,21 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 */
  	CheckTableNotInUse(userIndexRelation, "DROP INDEX");
  
@@ -610,7 +610,7 @@ index 26bfa74ce75..c32b45f9673 100644
  	/*
  	 * Drop Index Concurrently is more or less the reverse process of Create
  	 * Index Concurrently.
-@@ -2747,6 +2782,7 @@ index_update_stats(Relation rel,
+@@ -2757,6 +2792,7 @@ index_update_stats(Relation rel,
  	HeapTuple	tuple;
  	Form_pg_class rd_rel;
  	bool		dirty;
@@ -618,7 +618,7 @@ index 26bfa74ce75..c32b45f9673 100644
  
  	/*
  	 * We always update the pg_class row using a non-transactional,
-@@ -2841,20 +2877,37 @@ index_update_stats(Relation rel,
+@@ -2851,20 +2887,37 @@ index_update_stats(Relation rel,
  		else					/* don't bother for indexes */
  			relallvisible = 0;
  
@@ -667,7 +667,7 @@ index 26bfa74ce75..c32b45f9673 100644
  		}
  	}
  
-@@ -2967,6 +3020,26 @@ index_build(Relation heapRelation,
+@@ -2977,6 +3030,26 @@ index_build(Relation heapRelation,
  		pgstat_progress_update_multi_param(6, progress_index, progress_vals);
  	}
  
@@ -694,7 +694,7 @@ index 26bfa74ce75..c32b45f9673 100644
  	/*
  	 * Call the access method's build procedure
  	 */
-@@ -3508,6 +3581,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3518,6 +3591,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	PGRUsage	ru0;
  	bool		progress = ((params->options & REINDEXOPT_REPORT_PROGRESS) != 0);
  	bool		set_tablespace = false;
@@ -703,7 +703,7 @@ index 26bfa74ce75..c32b45f9673 100644
  
  	pg_rusage_init(&ru0);
  
-@@ -3521,10 +3596,29 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3531,10 +3606,29 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	if (!OidIsValid(heapId))
  		return;
  
@@ -735,7 +735,7 @@ index 26bfa74ce75..c32b45f9673 100644
  
  	/* if relation is gone, leave */
  	if (!heapRelation)
-@@ -3550,7 +3644,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3560,7 +3654,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	 * Open the target index relation and get an exclusive lock on it, to
  	 * ensure that no one else is touching this particular index.
  	 */
@@ -744,7 +744,7 @@ index 26bfa74ce75..c32b45f9673 100644
  
  	if (progress)
  		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-@@ -3801,6 +3895,12 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3811,6 +3905,12 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  	bool		result;
  	ListCell   *indexId;
  	int			i;
@@ -757,7 +757,7 @@ index 26bfa74ce75..c32b45f9673 100644
  
  	/*
  	 * Open and lock the relation.  ShareLock is sufficient since we only need
-@@ -3808,9 +3908,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3818,9 +3918,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  	 * should match ReindexTable().
  	 */
  	if ((params->options & REINDEXOPT_MISSING_OK) != 0)
@@ -933,10 +933,10 @@ index c5ad28d71fe..707068a6fd8 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 00000000000..17b84dba29c
+index 00000000000..2011e4cc86e
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
-@@ -0,0 +1,1519 @@
+@@ -0,0 +1,1509 @@
 +/*-------------------------------------------------------------------------
 + *
 + * storage_gtt.c
@@ -1278,17 +1278,13 @@ index 00000000000..17b84dba29c
 +	entry = hash_search(active_gtt_shared_hash,
 +					(void *) &(fnode), HASH_FIND, NULL);
 +
-+	if (entry == NULL)
++	if (entry)
 +	{
-+		LWLockRelease(&gtt_shared_ctl->lock);
-+		return NULL;
++		Assert(entry->map);
++		/* copy the entire bitmap */
++		if (!bms_is_empty(entry->map))
++			map_copy = bms_copy(entry->map);
 +	}
-+
-+	Assert(entry->map);
-+
-+	/* copy the entire bitmap */
-+	if (!bms_is_empty(entry->map))
-+		map_copy = bms_copy(entry->map);
 +
 +	LWLockRelease(&gtt_shared_ctl->lock);
 +
@@ -1929,7 +1925,6 @@ index 00000000000..17b84dba29c
 +	Relation		rel = NULL;
 +	Oid			reloid = PG_GETARG_OID(0);
 +	int			attnum = PG_GETARG_INT32(1);
-+	char			rel_persistence;
 +	TupleDesc		tupdesc;
 +	MemoryContext		oldcontext;
 +	Relation		pg_tatistic = NULL;
@@ -1959,8 +1954,7 @@ index 00000000000..17b84dba29c
 +	MemoryContextSwitchTo(oldcontext);
 +
 +	rel = relation_open(reloid, AccessShareLock);
-+	rel_persistence = get_rel_persistence(reloid);
-+	if (rel_persistence != RELPERSISTENCE_GLOBAL_TEMP)
++	if (!RELATION_IS_GLOBAL_TEMP(rel))
 +	{
 +		elog(WARNING, "relation OID %u is not a global temporary table", reloid);
 +		relation_close(rel, NoLock);
@@ -1974,8 +1968,8 @@ index 00000000000..17b84dba29c
 +	tuple = get_gtt_att_statistic(reloid, attnum, false);
 +	if (tuple)
 +	{
-+		Datum		values[31];
-+		bool		isnull[31];
++		Datum		values[Natts_pg_statistic];
++		bool		isnull[Natts_pg_statistic];
 +		HeapTuple	res = NULL;
 +
 +		memset(&values, 0, sizeof(values));
@@ -1986,7 +1980,7 @@ index 00000000000..17b84dba29c
 +	}
 +	tuplestore_donestoring(tupstore);
 +
-+	relation_close(rel, NoLock);
++	relation_close(rel, AccessShareLock);
 +	relation_close(pg_tatistic, AccessShareLock);
 +
 +	return (Datum) 0;
@@ -2005,7 +1999,6 @@ index 00000000000..17b84dba29c
 +	HeapTuple	tuple;
 +	Oid			reloid = PG_GETARG_OID(0);
 +	Oid			relnode = 0;
-+	char			rel_persistence;
 +	BlockNumber		relpages = 0;
 +	BlockNumber		relallvisible = 0;
 +	uint32			relfrozenxid = 0;
@@ -2034,8 +2027,7 @@ index 00000000000..17b84dba29c
 +	MemoryContextSwitchTo(oldcontext);
 +
 +	rel = relation_open(reloid, AccessShareLock);
-+	rel_persistence = get_rel_persistence(reloid);
-+	if (rel_persistence != RELPERSISTENCE_GLOBAL_TEMP)
++	if (!RELATION_IS_GLOBAL_TEMP(rel))
 +	{
 +		elog(WARNING, "relation OID %u is not a global temporary table", reloid);
 +		relation_close(rel, NoLock);
@@ -2048,8 +2040,8 @@ index 00000000000..17b84dba29c
 +	relnode = gtt_fetch_current_relfilenode(reloid);
 +	if (relnode != InvalidOid)
 +	{
-+		Datum	values[6];
-+		bool	isnull[6];
++		Datum	values[Natts_pg_class];
++		bool	isnull[Natts_pg_class];
 +
 +		memset(isnull, 0, sizeof(isnull));
 +		memset(values, 0, sizeof(values));
@@ -2083,7 +2075,6 @@ index 00000000000..17b84dba29c
 +	MemoryContext		oldcontext;
 +	HeapTuple		tuple;
 +	Oid			reloid = PG_GETARG_OID(0);
-+	char			rel_persistence;
 +	Relation		rel = NULL;
 +	pid_t			pid = 0;
 +	int				backendid = 0;
@@ -2109,8 +2100,7 @@ index 00000000000..17b84dba29c
 +	MemoryContextSwitchTo(oldcontext);
 +
 +	rel = relation_open(reloid, AccessShareLock);
-+	rel_persistence = get_rel_persistence(reloid);
-+	if (rel_persistence != RELPERSISTENCE_GLOBAL_TEMP)
++	if (!RELATION_IS_GLOBAL_TEMP(rel))
 +	{
 +		elog(WARNING, "relation OID %u is not a global temporary table", reloid);
 +		relation_close(rel, NoLock);
@@ -2127,8 +2117,7 @@ index 00000000000..17b84dba29c
 +		{
 +			/* backendid map to process pid */
 +			proc = BackendIdGetProc(backendid);
-+			pid = proc->pid;
-+			if (pid > 0)
++			if (proc && proc->pid > 0)
 +			{
 +				Datum	values[2];
 +				bool	isnull[2];
@@ -2147,7 +2136,7 @@ index 00000000000..17b84dba29c
 +	}
 +
 +	tuplestore_donestoring(tupstore);
-+	relation_close(rel, NoLock);
++	relation_close(rel, AccessShareLock);
 +
 +	return (Datum) 0;
 +}
@@ -2198,19 +2187,20 @@ index 00000000000..17b84dba29c
 +
 +	pids = palloc0(sizeof(int) * num_xid);
 +	xids = palloc0(sizeof(int) * num_xid);
++	if (pids == NULL || xids == NULL)
++		elog(ERROR, "out of memory");
 +
 +	/* Get backend level oldest relfrozenxid in all backend that in MyDatabaseId use GTT */
 +	oldest = list_all_backend_gtt_frozenxids(num_xid, pids, xids, &i);
 +	if (i > 0)
 +	{
-+		if (i > 0)
-+		{
-+			pids[i] = 0;
-+			xids[i] = oldest;
-+			i++;
-+		}
++		/* save oldest relfrozenxid */
++		pids[i] = 0;
++		xids[i] = oldest;
++		i++;
 +
-+		for(j = 0; j < i; j++)
++		/* save relfrozenxid for each session */
++		for (j = 0; j < i; j++)
 +		{
 +			Datum	values[2];
 +			bool	isnull[2];
@@ -4096,7 +4086,7 @@ index 9fa3e0631e6..cc3eb928bc6 100644
  	/*
  	 * Set up lock manager
 diff --git a/src/backend/storage/ipc/procarray.c b/src/backend/storage/ipc/procarray.c
-index bd3c7a47fe2..22481374778 100644
+index 892f0f67998..bdc6b478ca8 100644
 --- a/src/backend/storage/ipc/procarray.c
 +++ b/src/backend/storage/ipc/procarray.c
 @@ -65,6 +65,7 @@
@@ -4107,7 +4097,7 @@ index bd3c7a47fe2..22481374778 100644
  
  #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
  
-@@ -5131,3 +5132,78 @@ KnownAssignedXidsReset(void)
+@@ -5148,3 +5149,82 @@ KnownAssignedXidsReset(void)
  
  	LWLockRelease(ProcArrayLock);
  }
@@ -4119,11 +4109,14 @@ index bd3c7a47fe2..22481374778 100644
 +int
 +list_all_backend_gtt_frozenxids(int max_size, int *pids, uint32 *xids, int *n)
 +{
-+	ProcArrayStruct		*arrayP = procArray;
++	ProcArrayStruct		*arrayP = NULL;
 +	TransactionId		result = InvalidTransactionId;
-+	int			index;
-+	uint8			flags = 0;
++	int			index = 0;
 +	int			i = 0;
++	uint8		flags = 0;
++
++	if (n)
++		*n = 0;
 +
 +	/* return 0 if feature is disabled */
 +	if (max_active_gtt <= 0)
@@ -4134,7 +4127,6 @@ index bd3c7a47fe2..22481374778 100644
 +		Assert(pids);
 +		Assert(xids);
 +		Assert(n);
-+		*n = 0;
 +	}
 +
 +	/* Disable in standby node */
@@ -4145,6 +4137,7 @@ index bd3c7a47fe2..22481374778 100644
 +	flags |= PROC_IN_LOGICAL_DECODING;
 +
 +	LWLockAcquire(ProcArrayLock, LW_SHARED);
++	arrayP = procArray;
 +	if (max_size > 0 && max_size < arrayP->numProcs)
 +	{
 +		LWLockRelease(ProcArrayLock);
@@ -4170,17 +4163,18 @@ index bd3c7a47fe2..22481374778 100644
 +				result = proc->backend_gtt_frozenxid;
 +
 +			/* save backend pid and backend level oldest relfrozenxid */
-+			if (max_size > 0)
-+			{
++			if (pids)
 +				pids[i] = proc->pid;
++
++			if (xids)
 +				xids[i] = proc->backend_gtt_frozenxid;
-+				i++;
-+			}
++
++			i++;
 +		}
 +	}
 +	LWLockRelease(ProcArrayLock);
 +
-+	if (max_size > 0)
++	if (n)
 +		*n = i;
 +
 +	return result;
@@ -4723,7 +4717,7 @@ index e91d5a3cfda..b8ec6b3ca46 100644
  	 * See also CheckRequiredParameterValues() if this parameter changes
  	 */
 diff --git a/src/bin/pg_dump/pg_dump.c b/src/bin/pg_dump/pg_dump.c
-index d1842edde0d..7d706307297 100644
+index b9635a95b6f..c08ef663aca 100644
 --- a/src/bin/pg_dump/pg_dump.c
 +++ b/src/bin/pg_dump/pg_dump.c
 @@ -2504,6 +2504,10 @@ makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
@@ -4989,7 +4983,7 @@ index 006661412ea..ffba81acb86 100644
  							  gettext_noop("temporary"),
  							  gettext_noop("unlogged"),
 diff --git a/src/bin/psql/tab-complete.c b/src/bin/psql/tab-complete.c
-index 8e01f545003..90882e1cd55 100644
+index 4f724e4428b..ab7eb31cd42 100644
 --- a/src/bin/psql/tab-complete.c
 +++ b/src/bin/psql/tab-complete.c
 @@ -1059,6 +1059,8 @@ static const pgsql_thing_t words_after_create[] = {
@@ -5001,7 +4995,7 @@ index 8e01f545003..90882e1cd55 100644
  	{"INDEX", NULL, NULL, &Query_for_list_of_indexes},
  	{"LANGUAGE", Query_for_list_of_languages},
  	{"LARGE OBJECT", NULL, NULL, NULL, THING_NO_CREATE | THING_NO_DROP},
-@@ -2554,6 +2556,9 @@ psql_completion(const char *text, int start, int end)
+@@ -2603,6 +2605,9 @@ psql_completion(const char *text, int start, int end)
  	/* CREATE FOREIGN DATA WRAPPER */
  	else if (Matches("CREATE", "FOREIGN", "DATA", "WRAPPER", MatchAny))
  		COMPLETE_WITH("HANDLER", "VALIDATOR", "OPTIONS");
@@ -5011,7 +5005,7 @@ index 8e01f545003..90882e1cd55 100644
  
  	/* CREATE INDEX --- is allowed inside CREATE SCHEMA, so use TailMatches */
  	/* First off we complete CREATE UNIQUE with "INDEX" */
-@@ -2781,6 +2786,8 @@ psql_completion(const char *text, int start, int end)
+@@ -2830,6 +2835,8 @@ psql_completion(const char *text, int start, int end)
  	/* Complete "CREATE TEMP/TEMPORARY" with the possible temp objects */
  	else if (TailMatches("CREATE", "TEMP|TEMPORARY"))
  		COMPLETE_WITH("SEQUENCE", "TABLE", "VIEW");
