@@ -1,3 +1,82 @@
+From 0e93616ef2229faeae48583d5ac5ab671a64ae8e Mon Sep 17 00:00:00 2001
+From: "wenjing.zwj" <wenjing.zwj@alibaba-inc.com>
+Date: Tue, 9 Nov 2021 10:45:31 +0800
+Subject: [PATCH] gtt v60 1109
+
+---
+ contrib/amcheck/verify_heapam.c          |   30 +-
+ src/backend/access/common/reloptions.c   |   15 +
+ src/backend/access/gist/gistutil.c       |    2 +-
+ src/backend/access/hash/hash.c           |    2 +-
+ src/backend/access/heap/heapam.c         |   18 +-
+ src/backend/access/heap/heapam_handler.c |    4 +-
+ src/backend/access/heap/vacuumlazy.c     |   30 +-
+ src/backend/access/nbtree/nbtpage.c      |    9 +
+ src/backend/catalog/Makefile             |    1 +
+ src/backend/catalog/catalog.c            |    1 +
+ src/backend/catalog/heap.c               |  105 +-
+ src/backend/catalog/index.c              |  134 +-
+ src/backend/catalog/namespace.c          |    7 +
+ src/backend/catalog/storage.c            |   52 +-
+ src/backend/catalog/storage_gtt.c        | 1509 ++++++++++++++++++++++
+ src/backend/catalog/system_views.sql     |   85 ++
+ src/backend/commands/analyze.c           |   78 +-
+ src/backend/commands/cluster.c           |   19 +
+ src/backend/commands/copy.c              |    2 +-
+ src/backend/commands/copyfrom.c          |    4 +
+ src/backend/commands/indexcmds.c         |   64 +-
+ src/backend/commands/lockcmds.c          |   24 +-
+ src/backend/commands/sequence.c          |   97 +-
+ src/backend/commands/tablecmds.c         |  205 ++-
+ src/backend/commands/vacuum.c            |  107 +-
+ src/backend/commands/view.c              |    6 +
+ src/backend/executor/execMain.c          |    4 +
+ src/backend/executor/execPartition.c     |    1 +
+ src/backend/executor/nodeModifyTable.c   |    4 +
+ src/backend/optimizer/path/allpaths.c    |    4 +-
+ src/backend/optimizer/plan/planner.c     |    2 +-
+ src/backend/optimizer/util/plancat.c     |    9 +
+ src/backend/parser/analyze.c             |    5 +
+ src/backend/parser/gram.y                |   20 +-
+ src/backend/parser/parse_relation.c      |   51 +
+ src/backend/parser/parse_utilcmd.c       |    9 +
+ src/backend/postmaster/autovacuum.c      |   10 +-
+ src/backend/storage/buffer/bufmgr.c      |   11 +
+ src/backend/storage/ipc/ipci.c           |    4 +
+ src/backend/storage/ipc/procarray.c      |   80 ++
+ src/backend/storage/lmgr/lwlock.c        |    4 +-
+ src/backend/storage/lmgr/proc.c          |    2 +
+ src/backend/utils/adt/dbsize.c           |    7 +
+ src/backend/utils/adt/selfuncs.c         |   99 +-
+ src/backend/utils/cache/lsyscache.c      |   14 +
+ src/backend/utils/cache/relcache.c       |  115 +-
+ src/backend/utils/misc/guc.c             |   32 +
+ src/bin/pg_dump/pg_dump.c                |   49 +-
+ src/bin/pg_upgrade/check.c               |    4 +-
+ src/bin/pg_upgrade/info.c                |   21 +-
+ src/bin/pg_upgrade/pg_upgrade.c          |   12 +-
+ src/bin/pg_upgrade/pg_upgrade.h          |    2 +-
+ src/bin/psql/describe.c                  |    3 +-
+ src/bin/psql/tab-complete.c              |    7 +
+ src/include/catalog/heap.h               |    2 +-
+ src/include/catalog/index.h              |    1 +
+ src/include/catalog/pg_class.h           |    1 +
+ src/include/catalog/pg_proc.dat          |   34 +
+ src/include/catalog/storage.h            |    2 +-
+ src/include/catalog/storage_gtt.h        |   45 +
+ src/include/commands/sequence.h          |    1 +
+ src/include/commands/tablecmds.h         |    2 +-
+ src/include/parser/parse_relation.h      |    3 +
+ src/include/storage/bufpage.h            |    2 +
+ src/include/storage/lwlock.h             |    1 +
+ src/include/storage/proc.h               |    2 +
+ src/include/storage/procarray.h          |    2 +
+ src/include/utils/guc.h                  |    4 +
+ src/include/utils/rel.h                  |   47 +-
+ 69 files changed, 3138 insertions(+), 206 deletions(-)
+ create mode 100644 src/backend/catalog/storage_gtt.c
+ create mode 100644 src/include/catalog/storage_gtt.h
+
 diff --git a/contrib/amcheck/verify_heapam.c b/contrib/amcheck/verify_heapam.c
 index 774a70f63df..692455ead0a 100644
 --- a/contrib/amcheck/verify_heapam.c
@@ -933,7 +1012,7 @@ index c5ad28d71fe..707068a6fd8 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 00000000000..2011e4cc86e
+index 00000000000..3eb8a5468cc
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
 @@ -0,0 +1,1509 @@
@@ -2040,8 +2119,8 @@ index 00000000000..2011e4cc86e
 +	relnode = gtt_fetch_current_relfilenode(reloid);
 +	if (relnode != InvalidOid)
 +	{
-+		Datum	values[Natts_pg_class];
-+		bool	isnull[Natts_pg_class];
++		Datum	values[6];
++		bool	isnull[6];
 +
 +		memset(isnull, 0, sizeof(isnull));
 +		memset(values, 0, sizeof(values));
@@ -2076,7 +2155,6 @@ index 00000000000..2011e4cc86e
 +	HeapTuple		tuple;
 +	Oid			reloid = PG_GETARG_OID(0);
 +	Relation		rel = NULL;
-+	pid_t			pid = 0;
 +	int				backendid = 0;
 +
 +	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -2121,8 +2199,9 @@ index 00000000000..2011e4cc86e
 +			{
 +				Datum	values[2];
 +				bool	isnull[2];
++				pid_t	pid = proc->pid;
 +
-+				memset(isnull, false, sizeof(isnull));
++				memset(isnull, 0, sizeof(isnull));
 +				memset(values, 0, sizeof(values));
 +				values[0] = UInt32GetDatum(reloid);
 +				values[1] = Int32GetDatum(pid);
@@ -2205,7 +2284,7 @@ index 00000000000..2011e4cc86e
 +			Datum	values[2];
 +			bool	isnull[2];
 +
-+			memset(isnull, false, sizeof(isnull));
++			memset(isnull, 0, sizeof(isnull));
 +			memset(values, 0, sizeof(values));
 +			values[0] = Int32GetDatum(pids[j]);
 +			values[1] = UInt32GetDatum(xids[j]);
