@@ -37,6 +37,11 @@ typedef SOCKET pgsocket;
 #define PGINVALID_SOCKET INVALID_SOCKET
 #endif
 
+/* if platform lacks socklen_t, we assume this will work */
+#ifndef HAVE_SOCKLEN_T
+typedef unsigned int socklen_t;
+#endif
+
 /* non-blocking */
 extern bool pg_set_noblock(pgsocket sock);
 extern bool pg_set_block(pgsocket sock);
