@@ -1084,10 +1084,10 @@ index d9fa6a5b54a..697db975479 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 00000000000..ec696c61ce9
+index 00000000000..5adc58d77e1
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,574 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1272,6 +1272,20 @@ index 00000000000..ec696c61ce9
 +-- should fail
 +CREATE MATERIALIZED VIEW mv_gtt_on_commit_default as select * from gtt_on_commit_default;
 +ERROR:  materialized views must not use global temporary tables or views
++-- test create table as select
++CREATE GLOBAL TEMPORARY TABLE test_create_table_as AS SELECT 1 AS a;
++-- test copy stmt
++create global temp table gtt_copytest (
++        c1 int,
++        "col with , comma" text,
++        "col with "" quote"  int);
++copy gtt_copytest from stdin csv header;
++select count(*) from gtt_copytest;
++ count 
++-------
++     2
++(1 row)
++
 +--
 +-- test foreign key dependencies for global temp table
 +--
@@ -1587,6 +1601,7 @@ index 00000000000..ec696c61ce9
 + regular_partition01                             | p       | p              | 
 + global_temp_partition_01_2021                   | r       | g              | {on_commit_delete_rows=true}
 + global_temp_with_serial                         | r       | g              | {on_commit_delete_rows=false}
++ gtt_copytest                                    | r       | g              | {on_commit_delete_rows=false}
 + gtt_on_commit_default                           | r       | g              | {on_commit_delete_rows=false}
 + gtt_on_commit_delete                            | r       | g              | {on_commit_delete_rows=true}
 + gtt_on_commit_delete2                           | r       | g              | {on_commit_delete_rows=true}
@@ -1605,14 +1620,15 @@ index 00000000000..ec696c61ce9
 + temp_table_test_systemview                      | r       | g              | {on_commit_delete_rows=false}
 + temp_table_with_sequence_oncommit_delete        | r       | g              | {on_commit_delete_rows=true}
 + temp_table_with_sequence_oncommit_preserve      | r       | g              | {on_commit_delete_rows=false}
++ test_create_table_as                            | r       | g              | {on_commit_delete_rows=false}
 + foo                                             | r       | p              | 
 + inherits_parent                                 | r       | p              | 
 + regular_partition_01_2019                       | r       | p              | 
-+(50 rows)
++(52 rows)
 +
 +reset search_path;
 +drop schema global_temporary_table cascade;
-+NOTICE:  drop cascades to 25 other objects
++NOTICE:  drop cascades to 27 other objects
 +DETAIL:  drop cascades to table global_temporary_table.gtt_on_commit_default
 +drop cascades to table global_temporary_table.gtt_on_commit_delete
 +drop cascades to table global_temporary_table.gtt_on_commit_delete2
@@ -1627,6 +1643,8 @@ index 00000000000..ec696c61ce9
 +drop cascades to table global_temporary_table.inherits_parent_global_temp
 +drop cascades to table global_temporary_table.gtt_test_alter1
 +drop cascades to table global_temporary_table.foo
++drop cascades to table global_temporary_table.test_create_table_as
++drop cascades to table global_temporary_table.gtt_copytest
 +drop cascades to table global_temporary_table.temp_products
 +drop cascades to table global_temporary_table.products
 +drop cascades to table global_temporary_table.temp_orders
@@ -1744,10 +1762,10 @@ index 2fa00a3c29a..e0001bc3448 100644
      a.type,
      a.database,
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 7be89178f0f..db8095d30bf 100644
+index 017e962fed2..e633b16076e 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
-@@ -130,3 +130,6 @@ test: fast_default
+@@ -131,3 +131,6 @@ test: fast_default
  
  # run stats by itself because its delay may be insufficient under heavy load
  test: stats
@@ -1756,10 +1774,10 @@ index 7be89178f0f..db8095d30bf 100644
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
-index 00000000000..1c45de23294
+index 00000000000..5185c3b15af
 --- /dev/null
 +++ b/src/test/regress/sql/global_temporary_table.sql
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,313 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1914,6 +1932,20 @@ index 00000000000..1c45de23294
 +create global temp table gtt4(a int primary key, b text) with(on_commit_delete_rows=true) on commit delete rows;
 +-- should fail
 +CREATE MATERIALIZED VIEW mv_gtt_on_commit_default as select * from gtt_on_commit_default;
++-- test create table as select
++CREATE GLOBAL TEMPORARY TABLE test_create_table_as AS SELECT 1 AS a;
++-- test copy stmt
++create global temp table gtt_copytest (
++        c1 int,
++        "col with , comma" text,
++        "col with "" quote"  int);
++
++copy gtt_copytest from stdin csv header;
++this is just a line full of junk that would error out if parsed
++1,a,1
++2,b,2
++\.
++select count(*) from gtt_copytest;
 +
 +--
 +-- test foreign key dependencies for global temp table
