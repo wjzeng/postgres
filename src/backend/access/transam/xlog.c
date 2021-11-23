@@ -1265,7 +1265,7 @@ XLogInsertRecord(XLogRecData *rdata,
 
 		if (!debug_reader)
 		{
-			appendStringInfoString(&buf, "error decoding record: out of memory");
+			appendStringInfoString(&buf, "error decoding record: out of memory while allocating a WAL reading processor");
 		}
 		else if (!DecodeXLogRecord(debug_reader, (XLogRecord *) recordBuf.data,
 								   &errormsg))
@@ -5800,7 +5800,8 @@ CleanupAfterArchiveRecovery(TimeLineID EndOfLogTLI, XLogRecPtr EndOfLog,
 	if (recoveryEndCommand && strcmp(recoveryEndCommand, "") != 0)
 		ExecuteRecoveryCommand(recoveryEndCommand,
 							   "recovery_end_command",
-							   true);
+							   true,
+							   WAIT_EVENT_RECOVERY_END_COMMAND);
 
 	/*
 	 * We switched to a new timeline. Clean up segments on the old timeline.
@@ -9915,7 +9916,8 @@ CreateRestartPoint(int flags)
 	if (archiveCleanupCommand && strcmp(archiveCleanupCommand, "") != 0)
 		ExecuteRecoveryCommand(archiveCleanupCommand,
 							   "archive_cleanup_command",
-							   false);
+							   false,
+							   WAIT_EVENT_ARCHIVE_CLEANUP_COMMAND);
 
 	return true;
 }
