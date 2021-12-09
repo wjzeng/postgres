@@ -1,10 +1,10 @@
-name: PostgreSQL regression
+name: PostgreSQL regression pushdown qual to sublink
 
 on:
   push:
-    branches: [ master ]
+    branches: [ build_master_sublink ]
   pull_request:
-    branches: [ master ]
+    branches: [ build_master_sublink ]
 
 jobs:
   build:
@@ -32,8 +32,10 @@ jobs:
     - name: Install dependencies
       run: sudo apt-get install -y gdb lcov libipc-run-perl libperl-dev tcl-dev libldap2-dev libicu-dev docbook docbook-xml docbook-dsssl docbook-xsl libxml2-utils opensp xsltproc krb5-admin-server krb5-kdc krb5-user slapd ldap-utils libssl-dev
 
+    - name: patch code1
+      run: patch -p1 < 0001-poc-pushdown-qual-to-sublink-v2.patch
+
     - name: configure
-##    run: ./configure --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-perl --with-ldap --with-openssl --with-gssapi --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom
       run: ./configure --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-ldap --with-openssl --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom
     - name: build
       run: make -j4 all contrib docs
