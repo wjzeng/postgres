@@ -141,7 +141,7 @@ index 6f1abbe47d6..f4aeb716a59 100644
  	}
  }
 diff --git a/src/backend/optimizer/plan/initsplan.c b/src/backend/optimizer/plan/initsplan.c
-index f6a202d900f..a2d6d3854df 100644
+index f6a202d900f..65ae37bb926 100644
 --- a/src/backend/optimizer/plan/initsplan.c
 +++ b/src/backend/optimizer/plan/initsplan.c
 @@ -30,10 +30,12 @@
@@ -185,7 +185,7 @@ index f6a202d900f..a2d6d3854df 100644
 +			 * Since there may be an unexpanded sublink in the targetList,
 +			 * we'll skip it for now. Don't worry let lazy_process_sublinks do it later.
 +			 */
-+			if (has_unexpand_sublink(root) && checkExprHasSubLink(node))
++			if (has_unexpanded_sublink(root) && checkExprHasSubLink(node))
 +				continue;
 +
 +			phinfo = find_placeholder_info(root, phv,
@@ -253,7 +253,7 @@ index f6a202d900f..a2d6d3854df 100644
 +	List		*tlist_vars;
 +
 +	/* Exit the function if no unprocessed sublink is recorded. */
-+	if (!has_unexpand_sublink(root))
++	if (!has_unexpanded_sublink(root))
 +		return;
 +
 +	/* process sublink in targetlist */
@@ -306,7 +306,7 @@ index f6a202d900f..a2d6d3854df 100644
 +	}
 +
 +	/* Make sure all sublinks are processed. */
-+	if (has_unexpand_sublink(root))
++	if (has_unexpanded_sublink(root))
 +		elog(ERROR, "sublink is not fully expanded yet");
 +
 +	return;
@@ -483,7 +483,7 @@ index 273ac0acf7e..7042c96b09b 100644
  	 * We have completed merging equivalence sets, so it's now possible to
  	 * generate pathkeys in canonical form; so compute query_pathkeys and
 diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index bd01ec0526f..9711eefd762 100644
+index bd01ec0526f..91437dcdc8e 100644
 --- a/src/backend/optimizer/plan/planner.c
 +++ b/src/backend/optimizer/plan/planner.c
 @@ -64,6 +64,7 @@
@@ -615,7 +615,7 @@ index bd01ec0526f..9711eefd762 100644
  		 */
 -		if (parse->hasAggs)
 -		{
-+		if (parse->hasAggs && !has_unexpand_sublink(root))
++		if (parse->hasAggs && !has_unexpanded_sublink(root))
  			preprocess_aggrefs(root, (Node *) root->processed_tlist);
 +
 +		if (parse->hasAggs)
@@ -630,7 +630,7 @@ index bd01ec0526f..9711eefd762 100644
  		 */
 -		if (parse->hasAggs)
 -			preprocess_minmax_aggregates(root);
-+		if (parse->hasAggs && !has_unexpand_sublink(root))
++		if (parse->hasAggs && !has_unexpanded_sublink(root))
 +			preprocess_minmax_aggregates(root, false);
  
  		/*
@@ -1160,7 +1160,7 @@ index f1d111063c2..425b5c68131 100644
  extern void debug_print_rel(PlannerInfo *root, RelOptInfo *rel);
  #endif
 diff --git a/src/include/optimizer/planmain.h b/src/include/optimizer/planmain.h
-index bf1adfc52ac..8dd9071d784 100644
+index bf1adfc52ac..784dfbfc42e 100644
 --- a/src/include/optimizer/planmain.h
 +++ b/src/include/optimizer/planmain.h
 @@ -28,12 +28,13 @@ typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
@@ -1183,7 +1183,7 @@ index bf1adfc52ac..8dd9071d784 100644
  extern int	from_collapse_limit;
  extern int	join_collapse_limit;
  
-+#define has_unexpand_sublink(root)		((root)->unexpanded_sublink_counter != 0)
++#define has_unexpanded_sublink(root)		((root)->unexpanded_sublink_counter != 0)
 +
  extern void add_base_rels_to_query(PlannerInfo *root, Node *jtnode);
  extern void add_other_rels_to_query(PlannerInfo *root);
@@ -1281,10 +1281,10 @@ index 3a91c144a27..232ee6d15a1 100644
             ->  Result
 diff --git a/src/test/regress/expected/qual_pushdown_to_sublink.out b/src/test/regress/expected/qual_pushdown_to_sublink.out
 new file mode 100644
-index 00000000000..6a978ec692e
+index 00000000000..bf14fa8a5fb
 --- /dev/null
 +++ b/src/test/regress/expected/qual_pushdown_to_sublink.out
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,189 @@
 +CREATE SCHEMA IF NOT EXISTS test_push_qual_to_sublink;
 +SET search_path=test_push_qual_to_sublink,sys;
 +show enable_lazy_process_sublink;
@@ -1441,32 +1441,36 @@ index 00000000000..6a978ec692e
 +(18 rows)
 +
 +--5 sublink in join on clause can not do pushdown
-+EXPLAIN SELECT y.a 
++EXPLAIN (VERBOSE, COSTS OFF) SELECT y.a
 +FROM ab y JOIN ab z on ((y.a=z.a) AND (y.b=z.b) AND exists (SELECT count(*) FROM ab x WHERE x.a=y.a AND x.b=y.b))
 +WHERE y.a = 1 AND y.b = 1;
-+                                      QUERY PLAN                                       
-+---------------------------------------------------------------------------------------
-+ Nested Loop  (cost=0.00..595496.11 rows=1 width=4)
-+   ->  Seq Scan on ab_a1_b1 y  (cost=0.00..595452.20 rows=1 width=8)
-+         Filter: ((b = 1) AND (a = 1) AND (SubPlan 1))
++                                  QUERY PLAN                                  
++------------------------------------------------------------------------------
++ Nested Loop
++   Output: y.a
++   ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b1 y
++         Output: y.a, y.b
++         Filter: ((y.b = 1) AND (y.a = 1) AND (SubPlan 1))
 +         SubPlan 1
-+           ->  Aggregate  (cost=263.44..263.45 rows=1 width=8)
-+                 ->  Append  (cost=0.00..263.43 rows=6 width=0)
-+                       ->  Seq Scan on ab_a1_b1 x_1  (cost=0.00..43.90 rows=1 width=0)
-+                             Filter: ((a = y.a) AND (b = y.b))
-+                       ->  Seq Scan on ab_a1_b2 x_2  (cost=0.00..43.90 rows=1 width=0)
-+                             Filter: ((a = y.a) AND (b = y.b))
-+                       ->  Seq Scan on ab_a1_b3 x_3  (cost=0.00..43.90 rows=1 width=0)
-+                             Filter: ((a = y.a) AND (b = y.b))
-+                       ->  Seq Scan on ab_a2_b1 x_4  (cost=0.00..43.90 rows=1 width=0)
-+                             Filter: ((a = y.a) AND (b = y.b))
-+                       ->  Seq Scan on ab_a2_b2 x_5  (cost=0.00..43.90 rows=1 width=0)
-+                             Filter: ((a = y.a) AND (b = y.b))
-+                       ->  Seq Scan on ab_a2_b3 x_6  (cost=0.00..43.90 rows=1 width=0)
-+                             Filter: ((a = y.a) AND (b = y.b))
-+   ->  Seq Scan on ab_a1_b1 z  (cost=0.00..43.90 rows=1 width=8)
-+         Filter: ((b = 1) AND (a = 1))
-+(20 rows)
++           ->  Aggregate
++                 Output: count(*)
++                 ->  Append
++                       ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b1 x_1
++                             Filter: ((x_1.a = y.a) AND (x_1.b = y.b))
++                       ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b2 x_2
++                             Filter: ((x_2.a = y.a) AND (x_2.b = y.b))
++                       ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b3 x_3
++                             Filter: ((x_3.a = y.a) AND (x_3.b = y.b))
++                       ->  Seq Scan on test_push_qual_to_sublink.ab_a2_b1 x_4
++                             Filter: ((x_4.a = y.a) AND (x_4.b = y.b))
++                       ->  Seq Scan on test_push_qual_to_sublink.ab_a2_b2 x_5
++                             Filter: ((x_5.a = y.a) AND (x_5.b = y.b))
++                       ->  Seq Scan on test_push_qual_to_sublink.ab_a2_b3 x_6
++                             Filter: ((x_6.a = y.a) AND (x_6.b = y.b))
++   ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b1 z
++         Output: z.a, z.b
++         Filter: ((z.b = 1) AND (z.a = 1))
++(24 rows)
 +
 +DROP SCHEMA test_push_qual_to_sublink CASCADE;
 +NOTICE:  drop cascades to table ab
@@ -1515,7 +1519,7 @@ index 017e962fed2..58c51d582ad 100644
 +test: qual_pushdown_to_sublink
 diff --git a/src/test/regress/sql/qual_pushdown_to_sublink.sql b/src/test/regress/sql/qual_pushdown_to_sublink.sql
 new file mode 100644
-index 00000000000..cf2d8555d07
+index 00000000000..13252251d37
 --- /dev/null
 +++ b/src/test/regress/sql/qual_pushdown_to_sublink.sql
 @@ -0,0 +1,78 @@
@@ -1592,7 +1596,7 @@ index 00000000000..cf2d8555d07
 +a.a=1 AND a.b=1;
 +
 +--5 sublink in join on clause can not do pushdown
-+EXPLAIN SELECT y.a 
++EXPLAIN (VERBOSE, COSTS OFF) SELECT y.a
 +FROM ab y JOIN ab z on ((y.a=z.a) AND (y.b=z.b) AND exists (SELECT count(*) FROM ab x WHERE x.a=y.a AND x.b=y.b))
 +WHERE y.a = 1 AND y.b = 1;
 +
