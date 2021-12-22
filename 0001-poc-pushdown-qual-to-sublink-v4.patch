@@ -141,7 +141,7 @@ index 6f1abbe47d6..f4aeb716a59 100644
  	}
  }
 diff --git a/src/backend/optimizer/plan/initsplan.c b/src/backend/optimizer/plan/initsplan.c
-index f6a202d900f..65ae37bb926 100644
+index f6a202d900f..08ca51b9960 100644
 --- a/src/backend/optimizer/plan/initsplan.c
 +++ b/src/backend/optimizer/plan/initsplan.c
 @@ -30,10 +30,12 @@
@@ -210,7 +210,7 @@ index f6a202d900f..65ae37bb926 100644
  	/*
  	 * Retrieve all relids mentioned within the clause.
  	 */
-@@ -2750,3 +2782,182 @@ check_memoizable(RestrictInfo *restrictinfo)
+@@ -2750,3 +2782,184 @@ check_memoizable(RestrictInfo *restrictinfo)
  	if (OidIsValid(typentry->hash_proc) && OidIsValid(typentry->eq_opr))
  		restrictinfo->right_hasheqoperator = typentry->eq_opr;
  }
@@ -239,7 +239,7 @@ index f6a202d900f..65ae37bb926 100644
 +		parse->cteList != NIL)
 +		return false;
 +
-+	return enable_lazy_process_sublink;
++	return lazy_process_sublink;
 +}
 +
 +/*
@@ -258,6 +258,8 @@ index f6a202d900f..65ae37bb926 100644
 +
 +	/* process sublink in targetlist */
 +	root->processed_tlist = (List *)SS_process_sublinks(root, (Node *)root->processed_tlist, false, true, true);
++	if (root->query_level > 1)
++		root->processed_tlist = (List *)SS_replace_correlation_vars(root, (Node *)root->processed_tlist);
 +
 +	/* process sublink in where clause */
 +	if (parse->jointree && parse->jointree->quals)
@@ -483,7 +485,7 @@ index 273ac0acf7e..7042c96b09b 100644
  	 * We have completed merging equivalence sets, so it's now possible to
  	 * generate pathkeys in canonical form; so compute query_pathkeys and
 diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index bd01ec0526f..91437dcdc8e 100644
+index bd01ec0526f..0b978106868 100644
 --- a/src/backend/optimizer/plan/planner.c
 +++ b/src/backend/optimizer/plan/planner.c
 @@ -64,6 +64,7 @@
@@ -494,17 +496,18 @@ index bd01ec0526f..91437dcdc8e 100644
  
  /* GUC parameters */
  double		cursor_tuple_fraction = DEFAULT_CURSOR_TUPLE_FRACTION;
-@@ -128,8 +129,8 @@ typedef struct
+@@ -128,8 +129,9 @@ typedef struct
  
  /* Local functions */
  static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 -static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
++static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode, bool istop);
  static void grouping_planner(PlannerInfo *root, double tuple_fraction);
 +static Node *preprocess_expression_ext(PlannerInfo *root, Node *expr, int kind, bool process_sublink);
  static grouping_sets_data *preprocess_grouping_sets(PlannerInfo *root);
  static List *remap_to_groupclause_idx(List *groupClause, List *gsets,
  									  int *tleref_to_colnum_map);
-@@ -641,6 +642,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
+@@ -641,6 +643,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
  		root->wt_param_id = -1;
  	root->non_recursive_path = NULL;
  	root->partColsUpdated = false;
@@ -513,7 +516,7 @@ index bd01ec0526f..91437dcdc8e 100644
  
  	/*
  	 * If there is a WITH list, process each WITH query and either convert it
-@@ -784,8 +787,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
+@@ -784,8 +788,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
  	 * part of the targetlist.
  	 */
  	parse->targetList = (List *)
@@ -524,7 +527,7 @@ index bd01ec0526f..91437dcdc8e 100644
  
  	/* Constant-folding might have removed all set-returning functions */
  	if (parse->hasTargetSRFs)
-@@ -807,7 +810,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
+@@ -807,7 +811,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
  		preprocess_expression(root, (Node *) parse->returningList,
  							  EXPRKIND_TARGET);
  
@@ -533,7 +536,7 @@ index bd01ec0526f..91437dcdc8e 100644
  
  	parse->havingQual = preprocess_expression(root, parse->havingQual,
  											  EXPRKIND_QUAL);
-@@ -1049,14 +1052,24 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
+@@ -1049,14 +1053,24 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
  	return root;
  }
  
@@ -559,7 +562,7 @@ index bd01ec0526f..91437dcdc8e 100644
  {
  	/*
  	 * Fall out quickly if expression is empty.  This occurs often enough to
-@@ -1129,7 +1142,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
+@@ -1129,7 +1143,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
  
  	/* Expand SubLinks to SubPlans */
  	if (root->parse->hasSubLinks)
@@ -568,18 +571,16 @@ index bd01ec0526f..91437dcdc8e 100644
  
  	/*
  	 * XXX do not insert anything here unless you have grokked the comments in
-@@ -1157,8 +1170,8 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
-  *		Recursively scan the query's jointree and do subquery_planner's
+@@ -1158,7 +1172,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
   *		preprocessing work on each qual condition found therein.
   */
--static void
+ static void
 -preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
-+void
 +preprocess_qual_conditions(PlannerInfo *root, Node *jtnode, bool istop)
  {
  	if (jtnode == NULL)
  		return;
-@@ -1172,17 +1185,24 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
+@@ -1172,17 +1186,24 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
  		ListCell   *l;
  
  		foreach(l, f->fromlist)
@@ -609,7 +610,7 @@ index bd01ec0526f..91437dcdc8e 100644
  		j->quals = preprocess_expression(root, j->quals, EXPRKIND_QUAL);
  	}
  	else
-@@ -1384,11 +1404,11 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
+@@ -1384,11 +1405,11 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
  		 * pathtargets, else some copies of the Aggref nodes might escape
  		 * being marked.
  		 */
@@ -624,7 +625,7 @@ index bd01ec0526f..91437dcdc8e 100644
  
  		/*
  		 * Locate any window functions in the tlist.  (We don't need to look
-@@ -1412,8 +1432,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
+@@ -1412,8 +1433,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
  		 * that is needed in MIN/MAX-optimizable cases will have to be
  		 * duplicated in planagg.c.
  		 */
@@ -636,7 +637,7 @@ index bd01ec0526f..91437dcdc8e 100644
  		/*
  		 * Figure out whether there's a hard limit on the number of rows that
 diff --git a/src/backend/optimizer/plan/subselect.c b/src/backend/optimizer/plan/subselect.c
-index c9f7a09d102..44f189b196e 100644
+index c9f7a09d102..aadf1fd52e0 100644
 --- a/src/backend/optimizer/plan/subselect.c
 +++ b/src/backend/optimizer/plan/subselect.c
 @@ -32,11 +32,13 @@
@@ -851,7 +852,7 @@ index c9f7a09d102..44f189b196e 100644
  
  		foreach(l, ((BoolExpr *) node)->args)
  		{
-@@ -2989,3 +3051,185 @@ SS_make_initplan_from_plan(PlannerInfo *root,
+@@ -2989,3 +3051,184 @@ SS_make_initplan_from_plan(PlannerInfo *root,
  	/* Set costs of SubPlan using info from the plan tree */
  	cost_subplan(subroot, node, plan);
  }
@@ -934,7 +935,6 @@ index c9f7a09d102..44f189b196e 100644
 +	quals = (Node *) canonicalize_qual((Expr *) quals, false);
 +	quals = (Node *) make_ands_implicit((Expr *) quals);
 +
-+	Assert(IsA(quals, List));
 +	foreach(lc, (List *)quals)
 +	{
 +		Node		*node = (Node *) lfirst(lc);
@@ -1061,7 +1061,7 @@ index 1c4202d864c..0e11ed22522 100644
  
  	phinfo->phid = phv->phid;
 diff --git a/src/backend/utils/adt/ruleutils.c b/src/backend/utils/adt/ruleutils.c
-index 1bb25738a52..5c25c2683ec 100644
+index 8da525c715b..f847e898e68 100644
 --- a/src/backend/utils/adt/ruleutils.c
 +++ b/src/backend/utils/adt/ruleutils.c
 @@ -429,7 +429,6 @@ static void resolve_special_varno(Node *node, deparse_context *context,
@@ -1072,7 +1072,7 @@ index 1bb25738a52..5c25c2683ec 100644
  static bool isSimpleNode(Node *node, Node *parentNode, int prettyFlags);
  static void appendContextKeyword(deparse_context *context, const char *str,
  								 int indentBefore, int indentAfter, int indentPlus);
-@@ -7971,7 +7970,7 @@ get_parameter(Param *param, deparse_context *context)
+@@ -7983,7 +7982,7 @@ get_parameter(Param *param, deparse_context *context)
   * helper function for isSimpleNode
   * will return single char binary operator name, or NULL if it's not
   */
@@ -1082,28 +1082,28 @@ index 1bb25738a52..5c25c2683ec 100644
  {
  	List	   *args = expr->args;
 diff --git a/src/backend/utils/misc/guc.c b/src/backend/utils/misc/guc.c
-index e91d5a3cfda..1df80bf95fc 100644
+index 7b030463013..cd4f6fd51b4 100644
 --- a/src/backend/utils/misc/guc.c
 +++ b/src/backend/utils/misc/guc.c
-@@ -682,6 +682,7 @@ static char *recovery_target_lsn_string;
+@@ -684,6 +684,7 @@ static char *recovery_target_lsn_string;
  /* should be static, but commands/variable.c needs to get at this */
  char	   *role_string;
  
-+bool enable_lazy_process_sublink = true;
++bool lazy_process_sublink = true;
  
  /*
   * Displayable names for context types (enum GucContext)
-@@ -971,6 +972,17 @@ static const unit_conversion time_unit_conversion_table[] =
+@@ -973,6 +974,17 @@ static const unit_conversion time_unit_conversion_table[] =
  
  static struct config_bool ConfigureNamesBool[] =
  {
 +	{
-+		{"enable_lazy_process_sublink", PGC_USERSET, QUERY_TUNING_METHOD,
++		{"lazy_process_sublink", PGC_USERSET, QUERY_TUNING_METHOD,
 +			gettext_noop("enable lazy process sublink."),
 +			NULL,
 +			GUC_EXPLAIN
 +		},
-+		&enable_lazy_process_sublink,
++		&lazy_process_sublink,
 +		true,
 +		NULL, NULL, NULL
 +	},
@@ -1112,7 +1112,7 @@ index e91d5a3cfda..1df80bf95fc 100644
  		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
  			gettext_noop("Enables the planner's use of sequential-scan plans."),
 diff --git a/src/include/nodes/pathnodes.h b/src/include/nodes/pathnodes.h
-index 186e89905b2..bd676569039 100644
+index 324d92880b5..fd8f6c995d6 100644
 --- a/src/include/nodes/pathnodes.h
 +++ b/src/include/nodes/pathnodes.h
 @@ -377,6 +377,9 @@ struct PlannerInfo
@@ -1198,17 +1198,6 @@ index bf1adfc52ac..784dfbfc42e 100644
  
  /*
   * prototypes for plan/analyzejoins.c
-diff --git a/src/include/optimizer/planner.h b/src/include/optimizer/planner.h
-index 9a15de50259..14ff94f60e3 100644
---- a/src/include/optimizer/planner.h
-+++ b/src/include/optimizer/planner.h
-@@ -57,5 +57,6 @@ extern Path *get_cheapest_fractional_path(RelOptInfo *rel,
- 										  double tuple_fraction);
- 
- extern Expr *preprocess_phv_expression(PlannerInfo *root, Expr *expr);
-+extern void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode, bool istop);
- 
- #endif							/* PLANNER_H */
 diff --git a/src/include/optimizer/subselect.h b/src/include/optimizer/subselect.h
 index 059bdf941ef..396c4c6117e 100644
 --- a/src/include/optimizer/subselect.h
@@ -1231,14 +1220,14 @@ index 059bdf941ef..396c4c6117e 100644
  
  #endif							/* SUBSELECT_H */
 diff --git a/src/include/utils/guc.h b/src/include/utils/guc.h
-index aa18d304ac0..06f77921449 100644
+index aa18d304ac0..92bfc1b806e 100644
 --- a/src/include/utils/guc.h
 +++ b/src/include/utils/guc.h
 @@ -288,6 +288,8 @@ extern int	tcp_user_timeout;
  extern bool trace_sort;
  #endif
  
-+extern bool enable_lazy_process_sublink;
++extern bool lazy_process_sublink;
 +
  /*
   * Functions exported by guc.c
@@ -1281,15 +1270,15 @@ index 3a91c144a27..232ee6d15a1 100644
             ->  Result
 diff --git a/src/test/regress/expected/qual_pushdown_to_sublink.out b/src/test/regress/expected/qual_pushdown_to_sublink.out
 new file mode 100644
-index 00000000000..bf14fa8a5fb
+index 00000000000..b4d68ac3a12
 --- /dev/null
 +++ b/src/test/regress/expected/qual_pushdown_to_sublink.out
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,221 @@
 +CREATE SCHEMA IF NOT EXISTS test_push_qual_to_sublink;
 +SET search_path=test_push_qual_to_sublink,sys;
-+show enable_lazy_process_sublink;
-+ enable_lazy_process_sublink 
-+-----------------------------
++show lazy_process_sublink;
++ lazy_process_sublink 
++----------------------
 + on
 +(1 row)
 +
@@ -1440,7 +1429,39 @@ index 00000000000..bf14fa8a5fb
 +               Filter: ((a1.b = 1) AND (a1.a = 1))
 +(18 rows)
 +
-+--5 sublink in join on clause can not do pushdown
++--5 aggrefs with multiple agglevelsup
++EXPLAIN (VERBOSE, COSTS OFF)
++SELECT 
++	(SELECT 
++	 (SELECT sum(foo.a + bar.b) FROM ab jazz WHERE jazz.a=foo.a AND jazz.b=foo.b)
++	 FROM ab bar WHERE bar.a=foo.a AND bar.b=foo.b
++	) FROM ab foo WHERE foo.a=1 AND foo.b=1 GROUP BY a, b;
++                                QUERY PLAN                                 
++---------------------------------------------------------------------------
++ Group
++   Output: (SubPlan 2), foo.a, foo.b
++   Group Key: foo.a, foo.b
++   ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b1 foo
++         Output: foo.a, foo.b
++         Filter: ((foo.a = 1) AND (foo.b = 1))
++   SubPlan 2
++     ->  Aggregate
++           Output: (SubPlan 1)
++           ->  Result
++                 Output: bar.b
++                 One-Time Filter: ((foo.b = 1) AND (foo.a = 1))
++                 ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b1 bar
++                       Output: bar.b
++                       Filter: ((bar.b = 1) AND (bar.a = 1))
++           SubPlan 1
++             ->  Result
++                   Output: sum((foo.a + bar.b))
++                   One-Time Filter: ((foo.b = 1) AND (foo.a = 1))
++                   ->  Seq Scan on test_push_qual_to_sublink.ab_a1_b1 jazz
++                         Filter: ((jazz.b = 1) AND (jazz.a = 1))
++(21 rows)
++
++--6 sublink in join on clause can not do pushdown
 +EXPLAIN (VERBOSE, COSTS OFF) SELECT y.a
 +FROM ab y JOIN ab z on ((y.a=z.a) AND (y.b=z.b) AND exists (SELECT count(*) FROM ab x WHERE x.a=y.a AND x.b=y.b))
 +WHERE y.a = 1 AND y.b = 1;
@@ -1475,7 +1496,7 @@ index 00000000000..bf14fa8a5fb
 +DROP SCHEMA test_push_qual_to_sublink CASCADE;
 +NOTICE:  drop cascades to table ab
 diff --git a/src/test/regress/expected/subselect.out b/src/test/regress/expected/subselect.out
-index 07426260330..fd0079a8335 100644
+index 4e8ddc70613..2df4d6e15b5 100644
 --- a/src/test/regress/expected/subselect.out
 +++ b/src/test/regress/expected/subselect.out
 @@ -1063,7 +1063,7 @@ where o.ten = 0;
@@ -1487,46 +1508,25 @@ index 07426260330..fd0079a8335 100644
  (14 rows)
  
  select sum(ss.tst::int) from
-diff --git a/src/test/regress/expected/sysviews.out b/src/test/regress/expected/sysviews.out
-index 2088857615a..bb7a1dff156 100644
---- a/src/test/regress/expected/sysviews.out
-+++ b/src/test/regress/expected/sysviews.out
-@@ -110,6 +110,7 @@ select name, setting from pg_settings where name like 'enable%';
-  enable_incremental_sort        | on
-  enable_indexonlyscan           | on
-  enable_indexscan               | on
-+ enable_lazy_process_sublink    | on
-  enable_material                | on
-  enable_memoize                 | on
-  enable_mergejoin               | on
-@@ -122,7 +123,7 @@ select name, setting from pg_settings where name like 'enable%';
-  enable_seqscan                 | on
-  enable_sort                    | on
-  enable_tidscan                 | on
--(20 rows)
-+(21 rows)
- 
- -- Test that the pg_timezone_names and pg_timezone_abbrevs views are
- -- more-or-less working.  We can't test their contents in any great detail
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 017e962fed2..58c51d582ad 100644
+index 5b0c73d7e37..3060801f2f1 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
-@@ -131,3 +131,4 @@ test: fast_default
+@@ -134,3 +134,4 @@ test: fast_default
  
  # run stats by itself because its delay may be insufficient under heavy load
  test: stats
 +test: qual_pushdown_to_sublink
 diff --git a/src/test/regress/sql/qual_pushdown_to_sublink.sql b/src/test/regress/sql/qual_pushdown_to_sublink.sql
 new file mode 100644
-index 00000000000..13252251d37
+index 00000000000..375e9aef91b
 --- /dev/null
 +++ b/src/test/regress/sql/qual_pushdown_to_sublink.sql
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,86 @@
 +CREATE SCHEMA IF NOT EXISTS test_push_qual_to_sublink;
 +SET search_path=test_push_qual_to_sublink,sys;
 +
-+show enable_lazy_process_sublink;
++show lazy_process_sublink;
 +
 +create table ab (a int not null, b int not null) partition by list (a);
 +create table ab_a2 partition of ab for values in(2) partition by list (b);
@@ -1595,12 +1595,20 @@ index 00000000000..13252251d37
 +) AND
 +a.a=1 AND a.b=1;
 +
-+--5 sublink in join on clause can not do pushdown
++--5 aggrefs with multiple agglevelsup
++EXPLAIN (VERBOSE, COSTS OFF)
++SELECT 
++	(SELECT 
++	 (SELECT sum(foo.a + bar.b) FROM ab jazz WHERE jazz.a=foo.a AND jazz.b=foo.b)
++	 FROM ab bar WHERE bar.a=foo.a AND bar.b=foo.b
++	) FROM ab foo WHERE foo.a=1 AND foo.b=1 GROUP BY a, b;
++
++--6 sublink in join on clause can not do pushdown
 +EXPLAIN (VERBOSE, COSTS OFF) SELECT y.a
 +FROM ab y JOIN ab z on ((y.a=z.a) AND (y.b=z.b) AND exists (SELECT count(*) FROM ab x WHERE x.a=y.a AND x.b=y.b))
 +WHERE y.a = 1 AND y.b = 1;
 +
 +DROP SCHEMA test_push_qual_to_sublink CASCADE;
 -- 
-2.30.1 (Apple Git-130)
+2.32.0 (Apple Git-132)
 
