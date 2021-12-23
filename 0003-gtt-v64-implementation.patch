@@ -300,7 +300,7 @@ index aa7d4d5456b..595cb03eb4a 100644
  			break;
  		case RELPERSISTENCE_UNLOGGED:
 diff --git a/src/backend/catalog/heap.c b/src/backend/catalog/heap.c
-index 6780ec53b7c..8aaa54e9a34 100644
+index 6780ec53b7c..e790bcbbc52 100644
 --- a/src/backend/catalog/heap.c
 +++ b/src/backend/catalog/heap.c
 @@ -62,6 +62,7 @@
@@ -430,7 +430,7 @@ index 6780ec53b7c..8aaa54e9a34 100644
 +	{
 +		if (is_other_backend_use_gtt(RelationGetRelid(rel)))
 +			ereport(ERROR,
-+				(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
++				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 +				 errmsg("cannot drop global temporary table %s when other backend attached it.",
 +						RelationGetRelationName(rel))));
 +	}
@@ -542,7 +542,7 @@ index 6780ec53b7c..8aaa54e9a34 100644
  
  /*
 diff --git a/src/backend/catalog/index.c b/src/backend/catalog/index.c
-index 1757cd3446f..50119909f79 100644
+index 1757cd3446f..946e391d92d 100644
 --- a/src/backend/catalog/index.c
 +++ b/src/backend/catalog/index.c
 @@ -54,6 +54,7 @@
@@ -553,18 +553,15 @@ index 1757cd3446f..50119909f79 100644
  #include "commands/event_trigger.h"
  #include "commands/progress.h"
  #include "commands/tablecmds.h"
-@@ -734,6 +735,25 @@ index_create(Relation heapRelation,
+@@ -734,6 +735,22 @@ index_create(Relation heapRelation,
  	TransactionId relfrozenxid;
  	MultiXactId relminmxid;
  
 +	/* For global temporary table only */
 +	if (RELATION_IS_GLOBAL_TEMP(heapRelation))
 +	{
-+		/* No support create index on global temporary table with concurrent mode yet */
-+		if (concurrent)
-+			ereport(ERROR,
-+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-+				errmsg("cannot reindex global temporary tables concurrently")));
++		/* No support create index on global temporary table with concurrent mode */
++		Assert(!concurrent);
 +
 +		/*
 +		 * For the case that some backend is applied relcache message to create
@@ -579,7 +576,7 @@ index 1757cd3446f..50119909f79 100644
  	/* constraint flags can only be set when a constraint is requested */
  	Assert((constr_flags == 0) ||
  		   ((flags & INDEX_CREATE_ADD_CONSTRAINT) != 0));
-@@ -2119,7 +2139,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+@@ -2119,7 +2136,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 * lock (see comments in RemoveRelations), and a non-concurrent DROP is
  	 * more efficient.
  	 */
@@ -588,7 +585,7 @@ index 1757cd3446f..50119909f79 100644
  		   (!concurrent && !concurrent_lock_mode));
  
  	/*
-@@ -2151,6 +2171,21 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+@@ -2151,6 +2168,21 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 */
  	CheckTableNotInUse(userIndexRelation, "DROP INDEX");
  
@@ -600,7 +597,7 @@ index 1757cd3446f..50119909f79 100644
 +		is_other_backend_use_gtt(RelationGetRelid(userHeapRelation)))
 +	{
 +		ereport(ERROR,
-+			(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
++			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 +			 errmsg("cannot drop index %s on global temporary table %s",
 +					RelationGetRelationName(userIndexRelation), RelationGetRelationName(userHeapRelation)),
 +					errdetail("Because the index is created on the global temporary table and other backend attached it."),
@@ -610,7 +607,7 @@ index 1757cd3446f..50119909f79 100644
  	/*
  	 * Drop Index Concurrently is more or less the reverse process of Create
  	 * Index Concurrently.
-@@ -2759,6 +2794,7 @@ index_update_stats(Relation rel,
+@@ -2759,6 +2791,7 @@ index_update_stats(Relation rel,
  	HeapTuple	tuple;
  	Form_pg_class rd_rel;
  	bool		dirty;
@@ -618,20 +615,15 @@ index 1757cd3446f..50119909f79 100644
  
  	/*
  	 * We always update the pg_class row using a non-transactional,
-@@ -2853,20 +2889,37 @@ index_update_stats(Relation rel,
+@@ -2853,20 +2886,37 @@ index_update_stats(Relation rel,
  		else					/* don't bother for indexes */
  			relallvisible = 0;
  
 -		if (rd_rel->relpages != (int32) relpages)
--		{
--			rd_rel->relpages = (int32) relpages;
--			dirty = true;
--		}
--		if (rd_rel->reltuples != (float4) reltuples)
 +		/* For global temporary table */
 +		if (is_gtt)
  		{
--			rd_rel->reltuples = (float4) reltuples;
+-			rd_rel->relpages = (int32) relpages;
 -			dirty = true;
 +			/* Update GTT'statistics into local relcache */
 +			rel->rd_rel->relpages = (int32) relpages;
@@ -642,6 +634,11 @@ index 1757cd3446f..50119909f79 100644
 +			up_gtt_relstats(RelationGetRelid(rel), relpages, reltuples, relallvisible,
 +							InvalidTransactionId, InvalidMultiXactId);
  		}
+-		if (rd_rel->reltuples != (float4) reltuples)
+-		{
+-			rd_rel->reltuples = (float4) reltuples;
+-			dirty = true;
+-		}
 -		if (rd_rel->relallvisible != (int32) relallvisible)
 +		else
  		{
@@ -667,7 +664,7 @@ index 1757cd3446f..50119909f79 100644
  		}
  	}
  
-@@ -2979,6 +3032,26 @@ index_build(Relation heapRelation,
+@@ -2979,6 +3029,26 @@ index_build(Relation heapRelation,
  		pgstat_progress_update_multi_param(6, progress_index, progress_vals);
  	}
  
@@ -694,7 +691,7 @@ index 1757cd3446f..50119909f79 100644
  	/*
  	 * Call the access method's build procedure
  	 */
-@@ -3520,6 +3593,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3520,6 +3590,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	PGRUsage	ru0;
  	bool		progress = ((params->options & REINDEXOPT_REPORT_PROGRESS) != 0);
  	bool		set_tablespace = false;
@@ -703,7 +700,7 @@ index 1757cd3446f..50119909f79 100644
  
  	pg_rusage_init(&ru0);
  
-@@ -3533,10 +3608,29 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3533,10 +3605,34 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	if (!OidIsValid(heapId))
  		return;
  
@@ -713,6 +710,11 @@ index 1757cd3446f..50119909f79 100644
 +	 */
 +	if (persistence == RELPERSISTENCE_GLOBAL_TEMP)
 +	{
++		if (OidIsValid(params->tablespaceOid))
++			ereport(ERROR,
++				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
++				 errmsg("The tablespace of global temporary table can not be changed")));
++
 +		if (!gtt_storage_attached(indexId))
 +		{
 +			/* Suppress use of the target index while rebuilding it */
@@ -735,7 +737,7 @@ index 1757cd3446f..50119909f79 100644
  
  	/* if relation is gone, leave */
  	if (!heapRelation)
-@@ -3562,7 +3656,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3562,7 +3658,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	 * Open the target index relation and get an exclusive lock on it, to
  	 * ensure that no one else is touching this particular index.
  	 */
@@ -744,7 +746,7 @@ index 1757cd3446f..50119909f79 100644
  
  	if (progress)
  		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-@@ -3813,6 +3907,12 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3813,6 +3909,12 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  	bool		result;
  	ListCell   *indexId;
  	int			i;
@@ -757,7 +759,7 @@ index 1757cd3446f..50119909f79 100644
  
  	/*
  	 * Open and lock the relation.  ShareLock is sufficient since we only need
-@@ -3820,9 +3920,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3820,9 +3922,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  	 * should match ReindexTable().
  	 */
  	if ((params->options & REINDEXOPT_MISSING_OK) != 0)
@@ -933,10 +935,10 @@ index c5ad28d71fe..707068a6fd8 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 00000000000..4fc4678c4c7
+index 00000000000..d50e1fa9afe
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
-@@ -0,0 +1,1508 @@
+@@ -0,0 +1,1509 @@
 +/*-------------------------------------------------------------------------
 + *
 + * storage_gtt.c
@@ -1080,7 +1082,7 @@ index 00000000000..4fc4678c4c7
 +static void remove_gtt_relfrozenxid_from_ordered_list(Oid relfrozenxid);
 +static void set_gtt_session_relfrozenxid(void);
 +static void gtt_free_statistics(gtt_relfilenode *rnode);
-+static gtt_relfilenode *gtt_search_relfilenode(gtt_local_hash_entry	*entry, Oid relfilenode, bool missing_ok);
++static gtt_relfilenode *gtt_search_relfilenode(gtt_local_hash_entry	*entry, Oid relfilenode, Oid spcnode, bool missing_ok);
 +static gtt_local_hash_entry *gtt_search_by_relid(Oid relid, bool missing_ok);
 +static Bitmapset *copy_active_gtt_bitmap(Oid relid);
 +
@@ -1498,7 +1500,7 @@ index 00000000000..4fc4678c4c7
 +		return;
 +	}
 +
-+	d_rnode = gtt_search_relfilenode(entry, rnode.relNode, true);
++	d_rnode = gtt_search_relfilenode(entry, rnode.relNode, rnode.spcNode, true);
 +	if (d_rnode == NULL)
 +	{
 +		if (isCommit)
@@ -2402,7 +2404,7 @@ index 00000000000..4fc4678c4c7
 + * Get a relfilenode used by this GTT during the transaction life cycle.
 + */
 +static gtt_relfilenode *
-+gtt_search_relfilenode(gtt_local_hash_entry	*entry, Oid relfilenode, bool missing_ok)
++gtt_search_relfilenode(gtt_local_hash_entry	*entry, Oid relfilenode, Oid spcnode, bool missing_ok)
 +{
 +	gtt_relfilenode		*rnode = NULL;
 +	ListCell		*lc;
@@ -2412,7 +2414,8 @@ index 00000000000..4fc4678c4c7
 +	foreach(lc, entry->relfilenode_list)
 +	{
 +		gtt_relfilenode	*gtt_rnode = lfirst(lc);
-+		if (gtt_rnode->relfilenode == relfilenode)
++		if (gtt_rnode->relfilenode == relfilenode &&
++			gtt_rnode->spcnode == spcnode)
 +		{
 +			rnode = gtt_rnode;
 +			break;
@@ -2677,7 +2680,7 @@ index cd77907fc74..446a713a9b1 100644
  
  	table_close(sd, RowExclusiveLock);
 diff --git a/src/backend/commands/cluster.c b/src/backend/commands/cluster.c
-index 9d22f648a84..a44eefa1f6b 100644
+index 9d22f648a84..668aaa8ad57 100644
 --- a/src/backend/commands/cluster.c
 +++ b/src/backend/commands/cluster.c
 @@ -33,6 +33,7 @@
@@ -2701,7 +2704,7 @@ index 9d22f648a84..a44eefa1f6b 100644
 +		if (gtt_storage_attached(RelationGetRelid(OldHeap)))
 +			ereport(ERROR,
 +				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-+				 errmsg("not support cluster global temporary table yet")));
++				 errmsg("not support cluster global temporary table")));
 +
 +		relation_close(OldHeap, AccessExclusiveLock);
 +		pgstat_progress_end_command();
@@ -2958,7 +2961,7 @@ index 62465bacd81..ef37f79ba68 100644
  			LockViewRecurse(reloid, lockstmt->mode, lockstmt->nowait, NIL);
  		else if (recurse)
 diff --git a/src/backend/commands/sequence.c b/src/backend/commands/sequence.c
-index 72bfdc07a49..e5257f610f6 100644
+index 72bfdc07a49..79119c57e54 100644
 --- a/src/backend/commands/sequence.c
 +++ b/src/backend/commands/sequence.c
 @@ -30,6 +30,8 @@
@@ -3025,7 +3028,7 @@ index 72bfdc07a49..e5257f610f6 100644
 +	{
 +		if (is_other_backend_use_gtt(RelationGetRelid(seqrel)))
 +			ereport(ERROR,
-+				(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
++				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 +				 errmsg("cannot alter global temporary sequence %s when other backend attached it.",
 +						RelationGetRelationName(seqrel))));
 +	}
@@ -3126,7 +3129,7 @@ index 72bfdc07a49..e5257f610f6 100644
 +}
 +
 diff --git a/src/backend/commands/tablecmds.c b/src/backend/commands/tablecmds.c
-index bf42587e383..94cd1f8306d 100644
+index bf42587e383..37a347cbfd0 100644
 --- a/src/backend/commands/tablecmds.c
 +++ b/src/backend/commands/tablecmds.c
 @@ -47,6 +47,7 @@
@@ -3335,7 +3338,19 @@ index bf42587e383..94cd1f8306d 100644
  							 &reindex_params);
  		}
  
-@@ -4035,6 +4113,16 @@ AlterTable(AlterTableStmt *stmt, LOCKMODE lockmode,
+@@ -3266,6 +3344,11 @@ CheckRelationTableSpaceMove(Relation rel, Oid newTableSpaceId)
+ 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+ 				 errmsg("cannot move temporary tables of other sessions")));
+ 
++	if (RELATION_IS_GLOBAL_TEMP(rel))
++		ereport(ERROR,
++				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
++				 errmsg("The tablespace of global temporary table can not be changed")));
++
+ 	return true;
+ }
+ 
+@@ -4035,6 +4118,16 @@ AlterTable(AlterTableStmt *stmt, LOCKMODE lockmode,
  	/* Caller is required to provide an adequate lock. */
  	rel = relation_open(context->relid, NoLock);
  
@@ -3344,7 +3359,7 @@ index bf42587e383..94cd1f8306d 100644
 +	{
 +		if (is_other_backend_use_gtt(RelationGetRelid(rel)))
 +			ereport(ERROR,
-+				(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
++				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 +				 errmsg("cannot alter global temporary table %s when other backend attached it.",
 +						RelationGetRelationName(rel))));
 +	}
@@ -3352,7 +3367,7 @@ index bf42587e383..94cd1f8306d 100644
  	CheckTableNotInUse(rel, "ALTER TABLE");
  
  	ATController(stmt, rel, stmt->cmds, stmt->relation->inh, lockmode, context);
-@@ -5366,6 +5454,24 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
+@@ -5366,6 +5459,24 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
  
  			rel = table_open(tab->relid, NoLock);
  			find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
@@ -3377,7 +3392,7 @@ index bf42587e383..94cd1f8306d 100644
  			table_close(rel, NoLock);
  		}
  
-@@ -5417,6 +5523,8 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
+@@ -5417,6 +5528,8 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
  						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
  						 errmsg("cannot rewrite temporary tables of other sessions")));
  
@@ -3386,7 +3401,7 @@ index bf42587e383..94cd1f8306d 100644
  			/*
  			 * Select destination tablespace (same as original unless user
  			 * requested a change)
-@@ -9064,6 +9172,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
+@@ -9064,6 +9177,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
  						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
  						 errmsg("constraints on temporary tables must involve temporary tables of this session")));
  			break;
@@ -3399,7 +3414,7 @@ index bf42587e383..94cd1f8306d 100644
  	}
  
  	/*
-@@ -13179,7 +13293,9 @@ TryReuseIndex(Oid oldId, IndexStmt *stmt)
+@@ -13179,7 +13298,9 @@ TryReuseIndex(Oid oldId, IndexStmt *stmt)
  		Relation	irel = index_open(oldId, NoLock);
  
  		/* If it's a partitioned index, there is no storage to share. */
@@ -3410,7 +3425,7 @@ index bf42587e383..94cd1f8306d 100644
  		{
  			stmt->oldNode = irel->rd_node.relNode;
  			stmt->oldCreateSubid = irel->rd_createSubid;
-@@ -13841,6 +13957,9 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
+@@ -13841,6 +13962,9 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
  	if (defList == NIL && operation != AT_ReplaceRelOptions)
  		return;					/* nothing to do */
  
@@ -3420,17 +3435,7 @@ index bf42587e383..94cd1f8306d 100644
  	pgclass = table_open(RelationRelationId, RowExclusiveLock);
  
  	/* Fetch heap tuple */
-@@ -14040,6 +14159,9 @@ ATExecSetTableSpace(Oid tableOid, Oid newTableSpace, LOCKMODE lockmode)
- 	 */
- 	rel = relation_open(tableOid, lockmode);
- 
-+	if (RELATION_IS_GLOBAL_TEMP(rel))
-+		elog(ERROR, "not support alter table set tablespace on global temporary table");
-+
- 	/* Check first if relation can be moved to new tablespace */
- 	if (!CheckRelationTableSpaceMove(rel, newTableSpace))
- 	{
-@@ -14341,7 +14463,7 @@ index_copy_data(Relation rel, RelFileNode newrnode)
+@@ -14341,7 +14465,7 @@ index_copy_data(Relation rel, RelFileNode newrnode)
  	 * NOTE: any conflict in relfilenode value will be caught in
  	 * RelationCreateStorage().
  	 */
@@ -3439,7 +3444,7 @@ index bf42587e383..94cd1f8306d 100644
  
  	/* copy main fork */
  	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
-@@ -15945,6 +16067,7 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
+@@ -15945,6 +16069,7 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
  	switch (rel->rd_rel->relpersistence)
  	{
  		case RELPERSISTENCE_TEMP:
@@ -3447,7 +3452,7 @@ index bf42587e383..94cd1f8306d 100644
  			ereport(ERROR,
  					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
  					 errmsg("cannot change logged status of table \"%s\" because it is temporary",
-@@ -16386,7 +16509,7 @@ AlterSeqNamespaces(Relation classRel, Relation rel,
+@@ -16386,7 +16511,7 @@ AlterSeqNamespaces(Relation classRel, Relation rel,
   * Register a newly-created relation's ON COMMIT action.
   */
  void
@@ -3456,7 +3461,7 @@ index bf42587e383..94cd1f8306d 100644
  {
  	OnCommitItem *oc;
  	MemoryContext oldcxt;
-@@ -16405,6 +16528,7 @@ register_on_commit_action(Oid relid, OnCommitAction action)
+@@ -16405,6 +16530,7 @@ register_on_commit_action(Oid relid, OnCommitAction action)
  	oc->oncommit = action;
  	oc->creating_subid = GetCurrentSubTransactionId();
  	oc->deleting_subid = InvalidSubTransactionId;
@@ -3464,7 +3469,7 @@ index bf42587e383..94cd1f8306d 100644
  
  	/*
  	 * We use lcons() here so that ON COMMIT actions are processed in reverse
-@@ -16450,6 +16574,7 @@ PreCommit_on_commit_actions(void)
+@@ -16450,6 +16576,7 @@ PreCommit_on_commit_actions(void)
  	ListCell   *l;
  	List	   *oids_to_truncate = NIL;
  	List	   *oids_to_drop = NIL;
@@ -3472,7 +3477,7 @@ index bf42587e383..94cd1f8306d 100644
  
  	foreach(l, on_commits)
  	{
-@@ -16473,7 +16598,12 @@ PreCommit_on_commit_actions(void)
+@@ -16473,7 +16600,12 @@ PreCommit_on_commit_actions(void)
  				 * tables, as they must still be empty.
  				 */
  				if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPNAMESPACE))
@@ -3486,7 +3491,7 @@ index bf42587e383..94cd1f8306d 100644
  				break;
  			case ONCOMMIT_DROP:
  				oids_to_drop = lappend_oid(oids_to_drop, oc->relid);
-@@ -16490,7 +16620,10 @@ PreCommit_on_commit_actions(void)
+@@ -16490,7 +16622,10 @@ PreCommit_on_commit_actions(void)
  	 * exists at truncation time.
  	 */
  	if (oids_to_truncate != NIL)
@@ -3498,7 +3503,7 @@ index bf42587e383..94cd1f8306d 100644
  
  	if (oids_to_drop != NIL)
  	{
-@@ -17489,6 +17622,13 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
+@@ -17489,6 +17624,13 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
  				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
  				 errmsg("cannot attach temporary relation of another session as partition")));
  
@@ -3512,7 +3517,7 @@ index bf42587e383..94cd1f8306d 100644
  	/* Check if there are any columns in attachrel that aren't in the parent */
  	tupleDesc = RelationGetDescr(attachrel);
  	natts = tupleDesc->natts;
-@@ -18959,3 +19099,40 @@ GetAttributeCompression(Oid atttypid, char *compression)
+@@ -18959,3 +19101,40 @@ GetAttributeCompression(Oid atttypid, char *compression)
  
  	return cmethod;
  }

@@ -1084,10 +1084,10 @@ index d9fa6a5b54a..697db975479 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 00000000000..5adc58d77e1
+index 00000000000..2ada5fa6b92
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
-@@ -0,0 +1,574 @@
+@@ -0,0 +1,577 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1243,13 +1243,16 @@ index 00000000000..5adc58d77e1
 +HINT:  Please create a new connection and execute ALTER TABLE on the new connection.
 +-- should fail
 +cluster gtt_on_commit_default using gtt_on_commit_default_pkey;
-+ERROR:  not support cluster global temporary table yet
++ERROR:  not support cluster global temporary table
 +-- should fail
 +create table gtt_on_commit_default(a int primary key, b text) on commit delete rows;
 +ERROR:  ON COMMIT can only be used on temporary tables
 +-- should fail
-+alter table gtt_on_commit_default SET TABLESPACE pg_default;
-+ERROR:  not support alter table set tablespace on global temporary table
++REINDEX (TABLESPACE pg_default) TABLE gtt_test_createindex;
++ERROR:  The tablespace of global temporary table can not be changed
++-- should fail
++REINDEX (TABLESPACE pg_default) INDEX gtt_idx_1;
++ERROR:  The tablespace of global temporary table can not be changed
 +-- should fail
 +alter table gtt_on_commit_default set ( on_commit_delete_rows='true');
 +ERROR:  table cannot add or modify on commit parameter by ALTER TABLE command.
@@ -1774,10 +1777,10 @@ index 5b0c73d7e37..40f4fc5ca10 100644
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
-index 00000000000..5185c3b15af
+index 00000000000..51cd9bbbc0c
 --- /dev/null
 +++ b/src/test/regress/sql/global_temporary_table.sql
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,315 @@
 +--
 +-- GLobal emparary table test case 
 +--
@@ -1916,7 +1919,9 @@ index 00000000000..5185c3b15af
 +-- should fail
 +create table gtt_on_commit_default(a int primary key, b text) on commit delete rows;
 +-- should fail
-+alter table gtt_on_commit_default SET TABLESPACE pg_default;
++REINDEX (TABLESPACE pg_default) TABLE gtt_test_createindex;
++-- should fail
++REINDEX (TABLESPACE pg_default) INDEX gtt_idx_1;
 +-- should fail
 +alter table gtt_on_commit_default set ( on_commit_delete_rows='true');
 +-- should fail
