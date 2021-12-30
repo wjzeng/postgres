@@ -1,3 +1,34 @@
+From e9a070ca04c67a91234cd3b91f0b2f339db83c27 Mon Sep 17 00:00:00 2001
+From: "wenjing.zwj" <wenjing.zwj@alibaba-inc.com>
+Date: Thu, 15 Jul 2021 19:20:26 +0800
+Subject: [PATCH] poc pushdown qual to sublink v5
+
+---
+ src/backend/optimizer/path/allpaths.c         |  64 +++++
+ src/backend/optimizer/path/equivclass.c       |  10 +
+ src/backend/optimizer/plan/initsplan.c        | 215 +++++++++++++-
+ src/backend/optimizer/plan/planagg.c          |  33 ++-
+ src/backend/optimizer/plan/planmain.c         |   4 +
+ src/backend/optimizer/plan/planner.c          |  52 ++--
+ src/backend/optimizer/plan/subselect.c        | 265 +++++++++++++++++-
+ src/backend/optimizer/util/placeholder.c      |   5 +
+ src/backend/utils/adt/ruleutils.c             |   3 +-
+ src/backend/utils/misc/guc.c                  |  12 +
+ src/include/nodes/pathnodes.h                 |   4 +
+ src/include/optimizer/paths.h                 |   8 +-
+ src/include/optimizer/planmain.h              |  10 +-
+ src/include/optimizer/subselect.h             |   4 +-
+ src/include/utils/guc.h                       |   2 +
+ src/include/utils/ruleutils.h                 |   1 +
+ src/test/regress/expected/join_hash.out       |   6 +-
+ .../expected/qual_pushdown_to_sublink.out     | 221 +++++++++++++++
+ src/test/regress/expected/subselect.out       |   2 +-
+ src/test/regress/parallel_schedule            |   1 +
+ .../regress/sql/qual_pushdown_to_sublink.sql  |  86 ++++++
+ 21 files changed, 958 insertions(+), 50 deletions(-)
+ create mode 100644 src/test/regress/expected/qual_pushdown_to_sublink.out
+ create mode 100644 src/test/regress/sql/qual_pushdown_to_sublink.sql
+
 diff --git a/src/backend/optimizer/path/allpaths.c b/src/backend/optimizer/path/allpaths.c
 index 296dd75c1b6..22405bef5fc 100644
 --- a/src/backend/optimizer/path/allpaths.c
@@ -83,7 +114,7 @@ index 296dd75c1b6..22405bef5fc 100644
  /*****************************************************************************
   *			DEBUG SUPPORT
 diff --git a/src/backend/optimizer/path/equivclass.c b/src/backend/optimizer/path/equivclass.c
-index 6f1abbe47d6..f4aeb716a59 100644
+index 6f1abbe47d6..bc8cea7fa24 100644
 --- a/src/backend/optimizer/path/equivclass.c
 +++ b/src/backend/optimizer/path/equivclass.c
 @@ -388,6 +388,7 @@ process_equivalence(PlannerInfo *root,
@@ -118,20 +149,18 @@ index 6f1abbe47d6..f4aeb716a59 100644
  
  	if (newec->ec_has_volatile && sortref == 0) /* should not happen */
  		elog(ERROR, "volatile EquivalenceClass has no sortref");
-@@ -1114,7 +1118,12 @@ generate_base_implied_equalities(PlannerInfo *root)
+@@ -1114,6 +1118,11 @@ generate_base_implied_equalities(PlannerInfo *root)
  		 * Single-member ECs won't generate any deductions, either here or at
  		 * the join level.
  		 */
--		if (list_length(ec->ec_members) > 1)
 +		if (ec->ec_processed)
 +		{
 +			ec_index++;
 +			continue;
 +		}
-+		else if (list_length(ec->ec_members) > 1)
+ 		if (list_length(ec->ec_members) > 1)
  		{
  			if (ec->ec_has_const)
- 				generate_base_implied_equalities_const(root, ec);
 @@ -1151,6 +1160,7 @@ generate_base_implied_equalities(PlannerInfo *root)
  				rel->has_eclass_joins = true;
  		}
@@ -141,7 +170,7 @@ index 6f1abbe47d6..f4aeb716a59 100644
  	}
  }
 diff --git a/src/backend/optimizer/plan/initsplan.c b/src/backend/optimizer/plan/initsplan.c
-index f6a202d900f..08ca51b9960 100644
+index f6a202d900f..2548e39e842 100644
 --- a/src/backend/optimizer/plan/initsplan.c
 +++ b/src/backend/optimizer/plan/initsplan.c
 @@ -30,10 +30,12 @@
@@ -182,7 +211,7 @@ index f6a202d900f..08ca51b9960 100644
 +			PlaceHolderInfo *phinfo = NULL;
 +
 +			/*
-+			 * Since there may be an unexpanded sublink in the targetList,
++			 * If there is an unexpanded sublink in the targetList,
 +			 * we'll skip it for now. Don't worry let lazy_process_sublinks do it later.
 +			 */
 +			if (has_unexpanded_sublink(root) && checkExprHasSubLink(node))
@@ -396,7 +425,7 @@ index f6a202d900f..08ca51b9960 100644
 +	return (void *)sublink_info;
 +}
 diff --git a/src/backend/optimizer/plan/planagg.c b/src/backend/optimizer/plan/planagg.c
-index c1634d16669..7f83f58479f 100644
+index c1634d16669..897903d7e05 100644
 --- a/src/backend/optimizer/plan/planagg.c
 +++ b/src/backend/optimizer/plan/planagg.c
 @@ -49,7 +49,7 @@
@@ -442,6 +471,12 @@ index c1634d16669..7f83f58479f 100644
  	/* append_rel_list might contain outer Vars? */
  	subroot->append_rel_list = copyObject(root->append_rel_list);
  	IncrementVarSublevelsUp((Node *) subroot->append_rel_list, 1, 1);
+-	/* There shouldn't be any OJ info to translate, as yet */
+-	Assert(subroot->join_info_list == NIL);
+-	/* and we haven't made equivalence classes, either */
+-	Assert(subroot->eq_classes == NIL);
+-	/* and we haven't created PlaceHolderInfos, either */
+-	Assert(subroot->placeholder_list == NIL);
 +
 +	if (lazy_process_sublink)
 +	{
@@ -452,12 +487,12 @@ index c1634d16669..7f83f58479f 100644
 +	}
 +	else
 +	{
- 	/* There shouldn't be any OJ info to translate, as yet */
- 	Assert(subroot->join_info_list == NIL);
- 	/* and we haven't made equivalence classes, either */
- 	Assert(subroot->eq_classes == NIL);
- 	/* and we haven't created PlaceHolderInfos, either */
- 	Assert(subroot->placeholder_list == NIL);
++		/* There shouldn't be any OJ info to translate, as yet */
++		Assert(subroot->join_info_list == NIL);
++		/* and we haven't made equivalence classes, either */
++		Assert(subroot->eq_classes == NIL);
++		/* and we haven't created PlaceHolderInfos, either */
++		Assert(subroot->placeholder_list == NIL);
 +	}
  
  	/*----------
@@ -485,7 +520,7 @@ index 273ac0acf7e..7042c96b09b 100644
  	 * We have completed merging equivalence sets, so it's now possible to
  	 * generate pathkeys in canonical form; so compute query_pathkeys and
 diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index bd01ec0526f..0b978106868 100644
+index bd01ec0526f..1924cbe0246 100644
 --- a/src/backend/optimizer/plan/planner.c
 +++ b/src/backend/optimizer/plan/planner.c
 @@ -64,6 +64,7 @@
@@ -580,7 +615,7 @@ index bd01ec0526f..0b978106868 100644
  {
  	if (jtnode == NULL)
  		return;
-@@ -1172,17 +1186,24 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
+@@ -1172,17 +1186,21 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
  		ListCell   *l;
  
  		foreach(l, f->fromlist)
@@ -593,10 +628,7 @@ index bd01ec0526f..0b978106868 100644
 +		 * istop = false means that this is the join qual on the Join on clause
 +		 * For now, only sublink on the WHERE clause can be deferred,
 +		 */
-+		if (istop)
-+			f->quals = preprocess_expression_ext(root, f->quals, EXPRKIND_QUAL, false);
-+		else
-+			f->quals = preprocess_expression_ext(root, f->quals, EXPRKIND_QUAL, true);
++		f->quals = preprocess_expression_ext(root, f->quals, EXPRKIND_QUAL, !istop);
  	}
  	else if (IsA(jtnode, JoinExpr))
  	{
@@ -610,7 +642,7 @@ index bd01ec0526f..0b978106868 100644
  		j->quals = preprocess_expression(root, j->quals, EXPRKIND_QUAL);
  	}
  	else
-@@ -1384,11 +1405,11 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
+@@ -1384,11 +1402,11 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
  		 * pathtargets, else some copies of the Aggref nodes might escape
  		 * being marked.
  		 */
@@ -625,7 +657,7 @@ index bd01ec0526f..0b978106868 100644
  
  		/*
  		 * Locate any window functions in the tlist.  (We don't need to look
-@@ -1412,8 +1433,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
+@@ -1412,8 +1430,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
  		 * that is needed in MIN/MAX-optimizable cases will have to be
  		 * duplicated in planagg.c.
  		 */
@@ -637,7 +669,7 @@ index bd01ec0526f..0b978106868 100644
  		/*
  		 * Figure out whether there's a hard limit on the number of rows that
 diff --git a/src/backend/optimizer/plan/subselect.c b/src/backend/optimizer/plan/subselect.c
-index c9f7a09d102..aadf1fd52e0 100644
+index c9f7a09d102..edd407740ea 100644
 --- a/src/backend/optimizer/plan/subselect.c
 +++ b/src/backend/optimizer/plan/subselect.c
 @@ -32,11 +32,13 @@
@@ -910,7 +942,7 @@ index c9f7a09d102..aadf1fd52e0 100644
 +		 */
 +		if (context.inner_var &&
 +			context.outer_var == NULL &&
-+			context.has_unexpected_expr == false &&
++			!context.has_unexpected_expr &&
 +			context.has_const &&
 +			context.inner_var->varattno > 0 &&
 +			equal(context.inner_var, var))
@@ -947,8 +979,8 @@ index c9f7a09d102..aadf1fd52e0 100644
 +			/* It needs to be something like outer var = inner var */
 +			if (context.inner_var &&
 +				context.outer_var &&
-+				context.has_unexpected_expr == false &&
-+				context.has_const == false)
++				!context.has_unexpected_expr &&
++				!context.has_const)
 +			{
 +				expr_info = palloc0(sizeof(pushdown_expr_info));
 +				expr_info->inner = context.inner_var;
