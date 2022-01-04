@@ -7284,7 +7284,6 @@ RevokeRoleStmt:
 					n->admin_opt = false;
 					n->granted_roles = $2;
 					n->grantee_roles = $4;
-					n->grantor = $5;
 					n->behavior = $6;
 					$$ = (Node*)n;
 				}
@@ -7295,7 +7294,6 @@ RevokeRoleStmt:
 					n->admin_opt = true;
 					n->granted_roles = $5;
 					n->grantee_roles = $7;
-					n->grantor = $8;
 					n->behavior = $9;
 					$$ = (Node*)n;
 				}
@@ -9752,14 +9750,14 @@ PublicationObjSpec:
 			| ALL TABLES IN_P SCHEMA ColId
 				{
 					$$ = makeNode(PublicationObjSpec);
-					$$->pubobjtype = PUBLICATIONOBJ_TABLE_IN_SCHEMA;
+					$$->pubobjtype = PUBLICATIONOBJ_TABLES_IN_SCHEMA;
 					$$->name = $5;
 					$$->location = @5;
 				}
 			| ALL TABLES IN_P SCHEMA CURRENT_SCHEMA
 				{
 					$$ = makeNode(PublicationObjSpec);
-					$$->pubobjtype = PUBLICATIONOBJ_TABLE_IN_CUR_SCHEMA;
+					$$->pubobjtype = PUBLICATIONOBJ_TABLES_IN_CUR_SCHEMA;
 					$$->location = @5;
 				}
 			| ColId
@@ -9830,7 +9828,7 @@ AlterPublicationStmt:
 					n->pubname = $3;
 					n->pubobjects = $5;
 					preprocess_pubobj_list(n->pubobjects, yyscanner);
-					n->action = DEFELEM_ADD;
+					n->action = AP_AddObjects;
 					$$ = (Node *)n;
 				}
 			| ALTER PUBLICATION name SET pub_obj_list
@@ -9839,7 +9837,7 @@ AlterPublicationStmt:
 					n->pubname = $3;
 					n->pubobjects = $5;
 					preprocess_pubobj_list(n->pubobjects, yyscanner);
-					n->action = DEFELEM_SET;
+					n->action = AP_SetObjects;
 					$$ = (Node *)n;
 				}
 			| ALTER PUBLICATION name DROP pub_obj_list
@@ -9848,7 +9846,7 @@ AlterPublicationStmt:
 					n->pubname = $3;
 					n->pubobjects = $5;
 					preprocess_pubobj_list(n->pubobjects, yyscanner);
-					n->action = DEFELEM_DROP;
+					n->action = AP_DropObjects;
 					$$ = (Node *)n;
 				}
 		;
@@ -17413,7 +17411,8 @@ preprocess_pubobj_list(List *pubobjspec_list, core_yyscan_t yyscanner)
 	if (pubobj->pubobjtype == PUBLICATIONOBJ_CONTINUATION)
 		ereport(ERROR,
 				errcode(ERRCODE_SYNTAX_ERROR),
-				errmsg("TABLE/ALL TABLES IN SCHEMA should be specified before the table/schema name(s)"),
+				errmsg("invalid publication object list"),
+				errdetail("One of TABLE or ALL TABLES IN SCHEMA must be specified before a standalone table or schema name."),
 				parser_errposition(pubobj->location));
 
 	foreach(cell, pubobjspec_list)
@@ -17435,23 +17434,24 @@ preprocess_pubobj_list(List *pubobjspec_list, core_yyscan_t yyscanner)
 			{
 				/* convert it to PublicationTable */
 				PublicationTable *pubtable = makeNode(PublicationTable);
-				pubtable->relation = makeRangeVar(NULL, pubobj->name,
-												  pubobj->location);
+
+				pubtable->relation =
+					makeRangeVar(NULL, pubobj->name, pubobj->location);
 				pubobj->pubtable = pubtable;
 				pubobj->name = NULL;
 			}
 		}
-		else if (pubobj->pubobjtype == PUBLICATIONOBJ_TABLE_IN_SCHEMA ||
-				 pubobj->pubobjtype == PUBLICATIONOBJ_TABLE_IN_CUR_SCHEMA)
+		else if (pubobj->pubobjtype == PUBLICATIONOBJ_TABLES_IN_SCHEMA ||
+				 pubobj->pubobjtype == PUBLICATIONOBJ_TABLES_IN_CUR_SCHEMA)
 		{
 			/*
 			 * We can distinguish between the different type of schema
 			 * objects based on whether name and pubtable is set.
 			 */
 			if (pubobj->name)
-				pubobj->pubobjtype = PUBLICATIONOBJ_TABLE_IN_SCHEMA;
+				pubobj->pubobjtype = PUBLICATIONOBJ_TABLES_IN_SCHEMA;
 			else if (!pubobj->name && !pubobj->pubtable)
-				pubobj->pubobjtype = PUBLICATIONOBJ_TABLE_IN_CUR_SCHEMA;
+				pubobj->pubobjtype = PUBLICATIONOBJ_TABLES_IN_CUR_SCHEMA;
 			else
 				ereport(ERROR,
 						errcode(ERRCODE_SYNTAX_ERROR),
