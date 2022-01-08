@@ -1,5 +1,5 @@
 
-# Copyright (c) 2021, PostgreSQL Global Development Group
+# Copyright (c) 2021-2022, PostgreSQL Global Development Group
 
 =pod
 
@@ -2595,6 +2595,42 @@ sub wait_for_slot_catchup
 	  or croak "timed out waiting for catchup";
 	print "done\n";
 	return;
+}
+
+=pod
+
+=item $node->wait_for_log(regexp, offset)
+
+Waits for the contents of the server log file, starting at the given offset, to
+match the supplied regular expression.  Checks the entire log if no offset is
+given.  Times out after 180 seconds.
+
+If successful, returns the length of the entire log file, in bytes.
+
+=cut
+
+sub wait_for_log
+{
+	my ($self, $regexp, $offset) = @_;
+	$offset = 0 unless defined $offset;
+
+	my $max_attempts = 180 * 10;
+	my $attempts     = 0;
+
+	while ($attempts < $max_attempts)
+	{
+		my $log = PostgreSQL::Test::Utils::slurp_file($self->logfile, $offset);
+
+		return $offset+length($log) if ($log =~ m/$regexp/);
+
+		# Wait 0.1 second before retrying.
+		usleep(100_000);
+
+		$attempts++;
+	}
+
+	# The logs didn't match within 180 seconds. Give up.
+	croak "timed out waiting for match: $regexp";
 }
 
 =pod

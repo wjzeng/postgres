@@ -4,7 +4,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/pg_basebackup.c
@@ -524,7 +524,8 @@ LogStreamerMain(logstreamer_param *param)
 													stream.do_sync);
 	else
 		stream.walmethod = CreateWalTarMethod(param->xlog,
-											  COMPRESSION_NONE, /* ignored */
+											  (compresslevel != 0) ?
+											  COMPRESSION_GZIP : COMPRESSION_NONE,
 											  compresslevel,
 											  stream.do_sync);
 
