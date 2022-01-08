@@ -1,6 +1,6 @@
 # -*-perl-*- hey - emacs - this is a perl file
 
-# Copyright (c) 2021, PostgreSQL Global Development Group
+# Copyright (c) 2021-2022, PostgreSQL Global Development Group
 
 # src/tools/msvc/vcregress.pl
 
@@ -506,6 +506,7 @@ sub contribcheck
 		# these configuration-based exclusions must match Install.pm
 		next if ($module eq "uuid-ossp"  && !defined($config->{uuid}));
 		next if ($module eq "sslinfo"    && !defined($config->{openssl}));
+		next if ($module eq "pgcrypto"   && !defined($config->{openssl}));
 		next if ($module eq "xml2"       && !defined($config->{xml}));
 		next if ($module =~ /_plperl$/   && !defined($config->{perl}));
 		next if ($module =~ /_plpython$/ && !defined($config->{python}));

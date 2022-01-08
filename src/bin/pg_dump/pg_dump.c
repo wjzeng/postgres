@@ -4,7 +4,7 @@
  *	  pg_dump is a utility for dumping out a postgres database
  *	  into a script file.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *	pg_dump will read the system catalogs in a database and dump out a
@@ -2779,34 +2779,21 @@ dumpDatabase(Archive *fout)
 	/*
 	 * Fetch the database-level properties for this database.
 	 */
+	appendPQExpBuffer(dbQry, "SELECT tableoid, oid, datname, "
+					  "datdba, "
+					  "pg_encoding_to_char(encoding) AS encoding, "
+					  "datcollate, datctype, datfrozenxid, "
+					  "datacl, acldefault('d', datdba) AS acldefault, "
+					  "datistemplate, datconnlimit, ");
 	if (fout->remoteVersion >= 90300)
-	{
-		appendPQExpBuffer(dbQry, "SELECT tableoid, oid, datname, "
-						  "datdba, "
-						  "pg_encoding_to_char(encoding) AS encoding, "
-						  "datcollate, datctype, datfrozenxid, datminmxid, "
-						  "datacl, acldefault('d', datdba) AS acldefault, "
-						  "datistemplate, datconnlimit, "
-						  "(SELECT spcname FROM pg_tablespace t WHERE t.oid = dattablespace) AS tablespace, "
-						  "shobj_description(oid, 'pg_database') AS description "
-
-						  "FROM pg_database "
-						  "WHERE datname = current_database()");
-	}
+		appendPQExpBuffer(dbQry, "datminmxid, ");
 	else
-	{
-		appendPQExpBuffer(dbQry, "SELECT tableoid, oid, datname, "
-						  "datdba, "
-						  "pg_encoding_to_char(encoding) AS encoding, "
-						  "datcollate, datctype, datfrozenxid, 0 AS datminmxid, "
-						  "datacl, acldefault('d', datdba) AS acldefault, "
-						  "datistemplate, datconnlimit, "
-						  "(SELECT spcname FROM pg_tablespace t WHERE t.oid = dattablespace) AS tablespace, "
-						  "shobj_description(oid, 'pg_database') AS description "
-
-						  "FROM pg_database "
-						  "WHERE datname = current_database()");
-	}
+		appendPQExpBuffer(dbQry, "0 AS datminmxid, ");
+	appendPQExpBuffer(dbQry,
+					  "(SELECT spcname FROM pg_tablespace t WHERE t.oid = dattablespace) AS tablespace, "
+					  "shobj_description(oid, 'pg_database') AS description "
+					  "FROM pg_database "
+					  "WHERE datname = current_database()");
 
 	res = ExecuteSqlQueryForSingleRow(fout, dbQry->data);
 
@@ -7208,7 +7195,7 @@ getTriggers(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_tgconstrrelid,
 				i_tgconstrrelname,
 				i_tgenabled,
-				i_tgisinternal,
+				i_tgispartition,
 				i_tgdeferrable,
 				i_tginitdeferred,
 				i_tgdef;
@@ -7237,7 +7224,31 @@ getTriggers(Archive *fout, TableInfo tblinfo[], int numTables)
 	}
 	appendPQExpBufferChar(tbloids, '}');
 
-	if (fout->remoteVersion >= 130000)
+	if (fout->remoteVersion >= 150000)
+	{
+		/*
+		 * NB: think not to use pretty=true in pg_get_triggerdef.  It could
+		 * result in non-forward-compatible dumps of WHEN clauses due to
+		 * under-parenthesization.
+		 *
+		 * NB: We need to see partition triggers in case the tgenabled flag
+		 * has been changed from the parent.
+		 */
+		appendPQExpBuffer(query,
+						  "SELECT t.tgrelid, t.tgname, "
+						  "t.tgfoid::pg_catalog.regproc AS tgfname, "
+						  "pg_catalog.pg_get_triggerdef(t.oid, false) AS tgdef, "
+						  "t.tgenabled, t.tableoid, t.oid, "
+						  "t.tgparentid <> 0 AS tgispartition\n"
+						  "FROM unnest('%s'::pg_catalog.oid[]) AS src(tbloid)\n"
+						  "JOIN pg_catalog.pg_trigger t ON (src.tbloid = t.tgrelid) "
+						  "LEFT JOIN pg_catalog.pg_trigger u ON (u.oid = t.tgparentid) "
+						  "WHERE ((NOT t.tgisinternal AND t.tgparentid = 0) "
+						  "OR t.tgenabled != u.tgenabled) "
+						  "ORDER BY t.tgrelid, t.tgname",
+						  tbloids->data);
+	}
+	else if (fout->remoteVersion >= 130000)
 	{
 		/*
 		 * NB: think not to use pretty=true in pg_get_triggerdef.  It could
@@ -7251,7 +7262,7 @@ getTriggers(Archive *fout, TableInfo tblinfo[], int numTables)
 						  "SELECT t.tgrelid, t.tgname, "
 						  "t.tgfoid::pg_catalog.regproc AS tgfname, "
 						  "pg_catalog.pg_get_triggerdef(t.oid, false) AS tgdef, "
-						  "t.tgenabled, t.tableoid, t.oid, t.tgisinternal\n"
+						  "t.tgenabled, t.tableoid, t.oid, t.tgisinternal as tgispartition\n"
 						  "FROM unnest('%s'::pg_catalog.oid[]) AS src(tbloid)\n"
 						  "JOIN pg_catalog.pg_trigger t ON (src.tbloid = t.tgrelid) "
 						  "LEFT JOIN pg_catalog.pg_trigger u ON (u.oid = t.tgparentid) "
@@ -7272,7 +7283,7 @@ getTriggers(Archive *fout, TableInfo tblinfo[], int numTables)
 						  "SELECT t.tgrelid, t.tgname, "
 						  "t.tgfoid::pg_catalog.regproc AS tgfname, "
 						  "pg_catalog.pg_get_triggerdef(t.oid, false) AS tgdef, "
-						  "t.tgenabled, t.tableoid, t.oid, t.tgisinternal "
+						  "t.tgenabled, t.tableoid, t.oid, t.tgisinternal as tgispartition "
 						  "FROM unnest('%s'::pg_catalog.oid[]) AS src(tbloid)\n"
 						  "JOIN pg_catalog.pg_trigger t ON (src.tbloid = t.tgrelid) "
 						  "LEFT JOIN pg_catalog.pg_depend AS d ON "
@@ -7291,7 +7302,7 @@ getTriggers(Archive *fout, TableInfo tblinfo[], int numTables)
 						  "SELECT t.tgrelid, t.tgname, "
 						  "t.tgfoid::pg_catalog.regproc AS tgfname, "
 						  "pg_catalog.pg_get_triggerdef(t.oid, false) AS tgdef, "
-						  "t.tgenabled, false as tgisinternal, "
+						  "t.tgenabled, false as tgispartition, "
 						  "t.tableoid, t.oid "
 						  "FROM unnest('%s'::pg_catalog.oid[]) AS src(tbloid)\n"
 						  "JOIN pg_catalog.pg_trigger t ON (src.tbloid = t.tgrelid) "
@@ -7317,7 +7328,7 @@ getTriggers(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_tgconstrrelid = PQfnumber(res, "tgconstrrelid");
 	i_tgconstrrelname = PQfnumber(res, "tgconstrrelname");
 	i_tgenabled = PQfnumber(res, "tgenabled");
-	i_tgisinternal = PQfnumber(res, "tgisinternal");
+	i_tgispartition = PQfnumber(res, "tgispartition");
 	i_tgdeferrable = PQfnumber(res, "tgdeferrable");
 	i_tginitdeferred = PQfnumber(res, "tginitdeferred");
 	i_tgdef = PQfnumber(res, "tgdef");
@@ -7367,7 +7378,7 @@ getTriggers(Archive *fout, TableInfo tblinfo[], int numTables)
 			tginfo[j].dobj.namespace = tbinfo->dobj.namespace;
 			tginfo[j].tgtable = tbinfo;
 			tginfo[j].tgenabled = *(PQgetvalue(res, j, i_tgenabled));
-			tginfo[j].tgisinternal = *(PQgetvalue(res, j, i_tgisinternal)) == 't';
+			tginfo[j].tgispartition = *(PQgetvalue(res, j, i_tgispartition)) == 't';
 			if (i_tgdef >= 0)
 			{
 				tginfo[j].tgdef = pg_strdup(PQgetvalue(res, j, i_tgdef));
@@ -16784,11 +16795,13 @@ dumpTrigger(Archive *fout, const TriggerInfo *tginfo)
 								"pg_catalog.pg_trigger", "TRIGGER",
 								trigidentity->data);
 
-	if (tginfo->tgisinternal)
+	if (tginfo->tgispartition)
 	{
+		Assert(tbinfo->ispartition);
+
 		/*
-		 * Triggers marked internal only appear here because their 'tgenabled'
-		 * flag differs from its parent's.  The trigger is created already, so
+		 * Partition triggers only appear here because their 'tgenabled' flag
+		 * differs from its parent's.  The trigger is created already, so
 		 * remove the CREATE and replace it with an ALTER.  (Clear out the
 		 * DROP query too, so that pg_dump --create does not cause errors.)
 		 */

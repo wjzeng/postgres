@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2022, PostgreSQL Global Development Group
  *
  * src/bin/psql/help.c
  */
@@ -248,7 +248,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\dFt[+] [PATTERN]      list text search templates\n"));
 	fprintf(output, _("  \\dg[S+] [PATTERN]      list roles\n"));
 	fprintf(output, _("  \\di[S+] [PATTERN]      list indexes\n"));
-	fprintf(output, _("  \\dl                    list large objects, same as \\lo_list\n"));
+	fprintf(output, _("  \\dl[+]                 list large objects, same as \\lo_list\n"));
 	fprintf(output, _("  \\dL[S+] [PATTERN]      list procedural languages\n"));
 	fprintf(output, _("  \\dm[S+] [PATTERN]      list materialized views\n"));
 	fprintf(output, _("  \\dn[S+] [PATTERN]      list schemas\n"));
@@ -325,7 +325,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("Large Objects\n"));
 	fprintf(output, _("  \\lo_export LOBOID FILE\n"
 					  "  \\lo_import FILE [COMMENT]\n"
-					  "  \\lo_list\n"
+					  "  \\lo_list[+]\n"
 					  "  \\lo_unlink LOBOID      large object operations\n"));
 
 	ClosePager(output);
@@ -693,7 +693,7 @@ print_copyright(void)
 {
 	puts("PostgreSQL Database Management System\n"
 		 "(formerly known as Postgres, then as Postgres95)\n\n"
-		 "Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group\n\n"
+		 "Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group\n\n"
 		 "Portions Copyright (c) 1994, The Regents of the University of California\n\n"
 		 "Permission to use, copy, modify, and distribute this software and its\n"
 		 "documentation for any purpose, without fee, and without a written agreement\n"
