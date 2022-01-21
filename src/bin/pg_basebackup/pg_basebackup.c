@@ -115,7 +115,7 @@ typedef enum
 static char *basedir = NULL;
 static TablespaceList tablespace_dirs = {NULL, NULL};
 static char *xlog_dir = NULL;
-static char format = 'p';		/* p(lain)/t(ar) */
+static char format = '\0';		/* p(lain)/t(ar) */
 static char *label = "pg_basebackup base backup";
 static bool noclean = false;
 static bool checksum_failure = false;
@@ -123,6 +123,7 @@ static bool showprogress = false;
 static bool estimatesize = true;
 static int	verbose = 0;
 static int	compresslevel = 0;
+static WalCompressionMethod compressmethod = COMPRESSION_NONE;
 static IncludeWal includewal = STREAM_WAL;
 static bool fastcheckpoint = false;
 static bool writerecoveryconf = false;
@@ -132,6 +133,7 @@ static pg_time_t last_progress_report = 0;
 static int32 maxrate = 0;		/* no limit by default */
 static char *replication_slot = NULL;
 static bool temp_replication_slot = true;
+static char *backup_target = NULL;
 static bool create_slot = false;
 static bool no_slot = false;
 static bool verify_checksums = true;
@@ -364,6 +366,8 @@ usage(void)
 	printf(_("Usage:\n"));
 	printf(_("  %s [OPTION]...\n"), progname);
 	printf(_("\nOptions controlling the output:\n"));
+	printf(_("  -t, --target=TARGET[:DETAIL]\n"
+			 "                         backup target (if other than client)\n"));
 	printf(_("  -D, --pgdata=DIRECTORY receive base backup into directory\n"));
 	printf(_("  -F, --format=p|t       output format (plain (default), tar)\n"));
 	printf(_("  -r, --max-rate=RATE    maximum transfer rate to transfer data directory\n"
@@ -376,7 +380,8 @@ usage(void)
 	printf(_("  -X, --wal-method=none|fetch|stream\n"
 			 "                         include required WAL files with specified method\n"));
 	printf(_("  -z, --gzip             compress tar output\n"));
-	printf(_("  -Z, --compress=0-9     compress tar output with given compression level\n"));
+	printf(_("  -Z, --compress={gzip,none}[:LEVEL] or [LEVEL]\n"
+			 "                         compress tar output with given compression method or level\n"));
 	printf(_("\nGeneral options:\n"));
 	printf(_("  -c, --checkpoint=fast|spread\n"
 			 "                         set fast or spread checkpointing\n"));
@@ -541,8 +546,7 @@ LogStreamerMain(logstreamer_param *param)
 													stream.do_sync);
 	else
 		stream.walmethod = CreateWalTarMethod(param->xlog,
-											  (compresslevel != 0) ?
-											  COMPRESSION_GZIP : COMPRESSION_NONE,
+											  compressmethod,
 											  compresslevel,
 											  stream.do_sync);
 
@@ -934,6 +938,81 @@ parse_max_rate(char *src)
 }
 
 /*
+ * Utility wrapper to parse the values specified for -Z/--compress.
+ * *methodres and *levelres will be optionally filled with values coming
+ * from the parsed results.
+ */
+static void
+parse_compress_options(char *src, WalCompressionMethod *methodres,
+					   int *levelres)
+{
+	char	   *sep;
+	int			firstlen;
+	char	   *firstpart = NULL;
+
+	/* check if the option is split in two */
+	sep = strchr(src, ':');
+
+	/*
+	 * The first part of the option value could be a method name, or just a
+	 * level value.
+	 */
+	firstlen = (sep != NULL) ? (sep - src) : strlen(src);
+	firstpart = pg_malloc(firstlen + 1);
+	strncpy(firstpart, src, firstlen);
+	firstpart[firstlen] = '\0';
+
+	/*
+	 * Check if the first part of the string matches with a supported
+	 * compression method.
+	 */
+	if (pg_strcasecmp(firstpart, "gzip") == 0)
+		*methodres = COMPRESSION_GZIP;
+	else if (pg_strcasecmp(firstpart, "none") == 0)
+		*methodres = COMPRESSION_NONE;
+	else
+	{
+		/*
+		 * It does not match anything known, so check for the
+		 * backward-compatible case of only an integer where the implied
+		 * compression method changes depending on the level value.
+		 */
+		if (!option_parse_int(firstpart, "-Z/--compress", 0,
+							  INT_MAX, levelres))
+			exit(1);
+
+		*methodres = (*levelres > 0) ?
+			COMPRESSION_GZIP : COMPRESSION_NONE;
+		return;
+	}
+
+	if (sep == NULL)
+	{
+		/*
+		 * The caller specified a method without a colon separator, so let any
+		 * subsequent checks assign a default level.
+		 */
+		return;
+	}
+
+	/* Check the contents after the colon separator. */
+	sep++;
+	if (*sep == '\0')
+	{
+		pg_log_error("no compression level defined for method %s", firstpart);
+		exit(1);
+	}
+
+	/*
+	 * For any of the methods currently supported, the data after the
+	 * separator can just be an integer.
+	 */
+	if (!option_parse_int(sep, "-Z/--compress", 0, INT_MAX,
+						  levelres))
+		exit(1);
+}
+
+/*
  * Read a stream of COPY data and invoke the provided callback for each
  * chunk.
  */
@@ -993,7 +1072,7 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 					 bool is_recovery_guc_supported,
 					 bool expect_unterminated_tarfile)
 {
-	bbstreamer *streamer;
+	bbstreamer *streamer = NULL;
 	bbstreamer *manifest_inject_streamer = NULL;
 	bool		inject_manifest;
 	bool		must_parse_archive;
@@ -1052,19 +1131,22 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 			archive_file = NULL;
 		}
 
+		if (compressmethod == COMPRESSION_NONE)
+			streamer = bbstreamer_plain_writer_new(archive_filename,
+												   archive_file);
 #ifdef HAVE_LIBZ
-		if (compresslevel != 0)
+		else if (compressmethod == COMPRESSION_GZIP)
 		{
 			strlcat(archive_filename, ".gz", sizeof(archive_filename));
 			streamer = bbstreamer_gzip_writer_new(archive_filename,
 												  archive_file,
 												  compresslevel);
 		}
-		else
 #endif
-			streamer = bbstreamer_plain_writer_new(archive_filename,
-												   archive_file);
-
+		else
+		{
+			Assert(false);		/* not reachable */
+		}
 
 		/*
 		 * If we need to parse the archive for whatever reason, then we'll
@@ -1232,15 +1314,22 @@ ReceiveArchiveStreamChunk(size_t r, char *copybuf, void *callback_data)
 				}
 
 				/*
-				 * Create an appropriate backup streamer. We know that
-				 * recovery GUCs are supported, because this protocol can only
-				 * be used on v15+.
+				 * Create an appropriate backup streamer, unless a backup
+				 * target was specified. In that case, it's up to the server
+				 * to put the backup wherever it needs to go.
 				 */
-				state->streamer =
-					CreateBackupStreamer(archive_name,
-										 spclocation,
-										 &state->manifest_inject_streamer,
-										 true, false);
+				if (backup_target == NULL)
+				{
+					/*
+					 * We know that recovery GUCs are supported, because this
+					 * protocol can only be used on v15+.
+					 */
+					state->streamer =
+						CreateBackupStreamer(archive_name,
+											 spclocation,
+											 &state->manifest_inject_streamer,
+											 true, false);
+				}
 				break;
 			}
 
@@ -1312,24 +1401,32 @@ ReceiveArchiveStreamChunk(size_t r, char *copybuf, void *callback_data)
 				GetCopyDataEnd(r, copybuf, cursor);
 
 				/*
-				 * If we're supposed inject the manifest into the archive, we
-				 * prepare to buffer it in memory; otherwise, we prepare to
-				 * write it to a temporary file.
+				 * If a backup target was specified, figuring out where to put
+				 * the manifest is the server's problem. Otherwise, we need to
+				 * deal with it.
 				 */
-				if (state->manifest_inject_streamer != NULL)
-					state->manifest_buffer = createPQExpBuffer();
-				else
+				if (backup_target == NULL)
 				{
-					snprintf(state->manifest_filename,
-							 sizeof(state->manifest_filename),
-							 "%s/backup_manifest.tmp", basedir);
-					state->manifest_file =
-						fopen(state->manifest_filename, "wb");
-					if (state->manifest_file == NULL)
+					/*
+					 * If we're supposed inject the manifest into the archive,
+					 * we prepare to buffer it in memory; otherwise, we
+					 * prepare to write it to a temporary file.
+					 */
+					if (state->manifest_inject_streamer != NULL)
+						state->manifest_buffer = createPQExpBuffer();
+					else
 					{
-						pg_log_error("could not create file \"%s\": %m",
-									 state->manifest_filename);
-						exit(1);
+						snprintf(state->manifest_filename,
+								 sizeof(state->manifest_filename),
+								 "%s/backup_manifest.tmp", basedir);
+						state->manifest_file =
+							fopen(state->manifest_filename, "wb");
+						if (state->manifest_file == NULL)
+						{
+							pg_log_error("could not create file \"%s\": %m",
+										 state->manifest_filename);
+							exit(1);
+						}
 					}
 				}
 				break;
@@ -1698,13 +1795,41 @@ BaseBackup(void)
 	if (manifest)
 	{
 		AppendStringCommandOption(&buf, use_new_option_syntax, "MANIFEST",
-									 manifest_force_encode ? "force-encode" : "yes");
+								  manifest_force_encode ? "force-encode" : "yes");
 		if (manifest_checksums != NULL)
 			AppendStringCommandOption(&buf, use_new_option_syntax,
-										 "MANIFEST_CHECKSUMS", manifest_checksums);
+									  "MANIFEST_CHECKSUMS", manifest_checksums);
 	}
 
-	if (serverMajor >= 1500)
+	if (backup_target != NULL)
+	{
+		char	   *colon;
+
+		if (serverMajor < 1500)
+		{
+			pg_log_error("backup targets are not supported by this server version");
+			exit(1);
+		}
+
+		AppendPlainCommandOption(&buf, use_new_option_syntax, "TABLESPACE_MAP");
+
+		if ((colon = strchr(backup_target, ':')) == NULL)
+		{
+			AppendStringCommandOption(&buf, use_new_option_syntax,
+									  "TARGET", backup_target);
+		}
+		else
+		{
+			char	   *target;
+
+			target = pnstrdup(backup_target, colon - backup_target);
+			AppendStringCommandOption(&buf, use_new_option_syntax,
+									  "TARGET", target);
+			AppendStringCommandOption(&buf, use_new_option_syntax,
+									  "TARGET_DETAIL", colon + 1);
+		}
+	}
+	else if (serverMajor >= 1500)
 		AppendStringCommandOption(&buf, use_new_option_syntax,
 								  "TARGET", "client");
 
@@ -1799,8 +1924,13 @@ BaseBackup(void)
 		 * Verify tablespace directories are empty. Don't bother with the
 		 * first once since it can be relocated, and it will be checked before
 		 * we do anything anyway.
+		 *
+		 * Note that this is skipped for tar format backups and backups that
+		 * the server is storing to a target location, since in that case
+		 * we won't be storing anything into these directories and thus should
+		 * not create them.
 		 */
-		if (format == 'p' && !PQgetisnull(res, i, 1))
+		if (backup_target == NULL && format == 'p' && !PQgetisnull(res, i, 1))
 		{
 			char	   *path = unconstify(char *, get_tablespace_mapping(PQgetvalue(res, i, 1)));
 
@@ -1811,7 +1941,8 @@ BaseBackup(void)
 	/*
 	 * When writing to stdout, require a single tablespace
 	 */
-	writing_to_stdout = format == 't' && strcmp(basedir, "-") == 0;
+	writing_to_stdout = format == 't' && basedir != NULL &&
+		strcmp(basedir, "-") == 0;
 	if (writing_to_stdout && PQntuples(res) > 1)
 	{
 		pg_log_error("can only write single tablespace to stdout, database has %d",
@@ -1894,7 +2025,7 @@ BaseBackup(void)
 	res = PQgetResult(conn);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
-		pg_log_error("could not get write-ahead log end position from server: %s",
+		pg_log_error("backup failed: %s",
 					 PQerrorMessage(conn));
 		exit(1);
 	}
@@ -2028,8 +2159,11 @@ BaseBackup(void)
 	 * synced after being completed.  In plain format, all the data of the
 	 * base directory is synced, taking into account all the tablespaces.
 	 * Errors are not considered fatal.
+	 *
+	 * If, however, there's a backup target, we're not writing anything
+	 * locally, so in that case we skip this step.
 	 */
-	if (do_sync)
+	if (do_sync && backup_target == NULL)
 	{
 		if (verbose)
 			pg_log_info("syncing data to disk ...");
@@ -2051,7 +2185,7 @@ BaseBackup(void)
 	 * without a backup_manifest file, decreasing the chances that a directory
 	 * we leave behind will be mistaken for a valid backup.
 	 */
-	if (!writing_to_stdout && manifest)
+	if (!writing_to_stdout && manifest && backup_target == NULL)
 	{
 		char		tmp_filename[MAXPGPATH];
 		char		filename[MAXPGPATH];
@@ -2085,6 +2219,7 @@ main(int argc, char **argv)
 		{"max-rate", required_argument, NULL, 'r'},
 		{"write-recovery-conf", no_argument, NULL, 'R'},
 		{"slot", required_argument, NULL, 'S'},
+		{"target", required_argument, NULL, 't'},
 		{"tablespace-mapping", required_argument, NULL, 'T'},
 		{"wal-method", required_argument, NULL, 'X'},
 		{"gzip", no_argument, NULL, 'z'},
@@ -2135,7 +2270,7 @@ main(int argc, char **argv)
 
 	atexit(cleanup_directories_atexit);
 
-	while ((c = getopt_long(argc, argv, "CD:F:r:RS:T:X:l:nNzZ:d:c:h:p:U:s:wWkvP",
+	while ((c = getopt_long(argc, argv, "CD:F:r:RS:t:T:X:l:nNzZ:d:c:h:p:U:s:wWkvP",
 							long_options, &option_index)) != -1)
 	{
 		switch (c)
@@ -2175,6 +2310,9 @@ main(int argc, char **argv)
 				break;
 			case 2:
 				no_slot = true;
+				break;
+			case 't':
+				backup_target = pg_strdup(optarg);
 				break;
 			case 'T':
 				tablespace_list_append(optarg);
@@ -2220,11 +2358,11 @@ main(int argc, char **argv)
 #else
 				compresslevel = 1;	/* will be rejected below */
 #endif
+				compressmethod = COMPRESSION_GZIP;
 				break;
 			case 'Z':
-				if (!option_parse_int(optarg, "-Z/--compress", 0, 9,
-									  &compresslevel))
-					exit(1);
+				parse_compress_options(optarg, &compressmethod,
+									   &compresslevel);
 				break;
 			case 'c':
 				if (pg_strcasecmp(optarg, "fast") == 0)
@@ -2308,27 +2446,72 @@ main(int argc, char **argv)
 	}
 
 	/*
-	 * Required arguments
+	 * Setting the backup target to 'client' is equivalent to leaving out the
+	 * option. This logic allows us to assume elsewhere that the backup is
+	 * being stored locally if and only if backup_target == NULL.
 	 */
-	if (basedir == NULL)
+	if (backup_target != NULL && strcmp(backup_target, "client") == 0)
 	{
-		pg_log_error("no target directory specified");
+		pg_free(backup_target);
+		backup_target = NULL;
+	}
+
+	/*
+	 * Can't use --format with --target. Without --target, default format is
+	 * tar.
+	 */
+	if (backup_target != NULL && format != '\0')
+	{
+		pg_log_error("cannot specify both format and backup target");
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
+	if (format == '\0')
+		format = 'p';
+
+	/*
+	 * Either directory or backup target should be specified, but not both
+	 */
+	if (basedir == NULL && backup_target == NULL)
+	{
+		pg_log_error("must specify output directory or backup target");
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
+	if (basedir != NULL && backup_target != NULL)
+	{
+		pg_log_error("cannot specify both output directory and backup target");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
 	}
 
 	/*
-	 * Mutually exclusive arguments
+	 * Compression doesn't make sense unless tar format is in use.
 	 */
-	if (format == 'p' && compresslevel != 0)
+	if (format == 'p' && compressmethod != COMPRESSION_NONE)
 	{
-		pg_log_error("only tar mode backups can be compressed");
+		if (backup_target == NULL)
+			pg_log_error("only tar mode backups can be compressed");
+		else
+			pg_log_error("client-side compression is not possible when a backup target is specfied");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
 	}
 
+	/*
+	 * Sanity checks for WAL method.
+	 */
+	if (backup_target != NULL && includewal == STREAM_WAL)
+	{
+		pg_log_error("WAL cannot be streamed when a backup target is specified");
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
 	if (format == 't' && includewal == STREAM_WAL && strcmp(basedir, "-") == 0)
 	{
 		pg_log_error("cannot stream write-ahead logs in tar mode to stdout");
@@ -2345,6 +2528,9 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
+	/*
+	 * Sanity checks for replication slot options.
+	 */
 	if (no_slot)
 	{
 		if (replication_slot)
@@ -2378,8 +2564,18 @@ main(int argc, char **argv)
 		}
 	}
 
+	/*
+	 * Sanity checks on WAL directory.
+	 */
 	if (xlog_dir)
 	{
+		if (backup_target != NULL)
+		{
+			pg_log_error("WAL directory location cannot be specified along with a backup target");
+			fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+					progname);
+			exit(1);
+		}
 		if (format != 'p')
 		{
 			pg_log_error("WAL directory location can only be specified in plain mode");
@@ -2399,14 +2595,47 @@ main(int argc, char **argv)
 		}
 	}
 
-#ifndef HAVE_LIBZ
-	if (compresslevel != 0)
+	/* Sanity checks for compression-related options. */
+	switch (compressmethod)
 	{
-		pg_log_error("this build does not support compression");
-		exit(1);
-	}
+		case COMPRESSION_NONE:
+			if (compresslevel != 0)
+			{
+				pg_log_error("cannot use compression level with method %s",
+							 "none");
+				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+						progname);
+				exit(1);
+			}
+			break;
+		case COMPRESSION_GZIP:
+#ifdef HAVE_LIBZ
+			if (compresslevel == 0)
+			{
+				pg_log_info("no value specified for compression level, switching to default");
+				compresslevel = Z_DEFAULT_COMPRESSION;
+			}
+			if (compresslevel > 9)
+			{
+				pg_log_error("compression level %d of method %s higher than maximum of 9",
+							 compresslevel, "gzip");
+				exit(1);
+			}
+#else
+			pg_log_error("this build does not support compression with %s",
+						 "gzip");
+			exit(1);
 #endif
+			break;
+		case COMPRESSION_LZ4:
+			/* option not supported */
+			Assert(false);
+			break;
+	}
 
+	/*
+	 * Sanity checks for progress reporting options.
+	 */
 	if (showprogress && !estimatesize)
 	{
 		pg_log_error("%s and %s are incompatible options",
@@ -2416,6 +2645,9 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
+	/*
+	 * Sanity checks for backup manifest options.
+	 */
 	if (!manifest && manifest_checksums != NULL)
 	{
 		pg_log_error("%s and %s are incompatible options",
@@ -2458,11 +2690,11 @@ main(int argc, char **argv)
 		manifest = false;
 
 	/*
-	 * Verify that the target directory exists, or create it. For plaintext
-	 * backups, always require the directory. For tar backups, require it
-	 * unless we are writing to stdout.
+	 * If an output directory was specified, verify that it exists, or create
+	 * it. Note that for a tar backup, an output directory of "-" means we are
+	 * writing to stdout, so do nothing in that case.
 	 */
-	if (format == 'p' || strcmp(basedir, "-") != 0)
+	if (basedir != NULL && (format == 'p' || strcmp(basedir, "-") != 0))
 		verify_dir_is_empty_or_create(basedir, &made_new_pgdata, &found_existing_pgdata);
 
 	/* determine remote server's xlog segment size */
