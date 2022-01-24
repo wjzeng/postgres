@@ -46,6 +46,7 @@
 #include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
+#include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/user.h"
 #include "commands/vacuum.h"
@@ -1957,6 +1958,17 @@ static struct config_bool ConfigureNamesBool[] =
 			GUC_NOT_IN_SAMPLE
 		},
 		&IgnoreSystemIndexes,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"allow_in_place_tablespaces", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Allows tablespaces directly inside pg_tblspc, for testing."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&allow_in_place_tablespaces,
 		false,
 		NULL, NULL, NULL
 	},
@@ -4264,7 +4276,7 @@ static struct config_string ConfigureNamesString[] =
 		{"log_destination", PGC_SIGHUP, LOGGING_WHERE,
 			gettext_noop("Sets the destination for server log output."),
 			gettext_noop("Valid values are combinations of \"stderr\", "
-						 "\"syslog\", \"csvlog\", and \"eventlog\", "
+						 "\"syslog\", \"csvlog\", \"jsonlog\" and \"eventlog\", "
 						 "depending on the platform."),
 			GUC_LIST_INPUT
 		},
@@ -8332,7 +8344,7 @@ flatten_set_variable_args(const char *name, List *args)
 				break;
 			case T_Float:
 				/* represented as a string, so just copy it */
-				appendStringInfoString(&buf, castNode(Float, &con->val)->val);
+				appendStringInfoString(&buf, castNode(Float, &con->val)->fval);
 				break;
 			case T_String:
 				val = strVal(&con->val);
@@ -11740,6 +11752,8 @@ check_log_destination(char **newval, void **extra, GucSource source)
 			newlogdest |= LOG_DESTINATION_STDERR;
 		else if (pg_strcasecmp(tok, "csvlog") == 0)
 			newlogdest |= LOG_DESTINATION_CSVLOG;
+		else if (pg_strcasecmp(tok, "jsonlog") == 0)
+			newlogdest |= LOG_DESTINATION_JSONLOG;
 #ifdef HAVE_SYSLOG
 		else if (pg_strcasecmp(tok, "syslog") == 0)
 			newlogdest |= LOG_DESTINATION_SYSLOG;
