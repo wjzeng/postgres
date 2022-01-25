@@ -2706,7 +2706,6 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	 */
 	if (LogwrtResult.Flush < WriteRqst.Flush &&
 		LogwrtResult.Flush < LogwrtResult.Write)
-
 	{
 		/*
 		 * Could get here without iterating above loop, in which case we might
@@ -10422,7 +10421,7 @@ xlog_redo(XLogReaderState *record)
 		 */
 		if (checkPoint.ThisTimeLineID != replayTLI)
 			ereport(PANIC,
-					(errmsg("unexpected timeline ID %u (should be %u) in checkpoint record",
+					(errmsg("unexpected timeline ID %u (should be %u) in shutdown checkpoint record",
 							checkPoint.ThisTimeLineID, replayTLI)));
 
 		RecoveryRestartPoint(&checkPoint, record);
@@ -10478,7 +10477,7 @@ xlog_redo(XLogReaderState *record)
 		/* TLI should not change in an on-line checkpoint */
 		if (checkPoint.ThisTimeLineID != replayTLI)
 			ereport(PANIC,
-					(errmsg("unexpected timeline ID %u (should be %u) in checkpoint record",
+					(errmsg("unexpected timeline ID %u (should be %u) in online checkpoint record",
 							checkPoint.ThisTimeLineID, replayTLI)));
 
 		RecoveryRestartPoint(&checkPoint, record);
@@ -10508,7 +10507,7 @@ xlog_redo(XLogReaderState *record)
 		 */
 		if (xlrec.ThisTimeLineID != replayTLI)
 			ereport(PANIC,
-					(errmsg("unexpected timeline ID %u (should be %u) in checkpoint record",
+					(errmsg("unexpected timeline ID %u (should be %u) in end-of-recovery record",
 							xlrec.ThisTimeLineID, replayTLI)));
 	}
 	else if (info == XLOG_NOOP)
