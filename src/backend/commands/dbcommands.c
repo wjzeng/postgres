@@ -570,16 +570,14 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		DirectFunctionCall1(namein, CStringGetDatum(dbname));
 	new_record[Anum_pg_database_datdba - 1] = ObjectIdGetDatum(datdba);
 	new_record[Anum_pg_database_encoding - 1] = Int32GetDatum(encoding);
-	new_record[Anum_pg_database_datcollate - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(dbcollate));
-	new_record[Anum_pg_database_datctype - 1] =
-		DirectFunctionCall1(namein, CStringGetDatum(dbctype));
 	new_record[Anum_pg_database_datistemplate - 1] = BoolGetDatum(dbistemplate);
 	new_record[Anum_pg_database_datallowconn - 1] = BoolGetDatum(dballowconnections);
 	new_record[Anum_pg_database_datconnlimit - 1] = Int32GetDatum(dbconnlimit);
 	new_record[Anum_pg_database_datfrozenxid - 1] = TransactionIdGetDatum(src_frozenxid);
 	new_record[Anum_pg_database_datminmxid - 1] = TransactionIdGetDatum(src_minmxid);
 	new_record[Anum_pg_database_dattablespace - 1] = ObjectIdGetDatum(dst_deftablespace);
+	new_record[Anum_pg_database_datcollate - 1] = CStringGetTextDatum(dbcollate);
+	new_record[Anum_pg_database_datctype - 1] = CStringGetTextDatum(dbctype);
 
 	/*
 	 * We deliberately set datacl to default (NULL), rather than copying it
@@ -999,11 +997,14 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 
 	/*
 	 * Force a checkpoint to make sure the checkpointer has received the
-	 * message sent by ForgetDatabaseSyncRequests. On Windows, this also
-	 * ensures that background procs don't hold any open files, which would
-	 * cause rmdir() to fail.
+	 * message sent by ForgetDatabaseSyncRequests.
 	 */
 	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT);
+
+#if defined(USE_BARRIER_SMGRRELEASE)
+	/* Close all smgr fds in all backends. */
+	WaitForProcSignalBarrier(EmitProcSignalBarrier(PROCSIGNAL_BARRIER_SMGRRELEASE));
+#endif
 
 	/*
 	 * Remove all tablespace subdirs belonging to the database.
@@ -1252,6 +1253,11 @@ movedb(const char *dbname, const char *tblspcname)
 	 */
 	RequestCheckpoint(CHECKPOINT_IMMEDIATE | CHECKPOINT_FORCE | CHECKPOINT_WAIT
 					  | CHECKPOINT_FLUSH_ALL);
+
+#if defined(USE_BARRIER_SMGRRELEASE)
+	/* Close all smgr fds in all backends. */
+	WaitForProcSignalBarrier(EmitProcSignalBarrier(PROCSIGNAL_BARRIER_SMGRRELEASE));
+#endif
 
 	/*
 	 * Now drop all buffers holding data of the target database; they should
@@ -1867,6 +1873,9 @@ get_db_info(const char *name, LOCKMODE lockmode,
 
 			if (strcmp(name, NameStr(dbform->datname)) == 0)
 			{
+				Datum		datum;
+				bool		isnull;
+
 				/* oid of the database */
 				if (dbIdP)
 					*dbIdP = dbOid;
@@ -1893,9 +1902,17 @@ get_db_info(const char *name, LOCKMODE lockmode,
 					*dbTablespace = dbform->dattablespace;
 				/* default locale settings for this database */
 				if (dbCollate)
-					*dbCollate = pstrdup(NameStr(dbform->datcollate));
+				{
+					datum = SysCacheGetAttr(DATABASEOID, tuple, Anum_pg_database_datcollate, &isnull);
+					Assert(!isnull);
+					*dbCollate = TextDatumGetCString(datum);
+				}
 				if (dbCtype)
-					*dbCtype = pstrdup(NameStr(dbform->datctype));
+				{
+					datum = SysCacheGetAttr(DATABASEOID, tuple, Anum_pg_database_datctype, &isnull);
+					Assert(!isnull);
+					*dbCtype = TextDatumGetCString(datum);
+				}
 				ReleaseSysCache(tuple);
 				result = true;
 				break;
@@ -2248,6 +2265,11 @@ dbase_redo(XLogReaderState *record)
 
 		/* Clean out the xlog relcache too */
 		XLogDropDatabase(xlrec->db_id);
+
+#if defined(USE_BARRIER_SMGRRELEASE)
+		/* Close all sgmr fds in all backends. */
+		WaitForProcSignalBarrier(EmitProcSignalBarrier(PROCSIGNAL_BARRIER_SMGRRELEASE));
+#endif
 
 		for (i = 0; i < xlrec->ntablespaces; i++)
 		{

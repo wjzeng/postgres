@@ -391,7 +391,7 @@ usage(void)
 	printf(_("  -X, --wal-method=none|fetch|stream\n"
 			 "                         include required WAL files with specified method\n"));
 	printf(_("  -z, --gzip             compress tar output\n"));
-	printf(_("  -Z, --compress={gzip,none}[:LEVEL] or [LEVEL]\n"
+	printf(_("  -Z, --compress={[{client,server}-]gzip,lz4,none}[:LEVEL] or [LEVEL]\n"
 			 "                         compress tar output with given compression method or level\n"));
 	printf(_("\nGeneral options:\n"));
 	printf(_("  -c, --checkpoint=fast|spread\n"
@@ -560,9 +560,14 @@ LogStreamerMain(logstreamer_param *param)
 											  COMPRESSION_NONE,
 											  compresslevel,
 											  stream.do_sync);
-	else
+	else if (compressmethod == COMPRESSION_GZIP)
 		stream.walmethod = CreateWalTarMethod(param->xlog,
 											  compressmethod,
+											  compresslevel,
+											  stream.do_sync);
+	else
+		stream.walmethod = CreateWalTarMethod(param->xlog,
+											  COMPRESSION_NONE,
 											  compresslevel,
 											  stream.do_sync);
 
@@ -966,6 +971,12 @@ parse_compress_options(char *src, WalCompressionMethod *methodres,
 	int			firstlen;
 	char	   *firstpart;
 
+	/*
+	 * clear 'levelres' so that if there are multiple compression options,
+	 * the last one fully overrides the earlier ones
+	 */
+	*levelres = 0;
+
 	/* check if the option is split in two */
 	sep = strchr(src, ':');
 
@@ -995,6 +1006,21 @@ parse_compress_options(char *src, WalCompressionMethod *methodres,
 	else if (pg_strcasecmp(firstpart, "server-gzip") == 0)
 	{
 		*methodres = COMPRESSION_GZIP;
+		*locationres = COMPRESS_LOCATION_SERVER;
+	}
+	else if (pg_strcasecmp(firstpart, "lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_UNSPECIFIED;
+	}
+	else if (pg_strcasecmp(firstpart, "client-lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_CLIENT;
+	}
+	else if (pg_strcasecmp(firstpart, "server-lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
 		*locationres = COMPRESS_LOCATION_SERVER;
 	}
 	else if (pg_strcasecmp(firstpart, "none") == 0)
@@ -1113,7 +1139,9 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	bbstreamer *streamer = NULL;
 	bbstreamer *manifest_inject_streamer = NULL;
 	bool		inject_manifest;
-	bool		is_tar;
+	bool		is_tar,
+				is_tar_gz,
+				is_tar_lz4;
 	bool		must_parse_archive;
 	int			archive_name_len = strlen(archive_name);
 
@@ -1128,6 +1156,14 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	is_tar = (archive_name_len > 4 &&
 			  strcmp(archive_name + archive_name_len - 4, ".tar") == 0);
 
+	/* Is this a gzip archive? */
+	is_tar_gz = (archive_name_len > 8 &&
+				 strcmp(archive_name + archive_name_len - 3, ".gz") == 0);
+
+	/* Is this a LZ4 archive? */
+	is_tar_lz4 = (archive_name_len > 8 &&
+				  strcmp(archive_name + archive_name_len - 4, ".lz4") == 0);
+
 	/*
 	 * We have to parse the archive if (1) we're suppose to extract it, or if
 	 * (2) we need to inject backup_manifest or recovery configuration into it.
@@ -1137,7 +1173,7 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 		(spclocation == NULL && writerecoveryconf));
 
 	/* At present, we only know how to parse tar archives. */
-	if (must_parse_archive && !is_tar)
+	if (must_parse_archive && !is_tar && !is_tar_gz && !is_tar_lz4)
 	{
 		pg_log_error("unable to parse archive: %s", archive_name);
 		pg_log_info("only tar archives can be parsed");
@@ -1194,7 +1230,6 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 			compressloc != COMPRESS_LOCATION_CLIENT)
 			streamer = bbstreamer_plain_writer_new(archive_filename,
 												   archive_file);
-#ifdef HAVE_LIBZ
 		else if (compressmethod == COMPRESSION_GZIP)
 		{
 			strlcat(archive_filename, ".gz", sizeof(archive_filename));
@@ -1202,7 +1237,14 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 												  archive_file,
 												  compresslevel);
 		}
-#endif
+		else if (compressmethod == COMPRESSION_LZ4)
+		{
+			strlcat(archive_filename, ".lz4", sizeof(archive_filename));
+			streamer = bbstreamer_plain_writer_new(archive_filename,
+												   archive_file);
+			streamer = bbstreamer_lz4_compressor_new(streamer,
+													 compresslevel);
+		}
 		else
 		{
 			Assert(false);		/* not reachable */
@@ -1250,6 +1292,18 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 		streamer = bbstreamer_tar_parser_new(streamer);
 	else if (expect_unterminated_tarfile)
 		streamer = bbstreamer_tar_terminator_new(streamer);
+
+	/*
+	 * If the user has requested a server compressed archive along with archive
+	 * extraction at client then we need to decompress it.
+	 */
+	if (format == 'p' && compressloc == COMPRESS_LOCATION_SERVER)
+	{
+		if (compressmethod == COMPRESSION_GZIP)
+			streamer = bbstreamer_gzip_decompressor_new(streamer);
+		else if (compressmethod == COMPRESSION_LZ4)
+			streamer = bbstreamer_lz4_decompressor_new(streamer);
+	}
 
 	/* Return the results. */
 	*manifest_inject_streamer_p = manifest_inject_streamer;
@@ -1871,6 +1925,12 @@ BaseBackup(void)
 			exit(1);
 		}
 
+		if (writerecoveryconf)
+		{
+			pg_log_error("recovery configuration cannot be written when a backup target is used");
+			exit(1);
+		}
+
 		AppendPlainCommandOption(&buf, use_new_option_syntax, "TABLESPACE_MAP");
 
 		if ((colon = strchr(backup_target, ':')) == NULL)
@@ -1907,13 +1967,16 @@ BaseBackup(void)
 			case COMPRESSION_GZIP:
 				compressmethodstr = "gzip";
 				break;
+			case COMPRESSION_LZ4:
+				compressmethodstr = "lz4";
+				break;
 			default:
 				Assert(false);
 				break;
 		}
 		AppendStringCommandOption(&buf, use_new_option_syntax,
 								  "COMPRESSION", compressmethodstr);
-		if (compresslevel != 0)
+		if (compresslevel >= 1) /* not 0 or Z_DEFAULT_COMPRESSION */
 			AppendIntegerCommandOption(&buf, use_new_option_syntax,
 									   "COMPRESSION_LEVEL", compresslevel);
 	}
@@ -2749,8 +2812,12 @@ main(int argc, char **argv)
 			}
 			break;
 		case COMPRESSION_LZ4:
-			/* option not supported */
-			Assert(false);
+			if (compresslevel > 12)
+			{
+				pg_log_error("compression level %d of method %s higher than maximum of 12",
+							 compresslevel, "lz4");
+				exit(1);
+			}
 			break;
 	}
 

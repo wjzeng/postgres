@@ -11,13 +11,12 @@ use Config;
 use File::Path qw(rmtree);
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 6;
+use Test::More;
 
 my $primary = PostgreSQL::Test::Cluster->new('primary');
 $primary->init(allows_streaming => 1);
 $primary->start;
 
-my $have_zlib = check_pg_config("#define HAVE_LIBZ 1");
 my $backup_path = $primary->backup_dir . '/server-backup';
 my $real_backup_path = PostgreSQL::Test::Utils::perl2host($backup_path);
 my $extract_path = $primary->backup_dir . '/extracted-backup';
@@ -36,6 +35,14 @@ my @test_configuration = (
 		'decompress_program' => $ENV{'GZIP_PROGRAM'},
 		'decompress_flags' => [ '-d' ],
 		'enabled' => check_pg_config("#define HAVE_LIBZ 1")
+	},
+	{
+		'compression_method' => 'lz4',
+		'backup_flags' => ['--compress', 'server-lz4'],
+		'backup_archive' => 'base.tar.lz4',
+		'decompress_program' => $ENV{'LZ4'},
+		'decompress_flags' => [ '-d', '-m'],
+		'enabled' => check_pg_config("#define HAVE_LIBLZ4 1")
 	}
 );
 
@@ -103,3 +110,5 @@ for my $tc (@test_configuration)
 		rmtree($extract_path);
 	}
 }
+
+done_testing();

@@ -13,7 +13,6 @@
 
 #include "access/rmgr.h"
 #include "access/xlogdefs.h"
-#include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
@@ -155,7 +154,6 @@ extern PGDLLIMPORT int wal_level;
 /* Is WAL archiving enabled always (even during recovery)? */
 #define XLogArchivingAlways() \
 	(AssertMacro(XLogArchiveMode == ARCHIVE_MODE_OFF || wal_level >= WAL_LEVEL_REPLICA), XLogArchiveMode == ARCHIVE_MODE_ALWAYS)
-#define XLogArchiveCommandSet() (XLogArchiveCommand[0] != '\0')
 
 /*
  * Is WAL-logging necessary for archival or log-shipping, or can we skip
