@@ -111,6 +111,16 @@ typedef enum
 	STREAM_WAL
 } IncludeWal;
 
+/*
+ * Different places to perform compression
+ */
+typedef enum
+{
+	COMPRESS_LOCATION_UNSPECIFIED,
+	COMPRESS_LOCATION_CLIENT,
+	COMPRESS_LOCATION_SERVER
+} CompressionLocation;
+
 /* Global options */
 static char *basedir = NULL;
 static TablespaceList tablespace_dirs = {NULL, NULL};
@@ -124,6 +134,7 @@ static bool estimatesize = true;
 static int	verbose = 0;
 static int	compresslevel = 0;
 static WalCompressionMethod compressmethod = COMPRESSION_NONE;
+static CompressionLocation compressloc = COMPRESS_LOCATION_UNSPECIFIED;
 static IncludeWal includewal = STREAM_WAL;
 static bool fastcheckpoint = false;
 static bool writerecoveryconf = false;
@@ -380,7 +391,7 @@ usage(void)
 	printf(_("  -X, --wal-method=none|fetch|stream\n"
 			 "                         include required WAL files with specified method\n"));
 	printf(_("  -z, --gzip             compress tar output\n"));
-	printf(_("  -Z, --compress={gzip,none}[:LEVEL] or [LEVEL]\n"
+	printf(_("  -Z, --compress={[{client,server}-]gzip,lz4,none}[:LEVEL] or [LEVEL]\n"
 			 "                         compress tar output with given compression method or level\n"));
 	printf(_("\nGeneral options:\n"));
 	printf(_("  -c, --checkpoint=fast|spread\n"
@@ -544,9 +555,19 @@ LogStreamerMain(logstreamer_param *param)
 		stream.walmethod = CreateWalDirectoryMethod(param->xlog,
 													COMPRESSION_NONE, 0,
 													stream.do_sync);
-	else
+	else if (compressloc != COMPRESS_LOCATION_CLIENT)
+		stream.walmethod = CreateWalTarMethod(param->xlog,
+											  COMPRESSION_NONE,
+											  compresslevel,
+											  stream.do_sync);
+	else if (compressmethod == COMPRESSION_GZIP)
 		stream.walmethod = CreateWalTarMethod(param->xlog,
 											  compressmethod,
+											  compresslevel,
+											  stream.do_sync);
+	else
+		stream.walmethod = CreateWalTarMethod(param->xlog,
+											  COMPRESSION_NONE,
 											  compresslevel,
 											  stream.do_sync);
 
@@ -944,11 +965,17 @@ parse_max_rate(char *src)
  */
 static void
 parse_compress_options(char *src, WalCompressionMethod *methodres,
-					   int *levelres)
+					   CompressionLocation *locationres, int *levelres)
 {
 	char	   *sep;
 	int			firstlen;
 	char	   *firstpart;
+
+	/*
+	 * clear 'levelres' so that if there are multiple compression options,
+	 * the last one fully overrides the earlier ones
+	 */
+	*levelres = 0;
 
 	/* check if the option is split in two */
 	sep = strchr(src, ':');
@@ -967,9 +994,40 @@ parse_compress_options(char *src, WalCompressionMethod *methodres,
 	 * compression method.
 	 */
 	if (pg_strcasecmp(firstpart, "gzip") == 0)
+	{
 		*methodres = COMPRESSION_GZIP;
+		*locationres = COMPRESS_LOCATION_UNSPECIFIED;
+	}
+	else if (pg_strcasecmp(firstpart, "client-gzip") == 0)
+	{
+		*methodres = COMPRESSION_GZIP;
+		*locationres = COMPRESS_LOCATION_CLIENT;
+	}
+	else if (pg_strcasecmp(firstpart, "server-gzip") == 0)
+	{
+		*methodres = COMPRESSION_GZIP;
+		*locationres = COMPRESS_LOCATION_SERVER;
+	}
+	else if (pg_strcasecmp(firstpart, "lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_UNSPECIFIED;
+	}
+	else if (pg_strcasecmp(firstpart, "client-lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_CLIENT;
+	}
+	else if (pg_strcasecmp(firstpart, "server-lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_SERVER;
+	}
 	else if (pg_strcasecmp(firstpart, "none") == 0)
+	{
 		*methodres = COMPRESSION_NONE;
+		*locationres = COMPRESS_LOCATION_UNSPECIFIED;
+	}
 	else
 	{
 		/*
@@ -983,6 +1041,7 @@ parse_compress_options(char *src, WalCompressionMethod *methodres,
 
 		*methodres = (*levelres > 0) ?
 			COMPRESSION_GZIP : COMPRESSION_NONE;
+		*locationres = COMPRESS_LOCATION_UNSPECIFIED;
 
 		free(firstpart);
 		return;
@@ -1080,7 +1139,11 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	bbstreamer *streamer = NULL;
 	bbstreamer *manifest_inject_streamer = NULL;
 	bool		inject_manifest;
+	bool		is_tar,
+				is_tar_gz,
+				is_tar_lz4;
 	bool		must_parse_archive;
+	int			archive_name_len = strlen(archive_name);
 
 	/*
 	 * Normally, we emit the backup manifest as a separate file, but when
@@ -1089,12 +1152,39 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	 */
 	inject_manifest = (format == 't' && strcmp(basedir, "-") == 0 && manifest);
 
+	/* Is this a tar archive? */
+	is_tar = (archive_name_len > 4 &&
+			  strcmp(archive_name + archive_name_len - 4, ".tar") == 0);
+
+	/* Is this a gzip archive? */
+	is_tar_gz = (archive_name_len > 8 &&
+				 strcmp(archive_name + archive_name_len - 3, ".gz") == 0);
+
+	/* Is this a LZ4 archive? */
+	is_tar_lz4 = (archive_name_len > 8 &&
+				  strcmp(archive_name + archive_name_len - 4, ".lz4") == 0);
+
 	/*
 	 * We have to parse the archive if (1) we're suppose to extract it, or if
 	 * (2) we need to inject backup_manifest or recovery configuration into it.
+	 * However, we only know how to parse tar archives.
 	 */
 	must_parse_archive = (format == 'p' || inject_manifest ||
 		(spclocation == NULL && writerecoveryconf));
+
+	/* At present, we only know how to parse tar archives. */
+	if (must_parse_archive && !is_tar && !is_tar_gz && !is_tar_lz4)
+	{
+		pg_log_error("unable to parse archive: %s", archive_name);
+		pg_log_info("only tar archives can be parsed");
+		if (format == 'p')
+			pg_log_info("plain format requires pg_basebackup to parse the archive");
+		if (inject_manifest)
+			pg_log_info("using - as the output directory requires pg_basebackup to parse the archive");
+		if (writerecoveryconf)
+			pg_log_info("the -R option requires pg_basebackup to parse the archive");
+		exit(1);
+	}
 
 	if (format == 'p')
 	{
@@ -1136,10 +1226,10 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 			archive_file = NULL;
 		}
 
-		if (compressmethod == COMPRESSION_NONE)
+		if (compressmethod == COMPRESSION_NONE ||
+			compressloc != COMPRESS_LOCATION_CLIENT)
 			streamer = bbstreamer_plain_writer_new(archive_filename,
 												   archive_file);
-#ifdef HAVE_LIBZ
 		else if (compressmethod == COMPRESSION_GZIP)
 		{
 			strlcat(archive_filename, ".gz", sizeof(archive_filename));
@@ -1147,7 +1237,14 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 												  archive_file,
 												  compresslevel);
 		}
-#endif
+		else if (compressmethod == COMPRESSION_LZ4)
+		{
+			strlcat(archive_filename, ".lz4", sizeof(archive_filename));
+			streamer = bbstreamer_plain_writer_new(archive_filename,
+												   archive_file);
+			streamer = bbstreamer_lz4_compressor_new(streamer,
+													 compresslevel);
+		}
 		else
 		{
 			Assert(false);		/* not reachable */
@@ -1195,6 +1292,18 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 		streamer = bbstreamer_tar_parser_new(streamer);
 	else if (expect_unterminated_tarfile)
 		streamer = bbstreamer_tar_terminator_new(streamer);
+
+	/*
+	 * If the user has requested a server compressed archive along with archive
+	 * extraction at client then we need to decompress it.
+	 */
+	if (format == 'p' && compressloc == COMPRESS_LOCATION_SERVER)
+	{
+		if (compressmethod == COMPRESSION_GZIP)
+			streamer = bbstreamer_gzip_decompressor_new(streamer);
+		else if (compressmethod == COMPRESSION_LZ4)
+			streamer = bbstreamer_lz4_decompressor_new(streamer);
+	}
 
 	/* Return the results. */
 	*manifest_inject_streamer_p = manifest_inject_streamer;
@@ -1816,6 +1925,12 @@ BaseBackup(void)
 			exit(1);
 		}
 
+		if (writerecoveryconf)
+		{
+			pg_log_error("recovery configuration cannot be written when a backup target is used");
+			exit(1);
+		}
+
 		AppendPlainCommandOption(&buf, use_new_option_syntax, "TABLESPACE_MAP");
 
 		if ((colon = strchr(backup_target, ':')) == NULL)
@@ -1837,6 +1952,34 @@ BaseBackup(void)
 	else if (serverMajor >= 1500)
 		AppendStringCommandOption(&buf, use_new_option_syntax,
 								  "TARGET", "client");
+
+	if (compressloc == COMPRESS_LOCATION_SERVER)
+	{
+		char *compressmethodstr = NULL;
+
+		if (!use_new_option_syntax)
+		{
+			pg_log_error("server does not support server-side compression");
+			exit(1);
+		}
+		switch (compressmethod)
+		{
+			case COMPRESSION_GZIP:
+				compressmethodstr = "gzip";
+				break;
+			case COMPRESSION_LZ4:
+				compressmethodstr = "lz4";
+				break;
+			default:
+				Assert(false);
+				break;
+		}
+		AppendStringCommandOption(&buf, use_new_option_syntax,
+								  "COMPRESSION", compressmethodstr);
+		if (compresslevel >= 1) /* not 0 or Z_DEFAULT_COMPRESSION */
+			AppendIntegerCommandOption(&buf, use_new_option_syntax,
+									   "COMPRESSION_LEVEL", compresslevel);
+	}
 
 	if (verbose)
 		pg_log_info("initiating base backup, waiting for checkpoint to complete");
@@ -2376,10 +2519,11 @@ main(int argc, char **argv)
 				compresslevel = 1;	/* will be rejected below */
 #endif
 				compressmethod = COMPRESSION_GZIP;
+				compressloc = COMPRESS_LOCATION_UNSPECIFIED;
 				break;
 			case 'Z':
 				parse_compress_options(optarg, &compressmethod,
-									   &compresslevel);
+									   &compressloc, &compresslevel);
 				break;
 			case 'c':
 				if (pg_strcasecmp(optarg, "fast") == 0)
@@ -2506,14 +2650,37 @@ main(int argc, char **argv)
 	}
 
 	/*
-	 * Compression doesn't make sense unless tar format is in use.
+	 * If we're compressing the backup and the user has not said where to
+	 * perform the compression, do it on the client, unless they specified
+	 * --target, in which case the server is the only choice.
 	 */
-	if (format == 'p' && compressmethod != COMPRESSION_NONE)
+	if (compressmethod != COMPRESSION_NONE &&
+		compressloc == COMPRESS_LOCATION_UNSPECIFIED)
 	{
 		if (backup_target == NULL)
-			pg_log_error("only tar mode backups can be compressed");
+			compressloc = COMPRESS_LOCATION_CLIENT;
 		else
-			pg_log_error("client-side compression is not possible when a backup target is specfied");
+			compressloc = COMPRESS_LOCATION_SERVER;
+	}
+
+	/*
+	 * Can't perform client-side compression if the backup is not being
+	 * sent to the client.
+	 */
+	if (backup_target != NULL && compressloc == COMPRESS_LOCATION_CLIENT)
+	{
+		pg_log_error("client-side compression is not possible when a backup target is specified");
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
+		exit(1);
+	}
+
+	/*
+	 * Compression doesn't make sense unless tar format is in use.
+	 */
+	if (format == 'p' && compressloc == COMPRESS_LOCATION_CLIENT)
+	{
+		pg_log_error("only tar mode backups can be compressed");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -2626,27 +2793,31 @@ main(int argc, char **argv)
 			}
 			break;
 		case COMPRESSION_GZIP:
-#ifdef HAVE_LIBZ
-			if (compresslevel == 0)
-			{
-				pg_log_info("no value specified for compression level, switching to default");
-				compresslevel = Z_DEFAULT_COMPRESSION;
-			}
 			if (compresslevel > 9)
 			{
 				pg_log_error("compression level %d of method %s higher than maximum of 9",
 							 compresslevel, "gzip");
 				exit(1);
 			}
+			if (compressloc == COMPRESS_LOCATION_CLIENT)
+			{
+#ifdef HAVE_LIBZ
+				if (compresslevel == 0)
+					compresslevel = Z_DEFAULT_COMPRESSION;
 #else
-			pg_log_error("this build does not support compression with %s",
-						 "gzip");
-			exit(1);
+				pg_log_error("this build does not support compression with %s",
+							 "gzip");
+				exit(1);
 #endif
+			}
 			break;
 		case COMPRESSION_LZ4:
-			/* option not supported */
-			Assert(false);
+			if (compresslevel > 12)
+			{
+				pg_log_error("compression level %d of method %s higher than maximum of 12",
+							 compresslevel, "lz4");
+				exit(1);
+			}
 			break;
 	}
 
