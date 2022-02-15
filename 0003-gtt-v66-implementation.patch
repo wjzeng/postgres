@@ -70,10 +70,10 @@ index d4bf0c7563d..b623e958c38 100644
  		/*
  		 * Temporary relations are only accessible in our session, so a simple
 diff --git a/src/backend/access/hash/hash.c b/src/backend/access/hash/hash.c
-index d48c8a45498..a6afb55fbc0 100644
+index a259a301fa8..6a85ec9debe 100644
 --- a/src/backend/access/hash/hash.c
 +++ b/src/backend/access/hash/hash.c
-@@ -152,7 +152,7 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
+@@ -153,7 +153,7 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
  	 * metapage, nor the first bitmap page.
  	 */
  	sort_threshold = (maintenance_work_mem * 1024L) / BLCKSZ;
@@ -83,7 +83,7 @@ index d48c8a45498..a6afb55fbc0 100644
  	else
  		sort_threshold = Min(sort_threshold, NLocBuffer);
 diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
-index 6ec57f3d8b2..7a143fe545a 100644
+index 98230aac49c..99d0926b85b 100644
 --- a/src/backend/access/heap/heapam.c
 +++ b/src/backend/access/heap/heapam.c
 @@ -5835,6 +5835,7 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
@@ -117,10 +117,10 @@ index 39ef8a0b77d..0bb308d1c5e 100644
  	/* copy main fork */
  	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
 diff --git a/src/backend/access/heap/vacuumlazy.c b/src/backend/access/heap/vacuumlazy.c
-index 1749cc2a476..de5914db777 100644
+index 9c88b9bd71a..a817e944cb2 100644
 --- a/src/backend/access/heap/vacuumlazy.c
 +++ b/src/backend/access/heap/vacuumlazy.c
-@@ -324,6 +324,9 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
+@@ -333,6 +333,9 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
  	TransactionId FreezeLimit;
  	MultiXactId MultiXactCutoff;
  
@@ -158,7 +158,7 @@ index 6b5f01e1d07..099f942c936 100644
  		metad = _bt_getmeta(rel, metabuf);
  
 diff --git a/src/backend/catalog/Makefile b/src/backend/catalog/Makefile
-index df5268fbc30..8b8a60c2ac5 100644
+index eefebb7bb83..97bec1e0e98 100644
 --- a/src/backend/catalog/Makefile
 +++ b/src/backend/catalog/Makefile
 @@ -44,6 +44,7 @@ OBJS = \
@@ -182,7 +182,7 @@ index dfd5fb669ee..c0fd68652f7 100644
  			break;
  		case RELPERSISTENCE_UNLOGGED:
 diff --git a/src/backend/catalog/heap.c b/src/backend/catalog/heap.c
-index 7e99de88b34..019e1105bc4 100644
+index 7e99de88b34..049eb621bdd 100644
 --- a/src/backend/catalog/heap.c
 +++ b/src/backend/catalog/heap.c
 @@ -62,6 +62,7 @@
@@ -389,8 +389,13 @@ index 7e99de88b34..019e1105bc4 100644
  {
  	Oid			toastrelid;
  
-@@ -3376,16 +3434,16 @@ heap_truncate_one_rel(Relation rel)
+@@ -3374,18 +3432,25 @@ heap_truncate_one_rel(Relation rel)
+ 
+ 	/* Truncate the underlying relation */
  	table_relation_nontransactional_truncate(rel);
++	if (RELATION_IS_GLOBAL_TEMP(rel))
++		gtt_update_relstats(rel, 0, 0, 0,
++							RecentXmin,GetOldestMultiXactId());
  
  	/* If the relation has indexes, truncate the indexes too */
 -	RelationTruncateIndexes(rel);
@@ -405,11 +410,15 @@ index 7e99de88b34..019e1105bc4 100644
  
  		table_relation_nontransactional_truncate(toastrel);
 -		RelationTruncateIndexes(toastrel);
++		if (RELATION_IS_GLOBAL_TEMP(toastrel))
++			gtt_update_relstats(toastrel, 0, 0, 0,
++								RecentXmin, GetOldestMultiXactId());
++
 +		RelationTruncateIndexes(toastrel, lockmode);
  		/* keep the lock... */
  		table_close(toastrel, NoLock);
  	}
-@@ -3856,3 +3914,15 @@ StorePartitionBound(Relation rel, Relation parent, PartitionBoundSpec *bound)
+@@ -3856,3 +3921,15 @@ StorePartitionBound(Relation rel, Relation parent, PartitionBoundSpec *bound)
  
  	CacheInvalidateRelcache(parent);
  }
@@ -426,7 +435,7 @@ index 7e99de88b34..019e1105bc4 100644
 +				 errdetail("Please try detach all other sessions using this table and try again.")));
 +}
 diff --git a/src/backend/catalog/index.c b/src/backend/catalog/index.c
-index e4203819a0e..17b79212365 100644
+index 5e3fc2b35dc..03900de5a00 100644
 --- a/src/backend/catalog/index.c
 +++ b/src/backend/catalog/index.c
 @@ -54,6 +54,7 @@
@@ -447,7 +456,7 @@ index e4203819a0e..17b79212365 100644
  static void IndexCheckExclusion(Relation heapRelation,
  								Relation indexRelation,
  								IndexInfo *indexInfo);
-@@ -736,6 +738,21 @@ index_create(Relation heapRelation,
+@@ -737,6 +739,21 @@ index_create(Relation heapRelation,
  	MultiXactId relminmxid;
  	bool		create_storage = !OidIsValid(relFileNode);
  
@@ -469,7 +478,7 @@ index e4203819a0e..17b79212365 100644
  	/* constraint flags can only be set when a constraint is requested */
  	Assert((constr_flags == 0) ||
  		   ((flags & INDEX_CREATE_ADD_CONSTRAINT) != 0));
-@@ -1242,7 +1259,8 @@ index_create(Relation heapRelation,
+@@ -1243,7 +1260,8 @@ index_create(Relation heapRelation,
  		 */
  		index_update_stats(heapRelation,
  						   true,
@@ -479,7 +488,7 @@ index e4203819a0e..17b79212365 100644
  		/* Make the above update visible */
  		CommandCounterIncrement();
  	}
-@@ -2138,7 +2156,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+@@ -2151,7 +2169,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 * lock (see comments in RemoveRelations), and a non-concurrent DROP is
  	 * more efficient.
  	 */
@@ -488,7 +497,7 @@ index e4203819a0e..17b79212365 100644
  		   (!concurrent && !concurrent_lock_mode));
  
  	/*
-@@ -2170,6 +2188,14 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
+@@ -2183,6 +2201,14 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
  	 */
  	CheckTableNotInUse(userIndexRelation, "DROP INDEX");
  
@@ -503,7 +512,7 @@ index e4203819a0e..17b79212365 100644
  	/*
  	 * Drop Index Concurrently is more or less the reverse process of Create
  	 * Index Concurrently.
-@@ -2771,7 +2797,8 @@ FormIndexDatum(IndexInfo *indexInfo,
+@@ -2789,7 +2815,8 @@ FormIndexDatum(IndexInfo *indexInfo,
  static void
  index_update_stats(Relation rel,
  				   bool hasindex,
@@ -513,7 +522,7 @@ index e4203819a0e..17b79212365 100644
  {
  	Oid			relid = RelationGetRelid(rel);
  	Relation	pg_class;
-@@ -2779,6 +2806,13 @@ index_update_stats(Relation rel,
+@@ -2797,6 +2824,13 @@ index_update_stats(Relation rel,
  	Form_pg_class rd_rel;
  	bool		dirty;
  
@@ -527,7 +536,7 @@ index e4203819a0e..17b79212365 100644
  	/*
  	 * We always update the pg_class row using a non-transactional,
  	 * overwrite-in-place update.  There are several reasons for this:
-@@ -2998,6 +3032,25 @@ index_build(Relation heapRelation,
+@@ -3016,6 +3050,25 @@ index_build(Relation heapRelation,
  		pgstat_progress_update_multi_param(6, progress_index, progress_vals);
  	}
  
@@ -541,7 +550,7 @@ index e4203819a0e..17b79212365 100644
 +		if (!gtt_storage_attached(RelationGetRelid(indexRelation)))
 +		{
 +			/* Before create init storage, fix the local Relcache first */
-+			force_enable_gtt_index(indexRelation);
++			gtt_index_force_enable(indexRelation);
 +
 +			Assert(gtt_storage_attached(RelationGetRelid(heapRelation)));
 +
@@ -553,7 +562,7 @@ index e4203819a0e..17b79212365 100644
  	/*
  	 * Call the access method's build procedure
  	 */
-@@ -3080,11 +3133,13 @@ index_build(Relation heapRelation,
+@@ -3098,11 +3151,13 @@ index_build(Relation heapRelation,
  	 */
  	index_update_stats(heapRelation,
  					   true,
@@ -569,7 +578,7 @@ index e4203819a0e..17b79212365 100644
  
  	/* Make the updated catalog row versions visible */
  	CommandCounterIncrement();
-@@ -3539,6 +3594,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3557,6 +3612,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	PGRUsage	ru0;
  	bool		progress = ((params->options & REINDEXOPT_REPORT_PROGRESS) != 0);
  	bool		set_tablespace = false;
@@ -578,7 +587,7 @@ index e4203819a0e..17b79212365 100644
  
  	pg_rusage_init(&ru0);
  
-@@ -3552,10 +3609,35 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3570,10 +3627,35 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	if (!OidIsValid(heapId))
  		return;
  
@@ -616,7 +625,7 @@ index e4203819a0e..17b79212365 100644
  
  	/* if relation is gone, leave */
  	if (!heapRelation)
-@@ -3581,7 +3663,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3599,7 +3681,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
  	 * Open the target index relation and get an exclusive lock on it, to
  	 * ensure that no one else is touching this particular index.
  	 */
@@ -625,7 +634,7 @@ index e4203819a0e..17b79212365 100644
  
  	if (progress)
  		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
-@@ -3823,7 +3905,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
+@@ -3841,7 +3923,7 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
   * index rebuild.
   */
  bool
@@ -634,7 +643,7 @@ index e4203819a0e..17b79212365 100644
  {
  	Relation	rel;
  	Oid			toast_relid;
-@@ -3839,9 +3921,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3857,9 +3939,9 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  	 * should match ReindexTable().
  	 */
  	if ((params->options & REINDEXOPT_MISSING_OK) != 0)
@@ -646,7 +655,7 @@ index e4203819a0e..17b79212365 100644
  
  	/* if relation is gone, leave */
  	if (!rel)
-@@ -3948,7 +4030,7 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
+@@ -3966,7 +4048,7 @@ reindex_relation(Oid relid, int flags, ReindexParams *params)
  
  		newparams.options &= ~(REINDEXOPT_MISSING_OK);
  		newparams.tablespaceOid = InvalidOid;
@@ -833,14 +842,14 @@ index 9b8075536a7..733d89c0e8a 100644
  
 diff --git a/src/backend/catalog/storage_gtt.c b/src/backend/catalog/storage_gtt.c
 new file mode 100644
-index 00000000000..ea349a78072
+index 00000000000..31ddef288e2
 --- /dev/null
 +++ b/src/backend/catalog/storage_gtt.c
-@@ -0,0 +1,1669 @@
+@@ -0,0 +1,1651 @@
 +/*-------------------------------------------------------------------------
 + *
 + * storage_gtt.c
-+ *	  The body implementation of Global Temparary table.
++ *	  The body implementation of Global temparary table.
 + *
 + * IDENTIFICATION
 + *	  src/backend/catalog/storage_gtt.c
@@ -876,10 +885,13 @@ index 00000000000..ea349a78072
 +#include "utils/inval.h"
 +#include "utils/syscache.h"
 +
-+/* Copy from bitmapset.c, because gtt used the function in bitmapset.c */
++/*
++ * WORDNUM/BITNUM/BITMAPSET_SIZE copy from bitmapset.c, and use BITS_PER_BITMAPWORD
++ * and typedef bitmapword from nodes/bitmapset.h. GTT records the status of global
++ * temporary tables in each session using bitmaps, which are stored in shared memory.
++ */
 +#define WORDNUM(x)	((x) / BITS_PER_BITMAPWORD)
 +#define BITNUM(x)	((x) % BITS_PER_BITMAPWORD)
-+
 +#define BITMAPSET_SIZE(nwords)	\
 +	(offsetof(Bitmapset, words) + (nwords) * sizeof(bitmapword))
 +
@@ -891,7 +903,17 @@ index 00000000000..ea349a78072
 +/* relfrozenxid of all gtts in the current session */
 +static List *gtt_session_relfrozenxid_list = NIL;
 +
-+int		vacuum_gtt_defer_check_age = 0;
++int	vacuum_gtt_defer_check_age = 0;
++
++/*
++ * Global temp table or senquence has separate state in each session,
++ * record in a shared memory bitmap.
++ * However, index and toast relation for global temp table is not,
++ * because they depend on tables and don't exist independently.
++ */
++#define GLOBAL_TEMP_RELKIND_STATE_IS_SHARED(relkind) \
++	((relkind) == RELKIND_RELATION || \
++	 (relkind) == RELKIND_SEQUENCE)
 +
 +/*
 + * The Global temporary table's shared hash table data structure
@@ -925,17 +947,17 @@ index 00000000000..ea349a78072
 +/* Record the storage information and statistical information of the global temporary table */
 +typedef struct
 +{
-+	Oid			relfilenode;
-+	Oid			spcnode;
++	Oid			relfilenode;	/* relation */
++	Oid			spcnode;		/* tablespace */
 +
-+	/* pg_class relstat */
++	/* pg_class relation statistics */
 +	int32		relpages;
 +	float4		reltuples;
 +	int32		relallvisible;
 +	TransactionId relfrozenxid;
 +	TransactionId relminmxid;
 +
-+	/* pg_statistic column stat */
++	/* pg_statistic column statistics */
 +	int			natts;
 +	int			*attnum;
 +	HeapTuple	*att_stat_tups;
@@ -952,8 +974,8 @@ index 00000000000..ea349a78072
 +} gtt_local_hash_entry;
 +
 +static Size action_gtt_shared_hash_entry_size(void);
-+static void gtt_storage_checkin(Oid relid);
-+static void gtt_storage_checkout(Oid relid, bool isCommit);
++static void gtt_storage_checkin(Oid relid, char relkind);
++static void gtt_storage_checkout(Oid relid, bool isCommit, char relkind);
 +static void gtt_storage_removeall(int code, Datum arg);
 +static void insert_gtt_relfrozenxid_to_ordered_list(Oid relfrozenxid);
 +static void remove_gtt_relfrozenxid_from_ordered_list(Oid relfrozenxid);
@@ -980,12 +1002,15 @@ index 00000000000..ea349a78072
 +	if (max_active_gtt <= 0)
 +		return 0;
 +
-+	wordnum = WORDNUM(MaxBackends + 1);
++	wordnum = WORDNUM(GetMaxBackends() + 1);
++
 +	/* hash entry header size */
-+	hash_entry_size += MAXALIGN(sizeof(gtt_shared_hash_entry));
++	hash_entry_size = MAXALIGN(sizeof(gtt_shared_hash_entry));
++
 +	/*
 +	 * hash entry data size
 +	 * this is a bitmap in shared memory, each backend have a bit.
++	 * ensure we have enough words to store the upper bit.
 +	 */
 +	hash_entry_size += MAXALIGN(BITMAPSET_SIZE(wordnum + 1));
 +
@@ -1026,10 +1051,9 @@ index 00000000000..ea349a78072
 +	if (max_active_gtt <= 0)
 +		return;
 +
-+	gtt_shared_ctl =
-+		ShmemInitStruct("gtt_shared_ctl",
-+						sizeof(gtt_ctl_data),
-+						&found);
++	gtt_shared_ctl = ShmemInitStruct("gtt_shared_ctl",
++									 sizeof(gtt_ctl_data),
++									 &found);
 +
 +	if (!found)
 +	{
@@ -1042,18 +1066,17 @@ index 00000000000..ea349a78072
 +	MemSet(&info, 0, sizeof(info));
 +	info.keysize = sizeof(gtt_fnode);
 +	info.entrysize = action_gtt_shared_hash_entry_size();
-+	active_gtt_shared_hash =
-+		ShmemInitHash("active gtt shared hash",
-+						gtt_shared_ctl->max_entry,
-+						gtt_shared_ctl->max_entry,
-+						&info, HASH_ELEM | HASH_BLOBS | HASH_FIXED_SIZE);
++	active_gtt_shared_hash = ShmemInitHash("active gtt shared hash",
++										   gtt_shared_ctl->max_entry,
++										   gtt_shared_ctl->max_entry,
++										   &info, HASH_ELEM | HASH_BLOBS | HASH_FIXED_SIZE);
 +}
 +
 +/*
 + * Record GTT relid to shared hash table, which means that current session is using this GTT.
 + */
 +static void
-+gtt_storage_checkin(Oid relid)
++gtt_storage_checkin(Oid relid, char relkind)
 +{
 +	gtt_shared_hash_entry	*entry;
 +	bool			found;
@@ -1062,13 +1085,14 @@ index 00000000000..ea349a78072
 +	if (max_active_gtt <= 0)
 +		return;
 +
++	if (!GLOBAL_TEMP_RELKIND_STATE_IS_SHARED(relkind))
++		return;
++
 +	fnode.dbNode = MyDatabaseId;
 +	fnode.relNode = relid;
 +	LWLockAcquire(&gtt_shared_ctl->lock, LW_EXCLUSIVE);
-+	entry = hash_search(active_gtt_shared_hash,
-+						(void *)&(fnode), HASH_ENTER_NULL, &found);
-+
-+	if (entry == NULL)
++	entry = hash_search(active_gtt_shared_hash, (void *)&(fnode), HASH_ENTER_NULL, &found);
++	if (!entry)
 +	{
 +		LWLockRelease(&gtt_shared_ctl->lock);
 +		ereport(ERROR,
@@ -1079,16 +1103,16 @@ index 00000000000..ea349a78072
 +
 +	if (!found)
 +	{
-+		int			wordnum;
++		int		wordnum;
 +
-+		/* init bitmap */
++		/* init bitmap in shared memory */
 +		entry->map = (Bitmapset *)((char *)entry + MAXALIGN(sizeof(gtt_shared_hash_entry)));
-+		wordnum = WORDNUM(MaxBackends + 1);
++		wordnum = WORDNUM(GetMaxBackends() + 1);
 +		memset(entry->map, 0, BITMAPSET_SIZE(wordnum + 1));
 +		entry->map->nwords = wordnum + 1;
 +	}
 +
-+	/* record itself in bitmap */
++	/* record current backendid in shared bitmap */
 +	bms_add_member(entry->map, MyBackendId);
 +	LWLockRelease(&gtt_shared_ctl->lock);
 +}
@@ -1098,7 +1122,7 @@ index 00000000000..ea349a78072
 + * not use this GTT.
 + */
 +static void
-+gtt_storage_checkout(Oid relid, bool isCommit)
++gtt_storage_checkout(Oid relid, bool isCommit, char relkind)
 +{
 +	gtt_shared_hash_entry	*entry;
 +	gtt_fnode		fnode;
@@ -1106,13 +1130,14 @@ index 00000000000..ea349a78072
 +	if (max_active_gtt <= 0)
 +		return;
 +
++	if (!GLOBAL_TEMP_RELKIND_STATE_IS_SHARED(relkind))
++		return;
++
 +	fnode.dbNode = MyDatabaseId;
 +	fnode.relNode = relid;
 +	LWLockAcquire(&gtt_shared_ctl->lock, LW_EXCLUSIVE);
-+	entry = hash_search(active_gtt_shared_hash,
-+					(void *) &(fnode), HASH_FIND, NULL);
-+
-+	if (entry == NULL)
++	entry = hash_search(active_gtt_shared_hash, (void *) &(fnode), HASH_FIND, NULL);
++	if (!entry)
 +	{
 +		LWLockRelease(&gtt_shared_ctl->lock);
 +		if (isCommit)
@@ -1121,9 +1146,9 @@ index 00000000000..ea349a78072
 +		return;
 +	}
 +
-+	Assert(MyBackendId >= 1 && MyBackendId <= MaxBackends);
++	Assert(MyBackendId >= 1 && MyBackendId <= GetMaxBackends());
 +
-+	/* remove itself from bitmap */
++	/* remove current backendid from shared bitmap */
 +	bms_del_member(entry->map, MyBackendId);
 +	if (bms_is_empty(entry->map))
 +	{
@@ -1154,9 +1179,7 @@ index 00000000000..ea349a78072
 +	fnode.dbNode = MyDatabaseId;
 +	fnode.relNode = relid;
 +	LWLockAcquire(&gtt_shared_ctl->lock, LW_SHARED);
-+	entry = hash_search(active_gtt_shared_hash,
-+					(void *) &(fnode), HASH_FIND, NULL);
-+
++	entry = hash_search(active_gtt_shared_hash, (void *) &(fnode), HASH_FIND, NULL);
 +	if (entry)
 +	{
 +		Assert(entry->map);
@@ -1178,8 +1201,8 @@ index 00000000000..ea349a78072
 +{
 +	gtt_shared_hash_entry	*entry;
 +	bool			in_use = false;
-+	int			num_use = 0;
 +	gtt_fnode		fnode;
++	int			num_use = 0;
 +
 +	if (max_active_gtt <= 0)
 +		return false;
@@ -1187,17 +1210,15 @@ index 00000000000..ea349a78072
 +	fnode.dbNode = MyDatabaseId;
 +	fnode.relNode = relid;
 +	LWLockAcquire(&gtt_shared_ctl->lock, LW_SHARED);
-+	entry = hash_search(active_gtt_shared_hash,
-+						(void *) &(fnode), HASH_FIND, NULL);
-+
-+	if (entry == NULL)
++	entry = hash_search(active_gtt_shared_hash, (void *) &(fnode), HASH_FIND, NULL);
++	if (!entry)
 +	{
 +		LWLockRelease(&gtt_shared_ctl->lock);
 +		return false;
 +	}
 +
 +	Assert(entry->map);
-+	Assert(MyBackendId >= 1 && MyBackendId <= MaxBackends);
++	Assert(MyBackendId >= 1 && MyBackendId <= GetMaxBackends());
 +
 +	/* how many backend are using this GTT */
 +	num_use = bms_num_members(entry->map);
@@ -1234,9 +1255,9 @@ index 00000000000..ea349a78072
 +
 +	if (max_active_gtt <= 0)
 +		ereport(ERROR,
-+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-+			 errmsg("Global temporary table feature is disable"),
-+			 errhint("You might need to increase max_active_global_temporary_table to enable this feature.")));
++				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
++				 errmsg("Global temporary table is disabled"),
++				 errhint("You might need to increase max_active_global_temporary_table to enable this feature.")));
 +
 +	if (RecoveryInProgress())
 +		elog(ERROR, "readonly mode not support access global temporary table");
@@ -1246,10 +1267,10 @@ index 00000000000..ea349a78072
 +		(!rel->rd_index->indisvalid ||
 +		 !rel->rd_index->indisready ||
 +		 !rel->rd_index->indislive))
-+		 elog(ERROR, "invalid gtt index %s not allow to create storage", RelationGetRelationName(rel));
++		 elog(ERROR, "index \"%s\" is invalid that cannot create storage", RelationGetRelationName(rel));
 +
 +	/* First time through: initialize the hash table */
-+	if (gtt_storage_local_hash == NULL)
++	if (!gtt_storage_local_hash)
 +	{
 +#define GTT_LOCAL_HASH_SIZE		1024
 +		HASHCTL		ctl;
@@ -1257,19 +1278,17 @@ index 00000000000..ea349a78072
 +		if (!CacheMemoryContext)
 +			CreateCacheMemoryContext();
 +
-+		gtt_info_context =
-+			AllocSetContextCreate(CacheMemoryContext,
-+								"gtt info context",
-+								ALLOCSET_DEFAULT_SIZES);
++		gtt_info_context = AllocSetContextCreate(CacheMemoryContext,
++												 "gtt info context",
++												 ALLOCSET_DEFAULT_SIZES);
 +
 +		MemSet(&ctl, 0, sizeof(ctl));
 +		ctl.keysize = sizeof(Oid);
 +		ctl.entrysize = sizeof(gtt_local_hash_entry);
 +		ctl.hcxt = gtt_info_context;
-+		gtt_storage_local_hash =
-+			hash_create("global temporary table info",
-+						GTT_LOCAL_HASH_SIZE,
-+						&ctl, HASH_ELEM | HASH_BLOBS);
++		gtt_storage_local_hash = hash_create("global temporary table info",
++											 GTT_LOCAL_HASH_SIZE,
++											 &ctl, HASH_ELEM | HASH_BLOBS);
 +	}
 +
 +	Assert(CacheMemoryContext);
@@ -1279,12 +1298,10 @@ index 00000000000..ea349a78072
 +	entry = gtt_search_by_relid(relid, true);
 +	if (!entry)
 +	{
-+		bool		found = false;
++		bool	found = false;
 +
 +		/* Look up or create an entry */
-+		entry = hash_search(gtt_storage_local_hash,
-+						(void *) &relid, HASH_ENTER, &found);
-+
++		entry = hash_search(gtt_storage_local_hash, (void *) &relid, HASH_ENTER, &found);
 +		if (found)
 +		{
 +			MemoryContextSwitchTo(oldcontext);
@@ -1306,11 +1323,7 @@ index 00000000000..ea349a78072
 +			}
 +		}
 +
-+		if (entry->relkind == RELKIND_RELATION ||
-+			entry->relkind == RELKIND_SEQUENCE)
-+		{
-+			gtt_storage_checkin(relid);
-+		}
++		gtt_storage_checkin(relid, entry->relkind);
 +	}
 +
 +	/* record storage info relstat columnstats and transaction info to relfilenode list */
@@ -1327,7 +1340,7 @@ index 00000000000..ea349a78072
 +	new_node->att_stat_tups = NULL;
 +	entry->relfilenode_list = lappend(entry->relfilenode_list, new_node);
 +
-+	/* init column stats structure */
++	/* init structure for column statistics */
 +	natts = RelationGetNumberOfAttributes(rel);
 +	new_node->attnum = palloc0(sizeof(int) * natts);
 +	new_node->att_stat_tups = palloc0(sizeof(HeapTuple) * natts);
@@ -1371,7 +1384,7 @@ index 00000000000..ea349a78072
 +	if (entry == NULL)
 +	{
 +		if (isCommit)
-+			elog(ERROR,"gtt rel %u not found in local hash", relid);
++			elog(ERROR,"global temp relid %u not found in local hash", relid);
 +
 +		return;
 +	}
@@ -1380,18 +1393,15 @@ index 00000000000..ea349a78072
 +	if (d_rnode == NULL)
 +	{
 +		if (isCommit)
-+			elog(ERROR,"gtt relfilenode %u not found in rel %u", rnode.relNode, relid);
++			elog(ERROR,"global temp relfilenode %u not found in rel %u", rnode.relNode, relid);
 +		else
 +		{
 +			/* rollback transaction */
 +			if (entry->relfilenode_list == NIL)
 +			{
-+				if (entry->relkind == RELKIND_RELATION ||
-+					entry->relkind == RELKIND_SEQUENCE)
-+					gtt_storage_checkout(relid, isCommit);
++				gtt_storage_checkout(relid, isCommit, entry->relkind);
 +
-+				hash_search(gtt_storage_local_hash,
-+						(void *) &(relid), HASH_REMOVE, NULL);
++				hash_search(gtt_storage_local_hash, (void *) &(relid), HASH_REMOVE, NULL);
 +			}
 +
 +			return;
@@ -1399,8 +1409,7 @@ index 00000000000..ea349a78072
 +	}
 +
 +	/* Clean up transaction info from Local order list and MyProc */
-+	if (entry->relkind == RELKIND_RELATION ||
-+		entry->relkind == RELKIND_TOASTVALUE)
++	if (RELKIND_HAS_TABLE_AM(entry->relkind))
 +	{
 +		Assert(TransactionIdIsNormal(d_rnode->relfrozenxid) || !isCommit);
 +
@@ -1419,12 +1428,9 @@ index 00000000000..ea349a78072
 +	if (entry->relfilenode_list == NIL)
 +	{
 +		/* tell shared hash that current session will no longer use this GTT */
-+		if (entry->relkind == RELKIND_RELATION ||
-+			entry->relkind == RELKIND_SEQUENCE)
-+			gtt_storage_checkout(relid, isCommit);
++		gtt_storage_checkout(relid, isCommit, entry->relkind);
 +
-+		hash_search(gtt_storage_local_hash,
-+				(void *) &(relid), HASH_REMOVE, NULL);
++		hash_search(gtt_storage_local_hash, (void *) &(relid), HASH_REMOVE, NULL);
 +	}
 +
 +	return;
@@ -1461,7 +1467,7 @@ index 00000000000..ea349a78072
 +	HASH_SEQ_STATUS			status;
 +	gtt_local_hash_entry	*entry;
 +
-+	if (gtt_storage_local_hash == NULL)
++	if (!gtt_storage_local_hash)
 +		return;
 +
 +	/* Need to ensure we have a usable transaction. */
@@ -1487,9 +1493,7 @@ index 00000000000..ea349a78072
 +			smgrclose(srel[0]);
 +		}
 +
-+		if (entry->relkind == RELKIND_RELATION ||
-+			entry->relkind == RELKIND_SEQUENCE)
-+			gtt_storage_checkout(entry->relid, false);
++		gtt_storage_checkout(entry->relid, false, entry->relkind);
 +
 +		hash_search(gtt_storage_local_hash, (void *) &(entry->relid), HASH_REMOVE, NULL);
 +	}
@@ -1527,30 +1531,30 @@ index 00000000000..ea349a78072
 +	if (gtt_rnode == NULL)
 +		return;
 +
-+	if (relpages > 0 &&
++	if (relpages >= 0 &&
 +		gtt_rnode->relpages != (int32)relpages)
 +	{
 +		gtt_rnode->relpages = (int32)relpages;
 +		relation->rd_rel->relpages = (int32) relpages;
 +	}
 +
-+	if (reltuples > 0 &&
++	if (reltuples >= 0 &&
 +		gtt_rnode->reltuples != (float4)reltuples)
 +	{
 +		gtt_rnode->reltuples = (float4)reltuples;
 +		relation->rd_rel->reltuples = (float4)reltuples;
 +	}
 +
++	if (relallvisible >= 0 &&
++		gtt_rnode->relallvisible != (int32)relallvisible)
++	{
++		gtt_rnode->relallvisible = (int32)relallvisible;
++		relation->rd_rel->relallvisible = (int32)relallvisible;
++	}
++
 +	/* only heap contain transaction information and relallvisible */
 +	if (RELKIND_HAS_TABLE_AM(entry->relkind))
 +	{
-+		if (relallvisible > 0 &&
-+			gtt_rnode->relallvisible != (int32)relallvisible)
-+		{
-+			gtt_rnode->relallvisible = (int32)relallvisible;
-+			relation->rd_rel->relallvisible = (int32)relallvisible;
-+		}
-+
 +		if (TransactionIdIsNormal(relfrozenxid) &&
 +			gtt_rnode->relfrozenxid != relfrozenxid &&
 +			(TransactionIdPrecedes(gtt_rnode->relfrozenxid, relfrozenxid) ||
@@ -1820,17 +1824,14 @@ index 00000000000..ea349a78072
 +	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
 +		ereport(ERROR,
 +			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-+			errmsg("set-valued function called in context that cannot accept a set")));
++			 errmsg("set-valued function called in context that cannot accept a set")));
 +
 +	if (!(rsinfo->allowedModes & SFRM_Materialize))
 +		ereport(ERROR,
 +			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-+			errmsg("materialize mode required, but it is not " \
-+				"allowed in this context")));
++			 errmsg("materialize mode required, but it is not allowed in this context")));
 +
-+	oldcontext = MemoryContextSwitchTo(
-+				rsinfo->econtext->ecxt_per_query_memory);
-+
++	oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
 +	tupstore = tuplestore_begin_heap(true, false, work_mem);
 +	rsinfo->returnMode = SFRM_Materialize;
 +	rsinfo->setResult = tupstore;
@@ -1902,8 +1903,7 @@ index 00000000000..ea349a78072
 +				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 +				 errmsg("materialize mode required, but it is not allowed in this context")));
 +
-+	oldcontext = MemoryContextSwitchTo(
-+			rsinfo->econtext->ecxt_per_query_memory);
++	oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
 +	tupstore = tuplestore_begin_heap(true, false, work_mem);
 +	rsinfo->returnMode = SFRM_Materialize;
 +	rsinfo->setResult = tupstore;
@@ -2051,8 +2051,7 @@ index 00000000000..ea349a78072
 +				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 +				 errmsg("materialize mode required, but it is not allowed in this context")));
 +
-+	oldcontext = MemoryContextSwitchTo(
-+			rsinfo->econtext->ecxt_per_query_memory);
++	oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
 +	tupstore = tuplestore_begin_heap(true, false, work_mem);
 +	rsinfo->returnMode = SFRM_Materialize;
 +	rsinfo->setResult = tupstore;
@@ -2072,10 +2071,6 @@ index 00000000000..ea349a78072
 +		HeapTuple		tuple;
 +		ListCell		*lc1 = NULL;
 +		ListCell		*lc2 = NULL;
-+
-+		/* Save db level oldest relfrozenxid */
-+		pids = lappend_int(pids, 0);
-+		xids = lappend_oid(xids, oldest);
 +
 +		Assert(list_length(pids) == list_length(xids));
 +		forboth(lc1, pids, lc2, xids)
@@ -2102,7 +2097,7 @@ index 00000000000..ea349a78072
 + * In order to build the GTT index, force enable GTT'index.
 + */
 +void
-+force_enable_gtt_index(Relation index)
++gtt_index_force_enable(Relation index)
 +{
 +	if (!RELATION_IS_GLOBAL_TEMP(index))
 +		return;
@@ -2284,7 +2279,6 @@ index 00000000000..ea349a78072
 +	ListCell		*lc;
 +
 +	Assert(entry);
-+
 +	foreach(lc, entry->relfilenode_list)
 +	{
 +		gtt_relfilenode	*gtt_rnode = lfirst(lc);
@@ -2297,7 +2291,7 @@ index 00000000000..ea349a78072
 +	}
 +
 +	if (!missing_ok && rnode == NULL)
-+		elog(ERROR, "find relfilenode %u relfilenodelist from relid %u fail", relfilenode, entry->relid);
++		elog(ERROR, "search relfilenode %u relfilenodelist from relid %u fail", relfilenode, entry->relid);
 +
 +	return rnode;
 +}
@@ -2310,13 +2304,11 @@ index 00000000000..ea349a78072
 +{
 +	gtt_local_hash_entry	*entry = NULL;
 +
-+	if (gtt_storage_local_hash == NULL)
++	if (!gtt_storage_local_hash)
 +		return NULL;
 +
-+	entry = hash_search(gtt_storage_local_hash,
-+				(void *) &(relid), HASH_FIND, NULL);
-+
-+	if (entry == NULL && !missing_ok)
++	entry = hash_search(gtt_storage_local_hash, (void *) &(relid), HASH_FIND, NULL);
++	if (!entry && !missing_ok)
 +		elog(ERROR, "relid %u not found in local hash", relid);
 +
 +	return entry;
@@ -2348,7 +2340,7 @@ index 00000000000..ea349a78072
 +			relallvisible = 0;
 +
 +		gtt_update_relstats(rel, relpages, reltuples, relallvisible,
-+						InvalidTransactionId, InvalidMultiXactId);
++							InvalidTransactionId, InvalidMultiXactId);
 +	}
 +
 +	/* update relhasindex to pg_class */
@@ -2415,8 +2407,7 @@ index 00000000000..ea349a78072
 +	/* Fetch a copy of the tuple to scribble on */
 +	ctup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relid));
 +	if (!HeapTupleIsValid(ctup))
-+		elog(ERROR, "pg_class entry for relid %u vanished during vacuuming",
-+			 relid);
++		elog(ERROR, "pg_class entry for relid %u vanished during vacuuming", relid);
 +	pgcform = (Form_pg_class) GETSTRUCT(ctup);
 +
 +	/* Apply DDL updates, but not inside an outer transaction (see above) */
@@ -2603,7 +2594,7 @@ index 3cb69b1f87b..1625ee9345b 100644
      SELECT
          nspname AS schemaname,
 diff --git a/src/backend/commands/analyze.c b/src/backend/commands/analyze.c
-index a0da998c2ea..181bbb93f03 100644
+index 736479295ad..f08ac47b729 100644
 --- a/src/backend/commands/analyze.c
 +++ b/src/backend/commands/analyze.c
 @@ -34,6 +34,7 @@
@@ -2659,7 +2650,7 @@ index a0da998c2ea..181bbb93f03 100644
  		}
  
  		/* Build extended statistics (if there are any). */
-@@ -1617,7 +1630,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
+@@ -1620,7 +1633,7 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
   *		by taking a self-exclusive lock on the relation in analyze_rel().
   */
  static void
@@ -2668,7 +2659,7 @@ index a0da998c2ea..181bbb93f03 100644
  {
  	Relation	sd;
  	int			attno;
-@@ -1719,31 +1732,48 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
+@@ -1722,31 +1735,48 @@ update_attstats(Oid relid, bool inh, int natts, VacAttrStats **vacattrstats)
  			}
  		}
  
@@ -2738,7 +2729,7 @@ index a0da998c2ea..181bbb93f03 100644
  
  	table_close(sd, RowExclusiveLock);
 diff --git a/src/backend/commands/cluster.c b/src/backend/commands/cluster.c
-index 61853e6dec4..e0b8d1d0db7 100644
+index 02a7e94bf9b..cba222ddee0 100644
 --- a/src/backend/commands/cluster.c
 +++ b/src/backend/commands/cluster.c
 @@ -33,6 +33,7 @@
@@ -2782,7 +2773,7 @@ index 61853e6dec4..e0b8d1d0db7 100644
  	/* Mark the correct index as clustered */
  	if (OidIsValid(indexOid))
  		mark_index_clustered(OldHeap, indexOid, true);
-@@ -1429,7 +1449,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
+@@ -1428,7 +1448,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
  	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
  								 PROGRESS_CLUSTER_PHASE_REBUILD_INDEX);
  
@@ -2792,7 +2783,7 @@ index 61853e6dec4..e0b8d1d0db7 100644
  	/* Report that we are now doing clean up */
  	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
 diff --git a/src/backend/commands/copy.c b/src/backend/commands/copy.c
-index bb9c21bc6b4..18cd1d8c282 100644
+index 7da7105d44b..8351f41a154 100644
 --- a/src/backend/commands/copy.c
 +++ b/src/backend/commands/copy.c
 @@ -289,7 +289,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
@@ -2851,7 +2842,7 @@ index 9abbb6b5552..a944f244496 100644
  	 * Make sure the constructed table does not have RLS enabled.
  	 *
 diff --git a/src/backend/commands/indexcmds.c b/src/backend/commands/indexcmds.c
-index e5cf1bde13f..8daaed03bbc 100644
+index 560dcc87a2c..2d0edf1ae4c 100644
 --- a/src/backend/commands/indexcmds.c
 +++ b/src/backend/commands/indexcmds.c
 @@ -111,6 +111,7 @@ struct ReindexIndexCallbackState
@@ -2871,7 +2862,7 @@ index e5cf1bde13f..8daaed03bbc 100644
  		concurrent = true;
  	else
  		concurrent = false;
-@@ -2581,24 +2582,46 @@ ReindexIndex(RangeVar *indexRelation, ReindexParams *params, bool isTopLevel)
+@@ -2582,24 +2583,46 @@ ReindexIndex(RangeVar *indexRelation, ReindexParams *params, bool isTopLevel)
  	 */
  	state.params = *params;
  	state.locked_table_oid = InvalidOid;
@@ -2923,7 +2914,7 @@ index e5cf1bde13f..8daaed03bbc 100644
  		ReindexRelationConcurrently(indOid, params);
  	else
  	{
-@@ -2620,15 +2643,7 @@ RangeVarCallbackForReindexIndex(const RangeVar *relation,
+@@ -2621,15 +2644,7 @@ RangeVarCallbackForReindexIndex(const RangeVar *relation,
  {
  	char		relkind;
  	struct ReindexIndexCallbackState *state = arg;
@@ -2940,7 +2931,7 @@ index e5cf1bde13f..8daaed03bbc 100644
  
  	/*
  	 * If we previously locked some other index's heap, and the name we're
-@@ -2689,6 +2704,8 @@ ReindexTable(RangeVar *relation, ReindexParams *params, bool isTopLevel)
+@@ -2690,6 +2705,8 @@ ReindexTable(RangeVar *relation, ReindexParams *params, bool isTopLevel)
  {
  	Oid			heapOid;
  	bool		result;
@@ -2949,7 +2940,7 @@ index e5cf1bde13f..8daaed03bbc 100644
  
  	/*
  	 * The lock level used here should match reindex_relation().
-@@ -2699,15 +2716,27 @@ ReindexTable(RangeVar *relation, ReindexParams *params, bool isTopLevel)
+@@ -2700,15 +2717,27 @@ ReindexTable(RangeVar *relation, ReindexParams *params, bool isTopLevel)
  	 * locks on our temporary table.
  	 */
  	heapOid = RangeVarGetRelidExtended(relation,
@@ -2980,7 +2971,7 @@ index e5cf1bde13f..8daaed03bbc 100644
  	{
  		result = ReindexRelationConcurrently(heapOid, params);
  
-@@ -2724,7 +2753,8 @@ ReindexTable(RangeVar *relation, ReindexParams *params, bool isTopLevel)
+@@ -2725,7 +2754,8 @@ ReindexTable(RangeVar *relation, ReindexParams *params, bool isTopLevel)
  		result = reindex_relation(heapOid,
  								  REINDEX_REL_PROCESS_TOAST |
  								  REINDEX_REL_CHECK_CONSTRAINTS,
@@ -2990,7 +2981,7 @@ index e5cf1bde13f..8daaed03bbc 100644
  		if (!result)
  			ereport(NOTICE,
  					(errmsg("table \"%s\" has no indexes to reindex",
-@@ -3119,7 +3149,7 @@ ReindexMultipleInternal(List *relids, ReindexParams *params)
+@@ -3120,7 +3150,7 @@ ReindexMultipleInternal(List *relids, ReindexParams *params)
  		Assert(!RELKIND_HAS_PARTITIONS(relkind));
  
  		if ((params->options & REINDEXOPT_CONCURRENTLY) != 0 &&
@@ -2999,7 +2990,7 @@ index e5cf1bde13f..8daaed03bbc 100644
  		{
  			ReindexParams newparams = *params;
  
-@@ -3141,13 +3171,20 @@ ReindexMultipleInternal(List *relids, ReindexParams *params)
+@@ -3142,13 +3172,20 @@ ReindexMultipleInternal(List *relids, ReindexParams *params)
  		{
  			bool		result;
  			ReindexParams newparams = *params;
@@ -3062,7 +3053,7 @@ index 4b3f79704f8..c544885f53e 100644
  			LockViewRecurse(reloid, lockstmt->mode, lockstmt->nowait, NIL);
  		else if (recurse)
 diff --git a/src/backend/commands/sequence.c b/src/backend/commands/sequence.c
-index 27cb6307581..093f76f2950 100644
+index ab592ce2f15..1d0e7077020 100644
 --- a/src/backend/commands/sequence.c
 +++ b/src/backend/commands/sequence.c
 @@ -25,11 +25,14 @@
@@ -3131,7 +3122,7 @@ index 27cb6307581..093f76f2950 100644
  
  	/*
  	 * Copy the existing sequence tuple.
-@@ -451,6 +455,9 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
+@@ -457,6 +461,9 @@ AlterSequence(ParseState *pstate, AlterSeqStmt *stmt)
  
  	init_sequence(relid, &elm, &seqrel);
  
@@ -3141,7 +3132,7 @@ index 27cb6307581..093f76f2950 100644
  	rel = table_open(SequenceRelationId, RowExclusiveLock);
  	seqtuple = SearchSysCacheCopy1(SEQRELID,
  								   ObjectIdGetDatum(relid));
-@@ -611,7 +618,7 @@ nextval_internal(Oid relid, bool check_permissions)
+@@ -617,7 +624,7 @@ nextval_internal(Oid relid, bool check_permissions)
  						RelationGetRelationName(seqrel))));
  
  	/* read-only transactions may only modify temp sequences */
@@ -3150,7 +3141,7 @@ index 27cb6307581..093f76f2950 100644
  		PreventCommandIfReadOnly("nextval()");
  
  	/*
-@@ -936,7 +943,7 @@ do_setval(Oid relid, int64 next, bool iscalled)
+@@ -961,7 +968,7 @@ do_setval(Oid relid, int64 next, bool iscalled)
  	ReleaseSysCache(pgstuple);
  
  	/* read-only transactions may only modify temp sequences */
@@ -3159,7 +3150,7 @@ index 27cb6307581..093f76f2950 100644
  		PreventCommandIfReadOnly("setval()");
  
  	/*
-@@ -1153,6 +1160,14 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
+@@ -1185,6 +1192,14 @@ init_sequence(Oid relid, SeqTable *p_elm, Relation *p_rel)
  	/* Return results */
  	*p_elm = elm;
  	*p_rel = seqrel;
@@ -3174,7 +3165,7 @@ index 27cb6307581..093f76f2950 100644
  }
  
  
-@@ -1927,3 +1942,57 @@ seq_mask(char *page, BlockNumber blkno)
+@@ -1959,3 +1974,57 @@ seq_mask(char *page, BlockNumber blkno)
  
  	mask_unused_space(page);
  }
@@ -3233,10 +3224,10 @@ index 27cb6307581..093f76f2950 100644
 +	return;
 +}
 diff --git a/src/backend/commands/tablecmds.c b/src/backend/commands/tablecmds.c
-index 1f0654c2f51..a558e121596 100644
+index 3e83f375b55..5b8f083a110 100644
 --- a/src/backend/commands/tablecmds.c
 +++ b/src/backend/commands/tablecmds.c
-@@ -47,6 +47,7 @@
+@@ -48,6 +48,7 @@
  #include "catalog/storage.h"
  #include "catalog/storage_xlog.h"
  #include "catalog/toasting.h"
@@ -3244,7 +3235,7 @@ index 1f0654c2f51..a558e121596 100644
  #include "commands/cluster.h"
  #include "commands/comment.h"
  #include "commands/defrem.h"
-@@ -118,6 +119,7 @@ typedef struct OnCommitItem
+@@ -119,6 +120,7 @@ typedef struct OnCommitItem
  	 */
  	SubTransactionId creating_subid;
  	SubTransactionId deleting_subid;
@@ -3252,7 +3243,7 @@ index 1f0654c2f51..a558e121596 100644
  } OnCommitItem;
  
  static List *on_commits = NIL;
-@@ -624,7 +626,7 @@ static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
+@@ -625,7 +627,7 @@ static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
  static List *GetParentedForeignKeyRefs(Relation partition);
  static void ATDetachCheckNoForeignKeyRefs(Relation partition);
  static char GetAttributeCompression(Oid atttypid, char *compression);
@@ -3261,7 +3252,7 @@ index 1f0654c2f51..a558e121596 100644
  
  /* ----------------------------------------------------------------
   *		DefineRelation
-@@ -669,6 +671,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
+@@ -670,6 +672,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
  	LOCKMODE	parentLockmode;
  	const char *accessMethod = NULL;
  	Oid			accessMethodId = InvalidOid;
@@ -3269,7 +3260,7 @@ index 1f0654c2f51..a558e121596 100644
  
  	/*
  	 * Truncate relname to appropriate length (probably a waste of time, as
-@@ -680,7 +683,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
+@@ -681,7 +684,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
  	 * Check consistency of arguments
  	 */
  	if (stmt->oncommit != ONCOMMIT_NOOP
@@ -3278,7 +3269,7 @@ index 1f0654c2f51..a558e121596 100644
  		ereport(ERROR,
  				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
  				 errmsg("ON COMMIT can only be used on temporary tables")));
-@@ -710,7 +713,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
+@@ -711,7 +714,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
  	 * code.  This is needed because calling code might not expect untrusted
  	 * tables to appear in pg_temp at the front of its search path.
  	 */
@@ -3287,7 +3278,7 @@ index 1f0654c2f51..a558e121596 100644
  		&& InSecurityRestrictedOperation())
  		ereport(ERROR,
  				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-@@ -811,6 +814,59 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
+@@ -812,6 +815,59 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
  	/*
  	 * Parse and validate reloptions, if any.
  	 */
@@ -3347,7 +3338,7 @@ index 1f0654c2f51..a558e121596 100644
  	reloptions = transformRelOptions((Datum) 0, stmt->options, NULL, validnsps,
  									 true, false);
  
-@@ -1435,7 +1491,7 @@ RemoveRelations(DropStmt *drop)
+@@ -1436,7 +1492,7 @@ RemoveRelations(DropStmt *drop)
  		 * relation persistence cannot be known without its OID.
  		 */
  		if (drop->concurrent &&
@@ -3356,7 +3347,7 @@ index 1f0654c2f51..a558e121596 100644
  		{
  			Assert(list_length(drop->objects) == 1 &&
  				   drop->removeType == OBJECT_INDEX);
-@@ -1644,9 +1700,9 @@ ExecuteTruncate(TruncateStmt *stmt)
+@@ -1645,9 +1701,9 @@ ExecuteTruncate(TruncateStmt *stmt)
  		Relation	rel;
  		bool		recurse = rv->inh;
  		Oid			myrelid;
@@ -3368,7 +3359,7 @@ index 1f0654c2f51..a558e121596 100644
  										   0, RangeVarCallbackForTruncate,
  										   NULL);
  
-@@ -1654,9 +1710,21 @@ ExecuteTruncate(TruncateStmt *stmt)
+@@ -1655,9 +1711,21 @@ ExecuteTruncate(TruncateStmt *stmt)
  		if (list_member_oid(relids, myrelid))
  			continue;
  
@@ -3391,7 +3382,7 @@ index 1f0654c2f51..a558e121596 100644
  		/*
  		 * RangeVarGetRelidExtended() has done most checks with its callback,
  		 * but other checks with the now-opened Relation remain.
-@@ -1906,6 +1974,7 @@ ExecuteTruncateGuts(List *explicit_rels,
+@@ -1907,6 +1975,7 @@ ExecuteTruncateGuts(List *explicit_rels,
  	foreach(cell, rels)
  	{
  		Relation	rel = (Relation) lfirst(cell);
@@ -3399,7 +3390,7 @@ index 1f0654c2f51..a558e121596 100644
  
  		/* Skip partitioned tables as there is nothing to do */
  		if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-@@ -1956,6 +2025,19 @@ ExecuteTruncateGuts(List *explicit_rels,
+@@ -1957,6 +2026,19 @@ ExecuteTruncateGuts(List *explicit_rels,
  			continue;
  		}
  
@@ -3419,7 +3410,7 @@ index 1f0654c2f51..a558e121596 100644
  		/*
  		 * Normally, we need a transaction-safe truncation here.  However, if
  		 * the table was either created in the current (sub)transaction or has
-@@ -1967,7 +2049,7 @@ ExecuteTruncateGuts(List *explicit_rels,
+@@ -1968,7 +2050,7 @@ ExecuteTruncateGuts(List *explicit_rels,
  			rel->rd_newRelfilenodeSubid == mySubid)
  		{
  			/* Immediate, non-rollbackable truncation is OK */
@@ -3428,7 +3419,7 @@ index 1f0654c2f51..a558e121596 100644
  		}
  		else
  		{
-@@ -2001,7 +2083,7 @@ ExecuteTruncateGuts(List *explicit_rels,
+@@ -2002,7 +2084,7 @@ ExecuteTruncateGuts(List *explicit_rels,
  			if (OidIsValid(toast_relid))
  			{
  				Relation	toastrel = relation_open(toast_relid,
@@ -3437,7 +3428,7 @@ index 1f0654c2f51..a558e121596 100644
  
  				RelationSetNewRelfilenode(toastrel,
  										  toastrel->rd_rel->relpersistence);
-@@ -2012,7 +2094,7 @@ ExecuteTruncateGuts(List *explicit_rels,
+@@ -2013,7 +2095,7 @@ ExecuteTruncateGuts(List *explicit_rels,
  			 * Reconstruct the indexes to match, and we're done.
  			 */
  			reindex_relation(heap_relid, REINDEX_REL_PROCESS_TOAST,
@@ -3446,7 +3437,7 @@ index 1f0654c2f51..a558e121596 100644
  		}
  
  		pgstat_count_truncate(rel);
-@@ -3283,6 +3365,12 @@ CheckRelationTableSpaceMove(Relation rel, Oid newTableSpaceId)
+@@ -3284,6 +3366,12 @@ CheckRelationTableSpaceMove(Relation rel, Oid newTableSpaceId)
  				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
  				 errmsg("cannot move temporary tables of other sessions")));
  
@@ -3459,7 +3450,7 @@ index 1f0654c2f51..a558e121596 100644
  	return true;
  }
  
-@@ -4052,6 +4140,10 @@ AlterTable(AlterTableStmt *stmt, LOCKMODE lockmode,
+@@ -4053,6 +4141,10 @@ AlterTable(AlterTableStmt *stmt, LOCKMODE lockmode,
  	/* Caller is required to provide an adequate lock. */
  	rel = relation_open(context->relid, NoLock);
  
@@ -3470,7 +3461,7 @@ index 1f0654c2f51..a558e121596 100644
  	CheckTableNotInUse(rel, "ALTER TABLE");
  
  	ATController(stmt, rel, stmt->cmds, stmt->relation->inh, lockmode, context);
-@@ -5383,6 +5475,25 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
+@@ -5384,6 +5476,25 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
  
  			rel = table_open(tab->relid, NoLock);
  			find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
@@ -3496,7 +3487,7 @@ index 1f0654c2f51..a558e121596 100644
  			table_close(rel, NoLock);
  		}
  
-@@ -5434,6 +5545,9 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
+@@ -5435,6 +5546,9 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
  						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
  						 errmsg("cannot rewrite temporary tables of other sessions")));
  
@@ -3506,7 +3497,7 @@ index 1f0654c2f51..a558e121596 100644
  			/*
  			 * Select destination tablespace (same as original unless user
  			 * requested a change)
-@@ -9081,6 +9195,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
+@@ -9082,6 +9196,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
  						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
  						 errmsg("constraints on temporary tables must involve temporary tables of this session")));
  			break;
@@ -3519,7 +3510,7 @@ index 1f0654c2f51..a558e121596 100644
  	}
  
  	/*
-@@ -13439,7 +13559,9 @@ TryReuseIndex(Oid oldId, IndexStmt *stmt)
+@@ -13440,7 +13560,9 @@ TryReuseIndex(Oid oldId, IndexStmt *stmt)
  		Relation	irel = index_open(oldId, NoLock);
  
  		/* If it's a partitioned index, there is no storage to share. */
@@ -3530,7 +3521,7 @@ index 1f0654c2f51..a558e121596 100644
  		{
  			stmt->oldNode = irel->rd_node.relNode;
  			stmt->oldCreateSubid = irel->rd_createSubid;
-@@ -14101,6 +14223,11 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
+@@ -14102,6 +14224,11 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
  	if (defList == NIL && operation != AT_ReplaceRelOptions)
  		return;					/* nothing to do */
  
@@ -3542,7 +3533,7 @@ index 1f0654c2f51..a558e121596 100644
  	pgclass = table_open(RelationRelationId, RowExclusiveLock);
  
  	/* Fetch heap tuple */
-@@ -14601,7 +14728,7 @@ index_copy_data(Relation rel, RelFileNode newrnode)
+@@ -14602,7 +14729,7 @@ index_copy_data(Relation rel, RelFileNode newrnode)
  	 * NOTE: any conflict in relfilenode value will be caught in
  	 * RelationCreateStorage().
  	 */
@@ -3551,7 +3542,7 @@ index 1f0654c2f51..a558e121596 100644
  
  	/* copy main fork */
  	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
-@@ -16202,6 +16329,7 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
+@@ -16203,6 +16330,7 @@ ATPrepChangePersistence(Relation rel, bool toLogged)
  	switch (rel->rd_rel->relpersistence)
  	{
  		case RELPERSISTENCE_TEMP:
@@ -3559,7 +3550,7 @@ index 1f0654c2f51..a558e121596 100644
  			ereport(ERROR,
  					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
  					 errmsg("cannot change logged status of table \"%s\" because it is temporary",
-@@ -16643,7 +16771,7 @@ AlterSeqNamespaces(Relation classRel, Relation rel,
+@@ -16644,7 +16772,7 @@ AlterSeqNamespaces(Relation classRel, Relation rel,
   * Register a newly-created relation's ON COMMIT action.
   */
  void
@@ -3568,7 +3559,7 @@ index 1f0654c2f51..a558e121596 100644
  {
  	OnCommitItem *oc;
  	MemoryContext oldcxt;
-@@ -16662,6 +16790,7 @@ register_on_commit_action(Oid relid, OnCommitAction action)
+@@ -16663,6 +16791,7 @@ register_on_commit_action(Oid relid, OnCommitAction action)
  	oc->oncommit = action;
  	oc->creating_subid = GetCurrentSubTransactionId();
  	oc->deleting_subid = InvalidSubTransactionId;
@@ -3576,7 +3567,7 @@ index 1f0654c2f51..a558e121596 100644
  
  	/*
  	 * We use lcons() here so that ON COMMIT actions are processed in reverse
-@@ -16707,6 +16836,7 @@ PreCommit_on_commit_actions(void)
+@@ -16708,6 +16837,7 @@ PreCommit_on_commit_actions(void)
  	ListCell   *l;
  	List	   *oids_to_truncate = NIL;
  	List	   *oids_to_drop = NIL;
@@ -3584,7 +3575,7 @@ index 1f0654c2f51..a558e121596 100644
  
  	foreach(l, on_commits)
  	{
-@@ -16730,7 +16860,12 @@ PreCommit_on_commit_actions(void)
+@@ -16731,7 +16861,12 @@ PreCommit_on_commit_actions(void)
  				 * tables, as they must still be empty.
  				 */
  				if ((MyXactFlags & XACT_FLAGS_ACCESSEDTEMPNAMESPACE))
@@ -3598,7 +3589,7 @@ index 1f0654c2f51..a558e121596 100644
  				break;
  			case ONCOMMIT_DROP:
  				oids_to_drop = lappend_oid(oids_to_drop, oc->relid);
-@@ -16747,7 +16882,10 @@ PreCommit_on_commit_actions(void)
+@@ -16748,7 +16883,10 @@ PreCommit_on_commit_actions(void)
  	 * exists at truncation time.
  	 */
  	if (oids_to_truncate != NIL)
@@ -3610,7 +3601,7 @@ index 1f0654c2f51..a558e121596 100644
  
  	if (oids_to_drop != NIL)
  	{
-@@ -17746,6 +17884,13 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
+@@ -17747,6 +17885,13 @@ ATExecAttachPartition(List **wqueue, Relation rel, PartitionCmd *cmd,
  				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
  				 errmsg("cannot attach temporary relation of another session as partition")));
  
@@ -3624,7 +3615,7 @@ index 1f0654c2f51..a558e121596 100644
  	/* Check if there are any columns in attachrel that aren't in the parent */
  	tupleDesc = RelationGetDescr(attachrel);
  	natts = tupleDesc->natts;
-@@ -19238,3 +19383,39 @@ GetAttributeCompression(Oid atttypid, char *compression)
+@@ -19239,3 +19384,39 @@ GetAttributeCompression(Oid atttypid, char *compression)
  
  	return cmethod;
  }
@@ -3665,7 +3656,7 @@ index 1f0654c2f51..a558e121596 100644
 +	return action;
 +}
 diff --git a/src/backend/commands/vacuum.c b/src/backend/commands/vacuum.c
-index 283ffaea77d..a1bee3393a0 100644
+index b6767a5ff8c..630f7db5a8b 100644
 --- a/src/backend/commands/vacuum.c
 +++ b/src/backend/commands/vacuum.c
 @@ -39,7 +39,9 @@
@@ -3678,7 +3669,7 @@ index 283ffaea77d..a1bee3393a0 100644
  #include "commands/defrem.h"
  #include "commands/vacuum.h"
  #include "miscadmin.h"
-@@ -1323,6 +1325,11 @@ vac_update_relstats(Relation relation,
+@@ -1313,6 +1315,11 @@ vac_update_relstats(Relation relation,
  	Form_pg_class pgcform;
  	bool		dirty;
  
@@ -3690,7 +3681,7 @@ index 283ffaea77d..a1bee3393a0 100644
  	rd = table_open(RelationRelationId, RowExclusiveLock);
  
  	/* Fetch a copy of the tuple to scribble on */
-@@ -1417,7 +1424,6 @@ vac_update_relstats(Relation relation,
+@@ -1415,7 +1422,6 @@ vac_update_relstats(Relation relation,
  	table_close(rd, RowExclusiveLock);
  }
  
@@ -3698,7 +3689,7 @@ index 283ffaea77d..a1bee3393a0 100644
  /*
   *	vac_update_datfrozenxid() -- update pg_database.datfrozenxid for our DB
   *
-@@ -1509,6 +1515,13 @@ vac_update_datfrozenxid(void)
+@@ -1507,6 +1513,13 @@ vac_update_datfrozenxid(void)
  			continue;
  		}
  
@@ -3712,7 +3703,7 @@ index 283ffaea77d..a1bee3393a0 100644
  		/*
  		 * Some table AMs might not need per-relation xid / multixid horizons.
  		 * It therefore seems reasonable to allow relfrozenxid and relminmxid
-@@ -1566,6 +1579,42 @@ vac_update_datfrozenxid(void)
+@@ -1564,6 +1577,42 @@ vac_update_datfrozenxid(void)
  	Assert(TransactionIdIsNormal(newFrozenXid));
  	Assert(MultiXactIdIsValid(newMinMulti));
  
@@ -3755,7 +3746,7 @@ index 283ffaea77d..a1bee3393a0 100644
  	/* Now fetch the pg_database tuple we need to update. */
  	relation = table_open(DatabaseRelationId, RowExclusiveLock);
  
-@@ -1917,6 +1966,19 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
+@@ -1915,6 +1964,19 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
  		return false;
  	}
  
@@ -3951,10 +3942,10 @@ index 6ac2e9ce237..2d62d0a4036 100644
  					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
  					 errmsg("materialized views must not use temporary tables or views")));
 diff --git a/src/backend/parser/gram.y b/src/backend/parser/gram.y
-index b5966712ce1..388303a2d85 100644
+index c4f32425060..55453690a50 100644
 --- a/src/backend/parser/gram.y
 +++ b/src/backend/parser/gram.y
-@@ -3434,17 +3434,11 @@ OptTemp:	TEMPORARY					{ $$ = RELPERSISTENCE_TEMP; }
+@@ -3435,17 +3435,11 @@ OptTemp:	TEMPORARY					{ $$ = RELPERSISTENCE_TEMP; }
  			| LOCAL TEMP				{ $$ = RELPERSISTENCE_TEMP; }
  			| GLOBAL TEMPORARY
  				{
@@ -3974,7 +3965,7 @@ index b5966712ce1..388303a2d85 100644
  				}
  			| UNLOGGED					{ $$ = RELPERSISTENCE_UNLOGGED; }
  			| /*EMPTY*/					{ $$ = RELPERSISTENCE_PERMANENT; }
-@@ -11843,19 +11837,13 @@ OptTempTableName:
+@@ -11854,19 +11848,13 @@ OptTempTableName:
  				}
  			| GLOBAL TEMPORARY opt_table qualified_name
  				{
@@ -4062,7 +4053,7 @@ index cb9e177b5e5..e333f427740 100644
 +	return isQueryUsingGlobalTempRelation_walker((Node *) query, NULL);
 +}
 diff --git a/src/backend/parser/parse_utilcmd.c b/src/backend/parser/parse_utilcmd.c
-index 0eea214dd89..00233b13658 100644
+index 99efa26ce4a..08f36df50be 100644
 --- a/src/backend/parser/parse_utilcmd.c
 +++ b/src/backend/parser/parse_utilcmd.c
 @@ -447,6 +447,13 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
@@ -4079,7 +4070,7 @@ index 0eea214dd89..00233b13658 100644
  	/*
  	 * If a sequence data type was specified, add it to the options.  Prepend
  	 * to the list rather than append; in case a user supplied their own AS
-@@ -3326,6 +3333,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
+@@ -3329,6 +3336,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
  		cxt.isforeign = false;
  	}
  	cxt.relation = stmt->relation;
@@ -4117,10 +4108,10 @@ index 681ef91b81e..4ea4c5bfcc7 100644
  
  		relid = classForm->oid;
 diff --git a/src/backend/storage/buffer/bufmgr.c b/src/backend/storage/buffer/bufmgr.c
-index a2512e750c2..9aefdf48cb9 100644
+index f5459c68f89..39b82a0b389 100644
 --- a/src/backend/storage/buffer/bufmgr.c
 +++ b/src/backend/storage/buffer/bufmgr.c
-@@ -37,6 +37,7 @@
+@@ -38,6 +38,7 @@
  #include "access/xlogutils.h"
  #include "catalog/catalog.h"
  #include "catalog/storage.h"
@@ -4128,7 +4119,7 @@ index a2512e750c2..9aefdf48cb9 100644
  #include "executor/instrument.h"
  #include "lib/binaryheap.h"
  #include "miscadmin.h"
-@@ -2934,7 +2935,15 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln)
+@@ -2935,7 +2936,15 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln)
  BlockNumber
  RelationGetNumberOfBlocksInFork(Relation relation, ForkNumber forkNum)
  {
@@ -4175,7 +4166,7 @@ index 9f26e41c464..0a25b151e82 100644
  	/*
  	 * Set up lock manager
 diff --git a/src/backend/storage/ipc/procarray.c b/src/backend/storage/ipc/procarray.c
-index 3be60402890..dfb78547c0a 100644
+index 13d192ec2b4..c5fd02c9c7f 100644
 --- a/src/backend/storage/ipc/procarray.c
 +++ b/src/backend/storage/ipc/procarray.c
 @@ -65,6 +65,7 @@
@@ -4186,7 +4177,7 @@ index 3be60402890..dfb78547c0a 100644
  
  #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
  
-@@ -5161,3 +5162,66 @@ KnownAssignedXidsReset(void)
+@@ -5175,3 +5176,66 @@ KnownAssignedXidsReset(void)
  
  	LWLockRelease(ProcArrayLock);
  }
@@ -4269,10 +4260,10 @@ index 7b0dea4abec..ab0d2031e86 100644
  
  StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
 diff --git a/src/backend/storage/lmgr/proc.c b/src/backend/storage/lmgr/proc.c
-index e306b04738d..c9e90714c3b 100644
+index 37f032e7b95..d1ec2d9bcd5 100644
 --- a/src/backend/storage/lmgr/proc.c
 +++ b/src/backend/storage/lmgr/proc.c
-@@ -391,6 +391,7 @@ InitProcess(void)
+@@ -392,6 +392,7 @@ InitProcess(void)
  	MyProc->databaseId = InvalidOid;
  	MyProc->roleId = InvalidOid;
  	MyProc->tempNamespaceId = InvalidOid;
@@ -4280,7 +4271,7 @@ index e306b04738d..c9e90714c3b 100644
  	MyProc->isBackgroundWorker = IsBackgroundWorker;
  	MyProc->delayChkpt = false;
  	MyProc->statusFlags = 0;
-@@ -576,6 +577,7 @@ InitAuxiliaryProcess(void)
+@@ -577,6 +578,7 @@ InitAuxiliaryProcess(void)
  	MyProc->databaseId = InvalidOid;
  	MyProc->roleId = InvalidOid;
  	MyProc->tempNamespaceId = InvalidOid;
@@ -4519,7 +4510,7 @@ index feef9998634..ebaad33a698 100644
  						 ObjectIdGetDatum(relid),
  						 Int16GetDatum(attnum),
 diff --git a/src/backend/utils/cache/relcache.c b/src/backend/utils/cache/relcache.c
-index 2e760e8a3bd..758a635b75e 100644
+index 2707fed12f4..b26b6a0adbf 100644
 --- a/src/backend/utils/cache/relcache.c
 +++ b/src/backend/utils/cache/relcache.c
 @@ -65,6 +65,7 @@
@@ -4608,7 +4599,7 @@ index 2e760e8a3bd..758a635b75e 100644
  	}
  	else
  	{
-@@ -2288,6 +2344,14 @@ RelationReloadIndexInfo(Relation relation)
+@@ -2289,6 +2345,14 @@ RelationReloadIndexInfo(Relation relation)
  							   HeapTupleHeaderGetXmin(tuple->t_data));
  
  		ReleaseSysCache(tuple);
@@ -4623,7 +4614,7 @@ index 2e760e8a3bd..758a635b75e 100644
  	}
  
  	/* Okay, now it's valid again */
-@@ -3568,6 +3632,10 @@ RelationBuildLocalRelation(const char *relname,
+@@ -3569,6 +3633,10 @@ RelationBuildLocalRelation(const char *relname,
  			rel->rd_backend = BackendIdForTempRelations();
  			rel->rd_islocaltemp = true;
  			break;
@@ -4634,7 +4625,7 @@ index 2e760e8a3bd..758a635b75e 100644
  		default:
  			elog(ERROR, "invalid relpersistence: %c", relpersistence);
  			break;
-@@ -3681,6 +3749,13 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
+@@ -3682,6 +3750,13 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
  	TransactionId freezeXid = InvalidTransactionId;
  	RelFileNode newrnode;
  
@@ -4648,7 +4639,7 @@ index 2e760e8a3bd..758a635b75e 100644
  	/* Allocate a new relfilenode */
  	newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace, NULL,
  									   persistence);
-@@ -3724,7 +3799,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
+@@ -3725,7 +3800,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
  		/* handle these directly, at least for now */
  		SMgrRelation srel;
  
@@ -4658,7 +4649,7 @@ index 2e760e8a3bd..758a635b75e 100644
  	}
  	else
 diff --git a/src/backend/utils/misc/guc.c b/src/backend/utils/misc/guc.c
-index 4c94f09c645..b4017794a35 100644
+index f505413a7f9..884a5c2c890 100644
 --- a/src/backend/utils/misc/guc.c
 +++ b/src/backend/utils/misc/guc.c
 @@ -44,6 +44,7 @@
@@ -4722,7 +4713,7 @@ index 4c94f09c645..b4017794a35 100644
  	 * See also CheckRequiredParameterValues() if this parameter changes
  	 */
 diff --git a/src/bin/pg_dump/pg_dump.c b/src/bin/pg_dump/pg_dump.c
-index 7c2f1d30447..cb18546ad74 100644
+index 3b4b63d8971..ef1e78aa3c9 100644
 --- a/src/bin/pg_dump/pg_dump.c
 +++ b/src/bin/pg_dump/pg_dump.c
 @@ -2538,6 +2538,10 @@ makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
@@ -4736,7 +4727,7 @@ index 7c2f1d30447..cb18546ad74 100644
  	/* Check that the data is not explicitly excluded */
  	if (simple_oid_list_member(&tabledata_exclude_oids,
  							   tbinfo->dobj.catId.oid))
-@@ -14913,6 +14917,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -14930,6 +14934,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  		char	   *ftoptions = NULL;
  		char	   *srvname = NULL;
  		char	   *foreign = "";
@@ -4744,7 +4735,7 @@ index 7c2f1d30447..cb18546ad74 100644
  
  		/*
  		 * Set reltypename, and collect any relkind-specific data that we
-@@ -14988,9 +14993,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -15005,9 +15010,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  			binary_upgrade_set_pg_class_oids(fout, q,
  											 tbinfo->dobj.catId.oid, false);
  
@@ -4762,7 +4753,7 @@ index 7c2f1d30447..cb18546ad74 100644
  						  reltypename,
  						  qualrelname);
  
-@@ -15358,6 +15369,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -15375,6 +15386,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  			}
  		}
  
@@ -4778,7 +4769,7 @@ index 7c2f1d30447..cb18546ad74 100644
  		/*
  		 * In binary_upgrade mode, arrange to restore the old relfrozenxid and
  		 * relminmxid of all vacuumable relations.  (While vacuum.c processes
-@@ -15365,7 +15385,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -15382,7 +15402,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  		 * of other relations; so this "if" lacks RELKIND_TOASTVALUE, and the
  		 * child toast table is handled below.)
  		 */
@@ -4787,7 +4778,7 @@ index 7c2f1d30447..cb18546ad74 100644
  			(tbinfo->relkind == RELKIND_RELATION ||
  			 tbinfo->relkind == RELKIND_MATVIEW))
  		{
-@@ -16385,6 +16405,7 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16405,6 +16425,7 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  	PQExpBuffer query = createPQExpBuffer();
  	PQExpBuffer delqry = createPQExpBuffer();
  	char	   *qseqname;
@@ -4795,7 +4786,7 @@ index 7c2f1d30447..cb18546ad74 100644
  
  	qseqname = pg_strdup(fmtId(tbinfo->dobj.name));
  
-@@ -16394,9 +16415,12 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16414,9 +16435,12 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  						  "SELECT format_type(seqtypid, NULL), "
  						  "seqstart, seqincrement, "
  						  "seqmax, seqmin, "
@@ -4811,7 +4802,7 @@ index 7c2f1d30447..cb18546ad74 100644
  						  tbinfo->dobj.catId.oid);
  	}
  	else
-@@ -16433,6 +16457,9 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16453,6 +16477,9 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  	cache = PQgetvalue(res, 0, 5);
  	cycled = (strcmp(PQgetvalue(res, 0, 6), "t") == 0);
  
@@ -4821,7 +4812,7 @@ index 7c2f1d30447..cb18546ad74 100644
  	/* Calculate default limits for a sequence of this type */
  	is_ascending = (incby[0] != '-');
  	if (strcmp(seqtype, "smallint") == 0)
-@@ -16510,9 +16537,13 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16530,9 +16557,13 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  	}
  	else
  	{
@@ -4839,7 +4830,7 @@ index 7c2f1d30447..cb18546ad74 100644
  		if (strcmp(seqtype, "bigint") != 0)
  			appendPQExpBuffer(query, "    AS %s\n", seqtype);
 diff --git a/src/bin/pg_upgrade/check.c b/src/bin/pg_upgrade/check.c
-index 3d218c2ad24..b120ff8e71d 100644
+index 019bcb6c7b7..df30fa0dd7e 100644
 --- a/src/bin/pg_upgrade/check.c
 +++ b/src/bin/pg_upgrade/check.c
 @@ -88,7 +88,7 @@ check_and_dump_old_cluster(bool live_check)
@@ -4861,7 +4852,7 @@ index 3d218c2ad24..b120ff8e71d 100644
  	check_new_cluster_is_empty();
  	check_databases_are_compatible();
 diff --git a/src/bin/pg_upgrade/info.c b/src/bin/pg_upgrade/info.c
-index f7fa0820d69..028e0700e37 100644
+index 69ef23119f5..14e0fc5ef75 100644
 --- a/src/bin/pg_upgrade/info.c
 +++ b/src/bin/pg_upgrade/info.c
 @@ -21,7 +21,7 @@ static void report_unmatched_relation(const RelInfo *rel, const DbInfo *db,
@@ -4873,7 +4864,7 @@ index f7fa0820d69..028e0700e37 100644
  static void free_rel_infos(RelInfoArr *rel_arr);
  static void print_db_infos(DbInfoArr *dbinfo);
  static void print_rel_infos(RelInfoArr *rel_arr);
-@@ -271,9 +271,11 @@ report_unmatched_relation(const RelInfo *rel, const DbInfo *db, bool is_new_db)
+@@ -269,9 +269,11 @@ report_unmatched_relation(const RelInfo *rel, const DbInfo *db, bool is_new_db)
   *
   * higher level routine to generate dbinfos for the database running
   * on the given "port". Assumes that server is already running.
@@ -4886,7 +4877,7 @@ index f7fa0820d69..028e0700e37 100644
  {
  	int			dbnum;
  
-@@ -283,7 +285,7 @@ get_db_and_rel_infos(ClusterInfo *cluster)
+@@ -281,7 +283,7 @@ get_db_and_rel_infos(ClusterInfo *cluster)
  	get_db_infos(cluster);
  
  	for (dbnum = 0; dbnum < cluster->dbarr.ndbs; dbnum++)
@@ -4895,7 +4886,7 @@ index f7fa0820d69..028e0700e37 100644
  
  	if (cluster == &old_cluster)
  		pg_log(PG_VERBOSE, "\nsource databases:\n");
-@@ -368,7 +370,7 @@ get_db_infos(ClusterInfo *cluster)
+@@ -365,7 +367,7 @@ get_db_infos(ClusterInfo *cluster)
   * This allows later processing to match up old and new databases efficiently.
   */
  static void
@@ -4904,7 +4895,7 @@ index f7fa0820d69..028e0700e37 100644
  {
  	PGconn	   *conn = connectToServer(cluster,
  									   dbinfo->db_name);
-@@ -411,8 +413,17 @@ get_rel_infos(ClusterInfo *cluster, DbInfo *dbinfo)
+@@ -408,8 +410,17 @@ get_rel_infos(ClusterInfo *cluster, DbInfo *dbinfo)
  			 "  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n "
  			 "         ON c.relnamespace = n.oid "
  			 "  WHERE relkind IN (" CppAsString2(RELKIND_RELATION) ", "
@@ -4924,10 +4915,10 @@ index f7fa0820d69..028e0700e37 100644
  			 "      n.nspname !~ '^pg_toast_temp_' AND "
  			 "      n.nspname NOT IN ('pg_catalog', 'information_schema', "
 diff --git a/src/bin/pg_upgrade/pg_upgrade.c b/src/bin/pg_upgrade/pg_upgrade.c
-index 07defacd673..438ae344d09 100644
+index 77beb116398..2cdb7b138d4 100644
 --- a/src/bin/pg_upgrade/pg_upgrade.c
 +++ b/src/bin/pg_upgrade/pg_upgrade.c
-@@ -411,7 +411,7 @@ create_new_objects(void)
+@@ -476,7 +476,7 @@ create_new_objects(void)
  		set_frozenxids(true);
  
  	/* update new_cluster info now that we have objects in the databases */
@@ -4936,7 +4927,7 @@ index 07defacd673..438ae344d09 100644
  }
  
  /*
-@@ -649,7 +649,10 @@ set_frozenxids(bool minmxid_only)
+@@ -714,7 +714,10 @@ set_frozenxids(bool minmxid_only)
  									  "UPDATE	pg_catalog.pg_class "
  									  "SET	relfrozenxid = '%u' "
  			/* only heap, materialized view, and TOAST are vacuumed */
@@ -4948,7 +4939,7 @@ index 07defacd673..438ae344d09 100644
  									  CppAsString2(RELKIND_RELATION) ", "
  									  CppAsString2(RELKIND_MATVIEW) ", "
  									  CppAsString2(RELKIND_TOASTVALUE) ")",
-@@ -660,7 +663,10 @@ set_frozenxids(bool minmxid_only)
+@@ -725,7 +728,10 @@ set_frozenxids(bool minmxid_only)
  								  "UPDATE	pg_catalog.pg_class "
  								  "SET	relminmxid = '%u' "
  		/* only heap, materialized view, and TOAST are vacuumed */
@@ -4961,10 +4952,10 @@ index 07defacd673..438ae344d09 100644
  								  CppAsString2(RELKIND_MATVIEW) ", "
  								  CppAsString2(RELKIND_TOASTVALUE) ")",
 diff --git a/src/bin/pg_upgrade/pg_upgrade.h b/src/bin/pg_upgrade/pg_upgrade.h
-index da6770d0f83..2da01c28f37 100644
+index 0aca0a77aae..b99df4f6a42 100644
 --- a/src/bin/pg_upgrade/pg_upgrade.h
 +++ b/src/bin/pg_upgrade/pg_upgrade.h
-@@ -372,7 +372,7 @@ void		check_loadable_libraries(void);
+@@ -383,7 +383,7 @@ void		check_loadable_libraries(void);
  FileNameMap *gen_db_file_maps(DbInfo *old_db,
  							  DbInfo *new_db, int *nmaps, const char *old_pgdata,
  							  const char *new_pgdata);
@@ -4974,10 +4965,10 @@ index da6770d0f83..2da01c28f37 100644
  /* option.c */
  
 diff --git a/src/bin/psql/describe.c b/src/bin/psql/describe.c
-index 40433e32fa0..d1bbab6029b 100644
+index 654ef2d7c30..3dd8cd21317 100644
 --- a/src/bin/psql/describe.c
 +++ b/src/bin/psql/describe.c
-@@ -3769,7 +3769,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
+@@ -3780,7 +3780,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
  		 * Show whether a relation is permanent, temporary, or unlogged.
  		 */
  		appendPQExpBuffer(&buf,
@@ -4988,19 +4979,19 @@ index 40433e32fa0..d1bbab6029b 100644
  						  gettext_noop("temporary"),
  						  gettext_noop("unlogged"),
 diff --git a/src/bin/psql/tab-complete.c b/src/bin/psql/tab-complete.c
-index 6bd33a06cb1..d65daa3855b 100644
+index 98882272130..adc6dd20b72 100644
 --- a/src/bin/psql/tab-complete.c
 +++ b/src/bin/psql/tab-complete.c
-@@ -1103,6 +1103,8 @@ static const pgsql_thing_t words_after_create[] = {
+@@ -1181,6 +1181,8 @@ static const pgsql_thing_t words_after_create[] = {
  	{"FOREIGN TABLE", NULL, NULL, NULL},
  	{"FUNCTION", NULL, NULL, Query_for_list_of_functions},
  	{"GROUP", Query_for_list_of_roles},
-+	{"GLOBAL", NULL, NULL, NULL, THING_NO_DROP | THING_NO_ALTER}, /* for CREATE GLOBAL TEMP/TEMPORARY TABLE
++	{"GLOBAL", NULL, NULL, NULL, NULL, THING_NO_DROP | THING_NO_ALTER}, /* for CREATE GLOBAL TEMP/TEMPORARY TABLE
 +																	* ... */
  	{"INDEX", NULL, NULL, &Query_for_list_of_indexes},
  	{"LANGUAGE", Query_for_list_of_languages},
- 	{"LARGE OBJECT", NULL, NULL, NULL, THING_NO_CREATE | THING_NO_DROP},
-@@ -2670,6 +2672,9 @@ psql_completion(const char *text, int start, int end)
+ 	{"LARGE OBJECT", NULL, NULL, NULL, NULL, THING_NO_CREATE | THING_NO_DROP},
+@@ -2761,6 +2763,9 @@ psql_completion(const char *text, int start, int end)
  	/* CREATE FOREIGN DATA WRAPPER */
  	else if (Matches("CREATE", "FOREIGN", "DATA", "WRAPPER", MatchAny))
  		COMPLETE_WITH("HANDLER", "VALIDATOR", "OPTIONS");
@@ -5010,7 +5001,7 @@ index 6bd33a06cb1..d65daa3855b 100644
  
  	/* CREATE FOREIGN TABLE */
  	else if (Matches("CREATE", "FOREIGN", "TABLE", MatchAny))
-@@ -2904,6 +2909,8 @@ psql_completion(const char *text, int start, int end)
+@@ -2994,6 +2999,8 @@ psql_completion(const char *text, int start, int end)
  	/* Complete "CREATE TEMP/TEMPORARY" with the possible temp objects */
  	else if (TailMatches("CREATE", "TEMP|TEMPORARY"))
  		COMPLETE_WITH("SEQUENCE", "TABLE", "VIEW");
@@ -5068,10 +5059,10 @@ index 304e8c18d52..e23cb49c010 100644
  /* default selection for replica identity (primary key or nothing) */
  #define		  REPLICA_IDENTITY_DEFAULT	'd'
 diff --git a/src/include/catalog/pg_proc.dat b/src/include/catalog/pg_proc.dat
-index 0859dc81cac..60d92e2096f 100644
+index 62f36daa981..66d12b7b65f 100644
 --- a/src/include/catalog/pg_proc.dat
 +++ b/src/include/catalog/pg_proc.dat
-@@ -5729,6 +5729,40 @@
+@@ -5735,6 +5735,40 @@
    proparallel => 'r', prorettype => 'float8', proargtypes => 'oid',
    prosrc => 'pg_stat_get_xact_function_self_time' },
  
@@ -5127,7 +5118,7 @@ index 9ffc7419131..ca5bcaa3f97 100644
  extern void RelationPreTruncate(Relation rel);
 diff --git a/src/include/catalog/storage_gtt.h b/src/include/catalog/storage_gtt.h
 new file mode 100644
-index 00000000000..50e0570945a
+index 00000000000..1b6d4ef2a8d
 --- /dev/null
 +++ b/src/include/catalog/storage_gtt.h
 @@ -0,0 +1,46 @@
@@ -5167,7 +5158,7 @@ index 00000000000..50e0570945a
 +extern bool get_gtt_relstats(Oid relid, BlockNumber *relpages, double *reltuples,
 +							BlockNumber *relallvisible, TransactionId *relfrozenxid,
 +							TransactionId *relminmxid);
-+extern void force_enable_gtt_index(Relation index);
++extern void gtt_index_force_enable(Relation index);
 +extern void gtt_correct_index_session_state(Relation index);
 +extern void gtt_init_storage(CmdType operation, Relation relation);
 +extern Oid gtt_fetch_current_relfilenode(Oid relid);
@@ -5178,10 +5169,10 @@ index 00000000000..50e0570945a
 +extern void GlobalTempRelationSetNewRelfilenode(Relation relation);
 +#endif							/* STORAGE_H */
 diff --git a/src/include/commands/sequence.h b/src/include/commands/sequence.h
-index f7542f2bccb..e8ae0f00531 100644
+index 9fecc41954e..c516851d09c 100644
 --- a/src/include/commands/sequence.h
 +++ b/src/include/commands/sequence.h
-@@ -65,5 +65,6 @@ extern void seq_redo(XLogReaderState *rptr);
+@@ -66,5 +66,6 @@ extern void seq_redo(XLogReaderState *rptr);
  extern void seq_desc(StringInfo buf, XLogReaderState *rptr);
  extern const char *seq_identify(uint8 info);
  extern void seq_mask(char *pagedata, BlockNumber blkno);

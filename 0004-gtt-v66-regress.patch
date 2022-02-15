@@ -1084,7 +1084,7 @@ index aa6e89268ef..f782b9b8fcc 100644
  [\n]			{ yyline++; }
 diff --git a/src/test/regress/expected/global_temporary_table.out b/src/test/regress/expected/global_temporary_table.out
 new file mode 100644
-index 00000000000..0b5e09e27b0
+index 00000000000..5b8203f28f5
 --- /dev/null
 +++ b/src/test/regress/expected/global_temporary_table.out
 @@ -0,0 +1,577 @@
@@ -1526,7 +1526,7 @@ index 00000000000..0b5e09e27b0
 +select count(*) from pg_list_gtt_relfrozenxids();
 + count 
 +-------
-+     2
++     1
 +(1 row)
 +
 +insert into temp_table_test_systemview values(generate_series(1,10000),'test');
@@ -1539,7 +1539,7 @@ index 00000000000..0b5e09e27b0
 +select count(*) from pg_list_gtt_relfrozenxids();
 + count 
 +-------
-+     2
++     1
 +(1 row)
 +
 +select schemaname, tablename, relpages, reltuples, relallvisible from pg_gtt_relstats where tablename in('temp_table_test_systemview','temp_table_test_systemview_pkey') order by tablename;
@@ -1666,10 +1666,10 @@ index 00000000000..0b5e09e27b0
 +(0 rows)
 +
 diff --git a/src/test/regress/expected/rules.out b/src/test/regress/expected/rules.out
-index d652f7b5fb4..a1d4219737e 100644
+index 1420288d67b..faa70c947fa 100644
 --- a/src/test/regress/expected/rules.out
 +++ b/src/test/regress/expected/rules.out
-@@ -1359,6 +1359,94 @@ pg_group| SELECT pg_authid.rolname AS groname,
+@@ -1337,6 +1337,94 @@ pg_group| SELECT pg_authid.rolname AS groname,
            WHERE (pg_auth_members.roleid = pg_authid.oid)) AS grolist
     FROM pg_authid
    WHERE (NOT pg_authid.rolcanlogin);
@@ -1765,10 +1765,10 @@ index d652f7b5fb4..a1d4219737e 100644
      a.type,
      a.database,
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 5b0c73d7e37..40f4fc5ca10 100644
+index 6d8f524ae9e..7924bc02f59 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
-@@ -134,3 +134,6 @@ test: fast_default
+@@ -135,3 +135,6 @@ test: fast_default
  
  # run stats by itself because its delay may be insufficient under heavy load
  test: stats
