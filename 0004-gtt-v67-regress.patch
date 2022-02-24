@@ -734,10 +734,10 @@ index 00000000000..5825773aa12
 +(1 row)
 +
 diff --git a/src/test/isolation/isolation_schedule b/src/test/isolation/isolation_schedule
-index 99c23b16ffe..f5c8eec533d 100644
+index 0dae483e827..77d4cff5fcb 100644
 --- a/src/test/isolation/isolation_schedule
 +++ b/src/test/isolation/isolation_schedule
-@@ -97,3 +97,5 @@ test: plpgsql-toast
+@@ -98,3 +98,5 @@ test: plpgsql-toast
  test: truncate-conflict
  test: serializable-parallel
  test: serializable-parallel-2

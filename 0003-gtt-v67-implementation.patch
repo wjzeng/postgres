@@ -83,10 +83,10 @@ index a259a301fa8..6a85ec9debe 100644
  	else
  		sort_threshold = Min(sort_threshold, NLocBuffer);
 diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
-index 98230aac49c..99d0926b85b 100644
+index 2240cfd936d..2ee21752e02 100644
 --- a/src/backend/access/heap/heapam.c
 +++ b/src/backend/access/heap/heapam.c
-@@ -5835,6 +5835,7 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
+@@ -5888,6 +5888,7 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
  	Buffer		buffer;
  	TransactionId prune_xid;
  
@@ -117,7 +117,7 @@ index 39ef8a0b77d..0bb308d1c5e 100644
  	/* copy main fork */
  	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
 diff --git a/src/backend/access/heap/vacuumlazy.c b/src/backend/access/heap/vacuumlazy.c
-index 9c88b9bd71a..a817e944cb2 100644
+index 242511a235f..c2eebe52c18 100644
 --- a/src/backend/access/heap/vacuumlazy.c
 +++ b/src/backend/access/heap/vacuumlazy.c
 @@ -333,6 +333,9 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
@@ -665,10 +665,10 @@ index 5e3fc2b35dc..03900de5a00 100644
  
  	return result;
 diff --git a/src/backend/catalog/namespace.c b/src/backend/catalog/namespace.c
-index 5dbac9c437a..033fef26fe3 100644
+index fafb9349cce..34dfe7d430d 100644
 --- a/src/backend/catalog/namespace.c
 +++ b/src/backend/catalog/namespace.c
-@@ -656,6 +656,13 @@ RangeVarAdjustRelationPersistence(RangeVar *newRelation, Oid nspid)
+@@ -657,6 +657,13 @@ RangeVarAdjustRelationPersistence(RangeVar *newRelation, Oid nspid)
  							 errmsg("cannot create temporary relation in non-temporary schema")));
  			}
  			break;
@@ -2842,7 +2842,7 @@ index 9abbb6b5552..a944f244496 100644
  	 * Make sure the constructed table does not have RLS enabled.
  	 *
 diff --git a/src/backend/commands/indexcmds.c b/src/backend/commands/indexcmds.c
-index 560dcc87a2c..2d0edf1ae4c 100644
+index cd30f15eba6..e9a4c39e18d 100644
 --- a/src/backend/commands/indexcmds.c
 +++ b/src/backend/commands/indexcmds.c
 @@ -111,6 +111,7 @@ struct ReindexIndexCallbackState
@@ -3656,7 +3656,7 @@ index 3e83f375b55..5b8f083a110 100644
 +	return action;
 +}
 diff --git a/src/backend/commands/vacuum.c b/src/backend/commands/vacuum.c
-index b6767a5ff8c..630f7db5a8b 100644
+index 50a4a612e58..8a3e867055a 100644
 --- a/src/backend/commands/vacuum.c
 +++ b/src/backend/commands/vacuum.c
 @@ -39,7 +39,9 @@
@@ -3669,7 +3669,7 @@ index b6767a5ff8c..630f7db5a8b 100644
  #include "commands/defrem.h"
  #include "commands/vacuum.h"
  #include "miscadmin.h"
-@@ -1313,6 +1315,11 @@ vac_update_relstats(Relation relation,
+@@ -1332,6 +1334,11 @@ vac_update_relstats(Relation relation,
  	Form_pg_class pgcform;
  	bool		dirty;
  
@@ -3681,7 +3681,7 @@ index b6767a5ff8c..630f7db5a8b 100644
  	rd = table_open(RelationRelationId, RowExclusiveLock);
  
  	/* Fetch a copy of the tuple to scribble on */
-@@ -1415,7 +1422,6 @@ vac_update_relstats(Relation relation,
+@@ -1434,7 +1441,6 @@ vac_update_relstats(Relation relation,
  	table_close(rd, RowExclusiveLock);
  }
  
@@ -3689,7 +3689,7 @@ index b6767a5ff8c..630f7db5a8b 100644
  /*
   *	vac_update_datfrozenxid() -- update pg_database.datfrozenxid for our DB
   *
-@@ -1507,6 +1513,13 @@ vac_update_datfrozenxid(void)
+@@ -1526,6 +1532,13 @@ vac_update_datfrozenxid(void)
  			continue;
  		}
  
@@ -3703,7 +3703,7 @@ index b6767a5ff8c..630f7db5a8b 100644
  		/*
  		 * Some table AMs might not need per-relation xid / multixid horizons.
  		 * It therefore seems reasonable to allow relfrozenxid and relminmxid
-@@ -1564,6 +1577,42 @@ vac_update_datfrozenxid(void)
+@@ -1583,6 +1596,42 @@ vac_update_datfrozenxid(void)
  	Assert(TransactionIdIsNormal(newFrozenXid));
  	Assert(MultiXactIdIsValid(newMinMulti));
  
@@ -3746,7 +3746,7 @@ index b6767a5ff8c..630f7db5a8b 100644
  	/* Now fetch the pg_database tuple we need to update. */
  	relation = table_open(DatabaseRelationId, RowExclusiveLock);
  
-@@ -1915,6 +1964,19 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
+@@ -1934,6 +1983,19 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
  		return false;
  	}
  
@@ -3767,10 +3767,10 @@ index b6767a5ff8c..630f7db5a8b 100644
  	 * Silently ignore tables that are temp tables of other backends ---
  	 * trying to vacuum these will lead to great unhappiness, since their
 diff --git a/src/backend/commands/view.c b/src/backend/commands/view.c
-index e183ab097c4..04ae8ff7073 100644
+index 459e9821d08..b94776f80cf 100644
 --- a/src/backend/commands/view.c
 +++ b/src/backend/commands/view.c
-@@ -527,6 +527,12 @@ DefineView(ViewStmt *stmt, const char *queryString,
+@@ -543,6 +543,12 @@ DefineView(ViewStmt *stmt, const char *queryString,
  				(errcode(ERRCODE_SYNTAX_ERROR),
  				 errmsg("views cannot be unlogged because they do not have storage")));
  
@@ -3942,7 +3942,7 @@ index 6ac2e9ce237..2d62d0a4036 100644
  					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
  					 errmsg("materialized views must not use temporary tables or views")));
 diff --git a/src/backend/parser/gram.y b/src/backend/parser/gram.y
-index c4f32425060..55453690a50 100644
+index a03b33b53bd..7a50dd98052 100644
 --- a/src/backend/parser/gram.y
 +++ b/src/backend/parser/gram.y
 @@ -3435,17 +3435,11 @@ OptTemp:	TEMPORARY					{ $$ = RELPERSISTENCE_TEMP; }
@@ -3965,7 +3965,7 @@ index c4f32425060..55453690a50 100644
  				}
  			| UNLOGGED					{ $$ = RELPERSISTENCE_UNLOGGED; }
  			| /*EMPTY*/					{ $$ = RELPERSISTENCE_PERMANENT; }
-@@ -11854,19 +11848,13 @@ OptTempTableName:
+@@ -11878,19 +11872,13 @@ OptTempTableName:
  				}
  			| GLOBAL TEMPORARY opt_table qualified_name
  				{
@@ -4137,18 +4137,18 @@ index f5459c68f89..39b82a0b389 100644
  		/*
  		 * Not every table AM uses BLCKSZ wide fixed size blocks.
 diff --git a/src/backend/storage/ipc/ipci.c b/src/backend/storage/ipc/ipci.c
-index 9f26e41c464..0a25b151e82 100644
+index cd4ebe2fc5e..43384097d9b 100644
 --- a/src/backend/storage/ipc/ipci.c
 +++ b/src/backend/storage/ipc/ipci.c
-@@ -22,6 +22,7 @@
- #include "access/subtrans.h"
+@@ -23,6 +23,7 @@
  #include "access/syncscan.h"
  #include "access/twophase.h"
+ #include "access/xlogrecovery.h"
 +#include "catalog/storage_gtt.h"
  #include "commands/async.h"
  #include "miscadmin.h"
  #include "pgstat.h"
-@@ -143,6 +144,7 @@ CalculateShmemSize(int *num_semaphores)
+@@ -145,6 +146,7 @@ CalculateShmemSize(int *num_semaphores)
  	size = add_size(size, BTreeShmemSize());
  	size = add_size(size, SyncScanShmemSize());
  	size = add_size(size, AsyncShmemSize());
@@ -4156,7 +4156,7 @@ index 9f26e41c464..0a25b151e82 100644
  #ifdef EXEC_BACKEND
  	size = add_size(size, ShmemBackendArraySize());
  #endif
-@@ -246,6 +248,8 @@ CreateSharedMemoryAndSemaphores(void)
+@@ -249,6 +251,8 @@ CreateSharedMemoryAndSemaphores(void)
  	SUBTRANSShmemInit();
  	MultiXactShmemInit();
  	InitBufferPool();
@@ -4260,7 +4260,7 @@ index 7b0dea4abec..ab0d2031e86 100644
  
  StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
 diff --git a/src/backend/storage/lmgr/proc.c b/src/backend/storage/lmgr/proc.c
-index 37f032e7b95..d1ec2d9bcd5 100644
+index 90283f8a9f5..d2e1e3e94e1 100644
 --- a/src/backend/storage/lmgr/proc.c
 +++ b/src/backend/storage/lmgr/proc.c
 @@ -392,6 +392,7 @@ InitProcess(void)
@@ -4510,7 +4510,7 @@ index feef9998634..ebaad33a698 100644
  						 ObjectIdGetDatum(relid),
  						 Int16GetDatum(attnum),
 diff --git a/src/backend/utils/cache/relcache.c b/src/backend/utils/cache/relcache.c
-index 2707fed12f4..b26b6a0adbf 100644
+index fccffce5729..1d2fdb3760e 100644
 --- a/src/backend/utils/cache/relcache.c
 +++ b/src/backend/utils/cache/relcache.c
 @@ -65,6 +65,7 @@
@@ -4519,9 +4519,9 @@ index 2707fed12f4..b26b6a0adbf 100644
  #include "catalog/storage.h"
 +#include "catalog/storage_gtt.h"
  #include "commands/policy.h"
+ #include "commands/publicationcmds.h"
  #include "commands/trigger.h"
- #include "miscadmin.h"
-@@ -1152,6 +1153,36 @@ retry:
+@@ -1153,6 +1154,36 @@ retry:
  				relation->rd_islocaltemp = false;
  			}
  			break;
@@ -4558,7 +4558,7 @@ index 2707fed12f4..b26b6a0adbf 100644
  		default:
  			elog(ERROR, "invalid relpersistence: %c",
  				 relation->rd_rel->relpersistence);
-@@ -1212,6 +1243,15 @@ retry:
+@@ -1213,6 +1244,15 @@ retry:
  	else
  		Assert(relation->rd_rel->relam == InvalidOid);
  
@@ -4574,7 +4574,7 @@ index 2707fed12f4..b26b6a0adbf 100644
  	/* extract reloptions if any */
  	RelationParseRelOptions(relation, pg_class_tuple);
  
-@@ -1335,7 +1375,23 @@ RelationInitPhysicalAddr(Relation relation)
+@@ -1336,7 +1376,23 @@ RelationInitPhysicalAddr(Relation relation)
  			heap_freetuple(phys_tuple);
  		}
  
@@ -4599,7 +4599,7 @@ index 2707fed12f4..b26b6a0adbf 100644
  	}
  	else
  	{
-@@ -2289,6 +2345,14 @@ RelationReloadIndexInfo(Relation relation)
+@@ -2290,6 +2346,14 @@ RelationReloadIndexInfo(Relation relation)
  							   HeapTupleHeaderGetXmin(tuple->t_data));
  
  		ReleaseSysCache(tuple);
@@ -4614,7 +4614,7 @@ index 2707fed12f4..b26b6a0adbf 100644
  	}
  
  	/* Okay, now it's valid again */
-@@ -3569,6 +3633,10 @@ RelationBuildLocalRelation(const char *relname,
+@@ -3570,6 +3634,10 @@ RelationBuildLocalRelation(const char *relname,
  			rel->rd_backend = BackendIdForTempRelations();
  			rel->rd_islocaltemp = true;
  			break;
@@ -4625,7 +4625,7 @@ index 2707fed12f4..b26b6a0adbf 100644
  		default:
  			elog(ERROR, "invalid relpersistence: %c", relpersistence);
  			break;
-@@ -3682,6 +3750,13 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
+@@ -3683,6 +3751,13 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
  	TransactionId freezeXid = InvalidTransactionId;
  	RelFileNode newrnode;
  
@@ -4639,7 +4639,7 @@ index 2707fed12f4..b26b6a0adbf 100644
  	/* Allocate a new relfilenode */
  	newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace, NULL,
  									   persistence);
-@@ -3725,7 +3800,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
+@@ -3726,7 +3801,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
  		/* handle these directly, at least for now */
  		SMgrRelation srel;
  
@@ -4649,10 +4649,10 @@ index 2707fed12f4..b26b6a0adbf 100644
  	}
  	else
 diff --git a/src/backend/utils/misc/guc.c b/src/backend/utils/misc/guc.c
-index f505413a7f9..884a5c2c890 100644
+index bf7ec0d4666..90fe0c6506e 100644
 --- a/src/backend/utils/misc/guc.c
 +++ b/src/backend/utils/misc/guc.c
-@@ -44,6 +44,7 @@
+@@ -45,6 +45,7 @@
  #include "catalog/namespace.h"
  #include "catalog/pg_authid.h"
  #include "catalog/storage.h"
@@ -4660,7 +4660,7 @@ index f505413a7f9..884a5c2c890 100644
  #include "commands/async.h"
  #include "commands/prepare.h"
  #include "commands/tablespace.h"
-@@ -154,6 +155,18 @@ char	   *GUC_check_errmsg_string;
+@@ -157,6 +158,18 @@ char	   *GUC_check_errmsg_string;
  char	   *GUC_check_errdetail_string;
  char	   *GUC_check_errhint_string;
  
@@ -4679,7 +4679,7 @@ index f505413a7f9..884a5c2c890 100644
  static void do_serialize(char **destptr, Size *maxbytes, const char *fmt,...) pg_attribute_printf(3, 4);
  
  static void set_config_sourcefile(const char *name, char *sourcefile,
-@@ -2141,6 +2154,15 @@ static struct config_bool ConfigureNamesBool[] =
+@@ -2145,6 +2158,15 @@ static struct config_bool ConfigureNamesBool[] =
  
  static struct config_int ConfigureNamesInt[] =
  {
@@ -4695,7 +4695,7 @@ index f505413a7f9..884a5c2c890 100644
  	{
  		{"archive_timeout", PGC_SIGHUP, WAL_ARCHIVING,
  			gettext_noop("Sets the amount of time to wait before forcing a "
-@@ -2712,6 +2734,16 @@ static struct config_int ConfigureNamesInt[] =
+@@ -2716,6 +2738,16 @@ static struct config_int ConfigureNamesInt[] =
  		NULL, NULL, NULL
  	},
  
@@ -4712,8 +4712,23 @@ index f505413a7f9..884a5c2c890 100644
  	/*
  	 * See also CheckRequiredParameterValues() if this parameter changes
  	 */
+diff --git a/src/backend/utils/misc/postgresql.conf.sample b/src/backend/utils/misc/postgresql.conf.sample
+index 4a094bb38be..c7f97d2dcef 100644
+--- a/src/backend/utils/misc/postgresql.conf.sample
++++ b/src/backend/utils/misc/postgresql.conf.sample
+@@ -655,6 +655,10 @@
+ 					# autovacuum, -1 means use
+ 					# vacuum_cost_limit
+ 
++#max_active_global_temporary_table = 1000   # default active global temporary table
++                                            # -1 means disable gLobal temporary table
++
++#vacuum_gtt_defer_check_age = 10000         # global temporary table age check
+ 
+ #------------------------------------------------------------------------------
+ # CLIENT CONNECTION DEFAULTS
 diff --git a/src/bin/pg_dump/pg_dump.c b/src/bin/pg_dump/pg_dump.c
-index 3b4b63d8971..ef1e78aa3c9 100644
+index e69dcf8a484..2f3e43d0911 100644
 --- a/src/bin/pg_dump/pg_dump.c
 +++ b/src/bin/pg_dump/pg_dump.c
 @@ -2538,6 +2538,10 @@ makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
@@ -4727,7 +4742,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  	/* Check that the data is not explicitly excluded */
  	if (simple_oid_list_member(&tabledata_exclude_oids,
  							   tbinfo->dobj.catId.oid))
-@@ -14930,6 +14934,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -14973,6 +14977,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  		char	   *ftoptions = NULL;
  		char	   *srvname = NULL;
  		char	   *foreign = "";
@@ -4735,7 +4750,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  
  		/*
  		 * Set reltypename, and collect any relkind-specific data that we
-@@ -15005,9 +15010,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -15048,9 +15053,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  			binary_upgrade_set_pg_class_oids(fout, q,
  											 tbinfo->dobj.catId.oid, false);
  
@@ -4753,7 +4768,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  						  reltypename,
  						  qualrelname);
  
-@@ -15375,6 +15386,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -15418,6 +15429,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  			}
  		}
  
@@ -4769,7 +4784,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  		/*
  		 * In binary_upgrade mode, arrange to restore the old relfrozenxid and
  		 * relminmxid of all vacuumable relations.  (While vacuum.c processes
-@@ -15382,7 +15402,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
+@@ -15425,7 +15445,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
  		 * of other relations; so this "if" lacks RELKIND_TOASTVALUE, and the
  		 * child toast table is handled below.)
  		 */
@@ -4778,7 +4793,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  			(tbinfo->relkind == RELKIND_RELATION ||
  			 tbinfo->relkind == RELKIND_MATVIEW))
  		{
-@@ -16405,6 +16425,7 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16448,6 +16468,7 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  	PQExpBuffer query = createPQExpBuffer();
  	PQExpBuffer delqry = createPQExpBuffer();
  	char	   *qseqname;
@@ -4786,7 +4801,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  
  	qseqname = pg_strdup(fmtId(tbinfo->dobj.name));
  
-@@ -16414,9 +16435,12 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16457,9 +16478,12 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  						  "SELECT format_type(seqtypid, NULL), "
  						  "seqstart, seqincrement, "
  						  "seqmax, seqmin, "
@@ -4802,7 +4817,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  						  tbinfo->dobj.catId.oid);
  	}
  	else
-@@ -16453,6 +16477,9 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16496,6 +16520,9 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  	cache = PQgetvalue(res, 0, 5);
  	cycled = (strcmp(PQgetvalue(res, 0, 6), "t") == 0);
  
@@ -4812,7 +4827,7 @@ index 3b4b63d8971..ef1e78aa3c9 100644
  	/* Calculate default limits for a sequence of this type */
  	is_ascending = (incby[0] != '-');
  	if (strcmp(seqtype, "smallint") == 0)
-@@ -16530,9 +16557,13 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
+@@ -16573,9 +16600,13 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
  	}
  	else
  	{
@@ -4915,7 +4930,7 @@ index 69ef23119f5..14e0fc5ef75 100644
  			 "      n.nspname !~ '^pg_toast_temp_' AND "
  			 "      n.nspname NOT IN ('pg_catalog', 'information_schema', "
 diff --git a/src/bin/pg_upgrade/pg_upgrade.c b/src/bin/pg_upgrade/pg_upgrade.c
-index 77beb116398..2cdb7b138d4 100644
+index ecb3e1f6474..5e33d9d8ca9 100644
 --- a/src/bin/pg_upgrade/pg_upgrade.c
 +++ b/src/bin/pg_upgrade/pg_upgrade.c
 @@ -476,7 +476,7 @@ create_new_objects(void)
@@ -4952,10 +4967,10 @@ index 77beb116398..2cdb7b138d4 100644
  								  CppAsString2(RELKIND_MATVIEW) ", "
  								  CppAsString2(RELKIND_TOASTVALUE) ")",
 diff --git a/src/bin/pg_upgrade/pg_upgrade.h b/src/bin/pg_upgrade/pg_upgrade.h
-index 0aca0a77aae..b99df4f6a42 100644
+index ca86c112924..7cb57a01b8f 100644
 --- a/src/bin/pg_upgrade/pg_upgrade.h
 +++ b/src/bin/pg_upgrade/pg_upgrade.h
-@@ -383,7 +383,7 @@ void		check_loadable_libraries(void);
+@@ -384,7 +384,7 @@ void		check_loadable_libraries(void);
  FileNameMap *gen_db_file_maps(DbInfo *old_db,
  							  DbInfo *new_db, int *nmaps, const char *old_pgdata,
  							  const char *new_pgdata);
@@ -4965,10 +4980,10 @@ index 0aca0a77aae..b99df4f6a42 100644
  /* option.c */
  
 diff --git a/src/bin/psql/describe.c b/src/bin/psql/describe.c
-index 654ef2d7c30..3dd8cd21317 100644
+index e3382933d98..1779787b56c 100644
 --- a/src/bin/psql/describe.c
 +++ b/src/bin/psql/describe.c
-@@ -3780,7 +3780,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
+@@ -3791,7 +3791,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
  		 * Show whether a relation is permanent, temporary, or unlogged.
  		 */
  		appendPQExpBuffer(&buf,
@@ -4979,7 +4994,7 @@ index 654ef2d7c30..3dd8cd21317 100644
  						  gettext_noop("temporary"),
  						  gettext_noop("unlogged"),
 diff --git a/src/bin/psql/tab-complete.c b/src/bin/psql/tab-complete.c
-index 98882272130..adc6dd20b72 100644
+index 6957567264a..0c14beac935 100644
 --- a/src/bin/psql/tab-complete.c
 +++ b/src/bin/psql/tab-complete.c
 @@ -1181,6 +1181,8 @@ static const pgsql_thing_t words_after_create[] = {
@@ -4991,7 +5006,7 @@ index 98882272130..adc6dd20b72 100644
  	{"INDEX", NULL, NULL, &Query_for_list_of_indexes},
  	{"LANGUAGE", Query_for_list_of_languages},
  	{"LARGE OBJECT", NULL, NULL, NULL, NULL, THING_NO_CREATE | THING_NO_DROP},
-@@ -2761,6 +2763,9 @@ psql_completion(const char *text, int start, int end)
+@@ -2775,6 +2777,9 @@ psql_completion(const char *text, int start, int end)
  	/* CREATE FOREIGN DATA WRAPPER */
  	else if (Matches("CREATE", "FOREIGN", "DATA", "WRAPPER", MatchAny))
  		COMPLETE_WITH("HANDLER", "VALIDATOR", "OPTIONS");
@@ -5001,7 +5016,7 @@ index 98882272130..adc6dd20b72 100644
  
  	/* CREATE FOREIGN TABLE */
  	else if (Matches("CREATE", "FOREIGN", "TABLE", MatchAny))
-@@ -2994,6 +2999,8 @@ psql_completion(const char *text, int start, int end)
+@@ -3019,6 +3024,8 @@ psql_completion(const char *text, int start, int end)
  	/* Complete "CREATE TEMP/TEMPORARY" with the possible temp objects */
  	else if (TailMatches("CREATE", "TEMP|TEMPORARY"))
  		COMPLETE_WITH("SEQUENCE", "TABLE", "VIEW");
@@ -5059,7 +5074,7 @@ index 304e8c18d52..e23cb49c010 100644
  /* default selection for replica identity (primary key or nothing) */
  #define		  REPLICA_IDENTITY_DEFAULT	'd'
 diff --git a/src/include/catalog/pg_proc.dat b/src/include/catalog/pg_proc.dat
-index 62f36daa981..66d12b7b65f 100644
+index 7f1ee97f55c..67f6ea3ef62 100644
 --- a/src/include/catalog/pg_proc.dat
 +++ b/src/include/catalog/pg_proc.dat
 @@ -5735,6 +5735,40 @@
@@ -5253,7 +5268,7 @@ index e03692053ee..d948c0383b7 100644
 +
  #endif							/* PROCARRAY_H */
 diff --git a/src/include/utils/guc.h b/src/include/utils/guc.h
-index 6bb81707b09..4927edc2dec 100644
+index ea774968f07..264099cfc9b 100644
 --- a/src/include/utils/guc.h
 +++ b/src/include/utils/guc.h
 @@ -288,6 +288,9 @@ extern int	tcp_user_timeout;
@@ -5267,7 +5282,7 @@ index 6bb81707b09..4927edc2dec 100644
   * Functions exported by guc.c
   */
 diff --git a/src/include/utils/rel.h b/src/include/utils/rel.h
-index 6da1b220cdc..6455dfb7ae2 100644
+index 3b4ab65ae20..41d79809f5b 100644
 --- a/src/include/utils/rel.h
 +++ b/src/include/utils/rel.h
 @@ -57,7 +57,7 @@ typedef struct RelationData
