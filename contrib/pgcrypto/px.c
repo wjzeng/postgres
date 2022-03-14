@@ -50,12 +50,10 @@ static const struct error_desc px_err_list[] = {
 	{PXE_KEY_TOO_BIG, "Key was too big"},
 	{PXE_CIPHER_INIT, "Cipher cannot be initialized ?"},
 	{PXE_HASH_UNUSABLE_FOR_HMAC, "This hash algorithm is unusable for HMAC"},
-	{PXE_DEV_READ_ERROR, "Error reading from random device"},
 	{PXE_BUG, "pgcrypto bug"},
 	{PXE_ARGUMENT_ERROR, "Illegal argument to function"},
 	{PXE_UNKNOWN_SALT_ALGO, "Unknown salt algorithm"},
 	{PXE_BAD_SALT_ROUNDS, "Incorrect number of rounds"},
-	{PXE_MCRYPT_INTERNAL, "mcrypt internal error"},
 	{PXE_NO_RANDOM, "Failed to generate strong random bits"},
 	{PXE_DECRYPT_FAILED, "Decryption failed"},
 	{PXE_ENCRYPT_FAILED, "Encryption failed"},
@@ -200,7 +198,7 @@ combo_init(PX_Combo *cx, const uint8 *key, unsigned klen,
 		ivbuf = palloc0(ivs);
 		if (ivlen > ivs)
 			memcpy(ivbuf, iv, ivs);
-		else
+		else if (ivlen > 0)
 			memcpy(ivbuf, iv, ivlen);
 	}
 

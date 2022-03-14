@@ -36,7 +36,8 @@ PostgreSQL::Test::Cluster - class representing PostgreSQL server instance
   my ($stdout, $stderr, $timed_out);
   my $cmdret = $node->psql('postgres', 'SELECT pg_sleep(600)',
 	  stdout => \$stdout, stderr => \$stderr,
-	  timeout => 180, timed_out => \$timed_out,
+	  timeout => $PostgreSQL::Test::Utils::timeout_default,
+	  timed_out => \$timed_out,
 	  extra_params => ['--single-transaction'],
 	  on_error_die => 1)
   print "Sleep timed out" if $timed_out;
@@ -904,9 +905,7 @@ sub kill9
 	local %ENV = $self->_get_env();
 
 	print "### Killing node \"$name\" using signal 9\n";
-	# kill(9, ...) fails under msys Perl 5.8.8, so fall back on pg_ctl.
-	kill(9, $self->{_pid})
-	  or PostgreSQL::Test::Utils::system_or_bail('pg_ctl', 'kill', 'KILL', $self->{_pid});
+	kill(9, $self->{_pid});
 	$self->{_pid} = undef;
 	return;
 }
@@ -1076,7 +1075,7 @@ primary_conninfo='$root_connstr'
 sub enable_restoring
 {
 	my ($self, $root_node, $standby) = @_;
-	my $path = PostgreSQL::Test::Utils::perl2host($root_node->archive_dir);
+	my $path = $root_node->archive_dir;
 	my $name = $self->name;
 
 	print "### Enabling WAL restore for node \"$name\"\n";
@@ -1144,7 +1143,7 @@ sub set_standby_mode
 sub enable_archiving
 {
 	my ($self) = @_;
-	my $path   = PostgreSQL::Test::Utils::perl2host($self->archive_dir);
+	my $path   = $self->archive_dir;
 	my $name   = $self->name;
 
 	print "### Enabling WAL archiving for node \"$name\"\n";
@@ -1725,7 +1724,8 @@ e.g.
 	my ($stdout, $stderr, $timed_out);
 	my $cmdret = $node->psql('postgres', 'SELECT pg_sleep(600)',
 		stdout => \$stdout, stderr => \$stderr,
-		timeout => 180, timed_out => \$timed_out,
+		timeout => $PostgreSQL::Test::Utils::timeout_default,
+		timed_out => \$timed_out,
 		extra_params => ['--single-transaction'])
 
 will set $cmdret to undef and $timed_out to a true value.
@@ -1845,19 +1845,13 @@ sub psql
 		}
 	};
 
-	# Note: on Windows, IPC::Run seems to convert \r\n to \n in program output
-	# if we're using native Perl, but not if we're using MSys Perl.  So do it
-	# by hand in the latter case, here and elsewhere.
-
 	if (defined $$stdout)
 	{
-		$$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp $$stdout;
 	}
 
 	if (defined $$stderr)
 	{
-		$$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp $$stderr;
 	}
 
@@ -1905,7 +1899,8 @@ scalar reference.  This allows the caller to act on other parts of the system
 while idling this backend.
 
 The specified timer object is attached to the harness, as well.  It's caller's
-responsibility to select the timeout length, and to restart the timer after
+responsibility to set the timeout length (usually
+$PostgreSQL::Test::Utils::timeout_default), and to restart the timer after
 each command if the timeout is per-command.
 
 psql is invoked in tuples-only unaligned mode with reading of B<.psqlrc>
@@ -1993,9 +1988,10 @@ The process's stdin is sourced from the $stdin scalar reference,
 and its stdout and stderr go to the $stdout scalar reference.
 ptys are used so that psql thinks it's being called interactively.
 
-The specified timer object is attached to the harness, as well.
-It's caller's responsibility to select the timeout length, and to
-restart the timer after each command if the timeout is per-command.
+The specified timer object is attached to the harness, as well.  It's caller's
+responsibility to set the timeout length (usually
+$PostgreSQL::Test::Utils::timeout_default), and to restart the timer after
+each command if the timeout is per-command.
 
 psql is invoked in tuples-only unaligned mode with reading of B<.psqlrc>
 disabled.  That may be overridden by passing extra psql parameters.
@@ -2214,8 +2210,11 @@ sub connect_ok
 
 	if (defined($params{expected_stdout}))
 	{
-		like($stdout, $params{expected_stdout}, "$test_name: matches");
+		like($stdout, $params{expected_stdout}, "$test_name: stdout matches");
 	}
+
+	is($stderr, "", "$test_name: no stderr");
+
 	if (@log_like or @log_unlike)
 	{
 		my $log_contents = PostgreSQL::Test::Utils::slurp_file($self->logfile, $log_location);
@@ -2308,7 +2307,7 @@ sub connect_fails
 Run B<$query> repeatedly, until it returns the B<$expected> result
 ('t', or SQL boolean true, by default).
 Continues polling if B<psql> returns an error result.
-Times out after 180 seconds.
+Times out after $PostgreSQL::Test::Utils::timeout_default seconds.
 Returns 1 if successful, 0 if timed out.
 
 =cut
@@ -2326,7 +2325,7 @@ sub poll_query_until
 		'-d',                             $self->connstr($dbname)
 	];
 	my ($stdout, $stderr);
-	my $max_attempts = 180 * 10;
+	my $max_attempts = 10 * $PostgreSQL::Test::Utils::timeout_default;
 	my $attempts     = 0;
 
 	while ($attempts < $max_attempts)
@@ -2334,9 +2333,7 @@ sub poll_query_until
 		my $result = IPC::Run::run $cmd, '<', \$query,
 		  '>', \$stdout, '2>', \$stderr;
 
-		$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp($stdout);
-		$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp($stderr);
 
 		if ($stdout eq $expected && $stderr eq '')
@@ -2350,8 +2347,8 @@ sub poll_query_until
 		$attempts++;
 	}
 
-	# The query result didn't change in 180 seconds. Give up. Print the
-	# output from the last attempt, hopefully that's useful for debugging.
+	# Give up. Print the output from the last attempt, hopefully that's useful
+	# for debugging.
 	diag qq(poll_query_until timed out executing this query:
 $query
 expecting this output:
@@ -2664,7 +2661,7 @@ sub wait_for_slot_catchup
 
 Waits for the contents of the server log file, starting at the given offset, to
 match the supplied regular expression.  Checks the entire log if no offset is
-given.  Times out after 180 seconds.
+given.  Times out after $PostgreSQL::Test::Utils::timeout_default seconds.
 
 If successful, returns the length of the entire log file, in bytes.
 
@@ -2675,7 +2672,7 @@ sub wait_for_log
 	my ($self, $regexp, $offset) = @_;
 	$offset = 0 unless defined $offset;
 
-	my $max_attempts = 180 * 10;
+	my $max_attempts = 10 * $PostgreSQL::Test::Utils::timeout_default;
 	my $attempts     = 0;
 
 	while ($attempts < $max_attempts)
@@ -2690,7 +2687,6 @@ sub wait_for_log
 		$attempts++;
 	}
 
-	# The logs didn't match within 180 seconds. Give up.
 	croak "timed out waiting for match: $regexp";
 }
 
@@ -2845,9 +2841,6 @@ sub pg_recvlogical_upto
 			  unless wantarray;
 		}
 	};
-
-	$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
-	$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 
 	if (wantarray)
 	{

@@ -1849,9 +1849,8 @@ include_dir 'conf.d'
         operations can use.  The final limit is determined by
         multiplying <varname>work_mem</varname> by
         <varname>hash_mem_multiplier</varname>.  The default value is
-        1.0, which makes hash-based operations subject to the same
-        simple <varname>work_mem</varname> maximum as sort-based
-        operations.
+        2.0, which makes hash-based operations use twice the usual
+        <varname>work_mem</varname> base amount.
        </para>
        <para>
         Consider increasing <varname>hash_mem_multiplier</varname> in
@@ -1859,7 +1858,7 @@ include_dir 'conf.d'
         occurrence, especially when simply increasing
         <varname>work_mem</varname> results in memory pressure (memory
         pressure typically takes the form of intermittent out of
-        memory errors).  A setting of 1.5 or 2.0 may be effective with
+        memory errors).  The default setting of 2.0 is often effective with
         mixed workloads.  Higher settings in the range of 2.0 - 8.0 or
         more may be effective in environments where
         <varname>work_mem</varname> has already been increased to 40MB
@@ -3155,10 +3154,13 @@ include_dir 'conf.d'
         server compresses full page images written to WAL when
         <xref linkend="guc-full-page-writes"/> is on or during a base backup.
         A compressed page image will be decompressed during WAL replay.
-        The supported methods are <literal>pglz</literal> and
-        <literal>lz4</literal> (if <productname>PostgreSQL</productname> was
-        compiled with <option>--with-lz4</option>). The default value is
-        <literal>off</literal>. Only superusers can change this setting.
+        The supported methods are <literal>pglz</literal>,
+        <literal>lz4</literal> (if <productname>PostgreSQL</productname>
+        was compiled with <option>--with-lz4</option>) and
+        <literal>zstd</literal> (if <productname>PostgreSQL</productname>
+        was compiled with <option>--with-zstd</option>).
+        The default value is <literal>off</literal>.
+        Only superusers can change this setting.
        </para>
 
        <para>
@@ -4551,7 +4553,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        When Hot Standby is active, this parameter determines how long the
+        When hot standby is active, this parameter determines how long the
         standby server should wait before canceling standby queries that
         conflict with about-to-be-applied WAL entries, as described in
         <xref linkend="hot-standby-conflict"/>.
@@ -4583,7 +4585,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        When Hot Standby is active, this parameter determines how long the
+        When hot standby is active, this parameter determines how long the
         standby server should wait before canceling standby queries that
         conflict with about-to-be-applied WAL entries, as described in
         <xref linkend="hot-standby-conflict"/>.
@@ -7935,9 +7937,12 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         method is not acceptable.  In this case, in-core computation
         must be always disabled.
         Valid values are <literal>off</literal> (always disabled),
-        <literal>on</literal> (always enabled) and <literal>auto</literal>,
+        <literal>on</literal> (always enabled), <literal>auto</literal>,
         which lets modules such as <xref linkend="pgstatstatements"/>
-        automatically enable it.
+        automatically enable it, and <literal>regress</literal> which
+        has the same effect as <literal>auto</literal>, except that the
+        query identifier is hidden in the <literal>EXPLAIN</literal> output
+        to facilitate automated regression testing.
         The default is <literal>auto</literal>.
        </para>
        <note>
@@ -10885,7 +10890,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         Enables logging of recovery-related debugging output that otherwise
         would not be logged. This parameter allows the user to override the
         normal setting of <xref linkend="guc-log-min-messages"/>, but only for
-        specific messages. This is intended for use in debugging Hot Standby.
+        specific messages. This is intended for use in debugging hot standby.
         Valid values are <literal>DEBUG5</literal>, <literal>DEBUG4</literal>,
         <literal>DEBUG3</literal>, <literal>DEBUG2</literal>, <literal>DEBUG1</literal>, and
         <literal>LOG</literal>.  The default, <literal>LOG</literal>, does not affect

@@ -439,8 +439,7 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 			ereport(WARNING,
 					(errmsg("database \"%s\" has no actual collation version, but a version was recorded",
 							name)));
-
-		if (strcmp(actual_versionstr, collversionstr) != 0)
+		else if (strcmp(actual_versionstr, collversionstr) != 0)
 			ereport(WARNING,
 					(errmsg("database \"%s\" has a collation version mismatch",
 							name),
@@ -710,7 +709,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	/*
-	 * If this is either a bootstrap process nor a standalone backend, start
+	 * If this is either a bootstrap process or a standalone backend, start
 	 * up the XLOG machinery, and register to have it closed down at exit.
 	 * In other cases, the startup process is responsible for starting up
 	 * the XLOG machinery, and the checkpointer for closing it down.
@@ -1263,6 +1262,23 @@ ShutdownPostgres(int code, Datum arg)
 	 * them explicitly.
 	 */
 	LockReleaseAll(USER_LOCKMETHOD, true);
+
+	/*
+	 * temp debugging aid to analyze 019_replslot_limit failures
+	 *
+	 * If an error were thrown outside of a transaction nothing up to now
+	 * would have released lwlocks. We probably will add an
+	 * LWLockReleaseAll(). But for now make it easier to understand such cases
+	 * by warning if any lwlocks are held.
+	 */
+#ifdef USE_ASSERT_CHECKING
+	{
+		int held_lwlocks = LWLockHeldCount();
+		if (held_lwlocks)
+			elog(WARNING, "holding %d lwlocks at the end of ShutdownPostgres()",
+				 held_lwlocks);
+	}
+#endif
 }
 
 

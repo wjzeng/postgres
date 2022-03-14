@@ -91,15 +91,8 @@ my $walfile_to_be_archived = $node_standby->safe_psql('postgres',
 # Make WAL segment eligible for archival
 $node_standby->safe_psql('postgres', 'SELECT pg_switch_wal()');
 
-# Wait until the WAL segment has been archived.
-my $archive_wait_query =
-  "SELECT '$walfile_to_be_archived' <= last_archived_wal FROM pg_stat_archiver;";
-$node_standby->poll_query_until('postgres', $archive_wait_query)
-  or die "Timed out while waiting for WAL segment to be archived";
-my $last_archived_wal_file = $walfile_to_be_archived;
-
-# Ok, the standby has now archived the WAL on timeline 2.  We don't
-# need the standby anymore.
+# We don't need the standby anymore, request shutdown. The server will
+# finish archiving all the WAL on timeline 2 before it exits.
 $node_standby->stop;
 
 # Contents of the WAL archive at this point:
