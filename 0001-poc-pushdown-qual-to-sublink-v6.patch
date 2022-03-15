@@ -1,7 +1,7 @@
-From e9a070ca04c67a91234cd3b91f0b2f339db83c27 Mon Sep 17 00:00:00 2001
+From 9e509f7b37e3975cd5bee6fe9610cabfba40bc8a Mon Sep 17 00:00:00 2001
 From: "wenjing.zwj" <wenjing.zwj@alibaba-inc.com>
-Date: Thu, 15 Jul 2021 19:20:26 +0800
-Subject: [PATCH] poc pushdown qual to sublink v5
+Date: Tue, 15 Mar 2022 10:47:20 +0800
+Subject: [PATCH] pushdown qual to sublink
 
 ---
  src/backend/optimizer/path/allpaths.c         |  64 +++++
@@ -14,6 +14,7 @@ Subject: [PATCH] poc pushdown qual to sublink v5
  src/backend/optimizer/util/placeholder.c      |   5 +
  src/backend/utils/adt/ruleutils.c             |   3 +-
  src/backend/utils/misc/guc.c                  |  12 +
+ src/backend/utils/misc/postgresql.conf.sample |   1 +
  src/include/nodes/pathnodes.h                 |   4 +
  src/include/optimizer/paths.h                 |   8 +-
  src/include/optimizer/planmain.h              |  10 +-
@@ -25,12 +26,12 @@ Subject: [PATCH] poc pushdown qual to sublink v5
  src/test/regress/expected/subselect.out       |   2 +-
  src/test/regress/parallel_schedule            |   1 +
  .../regress/sql/qual_pushdown_to_sublink.sql  |  86 ++++++
- 21 files changed, 958 insertions(+), 50 deletions(-)
+ 22 files changed, 959 insertions(+), 50 deletions(-)
  create mode 100644 src/test/regress/expected/qual_pushdown_to_sublink.out
  create mode 100644 src/test/regress/sql/qual_pushdown_to_sublink.sql
 
 diff --git a/src/backend/optimizer/path/allpaths.c b/src/backend/optimizer/path/allpaths.c
-index 296dd75c1b6..22405bef5fc 100644
+index 169b1d53fc8..4c3c82d732e 100644
 --- a/src/backend/optimizer/path/allpaths.c
 +++ b/src/backend/optimizer/path/allpaths.c
 @@ -40,8 +40,10 @@
@@ -44,7 +45,7 @@ index 296dd75c1b6..22405bef5fc 100644
  #include "parser/parse_clause.h"
  #include "parser/parsetree.h"
  #include "partitioning/partbounds.h"
-@@ -3895,6 +3897,68 @@ generate_partitionwise_join_paths(PlannerInfo *root, RelOptInfo *rel)
+@@ -3962,6 +3964,68 @@ generate_partitionwise_join_paths(PlannerInfo *root, RelOptInfo *rel)
  	list_free(live_children);
  }
  
@@ -114,7 +115,7 @@ index 296dd75c1b6..22405bef5fc 100644
  /*****************************************************************************
   *			DEBUG SUPPORT
 diff --git a/src/backend/optimizer/path/equivclass.c b/src/backend/optimizer/path/equivclass.c
-index 6f1abbe47d6..bc8cea7fa24 100644
+index 8c6770de972..b224a3958b7 100644
 --- a/src/backend/optimizer/path/equivclass.c
 +++ b/src/backend/optimizer/path/equivclass.c
 @@ -388,6 +388,7 @@ process_equivalence(PlannerInfo *root,
@@ -170,7 +171,7 @@ index 6f1abbe47d6..bc8cea7fa24 100644
  	}
  }
 diff --git a/src/backend/optimizer/plan/initsplan.c b/src/backend/optimizer/plan/initsplan.c
-index f6a202d900f..2548e39e842 100644
+index 023efbaf092..0865532cdbc 100644
 --- a/src/backend/optimizer/plan/initsplan.c
 +++ b/src/backend/optimizer/plan/initsplan.c
 @@ -30,10 +30,12 @@
@@ -425,7 +426,7 @@ index f6a202d900f..2548e39e842 100644
 +	return (void *)sublink_info;
 +}
 diff --git a/src/backend/optimizer/plan/planagg.c b/src/backend/optimizer/plan/planagg.c
-index c1634d16669..897903d7e05 100644
+index 9330908cbf1..4ea75ff0dfb 100644
 --- a/src/backend/optimizer/plan/planagg.c
 +++ b/src/backend/optimizer/plan/planagg.c
 @@ -49,7 +49,7 @@
@@ -498,7 +499,7 @@ index c1634d16669..897903d7e05 100644
  	/*----------
  	 * Generate modified query of the form
 diff --git a/src/backend/optimizer/plan/planmain.c b/src/backend/optimizer/plan/planmain.c
-index 273ac0acf7e..7042c96b09b 100644
+index c92ddd27ed1..1e628772885 100644
 --- a/src/backend/optimizer/plan/planmain.c
 +++ b/src/backend/optimizer/plan/planmain.c
 @@ -102,6 +102,8 @@ query_planner(PlannerInfo *root,
@@ -520,7 +521,7 @@ index 273ac0acf7e..7042c96b09b 100644
  	 * We have completed merging equivalence sets, so it's now possible to
  	 * generate pathkeys in canonical form; so compute query_pathkeys and
 diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index bd01ec0526f..1924cbe0246 100644
+index bd09f85aea1..ccb249a6f46 100644
 --- a/src/backend/optimizer/plan/planner.c
 +++ b/src/backend/optimizer/plan/planner.c
 @@ -64,6 +64,7 @@
@@ -669,7 +670,7 @@ index bd01ec0526f..1924cbe0246 100644
  		/*
  		 * Figure out whether there's a hard limit on the number of rows that
 diff --git a/src/backend/optimizer/plan/subselect.c b/src/backend/optimizer/plan/subselect.c
-index c9f7a09d102..edd407740ea 100644
+index 41bd1ae7d44..b5146d8f4ff 100644
 --- a/src/backend/optimizer/plan/subselect.c
 +++ b/src/backend/optimizer/plan/subselect.c
 @@ -32,11 +32,13 @@
@@ -884,7 +885,7 @@ index c9f7a09d102..edd407740ea 100644
  
  		foreach(l, ((BoolExpr *) node)->args)
  		{
-@@ -2989,3 +3051,184 @@ SS_make_initplan_from_plan(PlannerInfo *root,
+@@ -2991,3 +3053,184 @@ SS_make_initplan_from_plan(PlannerInfo *root,
  	/* Set costs of SubPlan using info from the plan tree */
  	cost_subplan(subroot, node, plan);
  }
@@ -1070,7 +1071,7 @@ index c9f7a09d102..edd407740ea 100644
 +	return expression_tree_walker(node, equal_expr_analyze_walker, context);
 +}
 diff --git a/src/backend/optimizer/util/placeholder.c b/src/backend/optimizer/util/placeholder.c
-index 1c4202d864c..0e11ed22522 100644
+index 3b0f0584f01..4074e3997d7 100644
 --- a/src/backend/optimizer/util/placeholder.c
 +++ b/src/backend/optimizer/util/placeholder.c
 @@ -22,6 +22,7 @@
@@ -1093,7 +1094,7 @@ index 1c4202d864c..0e11ed22522 100644
  
  	phinfo->phid = phv->phid;
 diff --git a/src/backend/utils/adt/ruleutils.c b/src/backend/utils/adt/ruleutils.c
-index 8da525c715b..f847e898e68 100644
+index b16526e65e9..b8ffebfb8b5 100644
 --- a/src/backend/utils/adt/ruleutils.c
 +++ b/src/backend/utils/adt/ruleutils.c
 @@ -429,7 +429,6 @@ static void resolve_special_varno(Node *node, deparse_context *context,
@@ -1104,7 +1105,7 @@ index 8da525c715b..f847e898e68 100644
  static bool isSimpleNode(Node *node, Node *parentNode, int prettyFlags);
  static void appendContextKeyword(deparse_context *context, const char *str,
  								 int indentBefore, int indentAfter, int indentPlus);
-@@ -7983,7 +7982,7 @@ get_parameter(Param *param, deparse_context *context)
+@@ -8036,7 +8035,7 @@ get_parameter(Param *param, deparse_context *context)
   * helper function for isSimpleNode
   * will return single char binary operator name, or NULL if it's not
   */
@@ -1114,10 +1115,10 @@ index 8da525c715b..f847e898e68 100644
  {
  	List	   *args = expr->args;
 diff --git a/src/backend/utils/misc/guc.c b/src/backend/utils/misc/guc.c
-index 7b030463013..cd4f6fd51b4 100644
+index e7f0a380e60..74d1f759869 100644
 --- a/src/backend/utils/misc/guc.c
 +++ b/src/backend/utils/misc/guc.c
-@@ -684,6 +684,7 @@ static char *recovery_target_lsn_string;
+@@ -690,6 +690,7 @@ static char *recovery_target_lsn_string;
  /* should be static, but commands/variable.c needs to get at this */
  char	   *role_string;
  
@@ -1125,7 +1126,7 @@ index 7b030463013..cd4f6fd51b4 100644
  
  /*
   * Displayable names for context types (enum GucContext)
-@@ -973,6 +974,17 @@ static const unit_conversion time_unit_conversion_table[] =
+@@ -979,6 +980,17 @@ static const unit_conversion time_unit_conversion_table[] =
  
  static struct config_bool ConfigureNamesBool[] =
  {
@@ -1143,8 +1144,20 @@ index 7b030463013..cd4f6fd51b4 100644
  	{
  		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
  			gettext_noop("Enables the planner's use of sequential-scan plans."),
+diff --git a/src/backend/utils/misc/postgresql.conf.sample b/src/backend/utils/misc/postgresql.conf.sample
+index 4cf5b26a363..96bf3f0cf3a 100644
+--- a/src/backend/utils/misc/postgresql.conf.sample
++++ b/src/backend/utils/misc/postgresql.conf.sample
+@@ -427,6 +427,7 @@
+ #plan_cache_mode = auto			# auto, force_generic_plan or
+ 					# force_custom_plan
+ 
++#lazy_process_sublink = true
+ 
+ #------------------------------------------------------------------------------
+ # REPORTING AND LOGGING
 diff --git a/src/include/nodes/pathnodes.h b/src/include/nodes/pathnodes.h
-index 324d92880b5..fd8f6c995d6 100644
+index 1f3845b3fec..04ae0aa70e5 100644
 --- a/src/include/nodes/pathnodes.h
 +++ b/src/include/nodes/pathnodes.h
 @@ -377,6 +377,9 @@ struct PlannerInfo
@@ -1157,7 +1170,7 @@ index 324d92880b5..fd8f6c995d6 100644
  };
  
  
-@@ -995,6 +998,7 @@ typedef struct EquivalenceClass
+@@ -996,6 +999,7 @@ typedef struct EquivalenceClass
  	bool		ec_has_volatile;	/* the (sole) member is a volatile expr */
  	bool		ec_below_outer_join;	/* equivalence applies below an OJ */
  	bool		ec_broken;		/* failed to generate needed clauses? */
@@ -1166,7 +1179,7 @@ index 324d92880b5..fd8f6c995d6 100644
  	Index		ec_min_security;	/* minimum security_level in ec_sources */
  	Index		ec_max_security;	/* maximum security_level in ec_sources */
 diff --git a/src/include/optimizer/paths.h b/src/include/optimizer/paths.h
-index f1d111063c2..425b5c68131 100644
+index 0c3a0b90c85..1d6b2784c22 100644
 --- a/src/include/optimizer/paths.h
 +++ b/src/include/optimizer/paths.h
 @@ -25,6 +25,12 @@ extern PGDLLIMPORT int geqo_threshold;
@@ -1192,7 +1205,7 @@ index f1d111063c2..425b5c68131 100644
  extern void debug_print_rel(PlannerInfo *root, RelOptInfo *rel);
  #endif
 diff --git a/src/include/optimizer/planmain.h b/src/include/optimizer/planmain.h
-index bf1adfc52ac..784dfbfc42e 100644
+index 54a0d4c188d..7decb5b84d5 100644
 --- a/src/include/optimizer/planmain.h
 +++ b/src/include/optimizer/planmain.h
 @@ -28,12 +28,13 @@ typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
@@ -1231,7 +1244,7 @@ index bf1adfc52ac..784dfbfc42e 100644
  /*
   * prototypes for plan/analyzejoins.c
 diff --git a/src/include/optimizer/subselect.h b/src/include/optimizer/subselect.h
-index 059bdf941ef..396c4c6117e 100644
+index 456d3076e04..d17e5ee51e1 100644
 --- a/src/include/optimizer/subselect.h
 +++ b/src/include/optimizer/subselect.h
 @@ -25,7 +25,7 @@ extern JoinExpr *convert_EXISTS_sublink_to_join(PlannerInfo *root,
@@ -1252,7 +1265,7 @@ index 059bdf941ef..396c4c6117e 100644
  
  #endif							/* SUBSELECT_H */
 diff --git a/src/include/utils/guc.h b/src/include/utils/guc.h
-index aa18d304ac0..92bfc1b806e 100644
+index ea774968f07..1915b81b0e1 100644
 --- a/src/include/utils/guc.h
 +++ b/src/include/utils/guc.h
 @@ -288,6 +288,8 @@ extern int	tcp_user_timeout;
@@ -1265,7 +1278,7 @@ index aa18d304ac0..92bfc1b806e 100644
   * Functions exported by guc.c
   */
 diff --git a/src/include/utils/ruleutils.h b/src/include/utils/ruleutils.h
-index d333e5e8a56..d4ccca3fe3c 100644
+index e8090c96d73..d9db3f397ad 100644
 --- a/src/include/utils/ruleutils.h
 +++ b/src/include/utils/ruleutils.h
 @@ -42,5 +42,6 @@ extern char *generate_opclass_name(Oid opclass);
@@ -1276,10 +1289,10 @@ index d333e5e8a56..d4ccca3fe3c 100644
  
  #endif							/* RULEUTILS_H */
 diff --git a/src/test/regress/expected/join_hash.out b/src/test/regress/expected/join_hash.out
-index 3a91c144a27..232ee6d15a1 100644
+index 3ec07bc1af4..e9e40d71f08 100644
 --- a/src/test/regress/expected/join_hash.out
 +++ b/src/test/regress/expected/join_hash.out
-@@ -926,9 +926,9 @@ WHERE
+@@ -944,9 +944,9 @@ WHERE
             ->  Result
                   Output: (hjtest_1.b * 5)
     ->  Hash
@@ -1291,7 +1304,7 @@ index 3a91c144a27..232ee6d15a1 100644
                 Filter: ((SubPlan 5) < 55)
                 SubPlan 5
                   ->  Result
-@@ -974,7 +974,7 @@ WHERE
+@@ -992,7 +992,7 @@ WHERE
     Hash Cond: (((SubPlan 1) = hjtest_1.id) AND ((SubPlan 3) = (SubPlan 2)))
     Join Filter: (hjtest_1.a <> hjtest_2.b)
     ->  Seq Scan on public.hjtest_2
@@ -1528,10 +1541,10 @@ index 00000000000..b4d68ac3a12
 +DROP SCHEMA test_push_qual_to_sublink CASCADE;
 +NOTICE:  drop cascades to table ab
 diff --git a/src/test/regress/expected/subselect.out b/src/test/regress/expected/subselect.out
-index 4e8ddc70613..2df4d6e15b5 100644
+index 45c75eecc5f..0099f65985b 100644
 --- a/src/test/regress/expected/subselect.out
 +++ b/src/test/regress/expected/subselect.out
-@@ -1063,7 +1063,7 @@ where o.ten = 0;
+@@ -1086,7 +1086,7 @@ where o.ten = 0;
                 SubPlan 1
                   ->  Seq Scan on public.int4_tbl
                         Output: int4_tbl.f1
@@ -1541,10 +1554,10 @@ index 4e8ddc70613..2df4d6e15b5 100644
  
  select sum(ss.tst::int) from
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 5b0c73d7e37..3060801f2f1 100644
+index 6d8f524ae9e..58c2c0cd5a3 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
-@@ -134,3 +134,4 @@ test: fast_default
+@@ -135,3 +135,4 @@ test: fast_default
  
  # run stats by itself because its delay may be insufficient under heavy load
  test: stats
