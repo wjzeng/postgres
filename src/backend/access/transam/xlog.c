@@ -66,6 +66,7 @@
 #include "catalog/pg_control.h"
 #include "catalog/pg_database.h"
 #include "common/controldata_utils.h"
+#include "common/file_utils.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
@@ -5869,7 +5870,7 @@ GetRedoRecPtr(void)
  * full-page image to be included in the WAL record.
  *
  * The returned values are cached copies from backend-private memory, and
- * possibly out-of-date or, indeed, uninitalized, in which case they will
+ * possibly out-of-date or, indeed, uninitialized, in which case they will
  * be InvalidXLogRecPtr and false, respectively.  XLogInsertRecord will
  * re-check them against up-to-date values, while holding the WAL insert lock.
  */
@@ -8291,6 +8292,19 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 				continue;
 
 			snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
+
+			/*
+			 * Skip anything that isn't a symlink/junction.  For testing only,
+			 * we sometimes use allow_in_place_tablespaces to create
+			 * directories directly under pg_tblspc, which would fail below.
+			 */
+#ifdef WIN32
+			if (!pgwin32_is_junction(fullpath))
+				continue;
+#else
+			if (get_dirent_type(fullpath, de, false, ERROR) != PGFILETYPE_LNK)
+				continue;
+#endif
 
 #if defined(HAVE_READLINK) || defined(WIN32)
 			rllen = readlink(fullpath, linkpath, sizeof(linkpath));
