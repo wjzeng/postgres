@@ -402,6 +402,24 @@ do { \
 	matches = rl_completion_matches(text, complete_from_schema_query); \
 } while (0)
 
+/*
+ * Timezone completion is mostly like enum label completion, but we work
+ * a little harder since this is a more common use-case.
+ */
+#define COMPLETE_WITH_TIMEZONE_NAME() \
+do { \
+	static const char *const list[] = { "DEFAULT", NULL }; \
+	if (text[0] == '\'') \
+		completion_charp = Query_for_list_of_timezone_names_quoted_in; \
+	else if (start == 0 || rl_line_buffer[start - 1] != '\'') \
+		completion_charp = Query_for_list_of_timezone_names_quoted_out; \
+	else \
+		completion_charp = Query_for_list_of_timezone_names_unquoted; \
+	completion_charpp = list;							  \
+	completion_verbatim = true; \
+	matches = rl_completion_matches(text, complete_from_query); \
+} while (0)
+
 #define COMPLETE_WITH_FUNCTION_ARG(function) \
 do { \
 	set_completion_reference(function); \
@@ -1104,6 +1122,21 @@ static const SchemaQuery Query_for_trigger_of_table = {
 " SELECT name "\
 "   FROM pg_catalog.pg_cursors "\
 "  WHERE name LIKE '%s'"
+
+#define Query_for_list_of_timezone_names_unquoted \
+" SELECT name "\
+"   FROM pg_catalog.pg_timezone_names() "\
+"  WHERE pg_catalog.lower(name) LIKE pg_catalog.lower('%s')"
+
+#define Query_for_list_of_timezone_names_quoted_out \
+"SELECT pg_catalog.quote_literal(name) AS name "\
+"  FROM pg_catalog.pg_timezone_names() "\
+" WHERE pg_catalog.lower(name) LIKE pg_catalog.lower('%s')"
+
+#define Query_for_list_of_timezone_names_quoted_in \
+"SELECT pg_catalog.quote_literal(name) AS name "\
+"  FROM pg_catalog.pg_timezone_names() "\
+" WHERE pg_catalog.quote_literal(pg_catalog.lower(name)) LIKE pg_catalog.lower('%s')"
 
 /*
  * These object types were introduced later than our support cutoff of
@@ -1819,7 +1852,7 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER SUBSCRIPTION <name> */
 	else if (Matches("ALTER", "SUBSCRIPTION", MatchAny))
 		COMPLETE_WITH("CONNECTION", "ENABLE", "DISABLE", "OWNER TO",
-					  "RENAME TO", "REFRESH PUBLICATION", "SET",
+					  "RENAME TO", "REFRESH PUBLICATION", "SET", "SKIP (",
 					  "ADD PUBLICATION", "DROP PUBLICATION");
 	/* ALTER SUBSCRIPTION <name> REFRESH PUBLICATION */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) &&
@@ -1835,6 +1868,9 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER SUBSCRIPTION <name> SET ( */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SET", "("))
 		COMPLETE_WITH("binary", "slot_name", "streaming", "synchronous_commit", "disable_on_error");
+	/* ALTER SUBSCRIPTION <name> SKIP ( */
+	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SKIP", "("))
+		COMPLETE_WITH("lsn");
 	/* ALTER SUBSCRIPTION <name> SET PUBLICATION */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SET", "PUBLICATION"))
 	{
@@ -2124,7 +2160,11 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("TO");
 	/* ALTER MATERIALIZED VIEW xxx SET */
 	else if (Matches("ALTER", "MATERIALIZED", "VIEW", MatchAny, "SET"))
-		COMPLETE_WITH("(", "SCHEMA", "TABLESPACE", "WITHOUT CLUSTER");
+		COMPLETE_WITH("(", "ACCESS METHOD", "SCHEMA", "TABLESPACE", "WITHOUT CLUSTER");
+	/* ALTER MATERIALIZED VIEW xxx SET ACCESS METHOD */
+	else if (Matches("ALTER", "MATERIALIZED", "VIEW", MatchAny, "SET", "ACCESS", "METHOD"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_table_access_methods);
+
 	/* ALTER POLICY <name> */
 	else if (Matches("ALTER", "POLICY"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_policies);
@@ -4172,6 +4212,8 @@ psql_completion(const char *text, int start, int end)
 									 " AND nspname NOT LIKE E'pg\\\\_temp%%'",
 									 "DEFAULT");
 		}
+		else if (TailMatches("TimeZone", "TO|="))
+			COMPLETE_WITH_TIMEZONE_NAME();
 		else
 		{
 			/* generic, type based, GUC support */

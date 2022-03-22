@@ -533,6 +533,7 @@ DeadLockState
 DeallocateStmt
 DeclareCursorStmt
 DecodedBkpBlock
+DecodedXLogRecord
 DecodingOutputState
 DefElem
 DefElemAction
@@ -1916,6 +1917,8 @@ PgFdwScanState
 PgIfAddrCallback
 PgStat_ArchiverStats
 PgStat_BackendFunctionEntry
+PgStat_BgWriterStats
+PgStat_CheckpointerStats
 PgStat_Counter
 PgStat_FunctionCallUsage
 PgStat_FunctionCounts
@@ -1927,6 +1930,7 @@ PgStat_MsgAnlAncestors
 PgStat_MsgArchiver
 PgStat_MsgAutovacStart
 PgStat_MsgBgWriter
+PgStat_MsgCheckpointer
 PgStat_MsgChecksumFailure
 PgStat_MsgConnect
 PgStat_MsgDeadlock
@@ -2941,6 +2945,7 @@ XLogPageHeader
 XLogPageHeaderData
 XLogPageReadCB
 XLogPageReadPrivate
+XLogPageReadResult
 XLogReaderRoutine
 XLogReaderState
 XLogRecData
