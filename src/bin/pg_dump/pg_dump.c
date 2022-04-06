@@ -3814,10 +3814,12 @@ getPublications(Archive *fout, int *numPublications)
 	int			i_pubname;
 	int			i_pubowner;
 	int			i_puballtables;
+	int			i_puballsequences;
 	int			i_pubinsert;
 	int			i_pubupdate;
 	int			i_pubdelete;
 	int			i_pubtruncate;
+	int			i_pubsequence;
 	int			i_pubviaroot;
 	int			i,
 				ntups;
@@ -3833,23 +3835,29 @@ getPublications(Archive *fout, int *numPublications)
 	resetPQExpBuffer(query);
 
 	/* Get the publications. */
-	if (fout->remoteVersion >= 130000)
+	if (fout->remoteVersion >= 150000)
 		appendPQExpBuffer(query,
 						  "SELECT p.tableoid, p.oid, p.pubname, "
 						  "p.pubowner, "
-						  "p.puballtables, p.pubinsert, p.pubupdate, p.pubdelete, p.pubtruncate, p.pubviaroot "
+						  "p.puballtables, p.puballsequences, p.pubinsert, p.pubupdate, p.pubdelete, p.pubtruncate, p.pubsequence, p.pubviaroot "
+						  "FROM pg_publication p");
+	else if (fout->remoteVersion >= 130000)
+		appendPQExpBuffer(query,
+						  "SELECT p.tableoid, p.oid, p.pubname, "
+						  "p.pubowner, "
+						  "p.puballtables, false AS puballsequences, p.pubinsert, p.pubupdate, p.pubdelete, p.pubtruncate, false AS pubsequence, p.pubviaroot "
 						  "FROM pg_publication p");
 	else if (fout->remoteVersion >= 110000)
 		appendPQExpBuffer(query,
 						  "SELECT p.tableoid, p.oid, p.pubname, "
 						  "p.pubowner, "
-						  "p.puballtables, p.pubinsert, p.pubupdate, p.pubdelete, p.pubtruncate, false AS pubviaroot "
+						  "p.puballtables, false AS puballsequences, p.pubinsert, p.pubupdate, p.pubdelete, p.pubtruncate, false AS pubsequence, false AS pubviaroot "
 						  "FROM pg_publication p");
 	else
 		appendPQExpBuffer(query,
 						  "SELECT p.tableoid, p.oid, p.pubname, "
 						  "p.pubowner, "
-						  "p.puballtables, p.pubinsert, p.pubupdate, p.pubdelete, false AS pubtruncate, false AS pubviaroot "
+						  "p.puballtables, false AS puballsequences, p.pubinsert, p.pubupdate, p.pubdelete, false AS pubtruncate, false AS pubsequence, false AS pubviaroot "
 						  "FROM pg_publication p");
 
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
@@ -3861,10 +3869,12 @@ getPublications(Archive *fout, int *numPublications)
 	i_pubname = PQfnumber(res, "pubname");
 	i_pubowner = PQfnumber(res, "pubowner");
 	i_puballtables = PQfnumber(res, "puballtables");
+	i_puballsequences = PQfnumber(res, "puballsequences");
 	i_pubinsert = PQfnumber(res, "pubinsert");
 	i_pubupdate = PQfnumber(res, "pubupdate");
 	i_pubdelete = PQfnumber(res, "pubdelete");
 	i_pubtruncate = PQfnumber(res, "pubtruncate");
+	i_pubsequence = PQfnumber(res, "pubsequence");
 	i_pubviaroot = PQfnumber(res, "pubviaroot");
 
 	pubinfo = pg_malloc(ntups * sizeof(PublicationInfo));
@@ -3880,6 +3890,8 @@ getPublications(Archive *fout, int *numPublications)
 		pubinfo[i].rolname = getRoleName(PQgetvalue(res, i, i_pubowner));
 		pubinfo[i].puballtables =
 			(strcmp(PQgetvalue(res, i, i_puballtables), "t") == 0);
+		pubinfo[i].puballsequences =
+			(strcmp(PQgetvalue(res, i, i_puballsequences), "t") == 0);
 		pubinfo[i].pubinsert =
 			(strcmp(PQgetvalue(res, i, i_pubinsert), "t") == 0);
 		pubinfo[i].pubupdate =
@@ -3888,6 +3900,8 @@ getPublications(Archive *fout, int *numPublications)
 			(strcmp(PQgetvalue(res, i, i_pubdelete), "t") == 0);
 		pubinfo[i].pubtruncate =
 			(strcmp(PQgetvalue(res, i, i_pubtruncate), "t") == 0);
+		pubinfo[i].pubsequence =
+			(strcmp(PQgetvalue(res, i, i_pubsequence), "t") == 0);
 		pubinfo[i].pubviaroot =
 			(strcmp(PQgetvalue(res, i, i_pubviaroot), "t") == 0);
 
@@ -3933,6 +3947,9 @@ dumpPublication(Archive *fout, const PublicationInfo *pubinfo)
 	if (pubinfo->puballtables)
 		appendPQExpBufferStr(query, " FOR ALL TABLES");
 
+	if (pubinfo->puballsequences)
+		appendPQExpBufferStr(query, " FOR ALL SEQUENCES");
+
 	appendPQExpBufferStr(query, " WITH (publish = '");
 	if (pubinfo->pubinsert)
 	{
@@ -3964,6 +3981,15 @@ dumpPublication(Archive *fout, const PublicationInfo *pubinfo)
 			appendPQExpBufferStr(query, ", ");
 
 		appendPQExpBufferStr(query, "truncate");
+		first = false;
+	}
+
+	if (pubinfo->pubsequence)
+	{
+		if (!first)
+			appendPQExpBufferStr(query, ", ");
+
+		appendPQExpBufferStr(query, "sequence");
 		first = false;
 	}
 
@@ -4013,6 +4039,7 @@ getPublicationNamespaces(Archive *fout)
 	int			i_oid;
 	int			i_pnpubid;
 	int			i_pnnspid;
+	int			i_pntype;
 	int			i,
 				j,
 				ntups;
@@ -4024,7 +4051,7 @@ getPublicationNamespaces(Archive *fout)
 
 	/* Collect all publication membership info. */
 	appendPQExpBufferStr(query,
-						 "SELECT tableoid, oid, pnpubid, pnnspid "
+						 "SELECT tableoid, oid, pnpubid, pnnspid, pntype "
 						 "FROM pg_catalog.pg_publication_namespace");
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
@@ -4034,6 +4061,7 @@ getPublicationNamespaces(Archive *fout)
 	i_oid = PQfnumber(res, "oid");
 	i_pnpubid = PQfnumber(res, "pnpubid");
 	i_pnnspid = PQfnumber(res, "pnnspid");
+	i_pntype = PQfnumber(res, "pntype");
 
 	/* this allocation may be more than we need */
 	pubsinfo = pg_malloc(ntups * sizeof(PublicationSchemaInfo));
@@ -4043,6 +4071,7 @@ getPublicationNamespaces(Archive *fout)
 	{
 		Oid			pnpubid = atooid(PQgetvalue(res, i, i_pnpubid));
 		Oid			pnnspid = atooid(PQgetvalue(res, i, i_pnnspid));
+		char		pntype = PQgetvalue(res, i, i_pntype)[0];
 		PublicationInfo *pubinfo;
 		NamespaceInfo *nspinfo;
 
@@ -4074,6 +4103,7 @@ getPublicationNamespaces(Archive *fout)
 		pubsinfo[j].dobj.name = nspinfo->dobj.name;
 		pubsinfo[j].publication = pubinfo;
 		pubsinfo[j].pubschema = nspinfo;
+		pubsinfo[j].pubtype = pntype;
 
 		/* Decide whether we want to dump it */
 		selectDumpablePublicationObject(&(pubsinfo[j].dobj), fout);
@@ -4101,6 +4131,7 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 	int			i_prpubid;
 	int			i_prrelid;
 	int			i_prrelqual;
+	int			i_prattrs;
 	int			i,
 				j,
 				ntups;
@@ -4114,12 +4145,20 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 	if (fout->remoteVersion >= 150000)
 		appendPQExpBufferStr(query,
 							 "SELECT tableoid, oid, prpubid, prrelid, "
-							 "pg_catalog.pg_get_expr(prqual, prrelid) AS prrelqual "
-							 "FROM pg_catalog.pg_publication_rel");
+							 "pg_catalog.pg_get_expr(prqual, prrelid) AS prrelqual, "
+							 "(CASE\n"
+							 "  WHEN pr.prattrs IS NOT NULL THEN\n"
+							 "    (SELECT array_agg(attname)\n"
+							 "       FROM\n"
+							 "         pg_catalog.generate_series(0, pg_catalog.array_upper(pr.prattrs::pg_catalog.int2[], 1)) s,\n"
+							 "         pg_catalog.pg_attribute\n"
+							 "      WHERE attrelid = pr.prrelid AND attnum = prattrs[s])\n"
+							 "  ELSE NULL END) prattrs "
+							 "FROM pg_catalog.pg_publication_rel pr");
 	else
 		appendPQExpBufferStr(query,
 							 "SELECT tableoid, oid, prpubid, prrelid, "
-							 "NULL AS prrelqual "
+							 "NULL AS prrelqual, NULL AS prattrs "
 							 "FROM pg_catalog.pg_publication_rel");
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
@@ -4130,6 +4169,7 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_prpubid = PQfnumber(res, "prpubid");
 	i_prrelid = PQfnumber(res, "prrelid");
 	i_prrelqual = PQfnumber(res, "prrelqual");
+	i_prattrs = PQfnumber(res, "prattrs");
 
 	/* this allocation may be more than we need */
 	pubrinfo = pg_malloc(ntups * sizeof(PublicationRelInfo));
@@ -4175,6 +4215,28 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 		else
 			pubrinfo[j].pubrelqual = pg_strdup(PQgetvalue(res, i, i_prrelqual));
 
+		if (!PQgetisnull(res, i, i_prattrs))
+		{
+			char	  **attnames;
+			int			nattnames;
+			PQExpBuffer attribs;
+
+			if (!parsePGArray(PQgetvalue(res, i, i_prattrs),
+							  &attnames, &nattnames))
+				fatal("could not parse %s array", "prattrs");
+			attribs = createPQExpBuffer();
+			for (int k = 0; k < nattnames; k++)
+			{
+				if (k > 0)
+					appendPQExpBufferStr(attribs, ", ");
+
+				appendPQExpBufferStr(attribs, fmtId(attnames[k]));
+			}
+			pubrinfo[j].pubrattrs = attribs->data;
+		}
+		else
+			pubrinfo[j].pubrattrs = NULL;
+
 		/* Decide whether we want to dump it */
 		selectDumpablePublicationObject(&(pubrinfo[j].dobj), fout);
 
@@ -4207,7 +4269,11 @@ dumpPublicationNamespace(Archive *fout, const PublicationSchemaInfo *pubsinfo)
 	query = createPQExpBuffer();
 
 	appendPQExpBuffer(query, "ALTER PUBLICATION %s ", fmtId(pubinfo->dobj.name));
-	appendPQExpBuffer(query, "ADD ALL TABLES IN SCHEMA %s;\n", fmtId(schemainfo->dobj.name));
+
+	if (pubsinfo->pubtype == 't')
+		appendPQExpBuffer(query, "ADD ALL TABLES IN SCHEMA %s;\n", fmtId(schemainfo->dobj.name));
+	else
+		appendPQExpBuffer(query, "ADD ALL SEQUENCES IN SCHEMA %s;\n", fmtId(schemainfo->dobj.name));
 
 	/*
 	 * There is no point in creating drop query as the drop is done by schema
@@ -4240,6 +4306,7 @@ dumpPublicationTable(Archive *fout, const PublicationRelInfo *pubrinfo)
 	TableInfo  *tbinfo = pubrinfo->pubtable;
 	PQExpBuffer query;
 	char	   *tag;
+	char	   *description;
 
 	/* Do nothing in data-only dump */
 	if (dopt->dataOnly)
@@ -4249,10 +4316,25 @@ dumpPublicationTable(Archive *fout, const PublicationRelInfo *pubrinfo)
 
 	query = createPQExpBuffer();
 
-	appendPQExpBuffer(query, "ALTER PUBLICATION %s ADD TABLE ONLY",
-					  fmtId(pubinfo->dobj.name));
+	if (tbinfo->relkind == RELKIND_SEQUENCE)
+	{
+		appendPQExpBuffer(query, "ALTER PUBLICATION %s ADD SEQUENCE",
+						  fmtId(pubinfo->dobj.name));
+		description = "PUBLICATION SEQUENCE";
+	}
+	else
+	{
+		appendPQExpBuffer(query, "ALTER PUBLICATION %s ADD TABLE ONLY",
+						  fmtId(pubinfo->dobj.name));
+		description = "PUBLICATION TABLE";
+	}
+
 	appendPQExpBuffer(query, " %s",
 					  fmtQualifiedDumpable(tbinfo));
+
+	if (pubrinfo->pubrattrs)
+		appendPQExpBuffer(query, " (%s)", pubrinfo->pubrattrs);
+
 	if (pubrinfo->pubrelqual)
 	{
 		/*
@@ -4275,7 +4357,7 @@ dumpPublicationTable(Archive *fout, const PublicationRelInfo *pubrinfo)
 					 ARCHIVE_OPTS(.tag = tag,
 								  .namespace = tbinfo->dobj.namespace->dobj.name,
 								  .owner = pubinfo->rolname,
-								  .description = "PUBLICATION TABLE",
+								  .description = description,
 								  .section = SECTION_POST_DATA,
 								  .createStmt = query->data));
 

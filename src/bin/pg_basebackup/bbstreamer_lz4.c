@@ -67,13 +67,12 @@ const bbstreamer_ops bbstreamer_lz4_decompressor_ops = {
  * blocks.
  */
 bbstreamer *
-bbstreamer_lz4_compressor_new(bbstreamer *next, int compresslevel)
+bbstreamer_lz4_compressor_new(bbstreamer *next, bc_specification *compress)
 {
 #ifdef USE_LZ4
 	bbstreamer_lz4_frame   *streamer;
 	LZ4F_errorCode_t		ctxError;
 	LZ4F_preferences_t	   *prefs;
-	size_t					compressed_bound;
 
 	Assert(next != NULL);
 
@@ -89,18 +88,8 @@ bbstreamer_lz4_compressor_new(bbstreamer *next, int compresslevel)
 	prefs = &streamer->prefs;
 	memset(prefs, 0, sizeof(LZ4F_preferences_t));
 	prefs->frameInfo.blockSizeID = LZ4F_max256KB;
-	prefs->compressionLevel = compresslevel;
-
-	/*
-	 * Find out the compression bound, it specifies the minimum destination
-	 * capacity required in worst case for the success of compression operation
-	 * (LZ4F_compressUpdate) based on a given source size and preferences.
-	 */
-	compressed_bound = LZ4F_compressBound(streamer->base.bbs_buffer.maxlen, prefs);
-
-	/* Enlarge buffer if it falls short of compression bound. */
-	if (streamer->base.bbs_buffer.maxlen < compressed_bound)
-		enlargeStringInfo(&streamer->base.bbs_buffer, compressed_bound);
+	if ((compress->options & BACKUP_COMPRESSION_OPTION_LEVEL) != 0)
+		prefs->compressionLevel = compress->level;
 
 	ctxError = LZ4F_createCompressionContext(&streamer->cctx, LZ4F_VERSION);
 	if (LZ4F_isError(ctxError))
@@ -169,13 +158,16 @@ bbstreamer_lz4_compressor_content(bbstreamer *streamer,
 	 * forward the content to next streamer and empty the buffer.
 	 */
 	out_bound = LZ4F_compressBound(len, &mystreamer->prefs);
-	Assert(mystreamer->base.bbs_buffer.maxlen >= out_bound);
 	if (avail_out < out_bound)
 	{
 			bbstreamer_content(mystreamer->base.bbs_next, member,
 							   mystreamer->base.bbs_buffer.data,
 							   mystreamer->bytes_written,
 							   context);
+
+			/* Enlarge buffer if it falls short of out bound. */
+			if (mystreamer->base.bbs_buffer.maxlen < out_bound)
+				enlargeStringInfo(&mystreamer->base.bbs_buffer, out_bound);
 
 			avail_out = mystreamer->base.bbs_buffer.maxlen;
 			mystreamer->bytes_written = 0;
@@ -217,7 +209,6 @@ bbstreamer_lz4_compressor_finalize(bbstreamer *streamer)
 
 	/* Find out the footer bound and update the output buffer. */
 	footer_bound = LZ4F_compressBound(0, &mystreamer->prefs);
-	Assert(mystreamer->base.bbs_buffer.maxlen >= footer_bound);
 	if ((mystreamer->base.bbs_buffer.maxlen - mystreamer->bytes_written) <
 		footer_bound)
 	{
@@ -225,6 +216,10 @@ bbstreamer_lz4_compressor_finalize(bbstreamer *streamer)
 							   mystreamer->base.bbs_buffer.data,
 							   mystreamer->bytes_written,
 							   BBSTREAMER_UNKNOWN);
+
+			/* Enlarge buffer if it falls short of footer bound. */
+			if (mystreamer->base.bbs_buffer.maxlen < footer_bound)
+				enlargeStringInfo(&mystreamer->base.bbs_buffer, footer_bound);
 
 			avail_out = mystreamer->base.bbs_buffer.maxlen;
 			mystreamer->bytes_written = 0;

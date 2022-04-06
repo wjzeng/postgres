@@ -45,6 +45,10 @@ test: insert-conflict-do-update
 test: insert-conflict-do-update-2
 test: insert-conflict-do-update-3
 test: insert-conflict-specconflict
+test: merge-insert-update
+test: merge-delete
+test: merge-update
+test: merge-match-recheck
 test: delete-abort-savept
 test: delete-abort-savept-2
 test: aborted-keyrevoke
@@ -80,7 +84,7 @@ test: alter-table-4
 test: create-trigger
 test: sequence-ddl
 test: async-notify
-test: vacuum-reltuples
+test: vacuum-no-cleanup-lock
 test: timeouts
 test: vacuum-concurrent-drop
 test: vacuum-conflict

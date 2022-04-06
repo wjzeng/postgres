@@ -486,7 +486,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		resultRelInfo->ri_TrigDesc->trig_update_before_row)
 	{
 		if (!ExecBRUpdateTriggers(estate, epqstate, resultRelInfo,
-								  tid, NULL, slot))
+								  tid, NULL, slot, NULL))
 			skip_tuple = true;	/* "do nothing" */
 	}
 
@@ -574,9 +574,6 @@ CheckCmdReplicaIdentity(Relation rel, CmdType cmd)
 	if (cmd != CMD_UPDATE && cmd != CMD_DELETE)
 		return;
 
-	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
-		return;
-
 	/*
 	 * It is only safe to execute UPDATE/DELETE when all columns, referenced
 	 * in the row filters from publications which the relation is in, are
@@ -596,15 +593,31 @@ CheckCmdReplicaIdentity(Relation rel, CmdType cmd)
 				 errmsg("cannot update table \"%s\"",
 						RelationGetRelationName(rel)),
 				 errdetail("Column used in the publication WHERE expression is not part of the replica identity.")));
+	else if (cmd == CMD_UPDATE && !pubdesc.cols_valid_for_update)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+				 errmsg("cannot update table \"%s\"",
+						RelationGetRelationName(rel)),
+				 errdetail("Column list used by the publication does not cover the replica identity.")));
 	else if (cmd == CMD_DELETE && !pubdesc.rf_valid_for_delete)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 				 errmsg("cannot delete from table \"%s\"",
 						RelationGetRelationName(rel)),
 				 errdetail("Column used in the publication WHERE expression is not part of the replica identity.")));
+	else if (cmd == CMD_DELETE && !pubdesc.cols_valid_for_delete)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+				 errmsg("cannot delete from table \"%s\"",
+						RelationGetRelationName(rel)),
+				 errdetail("Column list used by the publication does not cover the replica identity.")));
 
 	/* If relation has replica identity we are always good. */
 	if (OidIsValid(RelationGetReplicaIndex(rel)))
+		return;
+
+	/* REPLICA IDENTITY FULL is also good for UPDATE/DELETE. */
+	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
 		return;
 
 	/*
@@ -636,7 +649,9 @@ void
 CheckSubscriptionRelkind(char relkind, const char *nspname,
 						 const char *relname)
 {
-	if (relkind != RELKIND_RELATION && relkind != RELKIND_PARTITIONED_TABLE)
+	if (relkind != RELKIND_RELATION &&
+		relkind != RELKIND_PARTITIONED_TABLE &&
+		relkind != RELKIND_SEQUENCE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot use relation \"%s.%s\" as logical replication target",

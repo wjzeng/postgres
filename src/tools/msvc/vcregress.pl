@@ -106,7 +106,7 @@ my %command = (
 	ISOLATIONCHECK => \&isolationcheck,
 	BINCHECK       => \&bincheck,
 	RECOVERYCHECK  => \&recoverycheck,
-	UPGRADECHECK   => \&upgradecheck,
+	UPGRADECHECK   => \&upgradecheck,     # no-op
 	TAPTEST        => \&taptest,);
 
 my $proc = $command{$what};
@@ -286,6 +286,7 @@ sub bincheck
 	foreach my $dir (@bin_dirs)
 	{
 		next unless -d "$dir/t";
+
 		my $status = tap_check($dir);
 		$mstat ||= $status;
 	}
@@ -494,113 +495,11 @@ sub quote_system_arg
 	return "\"$arg\"";
 }
 
-# Generate a database with a name made of a range of ASCII characters, useful
-# for testing pg_upgrade.
-sub generate_db
-{
-	my ($prefix, $from_char, $to_char, $suffix) = @_;
-
-	my $dbname = $prefix;
-	for my $i ($from_char .. $to_char)
-	{
-		next if $i == 7 || $i == 10 || $i == 13;    # skip BEL, LF, and CR
-		$dbname = $dbname . sprintf('%c', $i);
-	}
-	$dbname .= $suffix;
-
-	system('createdb', quote_system_arg($dbname));
-	my $status = $? >> 8;
-	exit $status if $status;
-	return;
-}
-
 sub upgradecheck
 {
-	my $status;
-	my $cwd = getcwd();
-
-	# Much of this comes from the pg_upgrade test.sh script,
-	# but it only covers the --install case, and not the case
-	# where the old and new source or bin dirs are different.
-	# i.e. only this version to this version check. That's
-	# what pg_upgrade's "make check" does.
-
-	$ENV{PGHOST} = 'localhost';
-	$ENV{PGPORT} ||= 50432;
-	my $tmp_root = "$topdir/src/bin/pg_upgrade/tmp_check";
-	rmtree($tmp_root);
-	mkdir $tmp_root || die $!;
-	my $upg_tmp_install = "$tmp_root/install";    # unshared temp install
-	print "Setting up temp install\n\n";
-	Install($upg_tmp_install, "all", $config);
-
-	# Install does a chdir, so change back after that
-	chdir $cwd;
-	my ($bindir, $libdir, $oldsrc, $newsrc) =
-	  ("$upg_tmp_install/bin", "$upg_tmp_install/lib", $topdir, $topdir);
-	$ENV{PATH} = "$bindir;$ENV{PATH}";
-	my $data = "$tmp_root/data";
-	$ENV{PGDATA} = "$data.old";
-	my $outputdir          = "$tmp_root/regress";
-	my @EXTRA_REGRESS_OPTS = ("--outputdir=$outputdir");
-	mkdir "$outputdir" || die $!;
-
-	my $logdir = "$topdir/src/bin/pg_upgrade/log";
-	rmtree($logdir);
-	mkdir $logdir || die $!;
-	print "\nRunning initdb on old cluster\n\n";
-	standard_initdb() or exit 1;
-	print "\nStarting old cluster\n\n";
-	my @args = ('pg_ctl', 'start', '-l', "$logdir/postmaster1.log");
-	system(@args) == 0 or exit 1;
-
-	print "\nCreating databases with names covering most ASCII bytes\n\n";
-	generate_db("\\\"\\", 1,  45,  "\\\\\"\\\\\\");
-	generate_db('',       46, 90,  '');
-	generate_db('',       91, 127, '');
-
-	print "\nSetting up data for upgrading\n\n";
-	installcheck_internal('parallel', @EXTRA_REGRESS_OPTS);
-
-	# now we can chdir into the source dir
-	chdir "$topdir/src/bin/pg_upgrade";
-	print "\nDumping old cluster\n\n";
-	@args = ('pg_dumpall', '-f', "$tmp_root/dump1.sql");
-	system(@args) == 0 or exit 1;
-	print "\nStopping old cluster\n\n";
-	system("pg_ctl stop") == 0 or exit 1;
-	$ENV{PGDATA} = "$data";
-	print "\nSetting up new cluster\n\n";
-	standard_initdb() or exit 1;
-	print "\nRunning pg_upgrade\n\n";
-	@args = (
-		'pg_upgrade', '-d', "$data.old", '-D', $data, '-b', $bindir,
-		'--no-sync');
-	system(@args) == 0 or exit 1;
-	print "\nStarting new cluster\n\n";
-	@args = ('pg_ctl', '-l', "$logdir/postmaster2.log", 'start');
-	system(@args) == 0 or exit 1;
-	print "\nDumping new cluster\n\n";
-	@args = ('pg_dumpall', '-f', "$tmp_root/dump2.sql");
-	system(@args) == 0 or exit 1;
-	print "\nStopping new cluster\n\n";
-	system("pg_ctl stop") == 0 or exit 1;
-	print "\nDeleting old cluster\n\n";
-	system(".\\delete_old_cluster.bat") == 0 or exit 1;
-	print "\nComparing old and new cluster dumps\n\n";
-
-	@args = ('diff', '-q', "$tmp_root/dump1.sql", "$tmp_root/dump2.sql");
-	system(@args);
-	$status = $?;
-	if (!$status)
-	{
-		print "PASSED\n";
-	}
-	else
-	{
-		print "dumps not identical!\n";
-		exit(1);
-	}
+	# pg_upgrade is now handled by bincheck, but keep this target for
+	# backward compatibility.
+	print "upgradecheck is a no-op, use bincheck instead.\n";
 	return;
 }
 
@@ -718,7 +617,7 @@ sub usage
 	  "  plcheck        run tests of PL languages\n",
 	  "  recoverycheck  run recovery test suite\n",
 	  "  taptest        run an arbitrary TAP test set\n",
-	  "  upgradecheck   run tests of pg_upgrade\n",
+	  "  upgradecheck   run tests of pg_upgrade (no-op)\n",
 	  "\nOptions for <arg>: (used by check and installcheck)\n",
 	  "  serial         serial mode\n",
 	  "  parallel       parallel mode\n",

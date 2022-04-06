@@ -42,6 +42,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_publication_namespace.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
@@ -14625,7 +14626,7 @@ index_copy_data(Relation rel, RelFileNode newrnode)
 	 * NOTE: any conflict in relfilenode value will be caught in
 	 * RelationCreateStorage().
 	 */
-	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence);
+	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence, true);
 
 	/* copy main fork */
 	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
@@ -16381,11 +16382,14 @@ AlterTableNamespace(AlterObjectSchemaStmt *stmt, Oid *oldschema)
 	 * Check that setting the relation to a different schema won't result in a
 	 * publication having both a schema and the same schema's table, as this
 	 * is not supported.
+	 *
+	 * XXX We do this for tables and sequences, but it's better to keep the two
+	 * blocks separate, to make the strings easier to translate.
 	 */
 	if (stmt->objectType == OBJECT_TABLE)
 	{
 		ListCell   *lc;
-		List	   *schemaPubids = GetSchemaPublications(nspOid);
+		List	   *schemaPubids = GetSchemaPublications(nspOid, PUB_OBJTYPE_TABLE);
 		List	   *relPubids = GetRelationPublications(RelationGetRelid(rel));
 
 		foreach(lc, relPubids)
@@ -16398,6 +16402,27 @@ AlterTableNamespace(AlterObjectSchemaStmt *stmt, Oid *oldschema)
 						errmsg("cannot move table \"%s\" to schema \"%s\"",
 							   RelationGetRelationName(rel), stmt->newschema),
 						errdetail("The schema \"%s\" and same schema's table \"%s\" cannot be part of the same publication \"%s\".",
+								  stmt->newschema,
+								  RelationGetRelationName(rel),
+								  get_publication_name(pubid, false)));
+		}
+	}
+	else if (stmt->objectType == OBJECT_SEQUENCE)
+	{
+		ListCell   *lc;
+		List	   *schemaPubids = GetSchemaPublications(nspOid, PUB_OBJTYPE_SEQUENCE);
+		List	   *relPubids = GetRelationPublications(RelationGetRelid(rel));
+
+		foreach(lc, relPubids)
+		{
+			Oid			pubid = lfirst_oid(lc);
+
+			if (list_member_oid(schemaPubids, pubid))
+				ereport(ERROR,
+						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("cannot move sequence \"%s\" to schema \"%s\"",
+							   RelationGetRelationName(rel), stmt->newschema),
+						errdetail("The schema \"%s\" and same schema's sequence \"%s\" cannot be part of the same publication \"%s\".",
 								  stmt->newschema,
 								  RelationGetRelationName(rel),
 								  get_publication_name(pubid, false)));
@@ -16886,11 +16911,11 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 
 /*
  * This is intended as a callback for RangeVarGetRelidExtended().  It allows
- * the relation to be locked only if (1) it's a plain table, materialized
- * view, or TOAST table and (2) the current user is the owner (or the
- * superuser).  This meets the permission-checking needs of CLUSTER, REINDEX
- * TABLE, and REFRESH MATERIALIZED VIEW; we expose it here so that it can be
- * used by all.
+ * the relation to be locked only if (1) it's a plain or partitioned table,
+ * materialized view, or TOAST table and (2) the current user is the owner (or
+ * the superuser).  This meets the permission-checking needs of CLUSTER,
+ * REINDEX TABLE, and REFRESH MATERIALIZED VIEW; we expose it here so that it
+ * can be used by all.
  */
 void
 RangeVarCallbackOwnsTable(const RangeVar *relation,

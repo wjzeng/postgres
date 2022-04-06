@@ -153,6 +153,7 @@ AttrMissing
 AttrNumber
 AttributeOpts
 AuthRequest
+AuthToken
 AutoPrewarmSharedState
 AutoVacOpts
 AutoVacuumShmemStruct
@@ -460,6 +461,8 @@ CoverPos
 CreateAmStmt
 CreateCastStmt
 CreateConversionStmt
+CreateDBRelInfo
+CreateDBStrategy
 CreateDomainStmt
 CreateEnumStmt
 CreateEventTrigStmt
@@ -1063,7 +1066,6 @@ HashState
 HashTapeInfo
 HashValueFunc
 HbaLine
-HbaToken
 HeadlineJsonState
 HeadlineParsedText
 HeadlineWordEntry
@@ -1236,6 +1238,17 @@ JsonPathParseResult
 JsonPathPredicateCallback
 JsonPathString
 JsonSemAction
+JsonTable
+JsonTableColumn
+JsonTableColumnType
+JsonTableContext
+JsonTableJoinState
+JsonTableParent
+JsonTablePlan
+JsonTablePlanJoinType
+JsonTablePlanType
+JsonTableScanState
+JsonTableSibling
 JsonTokenType
 JsonTransformStringValuesAction
 JsonTypeCategory
@@ -1441,6 +1454,8 @@ MemoryContextCounters
 MemoryContextData
 MemoryContextMethods
 MemoryStatsPrintFunc
+MergeAction
+MergeActionState
 MergeAppend
 MergeAppendPath
 MergeAppendState
@@ -1449,6 +1464,8 @@ MergeJoinClause
 MergeJoinState
 MergePath
 MergeScanSelCache
+MergeStmt
+MergeWhenClause
 MetaCommand
 MinMaxAggInfo
 MinMaxAggPath
@@ -1610,6 +1627,7 @@ PGMessageField
 PGModuleMagicFunction
 PGNoticeHooks
 PGOutputData
+PGOutputTxnData
 PGPROC
 PGP_CFB
 PGP_Context
@@ -2638,6 +2656,7 @@ TableFunc
 TableFuncRoutine
 TableFuncScan
 TableFuncScanState
+TableFuncType
 TableInfo
 TableLikeClause
 TableSampleClause
@@ -2699,7 +2718,7 @@ ToastTupleContext
 ToastedAttribute
 TocEntry
 TokenAuxData
-TokenizedLine
+TokenizedAuthLine
 TrackItem
 TransInvalidationInfo
 TransState
@@ -3701,7 +3720,8 @@ xl_btree_update
 xl_btree_vacuum
 xl_clog_truncate
 xl_commit_ts_truncate
-xl_dbase_create_rec
+xl_dbase_create_file_copy_rec
+xl_dbase_create_wal_log_rec
 xl_dbase_drop_rec
 xl_end_of_recovery
 xl_hash_add_ovfl_page

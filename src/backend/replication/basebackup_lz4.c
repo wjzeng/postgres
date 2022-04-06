@@ -56,11 +56,10 @@ const bbsink_ops bbsink_lz4_ops = {
 #endif
 
 /*
- * Create a new basebackup sink that performs lz4 compression using the
- * designated compression level.
+ * Create a new basebackup sink that performs lz4 compression.
  */
 bbsink *
-bbsink_lz4_new(bbsink *next, int compresslevel)
+bbsink_lz4_new(bbsink *next, bc_specification *compress)
 {
 #ifndef USE_LZ4
 	ereport(ERROR,
@@ -69,14 +68,17 @@ bbsink_lz4_new(bbsink *next, int compresslevel)
 	return NULL;				/* keep compiler quiet */
 #else
 	bbsink_lz4 *sink;
+	int		compresslevel;
 
 	Assert(next != NULL);
 
-	if (compresslevel < 0 || compresslevel > 12)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("lz4 compression level %d is out of range",
-						compresslevel)));
+	if ((compress->options & BACKUP_COMPRESSION_OPTION_LEVEL) == 0)
+		compresslevel = 0;
+	else
+	{
+		compresslevel = compress->level;
+		Assert(compresslevel >= 1 && compresslevel <= 12);
+	}
 
 	sink = palloc0(sizeof(bbsink_lz4));
 	*((const bbsink_ops **) &sink->base.bbs_ops) = &bbsink_lz4_ops;

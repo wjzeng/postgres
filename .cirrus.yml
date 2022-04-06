@@ -101,6 +101,7 @@ task:
         --with-ssl=openssl \
         --with-tcl --with-tclconfig=/usr/local/lib/tcl8.6/ \
         --with-uuid=bsd \
+        --with-zstd \
         \
         --with-includes=/usr/local/include \
         --with-libs=/usr/local/lib \
@@ -142,6 +143,7 @@ LINUX_CONFIGURE_FEATURES: &LINUX_CONFIGURE_FEATURES >-
   --with-systemd
   --with-tcl --with-tclconfig=/usr/lib/tcl8.6/
   --with-uuid=ossp
+  --with-zstd
 
 
 task:
@@ -270,7 +272,8 @@ task:
       openldap \
       openssl \
       python \
-      tcl-tk
+      tcl-tk \
+      zstd
 
     brew cleanup -s # to reduce cache size
   upload_caches: homebrew
@@ -282,7 +285,7 @@ task:
     INCLUDES="${brewpath}/include:${INCLUDES}"
     LIBS="${brewpath}/lib:${LIBS}"
 
-    for pkg in icu4c krb5 openldap openssl ; do
+    for pkg in icu4c krb5 openldap openssl zstd ; do
       pkgpath="${brewpath}/opt/${pkg}"
       INCLUDES="${pkgpath}/include:${INCLUDES}"
       LIBS="${pkgpath}/lib:${LIBS}"
@@ -307,6 +310,7 @@ task:
       --with-ssl=openssl \
       --with-tcl --with-tclconfig=${brewpath}/opt/tcl-tk/lib/ \
       --with-uuid=e2fs \
+      --with-zstd \
       \
       --prefix=${HOME}/install \
       --with-includes="${INCLUDES}" \
@@ -439,8 +443,6 @@ task:
     %T_C% perl src/tools/msvc/vcregress.pl recoverycheck
   test_bin_script: |
     %T_C% perl src/tools/msvc/vcregress.pl bincheck
-  test_pg_upgrade_script: |
-    %T_C% perl src/tools/msvc/vcregress.pl upgradecheck
   test_ecpg_script: |
     rem tries to build additional stuff
     vcvarsall x64
@@ -575,6 +577,29 @@ task:
         CLANG="ccache clang"
       make -s -j${BUILD_JOBS} clean
       time make -s -j${BUILD_JOBS} -C doc
+
+  ###
+  # Verify headerscheck / cpluspluscheck succeed
+  #
+  # - Don't use ccache, the files are uncacheable, polluting ccache's
+  #   cache
+  # - Use -fmax-errors, as particularly cpluspluscheck can be very verbose
+  # - XXX have to disable ICU to avoid errors:
+  #   https://postgr.es/m/20220323002024.f2g6tivduzrktgfa%40alap3.anarazel.de
+  # - XXX: the -Wno-register avoids verbose warnings:
+  #   https://postgr.es/m/20220308181837.aun3tdtdvao4vb7o%40alap3.anarazel.de
+  ###
+  always:
+    headers_headerscheck_script: |
+      time ./configure \
+        ${LINUX_CONFIGURE_FEATURES} \
+        --without-icu \
+        --quiet \
+        CC="gcc" CXX"=g++" CLANG="clang"
+      make -s -j${BUILD_JOBS} clean
+      time make -s headerscheck EXTRAFLAGS='-fmax-errors=10'
+    headers_cpluspluscheck_script: |
+      time make -s cpluspluscheck EXTRAFLAGS='-Wno-register -fmax-errors=10'
 
   always:
     upload_caches: ccache
