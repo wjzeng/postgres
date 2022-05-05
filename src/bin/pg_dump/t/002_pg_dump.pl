@@ -2420,7 +2420,7 @@ my %tests = (
 		create_order => 50,
 		create_sql   => 'CREATE PUBLICATION pub1;',
 		regexp       => qr/^
-			\QCREATE PUBLICATION pub1 WITH (publish = 'insert, update, delete, truncate, sequence');\E
+			\QCREATE PUBLICATION pub1 WITH (publish = 'insert, update, delete, truncate');\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
@@ -2440,27 +2440,16 @@ my %tests = (
 		create_order => 50,
 		create_sql   => 'CREATE PUBLICATION pub3;',
 		regexp => qr/^
-			\QCREATE PUBLICATION pub3 WITH (publish = 'insert, update, delete, truncate, sequence');\E
+			\QCREATE PUBLICATION pub3 WITH (publish = 'insert, update, delete, truncate');\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
 
 	'CREATE PUBLICATION pub4' => {
 		create_order => 50,
-		create_sql   => 'CREATE PUBLICATION pub4
-						 FOR ALL SEQUENCES
-						 WITH (publish = \'\');',
+		create_sql   => 'CREATE PUBLICATION pub4;',
 		regexp => qr/^
-			\QCREATE PUBLICATION pub4 FOR ALL SEQUENCES WITH (publish = '');\E
-			/xm,
-		like => { %full_runs, section_post_data => 1, },
-	},
-
-	'CREATE PUBLICATION pub5' => {
-		create_order => 50,
-		create_sql   => 'CREATE PUBLICATION pub5;',
-		regexp => qr/^
-			\QCREATE PUBLICATION pub5 WITH (publish = 'insert, update, delete, truncate, sequence');\E
+			\QCREATE PUBLICATION pub4 WITH (publish = 'insert, update, delete, truncate');\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
@@ -2567,27 +2556,6 @@ my %tests = (
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
-	},
-
-	'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test' => {
-		create_order => 51,
-		create_sql =>
-		  'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test;',
-		regexp => qr/^
-			\QALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test;\E
-			/xm,
-		like   => { %full_runs, section_post_data => 1, },
-		unlike => { exclude_dump_test_schema => 1, },
-	},
-
-	'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public' => {
-		create_order => 52,
-		create_sql =>
-		  'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public;',
-		regexp => qr/^
-			\QALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public;\E
-			/xm,
-		like => { %full_runs, section_post_data => 1, },
 	},
 
 	'CREATE SCHEMA public' => {
@@ -4004,6 +3972,83 @@ command_fails_like(
 	[ 'pg_dump', '-p', "$port", '--strict-names', '-t', 'nonexistent*' ],
 	qr/\Qpg_dump: error: no matching tables were found for pattern\E/,
 	'no matching tables');
+
+#########################################
+# Test invalid multipart database names
+
+$node->command_fails_like(
+	[ 'pg_dumpall', '--exclude-database', '.' ],
+	qr/pg_dumpall: error: improper qualified name \(too many dotted names\): \./,
+	'pg_dumpall: option --exclude-database rejects multipart pattern "."'
+);
+
+$node->command_fails_like(
+	[ 'pg_dumpall', '--exclude-database', 'myhost.mydb' ],
+	qr/pg_dumpall: error: improper qualified name \(too many dotted names\): myhost\.mydb/,
+	'pg_dumpall: option --exclude-database rejects multipart database names'
+);
+
+#########################################
+# Test valid database exclusion patterns
+
+$node->command_ok(
+	[ 'pg_dumpall', '-p', "$port", '--exclude-database', '"myhost.mydb"' ],
+	'pg_dumpall: option --exclude-database handles database names with embedded dots'
+);
+
+#########################################
+# Test invalid multipart schema names
+
+$node->command_fails_like(
+	[ 'pg_dump', '--schema', 'myhost.mydb.myschema' ],
+	qr/pg_dump: error: improper qualified name \(too many dotted names\): myhost\.mydb\.myschema/,
+	'pg_dump: option --schema rejects three-part schema names'
+);
+
+$node->command_fails_like(
+	[ 'pg_dump', '--schema', 'otherdb.myschema' ],
+	qr/pg_dump: error: cross-database references are not implemented: otherdb\.myschema/,
+	'pg_dump: option --schema rejects cross-database multipart schema names'
+);
+
+$node->command_fails_like(
+	[ 'pg_dump', '--schema', '.' ],
+	qr/pg_dump: error: cross-database references are not implemented: \./,
+	'pg_dump: option --schema rejects degenerate two-part schema name: "."'
+);
+
+$node->command_fails_like(
+	[ 'pg_dump', '--schema', '"some.other.db".myschema' ],
+	qr/pg_dump: error: cross-database references are not implemented: "some\.other\.db"\.myschema/,
+	'pg_dump: option --schema rejects cross-database multipart schema names with embedded dots'
+);
+
+$node->command_fails_like(
+	[ 'pg_dump', '--schema', '..' ],
+	qr/pg_dump: error: improper qualified name \(too many dotted names\): \.\./,
+	'pg_dump: option --schema rejects degenerate three-part schema name: ".."'
+);
+
+#########################################
+# Test invalid multipart relation names
+
+$node->command_fails_like(
+	[ 'pg_dump', '--table', 'myhost.mydb.myschema.mytable' ],
+	qr/pg_dump: error: improper relation name \(too many dotted names\): myhost\.mydb\.myschema\.mytable/,
+	'pg_dump: option --table rejects four-part table names'
+);
+
+$node->command_fails_like(
+	[ 'pg_dump', '--table', 'otherdb.pg_catalog.pg_class' ],
+	qr/pg_dump: error: cross-database references are not implemented: otherdb\.pg_catalog\.pg_class/,
+	'pg_dump: option --table rejects cross-database three part table names'
+);
+
+command_fails_like(
+	[ 'pg_dump', '-p', "$port", '--table', '"some.other.db".pg_catalog.pg_class' ],
+	qr/pg_dump: error: cross-database references are not implemented: "some\.other\.db"\.pg_catalog\.pg_class/,
+	'pg_dump: option --table rejects cross-database three part table names with embedded dots'
+);
 
 #########################################
 # Run all runs

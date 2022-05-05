@@ -92,8 +92,8 @@ typedef uint32 AclMode;			/* a bitmask of privilege bits */
 #define ACL_CREATE		(1<<9)	/* for namespaces and databases */
 #define ACL_CREATE_TEMP (1<<10) /* for databases */
 #define ACL_CONNECT		(1<<11) /* for databases */
-#define ACL_SET_VALUE	(1<<12) /* for configuration parameters */
-#define ACL_ALTER_SYSTEM (1<<13) /* for configuration parameters */
+#define ACL_SET			(1<<12) /* for configuration parameters */
+#define ACL_ALTER_SYSTEM (1<<13)	/* for configuration parameters */
 #define N_ACL_RIGHTS	14		/* 1 plus the last 1<<x */
 #define ACL_NO_RIGHTS	0
 /* Currently, SELECT ... FOR [KEY] UPDATE/SHARE requires UPDATE privileges */
@@ -1402,6 +1402,7 @@ typedef struct WindowClause
 	int			frameOptions;	/* frame_clause options, see WindowDef */
 	Node	   *startOffset;	/* expression for starting bound, if any */
 	Node	   *endOffset;		/* expression for ending bound, if any */
+	List	   *runCondition;	/* qual to help short-circuit execution */
 	Oid			startInRangeFunc;	/* in_range function for startOffset */
 	Oid			endInRangeFunc; /* in_range function for endOffset */
 	Oid			inRangeColl;	/* collation for in_range tests */
@@ -1609,7 +1610,7 @@ typedef enum JsonQuotes
  * JsonTableColumnType -
  *		enumeration of JSON_TABLE column types
  */
-typedef enum
+typedef enum JsonTableColumnType
 {
 	JTC_FOR_ORDINALITY,
 	JTC_REGULAR,
@@ -1617,12 +1618,6 @@ typedef enum
 	JTC_FORMATTED,
 	JTC_NESTED,
 } JsonTableColumnType;
-
-/*
- * JsonPathSpec -
- *		representation of JSON path constant
- */
-typedef char *JsonPathSpec;
 
 /*
  * JsonOutput -
@@ -1687,7 +1682,7 @@ typedef struct JsonTableColumn
 	JsonTableColumnType coltype;	/* column type */
 	char	   *name;				/* column name */
 	TypeName   *typeName;			/* column type name */
-	JsonPathSpec pathspec;			/* path specification, if any */
+	char	   *pathspec;			/* path specification, if any */
 	char	   *pathname;			/* path name, if any */
 	JsonFormat *format;				/* JSON format clause, if specified */
 	JsonWrapper	wrapper;			/* WRAPPER behavior for formatted columns */
@@ -2162,6 +2157,7 @@ typedef enum ObjectType
 	OBJECT_OPCLASS,
 	OBJECT_OPERATOR,
 	OBJECT_OPFAMILY,
+	OBJECT_PARAMETER_ACL,
 	OBJECT_POLICY,
 	OBJECT_PROCEDURE,
 	OBJECT_PUBLICATION,
@@ -4012,10 +4008,6 @@ typedef enum PublicationObjSpecType
 	PUBLICATIONOBJ_TABLES_IN_SCHEMA,	/* All tables in schema */
 	PUBLICATIONOBJ_TABLES_IN_CUR_SCHEMA,	/* All tables in first element of
 											 * search_path */
-	PUBLICATIONOBJ_SEQUENCE,		/* Sequence type */
-	PUBLICATIONOBJ_SEQUENCES_IN_SCHEMA, /* Sequences in schema type */
-	PUBLICATIONOBJ_SEQUENCES_IN_CUR_SCHEMA, /* Get the first element of
-											 * search_path */
 	PUBLICATIONOBJ_CONTINUATION /* Continuation of previous type */
 } PublicationObjSpecType;
 
@@ -4034,7 +4026,7 @@ typedef struct CreatePublicationStmt
 	char	   *pubname;		/* Name of the publication */
 	List	   *options;		/* List of DefElem nodes */
 	List	   *pubobjects;		/* Optional list of publication objects */
-	List	   *for_all_objects; /* Special publication for all objects in db */
+	bool		for_all_tables; /* Special publication for all tables in db */
 } CreatePublicationStmt;
 
 typedef enum AlterPublicationAction
@@ -4057,7 +4049,7 @@ typedef struct AlterPublicationStmt
 	 * objects.
 	 */
 	List	   *pubobjects;		/* Optional list of publication objects */
-	List	   *for_all_objects; /* Special publication for all objects in db */
+	bool		for_all_tables; /* Special publication for all tables in db */
 	AlterPublicationAction action;	/* What action to perform with the given
 									 * objects */
 } AlterPublicationStmt;

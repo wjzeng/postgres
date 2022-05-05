@@ -632,6 +632,7 @@ _copySubqueryScan(const SubqueryScan *from)
 	 * copy remainder of node
 	 */
 	COPY_NODE_FIELD(subplan);
+	COPY_SCALAR_FIELD(scanstatus);
 
 	return newnode;
 }
@@ -1103,11 +1104,14 @@ _copyWindowAgg(const WindowAgg *from)
 	COPY_SCALAR_FIELD(frameOptions);
 	COPY_NODE_FIELD(startOffset);
 	COPY_NODE_FIELD(endOffset);
+	COPY_NODE_FIELD(runCondition);
+	COPY_NODE_FIELD(runConditionOrig);
 	COPY_SCALAR_FIELD(startInRangeFunc);
 	COPY_SCALAR_FIELD(endInRangeFunc);
 	COPY_SCALAR_FIELD(inRangeColl);
 	COPY_SCALAR_FIELD(inRangeAsc);
 	COPY_SCALAR_FIELD(inRangeNullsFirst);
+	COPY_SCALAR_FIELD(topWindow);
 
 	return newnode;
 }
@@ -3060,6 +3064,7 @@ _copyWindowClause(const WindowClause *from)
 	COPY_SCALAR_FIELD(frameOptions);
 	COPY_NODE_FIELD(startOffset);
 	COPY_NODE_FIELD(endOffset);
+	COPY_NODE_FIELD(runCondition);
 	COPY_SCALAR_FIELD(startInRangeFunc);
 	COPY_SCALAR_FIELD(endInRangeFunc);
 	COPY_SCALAR_FIELD(inRangeColl);
@@ -5389,7 +5394,7 @@ _copyCreatePublicationStmt(const CreatePublicationStmt *from)
 	COPY_STRING_FIELD(pubname);
 	COPY_NODE_FIELD(options);
 	COPY_NODE_FIELD(pubobjects);
-	COPY_NODE_FIELD(for_all_objects);
+	COPY_SCALAR_FIELD(for_all_tables);
 
 	return newnode;
 }
@@ -5402,7 +5407,7 @@ _copyAlterPublicationStmt(const AlterPublicationStmt *from)
 	COPY_STRING_FIELD(pubname);
 	COPY_NODE_FIELD(options);
 	COPY_NODE_FIELD(pubobjects);
-	COPY_NODE_FIELD(for_all_objects);
+	COPY_SCALAR_FIELD(for_all_tables);
 	COPY_SCALAR_FIELD(action);
 
 	return newnode;

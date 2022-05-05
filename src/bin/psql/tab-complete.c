@@ -1004,25 +1004,20 @@ static const SchemaQuery Query_for_trigger_of_table = {
 "SELECT nspname FROM pg_catalog.pg_namespace "\
 " WHERE nspname LIKE '%s'"
 
+/* Use COMPLETE_WITH_QUERY_VERBATIM with these queries for GUC names: */
 #define Query_for_list_of_alter_system_set_vars \
-"SELECT name FROM "\
-" (SELECT pg_catalog.lower(name) AS name FROM pg_catalog.pg_settings "\
-"  WHERE context != 'internal' "\
-" ) ss "\
-" WHERE name LIKE '%s'"
+"SELECT pg_catalog.lower(name) FROM pg_catalog.pg_settings "\
+" WHERE context != 'internal' "\
+"   AND pg_catalog.lower(name) LIKE pg_catalog.lower('%s')"
 
 #define Query_for_list_of_set_vars \
-"SELECT name FROM "\
-" (SELECT pg_catalog.lower(name) AS name FROM pg_catalog.pg_settings "\
-"  WHERE context IN ('user', 'superuser') "\
-" ) ss "\
-" WHERE name LIKE '%s'"
+"SELECT pg_catalog.lower(name) FROM pg_catalog.pg_settings "\
+" WHERE context IN ('user', 'superuser') "\
+"   AND pg_catalog.lower(name) LIKE pg_catalog.lower('%s')"
 
 #define Query_for_list_of_show_vars \
-"SELECT name FROM "\
-" (SELECT pg_catalog.lower(name) AS name FROM pg_catalog.pg_settings "\
-" ) ss "\
-" WHERE name LIKE '%s'"
+"SELECT pg_catalog.lower(name) FROM pg_catalog.pg_settings "\
+" WHERE pg_catalog.lower(name) LIKE pg_catalog.lower('%s')"
 
 #define Query_for_list_of_roles \
 " SELECT rolname "\
@@ -1690,7 +1685,7 @@ psql_completion(const char *text, int start, int end)
 		"\\connect", "\\conninfo", "\\C", "\\cd", "\\copy",
 		"\\copyright", "\\crosstabview",
 		"\\d", "\\da", "\\dA", "\\dAc", "\\dAf", "\\dAo", "\\dAp",
-		"\\db", "\\dc", "\\dC", "\\dd", "\\ddp", "\\dD",
+		"\\db", "\\dc", "\\dconfig", "\\dC", "\\dd", "\\ddp", "\\dD",
 		"\\des", "\\det", "\\deu", "\\dew", "\\dE", "\\df",
 		"\\dF", "\\dFd", "\\dFp", "\\dFt", "\\dg", "\\di", "\\dl", "\\dL",
 		"\\dm", "\\dn", "\\do", "\\dO", "\\dp", "\\dP", "\\dPi", "\\dPt",
@@ -1827,15 +1822,11 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("ADD", "DROP", "OWNER TO", "RENAME TO", "SET");
 	/* ALTER PUBLICATION <name> ADD */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD"))
-		COMPLETE_WITH("ALL TABLES IN SCHEMA", "ALL SEQUENCES IN SCHEMA", "TABLE", "SEQUENCE");
+		COMPLETE_WITH("ALL TABLES IN SCHEMA", "TABLE");
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "TABLE") ||
 			 (HeadMatches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "TABLE") &&
 			  ends_with(prev_wd, ',')))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
-	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "SEQUENCE") ||
-			 (HeadMatches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "SEQUENCE") &&
-			  ends_with(prev_wd, ',')))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_sequences);
 	/*
 	 * "ALTER PUBLICATION <name> SET TABLE <name> WHERE (" - complete with
 	 * table attributes
@@ -1854,11 +1845,11 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH(",");
 	/* ALTER PUBLICATION <name> DROP */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "DROP"))
-		COMPLETE_WITH("ALL TABLES IN SCHEMA", "ALL SEQUENCES IN SCHEMA", "TABLE", "SEQUENCE");
+		COMPLETE_WITH("ALL TABLES IN SCHEMA", "TABLE");
 	/* ALTER PUBLICATION <name> SET */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "SET"))
-		COMPLETE_WITH("(", "ALL TABLES IN SCHEMA", "ALL SEQUENCES IN SCHEMA", "TABLE", "SEQUENCE");
-	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|DROP|SET", "ALL", "TABLES|SEQUENCES", "IN", "SCHEMA"))
+		COMPLETE_WITH("(", "ALL TABLES IN SCHEMA", "TABLE");
+	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|DROP|SET", "ALL", "TABLES", "IN", "SCHEMA"))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_schemas
 								 " AND nspname NOT LIKE E'pg\\\\_%%'",
 								 "CURRENT_SCHEMA");
@@ -2116,7 +2107,7 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER SEQUENCE <name> */
 	else if (Matches("ALTER", "SEQUENCE", MatchAny))
 		COMPLETE_WITH("AS", "INCREMENT", "MINVALUE", "MAXVALUE", "RESTART",
-					  "NO", "CACHE", "CYCLE", "SET SCHEMA", "OWNED BY",
+					  "NO", "CACHE", "CYCLE", "SET", "OWNED BY",
 					  "OWNER TO", "RENAME TO");
 	/* ALTER SEQUENCE <name> AS */
 	else if (TailMatches("ALTER", "SEQUENCE", MatchAny, "AS"))
@@ -2124,6 +2115,9 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER SEQUENCE <name> NO */
 	else if (Matches("ALTER", "SEQUENCE", MatchAny, "NO"))
 		COMPLETE_WITH("MINVALUE", "MAXVALUE", "CYCLE");
+	/* ALTER SEQUENCE <name> SET */
+	else if (Matches("ALTER", "SEQUENCE", MatchAny, "SET"))
+		COMPLETE_WITH("SCHEMA", "LOGGED", "UNLOGGED");
 	/* ALTER SERVER <name> */
 	else if (Matches("ALTER", "SERVER", MatchAny))
 		COMPLETE_WITH("VERSION", "OPTIONS", "OWNER TO", "RENAME TO");
@@ -2257,7 +2251,7 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("COLUMN", "CONSTRAINT", "CHECK", "UNIQUE", "PRIMARY KEY",
 					  "EXCLUDE", "FOREIGN KEY");
 	}
-	/* ATER TABLE xxx ADD [COLUMN] yyy */
+	/* ALTER TABLE xxx ADD [COLUMN] yyy */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ADD", "COLUMN", MatchAny) ||
 			 (Matches("ALTER", "TABLE", MatchAny, "ADD", MatchAny) &&
 			  !Matches("ALTER", "TABLE", MatchAny, "ADD", "COLUMN|CONSTRAINT|CHECK|UNIQUE|PRIMARY|EXCLUDE|FOREIGN")))
@@ -2985,27 +2979,21 @@ psql_completion(const char *text, int start, int end)
 
 /* CREATE PUBLICATION */
 	else if (Matches("CREATE", "PUBLICATION", MatchAny))
-		COMPLETE_WITH("FOR TABLE", "FOR ALL TABLES", "FOR ALL TABLES IN SCHEMA",
-					  "FOR SEQUENCE", "FOR ALL SEQUENCES", "FOR ALL SEQUENCES IN SCHEMA",
-					  "WITH (");
+		COMPLETE_WITH("FOR TABLE", "FOR ALL TABLES", "FOR ALL TABLES IN SCHEMA", "WITH (");
 	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR"))
-		COMPLETE_WITH("TABLE", "ALL TABLES", "ALL TABLES IN SCHEMA",
-					  "SEQUENCE", "ALL SEQUENCES", "ALL SEQUENCES IN SCHEMA");
+		COMPLETE_WITH("TABLE", "ALL TABLES", "ALL TABLES IN SCHEMA");
 	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL"))
-		COMPLETE_WITH("TABLES", "TABLES IN SCHEMA", "SEQUENCES", "SEQUENCES IN SCHEMA");
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES|SEQUENCES"))
+		COMPLETE_WITH("TABLES", "TABLES IN SCHEMA");
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES"))
 		COMPLETE_WITH("IN SCHEMA", "WITH (");
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE|SEQUENCE", MatchAny) && !ends_with(prev_wd, ','))
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE", MatchAny) && !ends_with(prev_wd, ','))
 		COMPLETE_WITH("WHERE (", "WITH (");
 	/* Complete "CREATE PUBLICATION <name> FOR TABLE" with "<table>, ..." */
 	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
-	/* Complete "CREATE PUBLICATION <name> FOR SEQUENCE" with "<sequence>, ..." */
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "SEQUENCE"))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_sequences);
 
 	/*
-	 * "CREATE PUBLICATION <name> FOR TABLE|SEQUENCE <name> WHERE (" - complete with
+	 * "CREATE PUBLICATION <name> FOR TABLE <name> WHERE (" - complete with
 	 * table attributes
 	 */
 	else if (HeadMatches("CREATE", "PUBLICATION", MatchAny) && TailMatches("WHERE"))
@@ -3016,14 +3004,14 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH(" WITH (");
 
 	/*
-	 * Complete "CREATE PUBLICATION <name> FOR ALL TABLES|SEQUENCES IN SCHEMA <schema>,
+	 * Complete "CREATE PUBLICATION <name> FOR ALL TABLES IN SCHEMA <schema>,
 	 * ..."
 	 */
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES|SEQUENCES", "IN", "SCHEMA"))
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES", "IN", "SCHEMA"))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_schemas
 								 " AND nspname NOT LIKE E'pg\\\\_%%'",
 								 "CURRENT_SCHEMA");
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES|SEQUENCES", "IN", "SCHEMA", MatchAny) && (!ends_with(prev_wd, ',')))
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES", "IN", "SCHEMA", MatchAny) && (!ends_with(prev_wd, ',')))
 		COMPLETE_WITH("WITH (");
 	/* Complete "CREATE PUBLICATION <name> [...] WITH" */
 	else if (HeadMatches("CREATE", "PUBLICATION") && TailMatches("WITH", "("))
@@ -3737,7 +3725,8 @@ psql_completion(const char *text, int start, int end)
  * ALTER DEFAULT PRIVILEGES, so use TailMatches
  */
 	/* Complete GRANT/REVOKE with a list of roles and privileges */
-	else if (TailMatches("GRANT|REVOKE"))
+	else if (TailMatches("GRANT|REVOKE") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR"))
 	{
 		/*
 		 * With ALTER DEFAULT PRIVILEGES, restrict completion to grantable
@@ -3749,6 +3738,7 @@ psql_completion(const char *text, int start, int end)
 						  "EXECUTE", "USAGE", "ALL");
 		else
 			COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_roles,
+									 "GRANT",
 									 "SELECT",
 									 "INSERT",
 									 "UPDATE",
@@ -3761,14 +3751,48 @@ psql_completion(const char *text, int start, int end)
 									 "TEMPORARY",
 									 "EXECUTE",
 									 "USAGE",
+									 "SET",
+									 "ALTER SYSTEM",
 									 "ALL");
 	}
+
+	else if (TailMatches("REVOKE", "GRANT"))
+		COMPLETE_WITH("OPTION FOR");
+	else if (TailMatches("REVOKE", "GRANT", "OPTION"))
+		COMPLETE_WITH("FOR");
+
+	else if (TailMatches("GRANT|REVOKE", "ALTER") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", "ALTER"))
+		COMPLETE_WITH("SYSTEM");
+
+	else if (TailMatches("GRANT|REVOKE", "SET") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", "SET") ||
+			 TailMatches("GRANT|REVOKE", "ALTER", "SYSTEM") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", "ALTER", "SYSTEM"))
+		COMPLETE_WITH("ON PARAMETER");
+
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "PARAMETER") ||
+			 TailMatches("GRANT|REVOKE", MatchAny, MatchAny, "ON", "PARAMETER") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "PARAMETER") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, MatchAny, "ON", "PARAMETER"))
+		COMPLETE_WITH_QUERY_VERBATIM(Query_for_list_of_alter_system_set_vars);
+
+	else if (TailMatches("GRANT", MatchAny, "ON", "PARAMETER", MatchAny) ||
+			 TailMatches("GRANT", MatchAny, MatchAny, "ON", "PARAMETER", MatchAny))
+		COMPLETE_WITH("TO");
+
+	else if (TailMatches("REVOKE", MatchAny, "ON", "PARAMETER", MatchAny) ||
+			 TailMatches("REVOKE", MatchAny, MatchAny, "ON", "PARAMETER", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "PARAMETER", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, MatchAny, "ON", "PARAMETER", MatchAny))
+		COMPLETE_WITH("FROM");
 
 	/*
 	 * Complete GRANT/REVOKE <privilege> with "ON", GRANT/REVOKE <role> with
 	 * TO/FROM
 	 */
-	else if (TailMatches("GRANT|REVOKE", MatchAny))
+	else if (TailMatches("GRANT|REVOKE", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny))
 	{
 		if (TailMatches("SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER|CREATE|CONNECT|TEMPORARY|TEMP|EXECUTE|USAGE|ALL"))
 			COMPLETE_WITH("ON");
@@ -3785,7 +3809,8 @@ psql_completion(const char *text, int start, int end)
 	 * here will only work if the privilege list contains exactly one
 	 * privilege.
 	 */
-	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON"))
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON"))
 	{
 		/*
 		 * With ALTER DEFAULT PRIVILEGES, restrict completion to the kinds of
@@ -3807,6 +3832,7 @@ psql_completion(const char *text, int start, int end)
 											"FUNCTION",
 											"LANGUAGE",
 											"LARGE OBJECT",
+											"PARAMETER",
 											"PROCEDURE",
 											"ROUTINE",
 											"SCHEMA",
@@ -3815,13 +3841,15 @@ psql_completion(const char *text, int start, int end)
 											"TABLESPACE",
 											"TYPE");
 	}
-	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "ALL"))
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "ALL") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "ALL"))
 		COMPLETE_WITH("FUNCTIONS IN SCHEMA",
 					  "PROCEDURES IN SCHEMA",
 					  "ROUTINES IN SCHEMA",
 					  "SEQUENCES IN SCHEMA",
 					  "TABLES IN SCHEMA");
-	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "FOREIGN"))
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "FOREIGN") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "FOREIGN"))
 		COMPLETE_WITH("DATA WRAPPER", "SERVER");
 
 	/*
@@ -3830,7 +3858,8 @@ psql_completion(const char *text, int start, int end)
 	 *
 	 * Complete "GRANT/REVOKE * ON *" with "TO/FROM".
 	 */
-	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", MatchAny))
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", MatchAny))
 	{
 		if (TailMatches("DATABASE"))
 			COMPLETE_WITH_QUERY(Query_for_list_of_databases);
@@ -3868,6 +3897,22 @@ psql_completion(const char *text, int start, int end)
 			 (HeadMatches("REVOKE") && TailMatches("FROM")))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_roles,
 								 Keywords_for_list_of_grant_roles);
+
+	/*
+	 * Offer grant options after that.
+	 */
+	else if (HeadMatches("GRANT") && TailMatches("TO", MatchAny))
+		COMPLETE_WITH("WITH ADMIN OPTION",
+					  "WITH GRANT OPTION",
+					  "GRANTED BY");
+	else if (HeadMatches("GRANT") && TailMatches("TO", MatchAny, "WITH"))
+		COMPLETE_WITH("ADMIN OPTION",
+					  "GRANT OPTION");
+	else if (HeadMatches("GRANT") && TailMatches("TO", MatchAny, "WITH", MatchAny, "OPTION"))
+		COMPLETE_WITH("GRANTED BY");
+	else if (HeadMatches("GRANT") && TailMatches("TO", MatchAny, "WITH", MatchAny, "OPTION", "GRANTED", "BY"))
+		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_roles,
+								 Keywords_for_list_of_grant_roles);
 	/* Complete "ALTER DEFAULT PRIVILEGES ... GRANT/REVOKE ... TO/FROM */
 	else if (HeadMatches("ALTER", "DEFAULT", "PRIVILEGES") && TailMatches("TO|FROM"))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_roles,
@@ -3879,7 +3924,8 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("FROM");
 
 	/* Complete "GRANT/REVOKE * ON ALL * IN SCHEMA *" with TO/FROM */
-	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "ALL", MatchAny, "IN", "SCHEMA", MatchAny))
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "ALL", MatchAny, "IN", "SCHEMA", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "ALL", MatchAny, "IN", "SCHEMA", MatchAny))
 	{
 		if (TailMatches("GRANT", MatchAny, MatchAny, MatchAny, MatchAny, MatchAny, MatchAny, MatchAny))
 			COMPLETE_WITH("TO");
@@ -3888,7 +3934,8 @@ psql_completion(const char *text, int start, int end)
 	}
 
 	/* Complete "GRANT/REVOKE * ON FOREIGN DATA WRAPPER *" with TO/FROM */
-	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "FOREIGN", "DATA", "WRAPPER", MatchAny))
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "FOREIGN", "DATA", "WRAPPER", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "FOREIGN", "DATA", "WRAPPER", MatchAny))
 	{
 		if (TailMatches("GRANT", MatchAny, MatchAny, MatchAny, MatchAny, MatchAny, MatchAny))
 			COMPLETE_WITH("TO");
@@ -3897,7 +3944,8 @@ psql_completion(const char *text, int start, int end)
 	}
 
 	/* Complete "GRANT/REVOKE * ON FOREIGN SERVER *" with TO/FROM */
-	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "FOREIGN", "SERVER", MatchAny))
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "FOREIGN", "SERVER", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "FOREIGN", "SERVER", MatchAny))
 	{
 		if (TailMatches("GRANT", MatchAny, MatchAny, MatchAny, MatchAny, MatchAny))
 			COMPLETE_WITH("TO");
@@ -4479,6 +4527,8 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH_QUERY(Query_for_list_of_access_methods);
 	else if (TailMatchesCS("\\db*"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_tablespaces);
+	else if (TailMatchesCS("\\dconfig*"))
+		COMPLETE_WITH_QUERY_VERBATIM(Query_for_list_of_show_vars);
 	else if (TailMatchesCS("\\dD*"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_domains);
 	else if (TailMatchesCS("\\des*"))
