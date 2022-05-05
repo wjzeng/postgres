@@ -223,7 +223,7 @@ typedef struct LVRelState
  */
 typedef struct LVPagePruneState
 {
-	bool		hastup;			/* Page is truncatable? */
+	bool		hastup;			/* Page prevents rel truncation? */
 	bool		has_lpdead_items;	/* includes existing LP_DEAD items */
 
 	/*
@@ -325,9 +325,12 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 				new_rel_allvisible;
 	PGRUsage	ru0;
 	TimestampTz starttime = 0;
-	PgStat_Counter startreadtime = 0;
-	PgStat_Counter startwritetime = 0;
-	WalUsage	walusage_start = pgWalUsage;
+	PgStat_Counter startreadtime = 0,
+				   startwritetime = 0;
+	WalUsage	startwalusage = pgWalUsage;
+	int64		StartPageHit = VacuumPageHit,
+				StartPageMiss = VacuumPageMiss,
+				StartPageDirty = VacuumPageDirty;
 	ErrorContextCallback errcallback;
 	char	  **indnames = NULL;
 
@@ -509,7 +512,7 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 	vacrel->FreezeLimit = FreezeLimit;
 	/* MultiXactCutoff controls MXID freezing (always <= OldestMxact) */
 	vacrel->MultiXactCutoff = MultiXactCutoff;
-	/* Initialize state used to track oldest extant XID/XMID */
+	/* Initialize state used to track oldest extant XID/MXID */
 	vacrel->NewRelfrozenXid = OldestXmin;
 	vacrel->NewRelminMxid = OldestMxact;
 	vacrel->skippedallvis = false;
@@ -609,9 +612,9 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 						&frozenxid_updated, &minmulti_updated, false);
 
 	/*
-	 * Report results to the stats collector, too.
+	 * Report results to the cumulative stats system, too.
 	 *
-	 * Deliberately avoid telling the stats collector about LP_DEAD items that
+	 * Deliberately avoid telling the stats system about LP_DEAD items that
 	 * remain in the table due to VACUUM bypassing index and heap vacuuming.
 	 * ANALYZE will consider the remaining LP_DEAD items to be dead "tuples".
 	 * It seems like a good idea to err on the side of not vacuuming again too
@@ -633,29 +636,21 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 			TimestampDifferenceExceeds(starttime, endtime,
 									   params->log_min_duration))
 		{
-			long		secs;
-			int			usecs;
+			long		secs_dur;
+			int			usecs_dur;
 			WalUsage	walusage;
-			double		read_rate,
-						write_rate;
 			StringInfoData buf;
 			char	   *msgfmt;
 			int32		diff;
+			int64		PageHitOp = VacuumPageHit - StartPageHit,
+						PageMissOp = VacuumPageMiss - StartPageMiss,
+						PageDirtyOp = VacuumPageDirty - StartPageDirty;
+			double		read_rate = 0,
+						write_rate = 0;
 
-			TimestampDifference(starttime, endtime, &secs, &usecs);
-
+			TimestampDifference(starttime, endtime, &secs_dur, &usecs_dur);
 			memset(&walusage, 0, sizeof(WalUsage));
-			WalUsageAccumDiff(&walusage, &pgWalUsage, &walusage_start);
-
-			read_rate = 0;
-			write_rate = 0;
-			if ((secs > 0) || (usecs > 0))
-			{
-				read_rate = (double) BLCKSZ * VacuumPageMiss / (1024 * 1024) /
-					(secs + usecs / 1000000.0);
-				write_rate = (double) BLCKSZ * VacuumPageDirty / (1024 * 1024) /
-					(secs + usecs / 1000000.0);
-			}
+			WalUsageAccumDiff(&walusage, &pgWalUsage, &startwalusage);
 
 			initStringInfo(&buf);
 			if (verbose)
@@ -710,47 +705,45 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 								 vacrel->missed_dead_pages);
 			diff = (int32) (ReadNextTransactionId() - OldestXmin);
 			appendStringInfo(&buf,
-							 _("removable cutoff: %u, older by %d xids when operation ended\n"),
+							 _("removable cutoff: %u, which was %d XIDs old when operation ended\n"),
 							 OldestXmin, diff);
 			if (frozenxid_updated)
 			{
 				diff = (int32) (vacrel->NewRelfrozenXid - vacrel->relfrozenxid);
 				appendStringInfo(&buf,
-								 _("new relfrozenxid: %u, which is %d xids ahead of previous value\n"),
+								 _("new relfrozenxid: %u, which is %d XIDs ahead of previous value\n"),
 								 vacrel->NewRelfrozenXid, diff);
 			}
 			if (minmulti_updated)
 			{
 				diff = (int32) (vacrel->NewRelminMxid - vacrel->relminmxid);
 				appendStringInfo(&buf,
-								 _("new relminmxid: %u, which is %d mxids ahead of previous value\n"),
+								 _("new relminmxid: %u, which is %d MXIDs ahead of previous value\n"),
 								 vacrel->NewRelminMxid, diff);
 			}
-			if (orig_rel_pages > 0)
+			if (vacrel->do_index_vacuuming)
 			{
-				if (vacrel->do_index_vacuuming)
-				{
-					if (vacrel->nindexes == 0 || vacrel->num_index_scans == 0)
-						appendStringInfoString(&buf, _("index scan not needed: "));
-					else
-						appendStringInfoString(&buf, _("index scan needed: "));
-
-					msgfmt = _("%u pages from table (%.2f%% of total) had %lld dead item identifiers removed\n");
-				}
+				if (vacrel->nindexes == 0 || vacrel->num_index_scans == 0)
+					appendStringInfoString(&buf, _("index scan not needed: "));
 				else
-				{
-					if (!vacrel->failsafe_active)
-						appendStringInfoString(&buf, _("index scan bypassed: "));
-					else
-						appendStringInfoString(&buf, _("index scan bypassed by failsafe: "));
+					appendStringInfoString(&buf, _("index scan needed: "));
 
-					msgfmt = _("%u pages from table (%.2f%% of total) have %lld dead item identifiers\n");
-				}
-				appendStringInfo(&buf, msgfmt,
-								 vacrel->lpdead_item_pages,
-								 100.0 * vacrel->lpdead_item_pages / orig_rel_pages,
-								 (long long) vacrel->lpdead_items);
+				msgfmt = _("%u pages from table (%.2f%% of total) had %lld dead item identifiers removed\n");
 			}
+			else
+			{
+				if (!vacrel->failsafe_active)
+					appendStringInfoString(&buf, _("index scan bypassed: "));
+				else
+					appendStringInfoString(&buf, _("index scan bypassed by failsafe: "));
+
+				msgfmt = _("%u pages from table (%.2f%% of total) have %lld dead item identifiers\n");
+			}
+			appendStringInfo(&buf, msgfmt,
+							 vacrel->lpdead_item_pages,
+							 orig_rel_pages == 0 ? 100.0 :
+							 100.0 * vacrel->lpdead_item_pages / orig_rel_pages,
+							 (long long) vacrel->lpdead_items);
 			for (int i = 0; i < vacrel->nindexes; i++)
 			{
 				IndexBulkDeleteResult *istat = vacrel->indstats[i];
@@ -774,13 +767,20 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 				appendStringInfo(&buf, _("I/O timings: read: %.3f ms, write: %.3f ms\n"),
 								 read_ms, write_ms);
 			}
+			if (secs_dur > 0 || usecs_dur > 0)
+			{
+				read_rate = (double) BLCKSZ * PageMissOp / (1024 * 1024) /
+					(secs_dur + usecs_dur / 1000000.0);
+				write_rate = (double) BLCKSZ * PageDirtyOp / (1024 * 1024) /
+					(secs_dur + usecs_dur / 1000000.0);
+			}
 			appendStringInfo(&buf, _("avg read rate: %.3f MB/s, avg write rate: %.3f MB/s\n"),
 							 read_rate, write_rate);
 			appendStringInfo(&buf,
 							 _("buffer usage: %lld hits, %lld misses, %lld dirtied\n"),
-							 (long long) VacuumPageHit,
-							 (long long) VacuumPageMiss,
-							 (long long) VacuumPageDirty);
+							 (long long) PageHitOp,
+							 (long long) PageMissOp,
+							 (long long) PageDirtyOp);
 			appendStringInfo(&buf,
 							 _("WAL usage: %lld records, %lld full page images, %llu bytes\n"),
 							 (long long) walusage.wal_records,
@@ -1295,7 +1295,7 @@ lazy_scan_heap(LVRelState *vacrel)
  * Note: our opinion of which blocks can be skipped can go stale immediately.
  * It's okay if caller "misses" a page whose all-visible or all-frozen marking
  * was concurrently cleared, though.  All that matters is that caller scan all
- * pages whose tuples might contain XIDs < OldestXmin, or XMIDs < OldestMxact.
+ * pages whose tuples might contain XIDs < OldestXmin, or MXIDs < OldestMxact.
  * (Actually, non-aggressive VACUUMs can choose to skip all-visible pages with
  * older XIDs/MXIDs.  The vacrel->skippedallvis flag will be set here when the
  * choice to skip such a range is actually made, making everything safe.)
@@ -1393,7 +1393,7 @@ lazy_scan_skip(LVRelState *vacrel, Buffer *vmbuffer, BlockNumber next_block,
  *
  * It's necessary to consider new pages as a special case, since the rules for
  * maintaining the visibility map and FSM with empty pages are a little
- * different (though new pages can be truncated based on the usual rules).
+ * different (though new pages can be truncated away during rel truncation).
  *
  * Empty pages are not really a special case -- they're just heap pages that
  * have no allocated tuples (including even LP_UNUSED items).  You might
@@ -1561,6 +1561,11 @@ lazy_scan_prune(LVRelState *vacrel,
 
 	Assert(BufferGetBlockNumber(buf) == blkno);
 
+	/*
+	 * maxoff might be reduced following line pointer array truncation in
+	 * heap_page_prune.  That's safe for us to ignore, since the reclaimed
+	 * space will continue to look like LP_UNUSED items below.
+	 */
 	maxoff = PageGetMaxOffsetNumber(page);
 
 retry:
@@ -1768,7 +1773,7 @@ retry:
 		 * Check tuple left behind after pruning to see if needs to be frozen
 		 * now.
 		 */
-		prunestate->hastup = true;	/* page won't be truncatable */
+		prunestate->hastup = true;	/* page makes rel truncation unsafe */
 		if (heap_prepare_freeze_tuple(tuple.t_data,
 									  vacrel->relfrozenxid,
 									  vacrel->relminmxid,
@@ -2007,7 +2012,7 @@ lazy_scan_noprune(LVRelState *vacrel,
 				 * relfrozenxid to a value >= FreezeLimit (and be able to
 				 * advance rel's relminmxid to a value >= MultiXactCutoff).
 				 * The ongoing aggressive VACUUM won't be able to do that
-				 * unless it can freeze an XID (or XMID) from this tuple now.
+				 * unless it can freeze an XID (or MXID) from this tuple now.
 				 *
 				 * The only safe option is to have caller perform processing
 				 * of this page using lazy_scan_prune.  Caller might have to
@@ -2068,7 +2073,6 @@ lazy_scan_noprune(LVRelState *vacrel,
 				elog(ERROR, "unexpected HeapTupleSatisfiesVacuum result");
 				break;
 		}
-
 	}
 
 	vacrel->offnum = InvalidOffsetNumber;
@@ -2228,10 +2232,10 @@ lazy_vacuum(LVRelState *vacrel)
 		 * dead_items space is not CPU cache resident.
 		 *
 		 * We don't take any special steps to remember the LP_DEAD items (such
-		 * as counting them in our final report to the stats collector) when
+		 * as counting them in our final update to the stats system) when
 		 * the optimization is applied.  Though the accounting used in
 		 * analyze.c's acquire_sample_rows() will recognize the same LP_DEAD
-		 * items as dead rows in its own stats collector report, that's okay.
+		 * items as dead rows in its own stats report, that's okay.
 		 * The discrepancy should be negligible.  If this optimization is ever
 		 * expanded to cover more cases then this may need to be reconsidered.
 		 */
@@ -2473,13 +2477,6 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
  * index is an offset into the vacrel->dead_items array for the first listed
  * LP_DEAD item on the page.  The return value is the first index immediately
  * after all LP_DEAD items for the same page in the array.
- *
- * Prior to PostgreSQL 14 there were rare cases where this routine had to set
- * tuples with storage to unused.  These days it is strictly responsible for
- * marking LP_DEAD stub line pointers as unused.  This only happens for those
- * LP_DEAD items on the page that were determined to be LP_DEAD items back
- * when the same page was visited by lazy_scan_prune() (i.e. those whose TID
- * was recorded in the dead_items array at the time).
  */
 static int
 lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,

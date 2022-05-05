@@ -2688,7 +2688,7 @@ _equalCreatePublicationStmt(const CreatePublicationStmt *a,
 	COMPARE_STRING_FIELD(pubname);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(pubobjects);
-	COMPARE_NODE_FIELD(for_all_objects);
+	COMPARE_SCALAR_FIELD(for_all_tables);
 
 	return true;
 }
@@ -2700,7 +2700,7 @@ _equalAlterPublicationStmt(const AlterPublicationStmt *a,
 	COMPARE_STRING_FIELD(pubname);
 	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(pubobjects);
-	COMPARE_NODE_FIELD(for_all_objects);
+	COMPARE_SCALAR_FIELD(for_all_tables);
 	COMPARE_SCALAR_FIELD(action);
 
 	return true;
@@ -3234,6 +3234,7 @@ _equalWindowClause(const WindowClause *a, const WindowClause *b)
 	COMPARE_SCALAR_FIELD(frameOptions);
 	COMPARE_NODE_FIELD(startOffset);
 	COMPARE_NODE_FIELD(endOffset);
+	COMPARE_NODE_FIELD(runCondition);
 	COMPARE_SCALAR_FIELD(startInRangeFunc);
 	COMPARE_SCALAR_FIELD(endInRangeFunc);
 	COMPARE_SCALAR_FIELD(inRangeColl);

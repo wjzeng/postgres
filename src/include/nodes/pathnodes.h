@@ -241,7 +241,8 @@ struct PlannerInfo
 
 	List	   *init_plans;		/* init SubPlans for query */
 
-	List	   *cte_plan_ids;	/* per-CTE-item list of subplan IDs */
+	List	   *cte_plan_ids;	/* per-CTE-item list of subplan IDs (or -1 if
+								 * no subplan was made for that CTE) */
 
 	List	   *multiexpr_params;	/* List of Lists of Params for MULTIEXPR
 									 * subquery outputs */
@@ -1843,6 +1844,9 @@ typedef struct WindowAggPath
 	Path		path;
 	Path	   *subpath;		/* path representing input source */
 	WindowClause *winclause;	/* WindowClause we'll be using */
+	List	   *qual;			/* lower-level WindowAgg runconditions */
+	bool		topwindow;		/* false for all apart from the WindowAgg
+								 * that's closest to the root of the plan */
 } WindowAggPath;
 
 /*

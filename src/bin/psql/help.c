@@ -58,10 +58,7 @@ usage(unsigned short int pager)
 	{
 		user = get_user_name(&errstr);
 		if (!user)
-		{
-			pg_log_fatal("%s", errstr);
-			exit(EXIT_FAILURE);
-		}
+			pg_fatal("%s", errstr);
 	}
 
 	/*
@@ -166,7 +163,7 @@ slashUsage(unsigned short int pager)
 	 * Use "psql --help=commands | wc" to count correctly.  It's okay to count
 	 * the USE_READLINE line even in builds without that.
 	 */
-	output = PageOutput(137, pager ? &(pset.popt.topt) : NULL);
+	output = PageOutput(138, pager ? &(pset.popt.topt) : NULL);
 
 	fprintf(output, _("General\n"));
 	fprintf(output, _("  \\copyright             show PostgreSQL usage and distribution terms\n"));
@@ -231,6 +228,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\dAp[+] [AMPTRN [OPFPTRN]]   list support functions of operator families\n"));
 	fprintf(output, _("  \\db[+]  [PATTERN]      list tablespaces\n"));
 	fprintf(output, _("  \\dc[S+] [PATTERN]      list conversions\n"));
+	fprintf(output, _("  \\dconfig[+] [PATTERN]  list configuration parameters\n"));
 	fprintf(output, _("  \\dC[+]  [PATTERN]      list casts\n"));
 	fprintf(output, _("  \\dd[S]  [PATTERN]      show object descriptions not displayed elsewhere\n"));
 	fprintf(output, _("  \\dD[S+] [PATTERN]      list domains\n"));

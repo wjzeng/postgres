@@ -491,7 +491,7 @@ OPTIONS (ADD password_required 'false');
       <para>
        For a foreign server with this option enabled, if many remote
        (sub)transactions are opened on the foreign server in a local
-       (sub)transaction, this option might increase the remote server’s load
+       (sub)transaction, this option might increase the remote server's load
        when the local (sub)transaction commits, so be careful when using this
        option.
       </para>
@@ -729,7 +729,7 @@ OPTIONS (ADD password_required 'false');
       Example usage of the function:
 <screen>
 postgres=# SELECT * FROM postgres_fdw_get_connections() ORDER BY 1;
- server_name | valid 
+ server_name | valid
 -------------+-------
  loopback1   | t
  loopback2   | f
@@ -754,7 +754,7 @@ postgres=# SELECT * FROM postgres_fdw_get_connections() ORDER BY 1;
       Example usage of the function:
 <screen>
 postgres=# SELECT postgres_fdw_disconnect('loopback1');
- postgres_fdw_disconnect 
+ postgres_fdw_disconnect
 -------------------------
  t
 </screen>
@@ -775,7 +775,7 @@ postgres=# SELECT postgres_fdw_disconnect('loopback1');
       Example usage of the function:
 <screen>
 postgres=# SELECT postgres_fdw_disconnect_all();
- postgres_fdw_disconnect_all 
+ postgres_fdw_disconnect_all
 -----------------------------
  t
 </screen>
@@ -1040,7 +1040,7 @@ postgres=# SELECT postgres_fdw_disconnect_all();
         <row>
          <entry><literal>%C</literal></entry>
          <entry>
-          Cluster name in local server
+          Cluster name on local server
           (see <xref linkend="guc-cluster-name"/> for details)
          </entry>
         </row>
