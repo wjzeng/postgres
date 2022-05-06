@@ -1,40 +1,8 @@
-From 9e509f7b37e3975cd5bee6fe9610cabfba40bc8a Mon Sep 17 00:00:00 2001
-From: "wenjing.zwj" <wenjing.zwj@alibaba-inc.com>
-Date: Tue, 15 Mar 2022 10:47:20 +0800
-Subject: [PATCH] pushdown qual to sublink
-
----
- src/backend/optimizer/path/allpaths.c         |  64 +++++
- src/backend/optimizer/path/equivclass.c       |  10 +
- src/backend/optimizer/plan/initsplan.c        | 215 +++++++++++++-
- src/backend/optimizer/plan/planagg.c          |  33 ++-
- src/backend/optimizer/plan/planmain.c         |   4 +
- src/backend/optimizer/plan/planner.c          |  52 ++--
- src/backend/optimizer/plan/subselect.c        | 265 +++++++++++++++++-
- src/backend/optimizer/util/placeholder.c      |   5 +
- src/backend/utils/adt/ruleutils.c             |   3 +-
- src/backend/utils/misc/guc.c                  |  12 +
- src/backend/utils/misc/postgresql.conf.sample |   1 +
- src/include/nodes/pathnodes.h                 |   4 +
- src/include/optimizer/paths.h                 |   8 +-
- src/include/optimizer/planmain.h              |  10 +-
- src/include/optimizer/subselect.h             |   4 +-
- src/include/utils/guc.h                       |   2 +
- src/include/utils/ruleutils.h                 |   1 +
- src/test/regress/expected/join_hash.out       |   6 +-
- .../expected/qual_pushdown_to_sublink.out     | 221 +++++++++++++++
- src/test/regress/expected/subselect.out       |   2 +-
- src/test/regress/parallel_schedule            |   1 +
- .../regress/sql/qual_pushdown_to_sublink.sql  |  86 ++++++
- 22 files changed, 959 insertions(+), 50 deletions(-)
- create mode 100644 src/test/regress/expected/qual_pushdown_to_sublink.out
- create mode 100644 src/test/regress/sql/qual_pushdown_to_sublink.sql
-
 diff --git a/src/backend/optimizer/path/allpaths.c b/src/backend/optimizer/path/allpaths.c
-index 169b1d53fc8..4c3c82d732e 100644
+index d84f66a81b3..d1feb8a0a71 100644
 --- a/src/backend/optimizer/path/allpaths.c
 +++ b/src/backend/optimizer/path/allpaths.c
-@@ -40,8 +40,10 @@
+@@ -41,8 +41,10 @@
  #include "optimizer/paths.h"
  #include "optimizer/plancat.h"
  #include "optimizer/planner.h"
@@ -45,7 +13,7 @@ index 169b1d53fc8..4c3c82d732e 100644
  #include "parser/parse_clause.h"
  #include "parser/parsetree.h"
  #include "partitioning/partbounds.h"
-@@ -3962,6 +3964,68 @@ generate_partitionwise_join_paths(PlannerInfo *root, RelOptInfo *rel)
+@@ -4239,6 +4241,68 @@ generate_partitionwise_join_paths(PlannerInfo *root, RelOptInfo *rel)
  	list_free(live_children);
  }
  
@@ -115,7 +83,7 @@ index 169b1d53fc8..4c3c82d732e 100644
  /*****************************************************************************
   *			DEBUG SUPPORT
 diff --git a/src/backend/optimizer/path/equivclass.c b/src/backend/optimizer/path/equivclass.c
-index 8c6770de972..b224a3958b7 100644
+index 34c5ab1cb60..b83e4de6daf 100644
 --- a/src/backend/optimizer/path/equivclass.c
 +++ b/src/backend/optimizer/path/equivclass.c
 @@ -388,6 +388,7 @@ process_equivalence(PlannerInfo *root,
@@ -142,7 +110,7 @@ index 8c6770de972..b224a3958b7 100644
  
  	return em;
  }
-@@ -711,6 +714,7 @@ get_eclass_for_sort_expr(PlannerInfo *root,
+@@ -722,6 +725,7 @@ get_eclass_for_sort_expr(PlannerInfo *root,
  	newec->ec_min_security = UINT_MAX;
  	newec->ec_max_security = 0;
  	newec->ec_merged = NULL;
@@ -150,7 +118,7 @@ index 8c6770de972..b224a3958b7 100644
  
  	if (newec->ec_has_volatile && sortref == 0) /* should not happen */
  		elog(ERROR, "volatile EquivalenceClass has no sortref");
-@@ -1114,6 +1118,11 @@ generate_base_implied_equalities(PlannerInfo *root)
+@@ -1096,6 +1100,11 @@ generate_base_implied_equalities(PlannerInfo *root)
  		 * Single-member ECs won't generate any deductions, either here or at
  		 * the join level.
  		 */
@@ -162,7 +130,7 @@ index 8c6770de972..b224a3958b7 100644
  		if (list_length(ec->ec_members) > 1)
  		{
  			if (ec->ec_has_const)
-@@ -1151,6 +1160,7 @@ generate_base_implied_equalities(PlannerInfo *root)
+@@ -1133,6 +1142,7 @@ generate_base_implied_equalities(PlannerInfo *root)
  				rel->has_eclass_joins = true;
  		}
  
@@ -521,7 +489,7 @@ index c92ddd27ed1..1e628772885 100644
  	 * We have completed merging equivalence sets, so it's now possible to
  	 * generate pathkeys in canonical form; so compute query_pathkeys and
 diff --git a/src/backend/optimizer/plan/planner.c b/src/backend/optimizer/plan/planner.c
-index bd09f85aea1..ccb249a6f46 100644
+index 9a4accb4d9d..e7aba36827c 100644
 --- a/src/backend/optimizer/plan/planner.c
 +++ b/src/backend/optimizer/plan/planner.c
 @@ -64,6 +64,7 @@
@@ -552,7 +520,7 @@ index bd09f85aea1..ccb249a6f46 100644
  
  	/*
  	 * If there is a WITH list, process each WITH query and either convert it
-@@ -784,8 +788,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
+@@ -789,8 +793,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
  	 * part of the targetlist.
  	 */
  	parse->targetList = (List *)
@@ -563,7 +531,7 @@ index bd09f85aea1..ccb249a6f46 100644
  
  	/* Constant-folding might have removed all set-returning functions */
  	if (parse->hasTargetSRFs)
-@@ -807,7 +811,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
+@@ -812,7 +816,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
  		preprocess_expression(root, (Node *) parse->returningList,
  							  EXPRKIND_TARGET);
  
@@ -572,7 +540,7 @@ index bd09f85aea1..ccb249a6f46 100644
  
  	parse->havingQual = preprocess_expression(root, parse->havingQual,
  											  EXPRKIND_QUAL);
-@@ -1049,14 +1053,24 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
+@@ -1068,14 +1072,24 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
  	return root;
  }
  
@@ -598,7 +566,7 @@ index bd09f85aea1..ccb249a6f46 100644
  {
  	/*
  	 * Fall out quickly if expression is empty.  This occurs often enough to
-@@ -1129,7 +1143,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
+@@ -1148,7 +1162,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
  
  	/* Expand SubLinks to SubPlans */
  	if (root->parse->hasSubLinks)
@@ -607,7 +575,7 @@ index bd09f85aea1..ccb249a6f46 100644
  
  	/*
  	 * XXX do not insert anything here unless you have grokked the comments in
-@@ -1158,7 +1172,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
+@@ -1177,7 +1191,7 @@ preprocess_expression(PlannerInfo *root, Node *expr, int kind)
   *		preprocessing work on each qual condition found therein.
   */
  static void
@@ -616,7 +584,7 @@ index bd09f85aea1..ccb249a6f46 100644
  {
  	if (jtnode == NULL)
  		return;
-@@ -1172,17 +1186,21 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
+@@ -1191,17 +1205,21 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
  		ListCell   *l;
  
  		foreach(l, f->fromlist)
@@ -643,7 +611,7 @@ index bd09f85aea1..ccb249a6f46 100644
  		j->quals = preprocess_expression(root, j->quals, EXPRKIND_QUAL);
  	}
  	else
-@@ -1384,11 +1402,11 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
+@@ -1403,11 +1421,11 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
  		 * pathtargets, else some copies of the Aggref nodes might escape
  		 * being marked.
  		 */
@@ -658,7 +626,7 @@ index bd09f85aea1..ccb249a6f46 100644
  
  		/*
  		 * Locate any window functions in the tlist.  (We don't need to look
-@@ -1412,8 +1430,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
+@@ -1431,8 +1449,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
  		 * that is needed in MIN/MAX-optimizable cases will have to be
  		 * duplicated in planagg.c.
  		 */
@@ -670,7 +638,7 @@ index bd09f85aea1..ccb249a6f46 100644
  		/*
  		 * Figure out whether there's a hard limit on the number of rows that
 diff --git a/src/backend/optimizer/plan/subselect.c b/src/backend/optimizer/plan/subselect.c
-index 41bd1ae7d44..b5146d8f4ff 100644
+index df4ca129191..e0be55dca15 100644
 --- a/src/backend/optimizer/plan/subselect.c
 +++ b/src/backend/optimizer/plan/subselect.c
 @@ -32,11 +32,13 @@
@@ -696,7 +664,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  } process_sublinks_context;
  
  typedef struct finalize_primnode_context
-@@ -65,6 +69,13 @@ typedef struct inline_cte_walker_context
+@@ -64,6 +68,13 @@ typedef struct inline_cte_walker_context
  	Query	   *ctequery;		/* query to substitute */
  } inline_cte_walker_context;
  
@@ -710,7 +678,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  
  static Node *build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
  						   List *plan_params,
-@@ -105,6 +116,11 @@ static Bitmapset *finalize_plan(PlannerInfo *root,
+@@ -104,6 +115,11 @@ static Bitmapset *finalize_plan(PlannerInfo *root,
  static bool finalize_primnode(Node *node, finalize_primnode_context *context);
  static bool finalize_agg_primnode(Node *node, finalize_primnode_context *context);
  
@@ -722,7 +690,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  
  /*
   * Get the datatype/typmod/collation of the first column of the plan's output.
-@@ -162,7 +178,7 @@ get_first_col_type(Plan *plan, Oid *coltype, int32 *coltypmod,
+@@ -161,7 +177,7 @@ get_first_col_type(Plan *plan, Oid *coltype, int32 *coltypmod,
  static Node *
  make_subplan(PlannerInfo *root, Query *orig_subquery,
  			 SubLinkType subLinkType, int subLinkId,
@@ -731,7 +699,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  {
  	Query	   *subquery;
  	bool		simple_exists = false;
-@@ -173,6 +189,8 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
+@@ -172,6 +188,8 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
  	Plan	   *plan;
  	List	   *plan_params;
  	Node	   *result;
@@ -740,7 +708,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  
  	/*
  	 * Copy the source Query node.  This is a quick and dirty kluge to resolve
-@@ -218,8 +236,32 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
+@@ -217,8 +235,32 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
  	/* plan_params should not be in use in current query level */
  	Assert(root->plan_params == NIL);
  
@@ -774,7 +742,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  							   root,
  							   false, tuple_fraction);
  
-@@ -256,7 +298,7 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
+@@ -255,7 +297,7 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
  		List	   *paramIds;
  
  		/* Make a second copy of the original subquery */
@@ -783,16 +751,16 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  		/* and re-simplify */
  		simple_exists = simplify_EXISTS_query(root, subquery);
  		Assert(simple_exists);
-@@ -365,7 +407,7 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
- 		 */
+@@ -366,7 +408,7 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
  		if (IsA(arg, PlaceHolderVar) ||
- 			IsA(arg, Aggref))
+ 			IsA(arg, Aggref) ||
+ 			IsA(arg, GroupingFunc))
 -			arg = SS_process_sublinks(root, arg, false);
 +			arg = SS_process_sublinks(root, arg, false, false, true);
  
  		splan->parParam = lappend_int(splan->parParam, pitem->paramId);
  		splan->args = lappend(splan->args, arg);
-@@ -1915,12 +1957,14 @@ replace_correlation_vars_mutator(Node *node, PlannerInfo *root)
+@@ -1909,12 +1951,14 @@ replace_correlation_vars_mutator(Node *node, PlannerInfo *root)
   * not distinguish FALSE from UNKNOWN return values.
   */
  Node *
@@ -808,7 +776,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  	return process_sublinks_mutator(expr, &context);
  }
  
-@@ -1930,20 +1974,34 @@ process_sublinks_mutator(Node *node, process_sublinks_context *context)
+@@ -1924,20 +1968,34 @@ process_sublinks_mutator(Node *node, process_sublinks_context *context)
  	process_sublinks_context locContext;
  
  	locContext.root = context->root;
@@ -845,7 +813,7 @@ index 41bd1ae7d44..b5146d8f4ff 100644
  
  		/*
  		 * Now build the SubPlan node and make the expr to return.
-@@ -1952,8 +2010,8 @@ process_sublinks_mutator(Node *node, process_sublinks_context *context)
+@@ -1946,8 +2004,8 @@ process_sublinks_mutator(Node *node, process_sublinks_context *context)
  							(Query *) sublink->subselect,
  							sublink->subLinkType,
  							sublink->subLinkId,
@@ -1094,10 +1062,10 @@ index 3b0f0584f01..4074e3997d7 100644
  
  	phinfo->phid = phv->phid;
 diff --git a/src/backend/utils/adt/ruleutils.c b/src/backend/utils/adt/ruleutils.c
-index b16526e65e9..b8ffebfb8b5 100644
+index 5d49f564a2e..6964a0f9ad0 100644
 --- a/src/backend/utils/adt/ruleutils.c
 +++ b/src/backend/utils/adt/ruleutils.c
-@@ -429,7 +429,6 @@ static void resolve_special_varno(Node *node, deparse_context *context,
+@@ -434,7 +434,6 @@ static void resolve_special_varno(Node *node, deparse_context *context,
  static Node *find_param_referent(Param *param, deparse_context *context,
  								 deparse_namespace **dpns_p, ListCell **ancestor_cell_p);
  static void get_parameter(Param *param, deparse_context *context);
@@ -1105,7 +1073,7 @@ index b16526e65e9..b8ffebfb8b5 100644
  static bool isSimpleNode(Node *node, Node *parentNode, int prettyFlags);
  static void appendContextKeyword(deparse_context *context, const char *str,
  								 int indentBefore, int indentAfter, int indentPlus);
-@@ -8036,7 +8035,7 @@ get_parameter(Param *param, deparse_context *context)
+@@ -8084,7 +8083,7 @@ get_parameter(Param *param, deparse_context *context)
   * helper function for isSimpleNode
   * will return single char binary operator name, or NULL if it's not
   */
@@ -1115,10 +1083,10 @@ index b16526e65e9..b8ffebfb8b5 100644
  {
  	List	   *args = expr->args;
 diff --git a/src/backend/utils/misc/guc.c b/src/backend/utils/misc/guc.c
-index e7f0a380e60..74d1f759869 100644
+index 8e9b71375ce..bb1e0494e98 100644
 --- a/src/backend/utils/misc/guc.c
 +++ b/src/backend/utils/misc/guc.c
-@@ -690,6 +690,7 @@ static char *recovery_target_lsn_string;
+@@ -721,6 +721,7 @@ static char *recovery_target_lsn_string;
  /* should be static, but commands/variable.c needs to get at this */
  char	   *role_string;
  
@@ -1126,7 +1094,7 @@ index e7f0a380e60..74d1f759869 100644
  
  /*
   * Displayable names for context types (enum GucContext)
-@@ -979,6 +980,17 @@ static const unit_conversion time_unit_conversion_table[] =
+@@ -1012,6 +1013,17 @@ static const unit_conversion time_unit_conversion_table[] =
  
  static struct config_bool ConfigureNamesBool[] =
  {
@@ -1145,22 +1113,22 @@ index e7f0a380e60..74d1f759869 100644
  		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
  			gettext_noop("Enables the planner's use of sequential-scan plans."),
 diff --git a/src/backend/utils/misc/postgresql.conf.sample b/src/backend/utils/misc/postgresql.conf.sample
-index 4cf5b26a363..96bf3f0cf3a 100644
+index 94270eb0ecb..00787a21851 100644
 --- a/src/backend/utils/misc/postgresql.conf.sample
 +++ b/src/backend/utils/misc/postgresql.conf.sample
-@@ -427,6 +427,7 @@
- #plan_cache_mode = auto			# auto, force_generic_plan or
+@@ -435,6 +435,7 @@
  					# force_custom_plan
+ #recursive_worktable_factor = 10.0	# range 0.001-1000000
  
 +#lazy_process_sublink = true
  
  #------------------------------------------------------------------------------
  # REPORTING AND LOGGING
 diff --git a/src/include/nodes/pathnodes.h b/src/include/nodes/pathnodes.h
-index 1f3845b3fec..04ae0aa70e5 100644
+index 244d1e11974..545ac8bffec 100644
 --- a/src/include/nodes/pathnodes.h
 +++ b/src/include/nodes/pathnodes.h
-@@ -377,6 +377,9 @@ struct PlannerInfo
+@@ -378,6 +378,9 @@ struct PlannerInfo
  
  	/* Does this query modify any partition key columns? */
  	bool		partColsUpdated;
@@ -1170,7 +1138,7 @@ index 1f3845b3fec..04ae0aa70e5 100644
  };
  
  
-@@ -996,6 +999,7 @@ typedef struct EquivalenceClass
+@@ -997,6 +1000,7 @@ typedef struct EquivalenceClass
  	bool		ec_has_volatile;	/* the (sole) member is a volatile expr */
  	bool		ec_below_outer_join;	/* equivalence applies below an OJ */
  	bool		ec_broken;		/* failed to generate needed clauses? */
@@ -1179,12 +1147,12 @@ index 1f3845b3fec..04ae0aa70e5 100644
  	Index		ec_min_security;	/* minimum security_level in ec_sources */
  	Index		ec_max_security;	/* maximum security_level in ec_sources */
 diff --git a/src/include/optimizer/paths.h b/src/include/optimizer/paths.h
-index 0c3a0b90c85..1d6b2784c22 100644
+index 3d95e6bfc88..d7b63cf35b8 100644
 --- a/src/include/optimizer/paths.h
 +++ b/src/include/optimizer/paths.h
-@@ -25,6 +25,12 @@ extern PGDLLIMPORT int geqo_threshold;
- extern PGDLLIMPORT int min_parallel_table_scan_size;
+@@ -26,6 +26,12 @@ extern PGDLLIMPORT int min_parallel_table_scan_size;
  extern PGDLLIMPORT int min_parallel_index_scan_size;
+ extern PGDLLIMPORT bool enable_group_by_reordering;
  
 +typedef struct pushdown_expr_info
 +{
@@ -1195,7 +1163,7 @@ index 0c3a0b90c85..1d6b2784c22 100644
  /* Hook for plugins to get control in set_rel_pathlist() */
  typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
  											RelOptInfo *rel,
-@@ -62,7 +68,7 @@ extern void create_partial_bitmap_paths(PlannerInfo *root, RelOptInfo *rel,
+@@ -63,7 +69,7 @@ extern void create_partial_bitmap_paths(PlannerInfo *root, RelOptInfo *rel,
  										Path *bitmapqual);
  extern void generate_partitionwise_join_paths(PlannerInfo *root,
  											  RelOptInfo *rel);
@@ -1205,7 +1173,7 @@ index 0c3a0b90c85..1d6b2784c22 100644
  extern void debug_print_rel(PlannerInfo *root, RelOptInfo *rel);
  #endif
 diff --git a/src/include/optimizer/planmain.h b/src/include/optimizer/planmain.h
-index 54a0d4c188d..7decb5b84d5 100644
+index c4f61c1a09c..c4c85315aab 100644
 --- a/src/include/optimizer/planmain.h
 +++ b/src/include/optimizer/planmain.h
 @@ -28,12 +28,13 @@ typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
@@ -1225,8 +1193,8 @@ index 54a0d4c188d..7decb5b84d5 100644
  /*
   * prototypes for plan/createplan.c
 @@ -67,6 +68,8 @@ extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
- extern int	from_collapse_limit;
- extern int	join_collapse_limit;
+ extern PGDLLIMPORT int from_collapse_limit;
+ extern PGDLLIMPORT int join_collapse_limit;
  
 +#define has_unexpanded_sublink(root)		((root)->unexpanded_sublink_counter != 0)
 +
@@ -1265,11 +1233,11 @@ index 456d3076e04..d17e5ee51e1 100644
  
  #endif							/* SUBSELECT_H */
 diff --git a/src/include/utils/guc.h b/src/include/utils/guc.h
-index ea774968f07..1915b81b0e1 100644
+index efcbad78423..8d1fc72487e 100644
 --- a/src/include/utils/guc.h
 +++ b/src/include/utils/guc.h
-@@ -288,6 +288,8 @@ extern int	tcp_user_timeout;
- extern bool trace_sort;
+@@ -288,6 +288,8 @@ extern PGDLLIMPORT int tcp_user_timeout;
+ extern PGDLLIMPORT bool trace_sort;
  #endif
  
 +extern bool lazy_process_sublink;
@@ -1278,10 +1246,10 @@ index ea774968f07..1915b81b0e1 100644
   * Functions exported by guc.c
   */
 diff --git a/src/include/utils/ruleutils.h b/src/include/utils/ruleutils.h
-index e8090c96d73..d9db3f397ad 100644
+index 7d489718a35..108a281a9bf 100644
 --- a/src/include/utils/ruleutils.h
 +++ b/src/include/utils/ruleutils.h
-@@ -42,5 +42,6 @@ extern char *generate_opclass_name(Oid opclass);
+@@ -43,5 +43,6 @@ extern char *generate_opclass_name(Oid opclass);
  extern char *get_range_partbound_string(List *bound_datums);
  
  extern char *pg_get_statisticsobjdef_string(Oid statextid);
@@ -1554,13 +1522,15 @@ index 45c75eecc5f..0099f65985b 100644
  
  select sum(ss.tst::int) from
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 6d8f524ae9e..58c2c0cd5a3 100644
+index 103e11483d2..0dee58b7440 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
-@@ -135,3 +135,4 @@ test: fast_default
+@@ -135,3 +135,6 @@ test: event_trigger oidjoins
  
- # run stats by itself because its delay may be insufficient under heavy load
- test: stats
+ # this test also uses event triggers, so likewise run it by itself
+ test: fast_default
++
++# test qual pushdown to sublink
 +test: qual_pushdown_to_sublink
 diff --git a/src/test/regress/sql/qual_pushdown_to_sublink.sql b/src/test/regress/sql/qual_pushdown_to_sublink.sql
 new file mode 100644
