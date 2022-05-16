@@ -1043,6 +1043,11 @@ PostmasterMain(int argc, char *argv[])
 	InitializeMaxBackends();
 
 	/*
+	 * Give preloaded libraries a chance to request additional shared memory.
+	 */
+	process_shmem_requests();
+
+	/*
 	 * Now that loadable modules have had their chance to request additional
 	 * shared memory, determine the value of any runtime-computed GUCs that
 	 * depend on the amount of shared memory required.
@@ -2859,8 +2864,8 @@ pmdie(SIGNAL_ARGS)
 
 			/*
 			 * If we reached normal running, we go straight to waiting for
-			 * client backends to exit.  If already in PM_STOP_BACKENDS or
-			 * a later state, do not change it.
+			 * client backends to exit.  If already in PM_STOP_BACKENDS or a
+			 * later state, do not change it.
 			 */
 			if (pmState == PM_RUN || pmState == PM_HOT_STANDBY)
 				connsAllowed = false;

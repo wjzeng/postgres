@@ -58,6 +58,7 @@
 #include "access/xact.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -89,7 +90,7 @@ char	   *default_tablespace = NULL;
 char	   *temp_tablespaces = NULL;
 bool		allow_in_place_tablespaces = false;
 
-Oid         binary_upgrade_next_pg_tablespace_oid = InvalidOid;
+Oid			binary_upgrade_next_pg_tablespace_oid = InvalidOid;
 
 static void create_tablespace_directories(const char *location,
 										  const Oid tablespaceoid);

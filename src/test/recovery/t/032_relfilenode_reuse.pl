@@ -8,13 +8,13 @@ use File::Basename;
 
 my $node_primary = PostgreSQL::Test::Cluster->new('primary');
 $node_primary->init(allows_streaming => 1);
-$node_primary->append_conf('postgresql.conf', q[
+$node_primary->append_conf(
+	'postgresql.conf', q[
 allow_in_place_tablespaces = true
 log_connections=on
 # to avoid "repairing" corruption
 full_page_writes=off
 log_min_messages=debug2
-autovacuum_naptime=1s
 shared_buffers=1MB
 ]);
 $node_primary->start;
@@ -28,11 +28,8 @@ $node_standby->init_from_backup($node_primary, $backup_name,
 	has_streaming => 1);
 $node_standby->start;
 
-# To avoid hanging while expecting some specific input from a psql
-# instance being driven by us, add a timeout high enough that it
-# should never trigger even on very slow machines, unless something
-# is really wrong.
-my $psql_timeout = IPC::Run::timer(300);
+# We'll reset this timeout for each individual query we run.
+my $psql_timeout = IPC::Run::timer($PostgreSQL::Test::Utils::timeout_default);
 
 my %psql_primary = (stdin => '', stdout => '', stderr => '');
 $psql_primary{run} = IPC::Run::start(
@@ -61,28 +58,28 @@ $psql_standby{run} = IPC::Run::start(
 # rows. Using a template database + preexisting rows makes it a bit easier to
 # reproduce, because there's no cache invalidations generated.
 
-$node_primary->safe_psql('postgres', "CREATE DATABASE conflict_db_template OID = 50000;");
-$node_primary->safe_psql('conflict_db_template', q[
+$node_primary->safe_psql('postgres',
+	"CREATE DATABASE conflict_db_template OID = 50000;");
+$node_primary->safe_psql(
+	'conflict_db_template', q[
     CREATE TABLE large(id serial primary key, dataa text, datab text);
-    INSERT INTO large(dataa, datab) SELECT g.i::text, 1 FROM generate_series(1, 4000) g(i);]);
-$node_primary->safe_psql('postgres', "CREATE DATABASE conflict_db TEMPLATE conflict_db_template OID = 50001;");
+    INSERT INTO large(dataa, datab) SELECT g.i::text, 1 FROM generate_series(1, 4000) g(i);]
+);
+$node_primary->safe_psql('postgres',
+	"CREATE DATABASE conflict_db TEMPLATE conflict_db_template OID = 50001;");
 
-$node_primary->safe_psql('postgres', q[
+$node_primary->safe_psql(
+	'postgres', q[
     CREATE EXTENSION pg_prewarm;
     CREATE TABLE replace_sb(data text);
-    INSERT INTO replace_sb(data) SELECT random()::text FROM generate_series(1, 15000);]);
+    INSERT INTO replace_sb(data) SELECT random()::text FROM generate_series(1, 15000);]
+);
 
 $node_primary->wait_for_catchup($node_standby);
 
 # Use longrunning transactions, so that AtEOXact_SMgr doesn't close files
-send_query_and_wait(
-	\%psql_primary,
-	q[BEGIN;],
-	qr/BEGIN/m);
-send_query_and_wait(
-	\%psql_standby,
-	q[BEGIN;],
-	qr/BEGIN/m);
+send_query_and_wait(\%psql_primary, q[BEGIN;], qr/BEGIN/m);
+send_query_and_wait(\%psql_standby, q[BEGIN;], qr/BEGIN/m);
 
 # Cause lots of dirty rows in shared_buffers
 $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 1;");
@@ -94,10 +91,10 @@ cause_eviction(\%psql_primary, \%psql_standby);
 
 # drop and recreate database
 $node_primary->safe_psql('postgres', "DROP DATABASE conflict_db;");
-$node_primary->safe_psql('postgres', "CREATE DATABASE conflict_db TEMPLATE conflict_db_template OID = 50001;");
+$node_primary->safe_psql('postgres',
+	"CREATE DATABASE conflict_db TEMPLATE conflict_db_template OID = 50001;");
 
-verify($node_primary, $node_standby, 1,
-	   "initial contents as expected");
+verify($node_primary, $node_standby, 1, "initial contents as expected");
 
 # Again cause lots of dirty rows in shared_buffers, but use a different update
 # value so we can check everything is OK
@@ -109,17 +106,17 @@ $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 2;");
 cause_eviction(\%psql_primary, \%psql_standby);
 
 verify($node_primary, $node_standby, 2,
-	   "update to reused relfilenode (due to DB oid conflict) is not lost");
+	"update to reused relfilenode (due to DB oid conflict) is not lost");
 
 
 $node_primary->safe_psql('conflict_db', "VACUUM FULL large;");
 $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 3;");
 
-verify($node_primary, $node_standby, 3,
-	   "restored contents as expected");
+verify($node_primary, $node_standby, 3, "restored contents as expected");
 
 # Test for old filehandles after moving a database in / out of tablespace
-$node_primary->safe_psql('postgres', q[CREATE TABLESPACE test_tablespace LOCATION '']);
+$node_primary->safe_psql('postgres',
+	q[CREATE TABLESPACE test_tablespace LOCATION '']);
 
 # cause dirty buffers
 $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 4;");
@@ -127,23 +124,25 @@ $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 4;");
 cause_eviction(\%psql_primary, \%psql_standby);
 
 # move database back / forth
-$node_primary->safe_psql('postgres', 'ALTER DATABASE conflict_db SET TABLESPACE test_tablespace');
-$node_primary->safe_psql('postgres', 'ALTER DATABASE conflict_db SET TABLESPACE pg_default');
+$node_primary->safe_psql('postgres',
+	'ALTER DATABASE conflict_db SET TABLESPACE test_tablespace');
+$node_primary->safe_psql('postgres',
+	'ALTER DATABASE conflict_db SET TABLESPACE pg_default');
 
 # cause dirty buffers
 $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 5;");
 cause_eviction(\%psql_primary, \%psql_standby);
 
-verify($node_primary, $node_standby, 5,
-	   "post move contents as expected");
+verify($node_primary, $node_standby, 5, "post move contents as expected");
 
-$node_primary->safe_psql('postgres', 'ALTER DATABASE conflict_db SET TABLESPACE test_tablespace');
+$node_primary->safe_psql('postgres',
+	'ALTER DATABASE conflict_db SET TABLESPACE test_tablespace');
 
 $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 7;");
 cause_eviction(\%psql_primary, \%psql_standby);
 $node_primary->safe_psql('conflict_db', "UPDATE large SET datab = 8;");
-$node_primary->safe_psql('postgres', 'DROP DATABASE conflict_db');
-$node_primary->safe_psql('postgres', 'DROP TABLESPACE test_tablespace');
+$node_primary->safe_psql('postgres',    'DROP DATABASE conflict_db');
+$node_primary->safe_psql('postgres',    'DROP TABLESPACE test_tablespace');
 
 $node_primary->safe_psql('postgres', 'REINDEX TABLE pg_database');
 
@@ -160,25 +159,28 @@ $node_standby->stop();
 
 # Make sure that there weren't crashes during shutdown
 
-command_like([ 'pg_controldata', $node_primary->data_dir ],
-	qr/Database cluster state:\s+shut down\n/, 'primary shut down ok');
-command_like([ 'pg_controldata', $node_standby->data_dir ],
-	qr/Database cluster state:\s+shut down in recovery\n/, 'standby shut down ok');
+command_like(
+	[ 'pg_controldata', $node_primary->data_dir ],
+	qr/Database cluster state:\s+shut down\n/,
+	'primary shut down ok');
+command_like(
+	[ 'pg_controldata', $node_standby->data_dir ],
+	qr/Database cluster state:\s+shut down in recovery\n/,
+	'standby shut down ok');
 done_testing();
 
 sub verify
 {
 	my ($primary, $standby, $counter, $message) = @_;
 
-	my $query = "SELECT datab, count(*) FROM large GROUP BY 1 ORDER BY 1 LIMIT 10";
+	my $query =
+	  "SELECT datab, count(*) FROM large GROUP BY 1 ORDER BY 1 LIMIT 10";
 	is($primary->safe_psql('conflict_db', $query),
-	   "$counter|4000",
-	   "primary: $message");
+		"$counter|4000", "primary: $message");
 
 	$primary->wait_for_catchup($standby);
 	is($standby->safe_psql('conflict_db', $query),
-	   "$counter|4000",
-	   "standby: $message");
+		"$counter|4000", "standby: $message");
 }
 
 sub cause_eviction
@@ -201,6 +203,12 @@ sub send_query_and_wait
 {
 	my ($psql, $query, $untl) = @_;
 	my $ret;
+
+	# For each query we run, we'll restart the timeout.  Otherwise the timeout
+	# would apply to the whole test script, and would need to be set very high
+	# to survive when running under Valgrind.
+	$psql_timeout->reset();
+	$psql_timeout->start();
 
 	# send query
 	$$psql{stdin} .= $query;
