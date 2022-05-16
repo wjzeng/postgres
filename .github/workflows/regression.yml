@@ -35,19 +35,19 @@ jobs:
       run: sudo apt-get install -y gdb lcov libipc-run-perl libperl-dev tcl-dev libldap2-dev libicu-dev docbook docbook-xml docbook-dsssl docbook-xsl libxml2-utils opensp xsltproc krb5-admin-server krb5-kdc krb5-user slapd ldap-utils libssl-dev
 
     - name: patch code1
-      run: patch -p1 < 0001-gtt-v67-reademe.patch
+      run: patch -p1 < 0001-gtt-v68-reademe.patch
     - name: check1
       run: git status
     - name: patch code2
-      run: patch -p1 < 0002-gtt-v67-doc.patch
+      run: patch -p1 < 0002-gtt-v68-doc.patch
     - name: check2
       run: git status
     - name: patch code3
-      run: patch -p1 < 0003-gtt-v67-implementation.patch
+      run: patch -p1 < 0003-gtt-v68-implementation.patch
     - name: check3
       run: git status
     - name: patch code4
-      run: patch -p1 < 0004-gtt-v67-regress.patch
+      run: patch -p1 < 0004-gtt-v68-regress.patch
     - name: check4
       run: git status
 

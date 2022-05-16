@@ -1,3 +1,30 @@
+From 134d8bafd9f69fbff3432fa336a4981ebaa895e0 Mon Sep 17 00:00:00 2001
+From: "wenjing.zwj" <wenjing.zwj@alibaba-inc.com>
+Date: Mon, 16 May 2022 21:54:28 +0800
+Subject: [PATCH] gtt v58 reg
+
+---
+ src/test/isolation/expected/gtt-sequence.out  |  48 ++
+ src/test/isolation/expected/gtt-table.out     | 675 ++++++++++++++++++
+ src/test/isolation/isolation_schedule         |   2 +
+ src/test/isolation/isolationtester.c          |  41 +-
+ src/test/isolation/isolationtester.h          |   2 +
+ src/test/isolation/specparse.y                |  32 +-
+ src/test/isolation/specs/gtt-sequence.spec    |  39 +
+ src/test/isolation/specs/gtt-table.spec       | 135 ++++
+ src/test/isolation/specscanner.l              |   2 +
+ .../expected/global_temporary_table.out       | 577 +++++++++++++++
+ src/test/regress/expected/rules.out           |  88 +++
+ src/test/regress/parallel_schedule            |   1 +
+ .../regress/sql/global_temporary_table.sql    | 315 ++++++++
+ 13 files changed, 1947 insertions(+), 10 deletions(-)
+ create mode 100644 src/test/isolation/expected/gtt-sequence.out
+ create mode 100644 src/test/isolation/expected/gtt-table.out
+ create mode 100644 src/test/isolation/specs/gtt-sequence.spec
+ create mode 100644 src/test/isolation/specs/gtt-table.spec
+ create mode 100644 src/test/regress/expected/global_temporary_table.out
+ create mode 100644 src/test/regress/sql/global_temporary_table.sql
+
 diff --git a/src/test/isolation/expected/gtt-sequence.out b/src/test/isolation/expected/gtt-sequence.out
 new file mode 100644
 index 00000000000..31db2ebd423
@@ -734,10 +761,10 @@ index 00000000000..5825773aa12
 +(1 row)
 +
 diff --git a/src/test/isolation/isolation_schedule b/src/test/isolation/isolation_schedule
-index 0dae483e827..77d4cff5fcb 100644
+index 529a4cbd4da..b4fd62c7298 100644
 --- a/src/test/isolation/isolation_schedule
 +++ b/src/test/isolation/isolation_schedule
-@@ -98,3 +98,5 @@ test: plpgsql-toast
+@@ -107,3 +107,5 @@ test: cluster-conflict-partition
  test: truncate-conflict
  test: serializable-parallel
  test: serializable-parallel-2
@@ -1666,7 +1693,7 @@ index 00000000000..5b8203f28f5
 +(0 rows)
 +
 diff --git a/src/test/regress/expected/rules.out b/src/test/regress/expected/rules.out
-index 1420288d67b..faa70c947fa 100644
+index 21effe83154..97efaf6bdce 100644
 --- a/src/test/regress/expected/rules.out
 +++ b/src/test/regress/expected/rules.out
 @@ -1337,6 +1337,94 @@ pg_group| SELECT pg_authid.rolname AS groname,
@@ -1765,15 +1792,13 @@ index 1420288d67b..faa70c947fa 100644
      a.type,
      a.database,
 diff --git a/src/test/regress/parallel_schedule b/src/test/regress/parallel_schedule
-index 6d8f524ae9e..7924bc02f59 100644
+index 103e11483d2..d7d6ecdd6c8 100644
 --- a/src/test/regress/parallel_schedule
 +++ b/src/test/regress/parallel_schedule
-@@ -135,3 +135,6 @@ test: fast_default
+@@ -135,3 +135,4 @@ test: event_trigger oidjoins
  
- # run stats by itself because its delay may be insufficient under heavy load
- test: stats
-+
-+# global temp table test
+ # this test also uses event triggers, so likewise run it by itself
+ test: fast_default
 +test: global_temporary_table
 diff --git a/src/test/regress/sql/global_temporary_table.sql b/src/test/regress/sql/global_temporary_table.sql
 new file mode 100644
@@ -2097,5 +2122,5 @@ index 00000000000..51cd9bbbc0c
 +select * from pg_list_gtt_relfrozenxids();
 +
 -- 
-2.32.0 (Apple Git-132)
+2.32.1 (Apple Git-133)
 
