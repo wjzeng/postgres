@@ -548,8 +548,7 @@ Allow ordered scans of partitions to avoid sorting in more cases (David Rowley)
 </para>
 
 <para>
-Previously, a partitioned table with any LIST partition containing multiple values could not be used for ordered partition scans.  Now only non-pruned LIST partitions are checked.  This also helps with
-partitioned tables with DEFAULT partitions.
+Previously, a partitioned table with a DEFAULT partition or a LIST partition containing multiple values could not be used for ordered partition scans.  Now they can be used if these partitions are pruned.
 </para>
 </listitem>
 
@@ -757,7 +756,7 @@ Author: John Naylor <john.naylor@postgresql.org>
 
 <listitem>
 <para>
-Improve validation of ASCII and UTF-8 text by processing 16 bytes at a time (John Naylor)
+Improve validation of UTF-8 text (even if only ASCII) by processing 16 bytes at a time (John Naylor, Heikki Linnakangas)
 </para>
 
 <para>
@@ -2487,17 +2486,6 @@ Author: Fujii Masao <fujii@postgresql.org>
 <listitem>
 <para>
 Add documentation for pg_encoding_to_char() and pg_char_to_encoding() (Ian Lawrence Barwick)
-</para>
-</listitem>
-
-<!--
-Author: Peter Eisentraut <peter@eisentraut.org>
-2022-03-30 [b21c4cf95] doc: Document range_intersect_agg(anymultirange)
--->
-
-<listitem>
-<para>
-Add documentation for range_intersect_agg(anymultirange) (Paul Jungwirth)
 </para>
 </listitem>
 
