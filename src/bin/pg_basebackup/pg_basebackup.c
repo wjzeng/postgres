@@ -694,16 +694,8 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier,
 	bgchild = fork();
 	if (bgchild == 0)
 	{
-		int			ret;
-
 		/* in child process */
-		ret = LogStreamerMain(param);
-
-		/* temp debugging aid to analyze 019_replslot_limit failures */
-		if (verbose)
-			pg_log_info("log streamer with pid %d exiting", getpid());
-
-		exit(ret);
+		exit(LogStreamerMain(param));
 	}
 	else if (bgchild < 0)
 		pg_fatal("could not create background process: %m");
@@ -775,8 +767,7 @@ progress_update_filename(const char *filename)
 	/* We needn't maintain this variable if not doing verbose reports. */
 	if (showprogress && verbose)
 	{
-		if (progress_filename)
-			free(progress_filename);
+		free(progress_filename);
 		if (filename)
 			progress_filename = pg_strdup(filename);
 		else
