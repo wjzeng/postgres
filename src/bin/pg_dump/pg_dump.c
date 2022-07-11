@@ -3134,7 +3134,7 @@ dumpDatabase(Archive *fout)
 
 	/*
 	 * pg_largeobject comes from the old system intact, so set its
-	 * relfrozenxids and relminmxids.
+	 * relfrozenxids, relminmxids and relfilenode.
 	 */
 	if (dopt->binary_upgrade)
 	{
@@ -3142,34 +3142,41 @@ dumpDatabase(Archive *fout)
 		PQExpBuffer loFrozenQry = createPQExpBuffer();
 		PQExpBuffer loOutQry = createPQExpBuffer();
 		int			i_relfrozenxid,
+					i_relfilenode,
+					i_oid,
 					i_relminmxid;
 
 		/*
 		 * pg_largeobject
 		 */
 		if (fout->remoteVersion >= 90300)
-			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, relminmxid\n"
+			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, relminmxid, relfilenode, oid\n"
 							  "FROM pg_catalog.pg_class\n"
-							  "WHERE oid = %u;\n",
-							  LargeObjectRelationId);
+							  "WHERE oid IN (%u, %u);\n",
+							  LargeObjectRelationId, LargeObjectLOidPNIndexId);
 		else
-			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, 0 AS relminmxid\n"
+			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, 0 AS relminmxid, relfilenode, oid\n"
 							  "FROM pg_catalog.pg_class\n"
-							  "WHERE oid = %u;\n",
-							  LargeObjectRelationId);
+							  "WHERE oid IN (%u, %u);\n",
+							  LargeObjectRelationId, LargeObjectLOidPNIndexId);
 
-		lo_res = ExecuteSqlQueryForSingleRow(fout, loFrozenQry->data);
+		lo_res = ExecuteSqlQuery(fout, loFrozenQry->data, PGRES_TUPLES_OK);
 
 		i_relfrozenxid = PQfnumber(lo_res, "relfrozenxid");
 		i_relminmxid = PQfnumber(lo_res, "relminmxid");
+		i_relfilenode = PQfnumber(lo_res, "relfilenode");
+		i_oid = PQfnumber(lo_res, "oid");
 
-		appendPQExpBufferStr(loOutQry, "\n-- For binary upgrade, set pg_largeobject relfrozenxid and relminmxid\n");
-		appendPQExpBuffer(loOutQry, "UPDATE pg_catalog.pg_class\n"
-						  "SET relfrozenxid = '%u', relminmxid = '%u'\n"
-						  "WHERE oid = %u;\n",
-						  atooid(PQgetvalue(lo_res, 0, i_relfrozenxid)),
-						  atooid(PQgetvalue(lo_res, 0, i_relminmxid)),
-						  LargeObjectRelationId);
+		appendPQExpBufferStr(loOutQry, "\n-- For binary upgrade, preserve values for pg_largeobject and its index\n");
+		for (int i = 0; i < PQntuples(lo_res); ++i)
+			appendPQExpBuffer(loOutQry, "UPDATE pg_catalog.pg_class\n"
+							  "SET relfrozenxid = '%u', relminmxid = '%u', relfilenode = '%u'\n"
+							  "WHERE oid = %u;\n",
+							  atooid(PQgetvalue(lo_res, i, i_relfrozenxid)),
+							  atooid(PQgetvalue(lo_res, i, i_relminmxid)),
+							  atooid(PQgetvalue(lo_res, i, i_relfilenode)),
+							  atooid(PQgetvalue(lo_res, i, i_oid)));
+
 		ArchiveEntry(fout, nilCatalogId, createDumpId(),
 					 ARCHIVE_OPTS(.tag = "pg_largeobject",
 								  .description = "pg_largeobject",
@@ -4804,15 +4811,15 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 {
 	PQExpBuffer upgrade_query = createPQExpBuffer();
 	PGresult   *upgrade_res;
-	Oid			relfilenode;
+	RelFileNumber relfilenumber;
 	Oid			toast_oid;
-	Oid			toast_relfilenode;
+	RelFileNumber toast_relfilenumber;
 	char		relkind;
 	Oid			toast_index_oid;
-	Oid			toast_index_relfilenode;
+	RelFileNumber toast_index_relfilenumber;
 
 	/*
-	 * Preserve the OID and relfilenode of the table, table's index, table's
+	 * Preserve the OID and relfilenumber of the table, table's index, table's
 	 * toast table and toast table's index if any.
 	 *
 	 * One complexity is that the current table definition might not require
@@ -4835,16 +4842,16 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 
 	relkind = *PQgetvalue(upgrade_res, 0, PQfnumber(upgrade_res, "relkind"));
 
-	relfilenode = atooid(PQgetvalue(upgrade_res, 0,
-									PQfnumber(upgrade_res, "relfilenode")));
+	relfilenumber = atooid(PQgetvalue(upgrade_res, 0,
+									  PQfnumber(upgrade_res, "relfilenode")));
 	toast_oid = atooid(PQgetvalue(upgrade_res, 0,
 								  PQfnumber(upgrade_res, "reltoastrelid")));
-	toast_relfilenode = atooid(PQgetvalue(upgrade_res, 0,
-										  PQfnumber(upgrade_res, "toast_relfilenode")));
+	toast_relfilenumber = atooid(PQgetvalue(upgrade_res, 0,
+											PQfnumber(upgrade_res, "toast_relfilenode")));
 	toast_index_oid = atooid(PQgetvalue(upgrade_res, 0,
 										PQfnumber(upgrade_res, "indexrelid")));
-	toast_index_relfilenode = atooid(PQgetvalue(upgrade_res, 0,
-												PQfnumber(upgrade_res, "toast_index_relfilenode")));
+	toast_index_relfilenumber = atooid(PQgetvalue(upgrade_res, 0,
+												  PQfnumber(upgrade_res, "toast_index_relfilenode")));
 
 	appendPQExpBufferStr(upgrade_buffer,
 						 "\n-- For binary upgrade, must preserve pg_class oids and relfilenodes\n");
@@ -4857,13 +4864,13 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 
 		/*
 		 * Not every relation has storage. Also, in a pre-v12 database,
-		 * partitioned tables have a relfilenode, which should not be
+		 * partitioned tables have a relfilenumber, which should not be
 		 * preserved when upgrading.
 		 */
-		if (OidIsValid(relfilenode) && relkind != RELKIND_PARTITIONED_TABLE)
+		if (RelFileNumberIsValid(relfilenumber) && relkind != RELKIND_PARTITIONED_TABLE)
 			appendPQExpBuffer(upgrade_buffer,
 							  "SELECT pg_catalog.binary_upgrade_set_next_heap_relfilenode('%u'::pg_catalog.oid);\n",
-							  relfilenode);
+							  relfilenumber);
 
 		/*
 		 * In a pre-v12 database, partitioned tables might be marked as having
@@ -4877,7 +4884,7 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 							  toast_oid);
 			appendPQExpBuffer(upgrade_buffer,
 							  "SELECT pg_catalog.binary_upgrade_set_next_toast_relfilenode('%u'::pg_catalog.oid);\n",
-							  toast_relfilenode);
+							  toast_relfilenumber);
 
 			/* every toast table has an index */
 			appendPQExpBuffer(upgrade_buffer,
@@ -4885,20 +4892,20 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 							  toast_index_oid);
 			appendPQExpBuffer(upgrade_buffer,
 							  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
-							  toast_index_relfilenode);
+							  toast_index_relfilenumber);
 		}
 
 		PQclear(upgrade_res);
 	}
 	else
 	{
-		/* Preserve the OID and relfilenode of the index */
+		/* Preserve the OID and relfilenumber of the index */
 		appendPQExpBuffer(upgrade_buffer,
 						  "SELECT pg_catalog.binary_upgrade_set_next_index_pg_class_oid('%u'::pg_catalog.oid);\n",
 						  pg_class_oid);
 		appendPQExpBuffer(upgrade_buffer,
 						  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
-						  relfilenode);
+						  relfilenumber);
 	}
 
 	appendPQExpBufferChar(upgrade_buffer, '\n');

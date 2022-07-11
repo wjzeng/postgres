@@ -468,9 +468,6 @@ nodetag_to_string(NodeTag tag)
 		case T_TupleTableSlot:
 			return "TupleTableSlot";
 			break;
-		case T_Plan:
-			return "Plan";
-			break;
 		case T_Result:
 			return "Result";
 			break;
@@ -494,9 +491,6 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_BitmapOr:
 			return "BitmapOr";
-			break;
-		case T_Scan:
-			return "Scan";
 			break;
 		case T_SeqScan:
 			return "SeqScan";
@@ -548,9 +542,6 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_CustomScan:
 			return "CustomScan";
-			break;
-		case T_Join:
-			return "Join";
 			break;
 		case T_NestLoop:
 			return "NestLoop";
@@ -623,9 +614,6 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_PlanInvalItem:
 			return "PlanInvalItem";
-			break;
-		case T_PlanState:
-			return "PlanState";
 			break;
 		case T_ResultState:
 			return "ResultState";

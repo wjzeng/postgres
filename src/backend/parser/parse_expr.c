@@ -4574,7 +4574,25 @@ transformJsonSerializeExpr(ParseState *pstate, JsonSerializeExpr *expr)
 	JsonReturning *returning;
 
 	if (expr->output)
+	{
 		returning = transformJsonOutput(pstate, expr->output, true);
+
+		if (returning->typid != BYTEAOID)
+		{
+			char		typcategory;
+			bool		typispreferred;
+
+			get_type_category_preferred(returning->typid, &typcategory,
+										&typispreferred);
+			if (typcategory != TYPCATEGORY_STRING)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("cannot use RETURNING type %s in %s",
+								format_type_be(returning->typid),
+								"JSON_SERIALIZE()"),
+						 errhint("Try returning a string type or bytea")));
+		}
+	}
 	else
 	{
 		/* RETURNING TEXT FORMAT JSON is by default */
