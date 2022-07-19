@@ -69,8 +69,6 @@ static char *accesstype_to_string(ObjectAccessType access, int subId);
 static char *accesstype_arg_to_string(ObjectAccessType access, void *arg);
 
 
-void		_PG_init(void);
-
 /*
  * Module load callback
  */
@@ -1122,6 +1120,9 @@ nodetag_to_string(NodeTag tag)
 		case T_OidList:
 			return "OidList";
 			break;
+		case T_XidList:
+			return "XidList";
+			break;
 		case T_ExtensibleNode:
 			return "ExtensibleNode";
 			break;
@@ -1792,15 +1793,15 @@ accesstype_arg_to_string(ObjectAccessType access, void *arg)
 				return psprintf("%s%s%s%s%s%s",
 								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
 								 ? "internal action," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_CONCURRENTLY)
 								 ? "concurrent drop," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_QUIETLY)
 								 ? "suppress notices," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_SKIP_ORIGINAL)
 								 ? "keep original object," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_SKIP_EXTENSIONS)
 								 ? "keep extensions," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_CONCURRENT_LOCK)
 								 ? "normal concurrent drop," : ""));
 			}
 			break;

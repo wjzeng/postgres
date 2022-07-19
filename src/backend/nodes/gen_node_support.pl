@@ -19,11 +19,18 @@ use strict;
 use warnings;
 
 use File::Basename;
+use Getopt::Long;
 
 use FindBin;
 use lib "$FindBin::RealBin/../catalog";
 
 use Catalog;    # for RenameTempFile
+
+my $output_path = '.';
+
+GetOptions(
+	'outdir:s'       => \$output_path)
+  or die "$0: wrong arguments";
 
 
 # Test whether first argument is element of the list in the second
@@ -33,6 +40,72 @@ sub elem
 	my $x = shift;
 	return grep { $_ eq $x } @_;
 }
+
+
+# This list defines the canonical set of header files to be read by this
+# script, and the order they are to be processed in.  We must have a stable
+# processing order, else the NodeTag enum's order will vary, with catastrophic
+# consequences for ABI stability across different builds.
+#
+# Currently, the various build systems also have copies of this list,
+# so that they can do dependency checking properly.  In future we may be
+# able to make this list the only copy.  For now, we just check that
+# it matches the list of files passed on the command line.
+my @all_input_files = qw(
+  nodes/nodes.h
+  nodes/primnodes.h
+  nodes/parsenodes.h
+  nodes/pathnodes.h
+  nodes/plannodes.h
+  nodes/execnodes.h
+  access/amapi.h
+  access/sdir.h
+  access/tableam.h
+  access/tsmapi.h
+  commands/event_trigger.h
+  commands/trigger.h
+  executor/tuptable.h
+  foreign/fdwapi.h
+  nodes/extensible.h
+  nodes/lockoptions.h
+  nodes/replnodes.h
+  nodes/supportnodes.h
+  nodes/value.h
+  utils/rel.h
+);
+
+# Nodes from these input files are automatically treated as nodetag_only.
+# In the future we might add explicit pg_node_attr labeling to some of these
+# files and remove them from this list, but for now this is the path of least
+# resistance.
+my @nodetag_only_files = qw(
+  nodes/execnodes.h
+  access/amapi.h
+  access/sdir.h
+  access/tableam.h
+  access/tsmapi.h
+  commands/event_trigger.h
+  commands/trigger.h
+  executor/tuptable.h
+  foreign/fdwapi.h
+  nodes/lockoptions.h
+  nodes/replnodes.h
+  nodes/supportnodes.h
+);
+
+# ARM ABI STABILITY CHECK HERE:
+#
+# In stable branches, set $last_nodetag to the name of the last node type
+# that should receive an auto-generated nodetag number, and $last_nodetag_no
+# to its number.  (Find these values in the last line of the current
+# nodetags.h file.)  The script will then complain if those values don't
+# match reality, providing a cross-check that we haven't broken ABI by
+# adding or removing nodetags.
+# In HEAD, these variables should be left undef, since we don't promise
+# ABI stability during development.
+
+my $last_nodetag    = undef;
+my $last_nodetag_no = undef;
 
 # output file names
 my @output_files;
@@ -50,6 +123,8 @@ my @no_equal;
 my @no_read;
 # node types we don't want read/write support for
 my @no_read_write;
+# node types we don't want any support functions for, just node tags
+my @nodetag_only;
 
 # types that are copied by straight assignment
 my @scalar_types = qw(
@@ -88,6 +163,9 @@ my @custom_copy_equal;
 # Similarly for custom read/write implementations.
 my @custom_read_write;
 
+# Track node types with manually assigned NodeTag numbers.
+my %manual_nodetag_number;
+
 # EquivalenceClasses are never moved, so just shallow-copy the pointer
 push @scalar_types, qw(EquivalenceClass* EquivalenceMember*);
 
@@ -95,28 +173,14 @@ push @scalar_types, qw(EquivalenceClass* EquivalenceMember*);
 # currently not required.
 push @scalar_types, qw(QualCost);
 
-# XXX various things we are not publishing right now to stay level
-# with the manual system
-push @no_copy,  qw(CallContext InlineCodeBlock);
-push @no_equal, qw(CallContext InlineCodeBlock);
-push @no_read_write,
-  qw(AccessPriv AlterTableCmd CallContext CreateOpClassItem FunctionParameter InferClause InlineCodeBlock ObjectWithArgs OnConflictClause PartitionCmd RoleSpec VacuumRelation);
-push @no_read, qw(A_ArrayExpr A_Indices A_Indirection AlterStatsStmt
-  CollateClause ColumnDef ColumnRef CreateForeignTableStmt CreateStatsStmt
-  CreateStmt FuncCall ImportForeignSchemaStmt IndexElem IndexStmt
-  JsonAggConstructor JsonArgument JsonArrayAgg JsonArrayConstructor
-  JsonArrayQueryConstructor JsonCommon JsonFuncExpr JsonKeyValue
-  JsonObjectAgg JsonObjectConstructor JsonOutput JsonParseExpr JsonScalarExpr
-  JsonSerializeExpr JsonTable JsonTableColumn JsonTablePlan LockingClause
-  MultiAssignRef PLAssignStmt ParamRef PartitionElem PartitionSpec
-  PlaceHolderVar PublicationObjSpec PublicationTable RangeFunction
-  RangeSubselect RangeTableFunc RangeTableFuncCol RangeTableSample RawStmt
-  ResTarget ReturnStmt SelectStmt SortBy StatsElem TableLikeClause
-  TriggerTransition TypeCast TypeName WindowDef WithClause XmlSerialize);
 
+## check that we have the expected number of files on the command line
+die "wrong number of input files, expected @all_input_files\n"
+  if ($#ARGV != $#all_input_files);
 
 ## read input
 
+my $next_input_file = 0;
 foreach my $infile (@ARGV)
 {
 	my $in_struct;
@@ -131,7 +195,16 @@ foreach my $infile (@ARGV)
 	my %my_field_types;
 	my %my_field_attrs;
 
+	# open file with name from command line, which may have a path prefix
 	open my $ifh, '<', $infile or die "could not open \"$infile\": $!";
+
+	# now shorten filename for use below
+	$infile =~ s!.*src/include/!!;
+
+	# check it against next member of @all_input_files
+	die "wrong input file ordering, expected @all_input_files\n"
+	  if ($infile ne $all_input_files[$next_input_file]);
+	$next_input_file++;
 
 	my $raw_file_content = do { local $/; <$ifh> };
 
@@ -147,14 +220,38 @@ foreach my $infile (@ARGV)
 	}
 	$file_content .= $raw_file_content;
 
-	my $lineno = 0;
+	my $lineno   = 0;
+	my $prevline = '';
 	foreach my $line (split /\n/, $file_content)
 	{
+		# per-physical-line processing
 		$lineno++;
 		chomp $line;
 		$line =~ s/\s*$//;
 		next if $line eq '';
 		next if $line =~ /^#(define|ifdef|endif)/;
+
+		# within a struct, don't process until we have whole logical line
+		if ($in_struct && $subline > 0)
+		{
+			if ($line =~ /;$/)
+			{
+				# found the end, re-attach any previous line(s)
+				$line     = $prevline . $line;
+				$prevline = '';
+			}
+			elsif ($prevline eq ''
+				&& $line =~ /^\s*pg_node_attr\(([\w(), ]*)\)$/)
+			{
+				# special case: node-attributes line doesn't end with semi
+			}
+			else
+			{
+				# set it aside for a moment
+				$prevline .= $line . ' ';
+				next;
+			}
+		}
 
 		# we are analyzing a struct definition
 		if ($in_struct)
@@ -235,6 +332,10 @@ foreach my $infile (@ARGV)
 						{
 							push @no_read, $in_struct;
 						}
+						elsif ($attr eq 'nodetag_only')
+						{
+							push @nodetag_only, $in_struct;
+						}
 						elsif ($attr eq 'special_read_write')
 						{
 							# This attribute is called
@@ -247,6 +348,10 @@ foreach my $infile (@ARGV)
 							# be confusing, since read/write support
 							# does in fact exist.
 							push @no_read_write, $in_struct;
+						}
+						elsif ($attr =~ /^nodetag_number\((\d+)\)$/)
+						{
+							$manual_nodetag_number{$in_struct} = $1;
 						}
 						else
 						{
@@ -295,17 +400,9 @@ foreach my $infile (@ARGV)
 					$node_type_info{$in_struct}->{field_types} = \%ft;
 					$node_type_info{$in_struct}->{field_attrs} = \%fa;
 
-					# Nodes from these files don't need support functions,
-					# just node tags.
-					if (elem basename($infile),
-						qw(execnodes.h trigger.h event_trigger.h amapi.h tableam.h
-						tsmapi.h fdwapi.h tuptable.h replnodes.h supportnodes.h)
-					  )
-					{
-						push @no_copy,       $in_struct;
-						push @no_equal,      $in_struct;
-						push @no_read_write, $in_struct;
-					}
+					# Propagate nodetag_only marking from files to nodes
+					push @nodetag_only, $in_struct
+					  if (elem $infile, @nodetag_only_files);
 
 					# Propagate some node attributes from supertypes
 					if ($supertype)
@@ -328,7 +425,7 @@ foreach my $infile (@ARGV)
 			}
 			# normal struct field
 			elsif ($line =~
-				/^\s*(.+)\s*\b(\w+)(\[\w+\])?\s*(?:pg_node_attr\(([\w(), ]*)\))?;/
+				/^\s*(.+)\s*\b(\w+)(\[[\w\s+]+\])?\s*(?:pg_node_attr\(([\w(), ]*)\))?;/
 			  )
 			{
 				if ($is_node_struct)
@@ -375,12 +472,45 @@ foreach my $infile (@ARGV)
 					$my_field_attrs{$name} = \@attrs;
 				}
 			}
-			else
+			# function pointer field
+			elsif ($line =~
+				/^\s*([\w\s*]+)\s*\(\*(\w+)\)\s*\((.*)\)\s*(?:pg_node_attr\(([\w(), ]*)\))?;/
+			  )
 			{
 				if ($is_node_struct)
 				{
-					#warn "$infile:$lineno: could not parse \"$line\"\n";
+					my $type  = $1;
+					my $name  = $2;
+					my $args  = $3;
+					my $attrs = $4;
+
+					my @attrs;
+					if ($attrs)
+					{
+						@attrs = split /,\s*/, $attrs;
+						foreach my $attr (@attrs)
+						{
+							if (   $attr !~ /^copy_as\(\w+\)$/
+								&& $attr !~ /^read_as\(\w+\)$/
+								&& !elem $attr,
+								qw(equal_ignore read_write_ignore))
+							{
+								die
+								  "$infile:$lineno: unrecognized attribute \"$attr\"\n";
+							}
+						}
+					}
+
+					push @my_fields, $name;
+					$my_field_types{$name} = 'function pointer';
+					$my_field_attrs{$name} = \@attrs;
 				}
+			}
+			else
+			{
+				# We're not too picky about what's outside structs,
+				# but we'd better understand everything inside.
+				die "$infile:$lineno: could not parse \"$line\"\n";
 			}
 		}
 		# not in a struct
@@ -453,17 +583,34 @@ my $header_comment =
 # nodetags.h
 
 push @output_files, 'nodetags.h';
-open my $nt, '>', 'nodetags.h' . $tmpext or die $!;
+open my $nt, '>', "$output_path/nodetags.h$tmpext" or die "$output_path/nodetags.h$tmpext: $!";
 
 printf $nt $header_comment, 'nodetags.h';
 
-my $i = 1;
+my $tagno    = 0;
+my $last_tag = undef;
 foreach my $n (@node_types, @extra_tags)
 {
 	next if elem $n, @abstract_types;
-	print $nt "\tT_${n} = $i,\n";
-	$i++;
+	if (defined $manual_nodetag_number{$n})
+	{
+		# do not change $tagno or $last_tag
+		print $nt "\tT_${n} = $manual_nodetag_number{$n},\n";
+	}
+	else
+	{
+		$tagno++;
+		$last_tag = $n;
+		print $nt "\tT_${n} = $tagno,\n";
+	}
 }
+
+# verify that last auto-assigned nodetag stays stable
+die "ABI stability break: last nodetag is $last_tag not $last_nodetag\n"
+  if (defined $last_nodetag && $last_nodetag ne $last_tag);
+die
+  "ABI stability break: last nodetag number is $tagno not $last_nodetag_no\n"
+  if (defined $last_nodetag_no && $last_nodetag_no != $tagno);
 
 close $nt;
 
@@ -480,13 +627,13 @@ foreach my $infile (sort @ARGV)
 # copyfuncs.c, equalfuncs.c
 
 push @output_files, 'copyfuncs.funcs.c';
-open my $cff, '>', 'copyfuncs.funcs.c' . $tmpext or die $!;
+open my $cff, '>', "$output_path/copyfuncs.funcs.c$tmpext" or die $!;
 push @output_files, 'equalfuncs.funcs.c';
-open my $eff, '>', 'equalfuncs.funcs.c' . $tmpext or die $!;
+open my $eff, '>', "$output_path/equalfuncs.funcs.c$tmpext" or die $!;
 push @output_files, 'copyfuncs.switch.c';
-open my $cfs, '>', 'copyfuncs.switch.c' . $tmpext or die $!;
+open my $cfs, '>', "$output_path/copyfuncs.switch.c$tmpext" or die $!;
 push @output_files, 'equalfuncs.switch.c';
-open my $efs, '>', 'equalfuncs.switch.c' . $tmpext or die $!;
+open my $efs, '>', "$output_path/equalfuncs.switch.c$tmpext" or die $!;
 
 printf $cff $header_comment, 'copyfuncs.funcs.c';
 printf $eff $header_comment, 'equalfuncs.funcs.c';
@@ -500,6 +647,7 @@ print $eff $node_includes;
 foreach my $n (@node_types)
 {
 	next if elem $n, @abstract_types;
+	next if elem $n, @nodetag_only;
 	my $struct_no_copy  = (elem $n, @no_copy);
 	my $struct_no_equal = (elem $n, @no_equal);
 	next if $struct_no_copy && $struct_no_equal;
@@ -625,6 +773,12 @@ _equal${n}(const $n *a, const $n *b)
 				  unless $equal_ignore;
 			}
 		}
+		elsif ($t eq 'function pointer')
+		{
+			# we can copy and compare as a scalar
+			print $cff "\tCOPY_SCALAR_FIELD($f);\n"    unless $copy_ignore;
+			print $eff "\tCOMPARE_SCALAR_FIELD($f);\n" unless $equal_ignore;
+		}
 		# node type
 		elsif ($t =~ /(\w+)\*/ and elem $1, @node_types)
 		{
@@ -672,13 +826,13 @@ close $efs;
 # outfuncs.c, readfuncs.c
 
 push @output_files, 'outfuncs.funcs.c';
-open my $off, '>', 'outfuncs.funcs.c' . $tmpext or die $!;
+open my $off, '>', "$output_path/outfuncs.funcs.c$tmpext" or die $!;
 push @output_files, 'readfuncs.funcs.c';
-open my $rff, '>', 'readfuncs.funcs.c' . $tmpext or die $!;
+open my $rff, '>', "$output_path/readfuncs.funcs.c$tmpext" or die $!;
 push @output_files, 'outfuncs.switch.c';
-open my $ofs, '>', 'outfuncs.switch.c' . $tmpext or die $!;
+open my $ofs, '>', "$output_path/outfuncs.switch.c$tmpext" or die $!;
 push @output_files, 'readfuncs.switch.c';
-open my $rfs, '>', 'readfuncs.switch.c' . $tmpext or die $!;
+open my $rfs, '>', "$output_path/readfuncs.switch.c$tmpext" or die $!;
 
 printf $off $header_comment, 'outfuncs.funcs.c';
 printf $rff $header_comment, 'readfuncs.funcs.c';
@@ -691,15 +845,8 @@ print $rff $node_includes;
 foreach my $n (@node_types)
 {
 	next if elem $n, @abstract_types;
+	next if elem $n, @nodetag_only;
 	next if elem $n, @no_read_write;
-
-	# XXX For now, skip all "Stmt"s except that ones that were there before.
-	if ($n =~ /Stmt$/)
-	{
-		my @keep =
-		  qw(AlterStatsStmt CreateForeignTableStmt CreateStatsStmt CreateStmt DeclareCursorStmt ImportForeignSchemaStmt IndexStmt NotifyStmt PlannedStmt PLAssignStmt RawStmt ReturnStmt SelectStmt SetOperationStmt);
-		next unless elem $n, @keep;
-	}
 
 	my $no_read = (elem $n, @no_read);
 
@@ -725,13 +872,20 @@ _out${n}(StringInfo str, const $n *node)
 
 ";
 
-	print $rff "
+	if (!$no_read)
+	{
+		my $macro =
+		  (@{ $node_type_info{$n}->{fields} } > 0)
+		  ? 'READ_LOCALS'
+		  : 'READ_LOCALS_NO_FIELDS';
+		print $rff "
 static $n *
 _read${n}(void)
 {
-\tREAD_LOCALS($n);
+\t$macro($n);
 
-" unless $no_read;
+";
+	}
 
 	# print instructions for each field
 	foreach my $f (@{ $node_type_info{$n}->{fields} })
@@ -781,6 +935,7 @@ _read${n}(void)
 			print $rff "\tREAD_LOCATION_FIELD($f);\n" unless $no_read;
 		}
 		elsif ($t eq 'int'
+			|| $t eq 'int16'
 			|| $t eq 'int32'
 			|| $t eq 'AttrNumber'
 			|| $t eq 'StrategyNumber')
@@ -895,6 +1050,12 @@ _read${n}(void)
 				  unless $no_read;
 			}
 		}
+		elsif ($t eq 'function pointer')
+		{
+			# We don't print these, and we can't read them either
+			die "cannot read function pointer in struct \"$n\" field \"$f\"\n"
+			  unless $no_read;
+		}
 		# Special treatments of several Path node fields
 		elsif ($t eq 'RelOptInfo*' && elem 'write_only_relids', @a)
 		{
@@ -976,7 +1137,7 @@ close $rfs;
 # now rename the temporary files to their final names
 foreach my $file (@output_files)
 {
-	Catalog::RenameTempFile($file, $tmpext);
+	Catalog::RenameTempFile("$output_path/$file", $tmpext);
 }
 
 
@@ -990,7 +1151,7 @@ END
 	{
 		foreach my $file (@output_files)
 		{
-			unlink($file . $tmpext);
+			unlink("$output_path/$file$tmpext");
 		}
 	}
 

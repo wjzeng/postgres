@@ -429,6 +429,7 @@ sub GenerateFiles
 		HAVE_WINLDAP_H                           => undef,
 		HAVE_WCSTOMBS_L                          => 1,
 		HAVE_WCTYPE_H                            => 1,
+		HAVE_VISIBILITY_ATTRIBUTE                => undef,
 		HAVE_WRITEV                              => undef,
 		HAVE_X509_GET_SIGNATURE_NID              => 1,
 		HAVE_X86_64_POPCNTQ                      => undef,
@@ -624,9 +625,8 @@ sub GenerateFiles
 			'src/backend/storage/lmgr/lwlocknames.txt'))
 	{
 		print "Generating lwlocknames.c and lwlocknames.h...\n";
-		chdir('src/backend/storage/lmgr');
-		system('perl generate-lwlocknames.pl lwlocknames.txt');
-		chdir('../../../..');
+		my $lmgr = 'src/backend/storage/lmgr';
+		system("perl $lmgr/generate-lwlocknames.pl --outdir $lmgr $lmgr/lwlocknames.txt");
 	}
 	if (IsNewer(
 			'src/include/storage/lwlocknames.h',
@@ -662,7 +662,7 @@ sub GenerateFiles
 	{
 		print "Generating errcodes.h...\n";
 		system(
-			'perl src/backend/utils/generate-errcodes.pl src/backend/utils/errcodes.txt > src/backend/utils/errcodes.h'
+			'perl src/backend/utils/generate-errcodes.pl --outfile src/backend/utils/errcodes.h src/backend/utils/errcodes.txt'
 		);
 		copyFile('src/backend/utils/errcodes.h',
 			'src/include/utils/errcodes.h');
@@ -691,9 +691,8 @@ sub GenerateFiles
 	if (IsNewer('src/bin/psql/sql_help.h', 'src/bin/psql/create_help.pl'))
 	{
 		print "Generating sql_help.h...\n";
-		chdir('src/bin/psql');
-		system("perl create_help.pl ../../../doc/src/sgml/ref sql_help");
-		chdir('../../..');
+		my $psql = 'src/bin/psql';
+		system("perl $psql/create_help.pl --docdir doc/src/sgml/ref --outdir $psql --basename sql_help");
 	}
 
 	if (IsNewer('src/common/kwlist_d.h', 'src/include/parser/kwlist.h'))
@@ -746,9 +745,8 @@ sub GenerateFiles
 			'src/backend/parser/gram.y'))
 	{
 		print "Generating preproc.y...\n";
-		chdir('src/interfaces/ecpg/preproc');
-		system('perl parse.pl < ../../../backend/parser/gram.y > preproc.y');
-		chdir('../../../..');
+		my $ecpg = 'src/interfaces/ecpg';
+		system("perl $ecpg/preproc/parse.pl --srcdir $ecpg/preproc --parser src/backend/parser/gram.y --output $ecpg/preproc/preproc.y");
 	}
 
 	unless (-f "src/port/pg_config_paths.h")
@@ -843,40 +841,36 @@ EOF
 			'src/backend/nodes/node-support-stamp',
 			'src/backend/nodes/gen_node_support.pl'))
 	{
-		# XXX duplicates src/backend/nodes/Makefile
-
+		# XXX duplicates node_headers list in src/backend/nodes/Makefile
 		my @node_headers = qw(
 		  nodes/nodes.h
-		  nodes/execnodes.h
-		  nodes/plannodes.h
 		  nodes/primnodes.h
-		  nodes/pathnodes.h
-		  nodes/extensible.h
 		  nodes/parsenodes.h
-		  nodes/replnodes.h
-		  nodes/value.h
-		  commands/trigger.h
-		  commands/event_trigger.h
-		  foreign/fdwapi.h
+		  nodes/pathnodes.h
+		  nodes/plannodes.h
+		  nodes/execnodes.h
 		  access/amapi.h
+		  access/sdir.h
 		  access/tableam.h
 		  access/tsmapi.h
-		  utils/rel.h
-		  nodes/supportnodes.h
+		  commands/event_trigger.h
+		  commands/trigger.h
 		  executor/tuptable.h
+		  foreign/fdwapi.h
+		  nodes/extensible.h
 		  nodes/lockoptions.h
-		  access/sdir.h
+		  nodes/replnodes.h
+		  nodes/supportnodes.h
+		  nodes/value.h
+		  utils/rel.h
 		);
 
-		chdir('src/backend/nodes');
+		my @node_files = map { "src/include/$_" } @node_headers;
 
-		my @node_files = map { "../../../src/include/$_" } @node_headers;
-
-		system("perl gen_node_support.pl @node_files");
-		open(my $f, '>', 'node-support-stamp')
+		system("perl src/backend/nodes/gen_node_support.pl --outdir src/backend/nodes @node_files");
+		open(my $f, '>', 'src/backend/nodes/node-support-stamp')
 		  || confess "Could not touch node-support-stamp";
 		close($f);
-		chdir('../../..');
 	}
 
 	if (IsNewer(
@@ -1262,34 +1256,6 @@ sub GetFakeConfigure
 	$cfg .= " --with-pgport=$port" if defined($port);
 
 	return $cfg;
-}
-
-package VS2013Solution;
-
-#
-# Package that encapsulates a Visual Studio 2013 solution file
-#
-
-use Carp;
-use strict;
-use warnings;
-use base qw(Solution);
-
-no warnings qw(redefine);    ## no critic
-
-sub new
-{
-	my $classname = shift;
-	my $self      = $classname->SUPER::_new(@_);
-	bless($self, $classname);
-
-	$self->{solutionFileVersion}        = '12.00';
-	$self->{vcver}                      = '12.00';
-	$self->{visualStudioName}           = 'Visual Studio 2013';
-	$self->{VisualStudioVersion}        = '12.0.21005.1';
-	$self->{MinimumVisualStudioVersion} = '10.0.40219.1';
-
-	return $self;
 }
 
 package VS2015Solution;
