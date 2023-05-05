@@ -668,7 +668,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	QUOTE
 
-	RANGE READ REAL REASSIGN RECHECK RECURSIVE REF REFERENCES REFERENCING
+	RANGE READ REAL REASSIGN RECHECK RECURSIVE REF_P REFERENCES REFERENCING
 	REFRESH REINDEX RELATIVE_P RELEASE RENAME REPEATABLE REPLACE REPLICA
 	RESET RESTART RESTRICT RETURNING RETURNS REVOKE RIGHT ROLE ROLLBACK ROLLUP
 	ROUTINE ROUTINES ROW ROWS RULE
@@ -784,6 +784,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 stmtblock:	stmtmulti
 			{
 				pg_yyget_extra(yyscanner)->parsetree = $1;
+				(void) yynerrs;		/* suppress compiler warning */
 			}
 		;
 
@@ -13994,15 +13995,15 @@ xmlexists_argument:
 				{
 					$$ = $2;
 				}
-			| PASSING c_expr BY REF
+			| PASSING c_expr BY REF_P
 				{
 					$$ = $2;
 				}
-			| PASSING BY REF c_expr
+			| PASSING BY REF_P c_expr
 				{
 					$$ = $4;
 				}
-			| PASSING BY REF c_expr BY REF
+			| PASSING BY REF_P c_expr BY REF_P
 				{
 					$$ = $4;
 				}
@@ -15209,7 +15210,7 @@ unreserved_keyword:
 			| REASSIGN
 			| RECHECK
 			| RECURSIVE
-			| REF
+			| REF_P
 			| REFERENCING
 			| REFRESH
 			| REINDEX

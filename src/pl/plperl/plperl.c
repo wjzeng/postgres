@@ -268,6 +268,7 @@ static plperl_proc_desc *compile_plperl_function(Oid fn_oid,
 
 static SV  *plperl_hash_from_tuple(HeapTuple tuple, TupleDesc tupdesc);
 static SV  *plperl_hash_from_datum(Datum attr);
+static void check_spi_usage_allowed(void);
 static SV  *plperl_ref_from_pg_array(Datum arg, Oid typid);
 static SV  *split_array(plperl_array_info *info, int first, int last, int nest);
 static SV  *make_array_ref(plperl_array_info *info, int first, int last);
@@ -278,9 +279,9 @@ static Datum plperl_sv_to_datum(SV *sv, Oid typid, int32 typmod,
 				   bool *isnull);
 static void _sv_to_datum_finfo(Oid typid, FmgrInfo *finfo, Oid *typioparam);
 static Datum plperl_array_to_datum(SV *src, Oid typid, int32 typmod);
-static void array_to_datum_internal(AV *av, ArrayBuildState *astate,
+static void array_to_datum_internal(AV *av, ArrayBuildState **astatep,
 						int *ndims, int *dims, int cur_depth,
-						Oid arraytypid, Oid elemtypid, int32 typmod,
+						Oid elemtypid, int32 typmod,
 						FmgrInfo *finfo, Oid typioparam);
 static Datum plperl_hash_to_datum(SV *src, TupleDesc td);
 
@@ -302,9 +303,11 @@ static char *strip_trailing_ws(const char *msg);
 static OP  *pp_require_safe(pTHX);
 static void activate_interpreter(plperl_interp_desc *interp_desc);
 
-#ifdef WIN32
+#if defined(WIN32) && PERL_VERSION_LT(5, 28, 0)
 static char *setlocale_perl(int category, char *locale);
-#endif
+#else
+#define setlocale_perl(a,b)  Perl_setlocale(a,b)
+#endif							/* defined(WIN32) && PERL_VERSION_LT(5, 28, 0) */
 
 /*
  * Decrement the refcount of the given SV within the active Perl interpreter
@@ -1167,11 +1170,16 @@ get_perl_array_ref(SV *sv)
 
 /*
  * helper function for plperl_array_to_datum, recurses for multi-D arrays
+ *
+ * The ArrayBuildState is created only when we first find a scalar element;
+ * if we didn't do it like that, we'd need some other convention for knowing
+ * whether we'd already found any scalars (and thus the number of dimensions
+ * is frozen).
  */
 static void
-array_to_datum_internal(AV *av, ArrayBuildState *astate,
+array_to_datum_internal(AV *av, ArrayBuildState **astatep,
 						int *ndims, int *dims, int cur_depth,
-						Oid arraytypid, Oid elemtypid, int32 typmod,
+						Oid elemtypid, int32 typmod,
 						FmgrInfo *finfo, Oid typioparam)
 {
 	dTHX;
@@ -1191,28 +1199,34 @@ array_to_datum_internal(AV *av, ArrayBuildState *astate,
 		{
 			AV		   *nav = (AV *) SvRV(sav);
 
-			/* dimensionality checks */
-			if (cur_depth + 1 > MAXDIM)
-				ereport(ERROR,
-						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("number of array dimensions (%d) exceeds the maximum allowed (%d)",
-								cur_depth + 1, MAXDIM)));
-
 			/* set size when at first element in this level, else compare */
 			if (i == 0 && *ndims == cur_depth)
 			{
+				/* array after some scalars at same level? */
+				if (*astatep != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+							 errmsg("multidimensional arrays must have array expressions with matching dimensions")));
+				/* too many dimensions? */
+				if (cur_depth + 1 > MAXDIM)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							 errmsg("number of array dimensions (%d) exceeds the maximum allowed (%d)",
+									cur_depth + 1, MAXDIM)));
+				/* OK, add a dimension */
 				dims[*ndims] = av_len(nav) + 1;
 				(*ndims)++;
 			}
-			else if (av_len(nav) + 1 != dims[cur_depth])
+			else if (cur_depth >= *ndims ||
+					 av_len(nav) + 1 != dims[cur_depth])
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 						 errmsg("multidimensional arrays must have array expressions with matching dimensions")));
 
 			/* recurse to fetch elements of this sub-array */
-			array_to_datum_internal(nav, astate,
+			array_to_datum_internal(nav, astatep,
 									ndims, dims, cur_depth + 1,
-									arraytypid, elemtypid, typmod,
+									elemtypid, typmod,
 									finfo, typioparam);
 		}
 		else
@@ -1234,7 +1248,13 @@ array_to_datum_internal(AV *av, ArrayBuildState *astate,
 									 typioparam,
 									 &isnull);
 
-			(void) accumArrayResult(astate, dat, isnull,
+			/* Create ArrayBuildState if we didn't already */
+			if (*astatep == NULL)
+				*astatep = initArrayResult(elemtypid,
+										   CurrentMemoryContext, true);
+
+			/* ... and save the element value in it */
+			(void) accumArrayResult(*astatep, dat, isnull,
 									elemtypid, CurrentMemoryContext);
 		}
 	}
@@ -1247,7 +1267,8 @@ static Datum
 plperl_array_to_datum(SV *src, Oid typid, int32 typmod)
 {
 	dTHX;
-	ArrayBuildState *astate;
+	AV		   *nav = (AV *) SvRV(src);
+	ArrayBuildState *astate = NULL;
 	Oid			elemtypid;
 	FmgrInfo	finfo;
 	Oid			typioparam;
@@ -1263,21 +1284,19 @@ plperl_array_to_datum(SV *src, Oid typid, int32 typmod)
 				 errmsg("cannot convert Perl array to non-array type %s",
 						format_type_be(typid))));
 
-	astate = initArrayResult(elemtypid, CurrentMemoryContext, true);
-
 	_sv_to_datum_finfo(elemtypid, &finfo, &typioparam);
 
 	memset(dims, 0, sizeof(dims));
-	dims[0] = av_len((AV *) SvRV(src)) + 1;
+	dims[0] = av_len(nav) + 1;
 
-	array_to_datum_internal((AV *) SvRV(src), astate,
+	array_to_datum_internal(nav, &astate,
 							&ndims, dims, 1,
-							typid, elemtypid, typmod,
+							elemtypid, typmod,
 							&finfo, typioparam);
 
 	/* ensure we get zero-D array for no inputs, as per PG convention */
-	if (dims[0] <= 0)
-		ndims = 0;
+	if (astate == NULL)
+		return PointerGetDatum(construct_empty_array(elemtypid));
 
 	for (i = 0; i < ndims; i++)
 		lbs[i] = 1;
@@ -1434,13 +1453,15 @@ plperl_sv_to_datum(SV *sv, Oid typid, int32 typmod,
 char *
 plperl_sv_to_literal(SV *sv, char *fqtypename)
 {
-	Datum		str = CStringGetDatum(fqtypename);
-	Oid			typid = DirectFunctionCall1(regtypein, str);
+	Oid			typid;
 	Oid			typoutput;
 	Datum		datum;
 	bool		typisvarlena,
 				isnull;
 
+	check_spi_usage_allowed();
+
+	typid = DirectFunctionCall1(regtypein, CStringGetDatum(fqtypename));
 	if (!OidIsValid(typid))
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
@@ -2119,8 +2140,8 @@ plperl_create_sub(plperl_proc_desc *prodesc, const char *s, Oid fn_oid)
 	 * errors properly.  Perhaps it's because there's another level of eval
 	 * inside mksafefunc?
 	 */
-	count = perl_call_pv("PostgreSQL::InServer::mkfunc",
-						 G_SCALAR | G_EVAL | G_KEEPERR);
+	count = call_pv("PostgreSQL::InServer::mkfunc",
+					G_SCALAR | G_EVAL | G_KEEPERR);
 	SPAGAIN;
 
 	if (count == 1)
@@ -2227,7 +2248,7 @@ plperl_call_perl_func(plperl_proc_desc *desc, FunctionCallInfo fcinfo)
 	PUTBACK;
 
 	/* Do NOT use G_KEEPERR here */
-	count = perl_call_sv(desc->reference, G_SCALAR | G_EVAL);
+	count = call_sv(desc->reference, G_SCALAR | G_EVAL);
 
 	SPAGAIN;
 
@@ -2295,7 +2316,7 @@ plperl_call_perl_trigger_func(plperl_proc_desc *desc, FunctionCallInfo fcinfo,
 	PUTBACK;
 
 	/* Do NOT use G_KEEPERR here */
-	count = perl_call_sv(desc->reference, G_SCALAR | G_EVAL);
+	count = call_sv(desc->reference, G_SCALAR | G_EVAL);
 
 	SPAGAIN;
 
@@ -2358,7 +2379,7 @@ plperl_call_perl_event_trigger_func(plperl_proc_desc *desc,
 	PUTBACK;
 
 	/* Do NOT use G_KEEPERR here */
-	count = perl_call_sv(desc->reference, G_SCALAR | G_EVAL);
+	count = call_sv(desc->reference, G_SCALAR | G_EVAL);
 
 	SPAGAIN;
 
@@ -3101,6 +3122,21 @@ check_spi_usage_allowed(void)
 		/* simple croak as we don't want to involve PostgreSQL code */
 		croak("SPI functions can not be used in END blocks");
 	}
+
+	/*
+	 * Disallow SPI usage if we're not executing a fully-compiled plperl
+	 * function.  It might seem impossible to get here in that case, but there
+	 * are cases where Perl will try to execute code during compilation.  If
+	 * we proceed we are likely to crash trying to dereference the prodesc
+	 * pointer.  Working around that might be possible, but it seems unwise
+	 * because it'd allow code execution to happen while validating a
+	 * function, which is undesirable.
+	 */
+	if (current_call_data == NULL || current_call_data->prodesc == NULL)
+	{
+		/* simple croak as we don't want to involve PostgreSQL code */
+		croak("SPI functions can not be used during function compilation");
+	}
 }
 
 
@@ -3220,6 +3256,8 @@ void
 plperl_return_next(SV *sv)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
+
+	check_spi_usage_allowed();
 
 	PG_TRY();
 	{
@@ -3964,10 +4002,11 @@ plperl_spi_commit(void)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 
+	check_spi_usage_allowed();
+
 	PG_TRY();
 	{
 		SPI_commit();
-		SPI_start_transaction();
 	}
 	PG_CATCH();
 	{
@@ -3989,10 +4028,11 @@ plperl_spi_rollback(void)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 
+	check_spi_usage_allowed();
+
 	PG_TRY();
 	{
 		SPI_rollback();
-		SPI_start_transaction();
 	}
 	PG_CATCH();
 	{
@@ -4025,6 +4065,11 @@ plperl_util_elog(int level, SV *msg)
 {
 	MemoryContext oldcontext = CurrentMemoryContext;
 	char	   *volatile cmsg = NULL;
+
+	/*
+	 * We intentionally omit check_spi_usage_allowed() here, as this seems
+	 * safe to allow even in the contexts that that function rejects.
+	 */
 
 	PG_TRY();
 	{
@@ -4138,8 +4183,10 @@ plperl_inline_callback(void *arg)
 /*
  * Perl's own setlocale(), copied from POSIX.xs
  * (needed because of the calls to new_*())
+ *
+ * Starting in 5.28, perl exposes Perl_setlocale to do so.
  */
-#ifdef WIN32
+#if defined(WIN32) && PERL_VERSION_LT(5, 28, 0)
 static char *
 setlocale_perl(int category, char *locale)
 {
@@ -4207,5 +4254,4 @@ setlocale_perl(int category, char *locale)
 
 	return RETVAL;
 }
-
-#endif							/* WIN32 */
+#endif							/* defined(WIN32) && PERL_VERSION_LT(5, 28, 0) */

@@ -369,7 +369,7 @@ pgtls_write(PGconn *conn, const void *ptr, size_t len)
 	return n;
 }
 
-#ifdef HAVE_X509_GET_SIGNATURE_NID
+#if defined(HAVE_X509_GET_SIGNATURE_NID) || defined(HAVE_X509_GET_SIGNATURE_INFO)
 char *
 pgtls_get_peer_certificate_hash(PGconn *conn, size_t *len)
 {
@@ -389,10 +389,15 @@ pgtls_get_peer_certificate_hash(PGconn *conn, size_t *len)
 
 	/*
 	 * Get the signature algorithm of the certificate to determine the hash
-	 * algorithm to use for the result.
+	 * algorithm to use for the result.  Prefer X509_get_signature_info(),
+	 * introduced in OpenSSL 1.1.1, which can handle RSA-PSS signatures.
 	 */
+#if HAVE_X509_GET_SIGNATURE_INFO
+	if (!X509_get_signature_info(peer_cert, &algo_nid, NULL, NULL, NULL))
+#else
 	if (!OBJ_find_sigid_algs(X509_get_signature_nid(peer_cert),
 							 &algo_nid, NULL))
+#endif
 	{
 		printfPQExpBuffer(&conn->errorMessage,
 						  libpq_gettext("could not determine server certificate signature algorithm\n"));
@@ -1121,11 +1126,45 @@ initialize_SSL(PGconn *conn)
 							  fnbuf);
 			return -1;
 		}
-#ifndef WIN32
-		if (!S_ISREG(buf.st_mode) || buf.st_mode & (S_IRWXG | S_IRWXO))
+
+		/* Key file must be a regular file */
+		if (!S_ISREG(buf.st_mode))
 		{
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("private key file \"%s\" has group or world access; permissions should be u=rw (0600) or less\n"),
+							  libpq_gettext("private key file \"%s\" is not a regular file\n"),
+							  fnbuf);
+			return -1;
+		}
+
+		/*
+		 * Refuse to load world-readable key files.  We accept root-owned
+		 * files with mode 0640 or less, so that we can access system-wide
+		 * certificates if we have a supplementary group membership that
+		 * allows us to read 'em.  For files with non-root ownership, require
+		 * mode 0600 or less.  We need not check the file's ownership exactly;
+		 * if we're able to read it despite it having such restrictive
+		 * permissions, it must have the right ownership.
+		 *
+		 * Note: be very careful about tightening these rules.  Some people
+		 * expect, for example, that a client process running as root should
+		 * be able to use a non-root-owned key file.
+		 *
+		 * Note that roughly similar checks are performed in
+		 * src/backend/libpq/be-secure-common.c so any changes here may need
+		 * to be made there as well.  However, this code caters for the case
+		 * of current user == root, while that code does not.
+		 *
+		 * Ideally we would do similar permissions checks on Windows, but it
+		 * is not clear how that would work since Unix-style permissions may
+		 * not be available.
+		 */
+#if !defined(WIN32) && !defined(__CYGWIN__)
+		if (buf.st_uid == 0 ?
+			buf.st_mode & (S_IWGRP | S_IXGRP | S_IRWXO) :
+			buf.st_mode & (S_IRWXG | S_IRWXO))
+		{
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("private key file \"%s\" has group or world access; file must have permissions u=rw (0600) or less if owned by the current user, or permissions u=rw,g=r (0640) or less if owned by root\n"),
 							  fnbuf);
 			return -1;
 		}
@@ -1531,6 +1570,7 @@ my_BIO_s_socket(void)
 		my_bio_index = BIO_get_new_index();
 		if (my_bio_index == -1)
 			return NULL;
+		my_bio_index |= (BIO_TYPE_DESCRIPTOR | BIO_TYPE_SOURCE_SINK);
 		my_bio_methods = BIO_meth_new(my_bio_index, "libpq socket");
 		if (!my_bio_methods)
 			return NULL;

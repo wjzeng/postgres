@@ -446,9 +446,11 @@ ExecInsert(ModifyTableState *mtstate,
 			 *
 			 * We loop back here if we find a conflict below, either during
 			 * the pre-check, or when we re-check after inserting the tuple
-			 * speculatively.
+			 * speculatively.  Better allow interrupts in case some bug makes
+			 * this an infinite loop.
 			 */
 	vlock:
+			CHECK_FOR_INTERRUPTS();
 			specConflict = false;
 			if (!ExecCheckIndexConstraints(slot, estate, &conflictTid,
 										   arbiterIndexes))
@@ -919,7 +921,7 @@ ldelete:;
 							 mtstate->mt_transition_capture);
 
 		/*
-		 * We've already captured the NEW TABLE row, so make sure any AR
+		 * We've already captured the OLD TABLE row, so make sure any AR
 		 * DELETE trigger fired below doesn't capture it again.
 		 */
 		ar_delete_trig_tcs = NULL;

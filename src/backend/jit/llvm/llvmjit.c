@@ -181,8 +181,6 @@ llvm_release_context(JitContext *context)
 {
 	LLVMJitContext *llvm_context = (LLVMJitContext *) context;
 
-	llvm_enter_fatal_on_oom();
-
 	/*
 	 * When this backend is exiting, don't clean up LLVM. As an error might
 	 * have occurred from within LLVM, we do not want to risk reentering. All
@@ -190,6 +188,8 @@ llvm_release_context(JitContext *context)
 	 */
 	if (proc_exit_inprogress)
 		return;
+
+	llvm_enter_fatal_on_oom();
 
 	if (llvm_context->module)
 	{
@@ -763,6 +763,16 @@ llvm_session_initialize(void)
 	LLVMInitializeNativeAsmParser();
 
 	/*
+	 * When targeting an LLVM version with opaque pointers enabled by
+	 * default, turn them off for the context we build our code in.  We don't
+	 * need to do so for other contexts (e.g. llvm_ts_context).  Once the IR is
+	 * generated, it carries the necessary information.
+	 */
+#if LLVM_VERSION_MAJOR > 14
+	LLVMContextSetOpaquePointers(LLVMGetGlobalContext(), false);
+#endif
+
+	/*
 	 * Synchronize types early, as that also includes inferring the target
 	 * triple.
 	 */
@@ -770,7 +780,7 @@ llvm_session_initialize(void)
 
 	if (LLVMGetTargetFromTriple(llvm_triple, &llvm_targetref, &error) != 0)
 	{
-		elog(FATAL, "failed to query triple %s\n", error);
+		elog(FATAL, "failed to query triple %s", error);
 	}
 
 	/*
@@ -849,6 +859,20 @@ llvm_session_initialize(void)
 static void
 llvm_shutdown(int code, Datum arg)
 {
+	/*
+	 * If llvm_shutdown() is reached while in a fatal-on-oom section an error
+	 * has occurred in the middle of LLVM code. It is not safe to call back
+	 * into LLVM (which is why a FATAL error was thrown).
+	 *
+	 * We do need to shutdown LLVM in other shutdown cases, otherwise
+	 * e.g. profiling data won't be written out.
+	 */
+	if (llvm_in_fatal_on_oom())
+	{
+		Assert(proc_exit_inprogress);
+		return;
+	}
+
 #if LLVM_VERSION_MAJOR > 11
 	{
 		if (llvm_opt3_orc)
@@ -1096,7 +1120,11 @@ llvm_resolve_symbols(LLVMOrcDefinitionGeneratorRef GeneratorObj, void *Ctx,
 					 LLVMOrcJITDylibRef JD, LLVMOrcJITDylibLookupFlags JDLookupFlags,
 					 LLVMOrcCLookupSet LookupSet, size_t LookupSetSize)
 {
+#if LLVM_VERSION_MAJOR > 14
+	LLVMOrcCSymbolMapPairs symbols = palloc0(sizeof(LLVMOrcCSymbolMapPair) * LookupSetSize);
+#else
 	LLVMOrcCSymbolMapPairs symbols = palloc0(sizeof(LLVMJITCSymbolMapPair) * LookupSetSize);
+#endif
 	LLVMErrorRef error;
 	LLVMOrcMaterializationUnitRef mu;
 
@@ -1214,7 +1242,11 @@ llvm_create_jit_instance(LLVMTargetMachineRef tm)
 	 * Symbol resolution support for "special" functions, e.g. a call into an
 	 * SQL callable function.
 	 */
+#if LLVM_VERSION_MAJOR > 14
+	ref_gen = LLVMOrcCreateCustomCAPIDefinitionGenerator(llvm_resolve_symbols, NULL, NULL);
+#else
 	ref_gen = LLVMOrcCreateCustomCAPIDefinitionGenerator(llvm_resolve_symbols, NULL);
+#endif
 	LLVMOrcJITDylibAddGenerator(LLVMOrcLLJITGetMainJITDylib(lljit), ref_gen);
 
 	return lljit;

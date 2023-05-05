@@ -1266,6 +1266,12 @@ SELECT '' AS to_char_26, to_char('100'::numeric, 'FM999');
             | 100
 (1 row)
 
+SELECT to_char('12345678901'::float8, 'FM9999999999D9999900000000000000000');
+     to_char     
+-----------------
+ ##########.####
+(1 row)
+
 -- Check parsing of literal text in a format string
 SELECT '' AS to_char_27, to_char('100'::numeric, 'foo999');
  to_char_27 | to_char 
@@ -1721,6 +1727,12 @@ select coalesce(nullif(0.9999999999 ^ 23300000000000, 0), 0) as rounds_to_zero;
  rounds_to_zero 
 ----------------
               0
+(1 row)
+
+select round(((1 - 1.500012345678e-1000) ^ 1.45e1003) * 1e1000);
+                          round                           
+----------------------------------------------------------
+ 25218976308958387188077465658068501556514992509509282366
 (1 row)
 
 -- cases that used to error out

@@ -6,53 +6,53 @@
 # Sergey Burladyan <eshkinkot@gmail.com>, 2009.
 # Andrey Sudnik <sudnikand@yandex.ru>, 2010.
 # Dmitriy Olshevskiy <olshevskiy87@bk.ru>, 2014.
-# Alexander Lakhin <exclusion@gmail.com>, 2012-2017, 2018, 2019, 2020.
+# Alexander Lakhin <exclusion@gmail.com>, 2012-2017, 2018, 2019, 2020, 2021, 2022.
 msgid ""
 msgstr ""
 "Project-Id-Version: initdb (PostgreSQL current)\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@postgresql.org\n"
-"POT-Creation-Date: 2020-08-10 10:41+0300\n"
-"PO-Revision-Date: 2020-10-29 15:03+0300\n"
+"POT-Creation-Date: 2022-04-26 13:45+0300\n"
+"PO-Revision-Date: 2022-09-05 13:51+0300\n"
 "Last-Translator: Alexander Lakhin <exclusion@gmail.com>\n"
 "Language-Team: Russian <pgsql-ru-general@postgresql.org>\n"
 "Language: ru\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n"
-"%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 
-#: ../../common/exec.c:127 ../../common/exec.c:241 ../../common/exec.c:284
+#: ../../common/exec.c:132 ../../common/exec.c:246 ../../common/exec.c:289
 #, c-format
 msgid "could not identify current directory: %s"
 msgstr "не удалось определить текущий каталог: %s"
 
-#: ../../common/exec.c:146
+#: ../../common/exec.c:151
 #, c-format
 msgid "invalid binary \"%s\""
 msgstr "неверный исполняемый файл \"%s\""
 
-#: ../../common/exec.c:195
+#: ../../common/exec.c:200
 #, c-format
 msgid "could not read binary \"%s\""
 msgstr "не удалось прочитать исполняемый файл \"%s\""
 
-#: ../../common/exec.c:202
+#: ../../common/exec.c:207
 #, c-format
 msgid "could not find a \"%s\" to execute"
 msgstr "не удалось найти запускаемый файл \"%s\""
 
-#: ../../common/exec.c:257 ../../common/exec.c:293
+#: ../../common/exec.c:262 ../../common/exec.c:298
 #, c-format
 msgid "could not change directory to \"%s\": %s"
 msgstr "не удалось перейти в каталог \"%s\": %s"
 
-#: ../../common/exec.c:272
+#: ../../common/exec.c:277
 #, c-format
 msgid "could not read symbolic link \"%s\""
 msgstr "не удалось прочитать символическую ссылку \"%s\""
 
-#: ../../common/exec.c:523
+#: ../../common/exec.c:528
 #, c-format
 msgid "pclose failed: %s"
 msgstr "ошибка pclose: %s"
@@ -881,7 +881,7 @@ msgstr ""
 #: initdb.c:2827 initdb.c:2912 initdb.c:3283
 #, c-format
 msgid "%s: could not access directory \"%s\": %s\n"
-msgstr "%s: нет доступа к каталогу \"%s\": %s\n"
+msgstr "%s: ошибка доступа к каталогу \"%s\": %s\n"
 
 #: initdb.c:2851
 #, c-format
@@ -913,13 +913,13 @@ msgid ""
 "It contains a dot-prefixed/invisible file, perhaps due to it being a mount "
 "point.\n"
 msgstr ""
-"Он содержит файл с точкой (невидимый), возможно это точка монтирования.\n"
+"Он содержит файл с точкой (невидимый), возможно, это точка монтирования.\n"
 
 #: initdb.c:2952
 #, c-format
 msgid ""
 "It contains a lost+found directory, perhaps due to it being a mount point.\n"
-msgstr "Он содержит подкаталог lost+found, возможно это точка монтирования.\n"
+msgstr "Он содержит подкаталог lost+found, возможно, это точка монтирования.\n"
 
 #: initdb.c:2955
 #, c-format
@@ -979,8 +979,8 @@ msgstr "%s: аргументом --wal-segsize должна быть степе�
 #: initdb.c:3348
 #, c-format
 msgid ""
-"%s: superuser name \"%s\" is disallowed; role names cannot begin with \"pg_"
-"\"\n"
+"%s: superuser name \"%s\" is disallowed; role names cannot begin with "
+"\"pg_\"\n"
 msgstr ""
 "%s: имя \"%s\" для суперпользователя не допускается; имена ролей не могут "
 "начинаться с \"pg_\"\n"
@@ -1018,11 +1018,11 @@ msgstr ""
 "Каталог данных может повредиться при сбое операционной системы.\n"
 
 #. translator: This is a placeholder in a shell command.
-#: initdb.c:3413
+#: initdb.c:3416
 msgid "logfile"
 msgstr "файл_журнала"
 
-#: initdb.c:3415
+#: initdb.c:3418
 #, c-format
 msgid ""
 "\n"

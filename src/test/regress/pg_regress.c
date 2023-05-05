@@ -724,6 +724,10 @@ doputenv(const char *var, const char *val)
 static void
 initialize_environment(void)
 {
+	/*
+	 * Set default application_name.  (The test_function may choose to
+	 * override this, but if it doesn't, we have something useful in place.)
+	 */
 	putenv("PGAPPNAME=pg_regress");
 
 	if (nolocale)
@@ -2214,6 +2218,17 @@ regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc
 	{
 		add_stringlist_item(&extra_tests, argv[optind]);
 		optind++;
+	}
+
+	/*
+	 * We must have a database to run the tests in; either a default name, or
+	 * one supplied by the --dbname switch.
+	 */
+	if (!(dblist && dblist->str && dblist->str[0]))
+	{
+		fprintf(stderr, _("%s: no database name was specified\n"),
+				progname);
+		exit(2);
 	}
 
 	if (config_auth_datadir)

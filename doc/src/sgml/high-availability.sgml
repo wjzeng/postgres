@@ -1078,7 +1078,7 @@ primary_slot_name = 'node_a_slot'
     servers.  Waiting for confirmation increases the user's confidence that the
     changes will not be lost in the event of server crashes but it also
     necessarily increases the response time for the requesting transaction.
-    The minimum wait time is the round-trip time between primary to standby.
+    The minimum wait time is the round-trip time between primary and standby.
    </para>
 
    <para>
@@ -2326,7 +2326,7 @@ LOG:  database system is ready to accept read only connections
     Currently, temporary table creation is not allowed during read only
     transactions, so in some cases existing scripts will not run correctly.
     This restriction might be relaxed in a later release. This is
-    both a SQL Standard compliance issue and a technical issue.
+    both a SQL standard compliance issue and a technical issue.
    </para>
 
    <para>
