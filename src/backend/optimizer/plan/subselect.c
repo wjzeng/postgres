@@ -2317,6 +2317,7 @@ finalize_plan(PlannerInfo *root, Plan *plan,
 			break;
 
 		case T_SeqScan:
+		case T_InmemCatalogScan:
 			context.paramids = bms_add_members(context.paramids, scan_params);
 			break;
 

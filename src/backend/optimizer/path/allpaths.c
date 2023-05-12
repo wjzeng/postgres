@@ -1268,10 +1268,20 @@ set_append_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 		if (!rel->consider_parallel)
 			childrel->consider_parallel = false;
 
-		/*
-		 * Compute the child's access paths.
-		 */
-		set_rel_pathlist(root, childrel, childRTindex, childRTE);
+		if (childrel->inmem_catalog)
+		{
+			Path	*path = create_seqscan_path(root, childrel, childrel->lateral_relids, 0);
+
+			add_path(childrel, path);
+			set_cheapest(childrel);
+		}
+		else
+		{
+			/*
+			 * Compute the child's access paths.
+			 */
+			set_rel_pathlist(root, childrel, childRTindex, childRTE);
+		}
 
 		/*
 		 * If child is dummy, ignore it.
@@ -4423,6 +4433,9 @@ print_path(PlannerInfo *root, Path *path, int indent)
 		case T_Path:
 			switch (path->pathtype)
 			{
+				case T_InmemCatalogScan:
+					ptype = "InmemCatalogScan";
+					break;
 				case T_SeqScan:
 					ptype = "SeqScan";
 					break;

@@ -58,6 +58,7 @@
 #include "executor/nodeValuesscan.h"
 #include "executor/nodeWindowAgg.h"
 #include "executor/nodeWorktablescan.h"
+#include "executor/nodeInmemcatalogscan.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
@@ -165,6 +166,10 @@ ExecReScan(PlanState *node)
 
 		case T_SeqScanState:
 			ExecReScanSeqScan((SeqScanState *) node);
+			break;
+
+		case T_InmemCatalogScanState:
+			ExecReScanInmemCatalogScan((InmemCatalogScanState *) node);
 			break;
 
 		case T_SampleScanState:
@@ -568,6 +573,7 @@ ExecSupportsBackwardScan(Plan *node)
 				return true;
 			return false;
 
+		case T_InmemCatalogScan:
 		case T_SeqScan:
 		case T_TidScan:
 		case T_TidRangeScan:

@@ -116,6 +116,9 @@ static inline void
 SetHintBits(HeapTupleHeader tuple, Buffer buffer,
 			uint16 infomask, TransactionId xid)
 {
+	if (BufferIsInvalid(buffer))
+		return;
+
 	if (TransactionIdIsValid(xid))
 	{
 		/* NB: xid must be known committed here! */

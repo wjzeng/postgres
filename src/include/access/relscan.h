@@ -21,6 +21,7 @@
 #include "storage/spin.h"
 #include "utils/relcache.h"
 
+typedef struct InMemHeapScanDescData *InMemHeapScanDesc;
 
 struct ParallelTableScanDescData;
 
@@ -48,6 +49,9 @@ typedef struct TableScanDescData
 
 	struct ParallelTableScanDescData *rs_parallel;	/* parallel scan
 													 * information */
+
+	InMemHeapScanDesc	inmemonlyscan;
+	bool				inmem_started;
 } TableScanDescData;
 typedef struct TableScanDescData *TableScanDesc;
 
@@ -186,6 +190,9 @@ typedef struct SysScanDescData
 	struct IndexScanDescData *iscan;	/* only valid in index-scan case */
 	struct SnapshotData *snapshot;	/* snapshot to unregister at end of scan */
 	struct TupleTableSlot *slot;
+
+	InMemHeapScanDesc inmemonlyscan; /* scan of in-memory entries that are not saved to disk */
+	bool		inmem_started; /* heap/index scan finished, start inmemonlyscan */
 }			SysScanDescData;
 
 #endif							/* RELSCAN_H */

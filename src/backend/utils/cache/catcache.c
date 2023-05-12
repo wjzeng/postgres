@@ -1365,6 +1365,13 @@ SearchCatCacheMiss(CatCache *cache,
 		ct = CatalogCacheCreateEntry(cache, ntp, arguments,
 									 hashValue, hashIndex,
 									 false);
+
+#ifndef CATCACHE_FORCE_RELEASE
+		/* Make sure tuple is removed during ReleaseCatCache */
+		if (scandesc->inmem_started)
+			ct->dead = true;
+#endif
+
 		/* immediately set the refcount to 1 */
 		ResourceOwnerEnlargeCatCacheRefs(CurrentResourceOwner);
 		ct->refcount++;

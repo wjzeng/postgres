@@ -25,6 +25,7 @@
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "catalog/index.h"
+#include "catalog/inmemcatalog.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -62,6 +63,8 @@
  * ----------------------------------------------------------------
  */
 
+static HeapTuple systable_getnext_ext(SysScanDesc sysscan);
+
 /* ----------------
  *	RelationGetIndexScan -- Create and fill an IndexScanDesc.
  *
@@ -82,7 +85,7 @@ RelationGetIndexScan(Relation indexRelation, int nkeys, int norderbys)
 {
 	IndexScanDesc scan;
 
-	scan = (IndexScanDesc) palloc(sizeof(IndexScanDescData));
+	scan = (IndexScanDesc) palloc0(sizeof(IndexScanDescData));
 
 	scan->heapRelation = NULL;	/* may be set later */
 	scan->xs_heapfetch = NULL;
@@ -392,6 +395,9 @@ systable_beginscan(Relation heapRelation,
 {
 	SysScanDesc sysscan;
 	Relation	irel;
+	InMemHeapRelation memheap = NULL;
+	AttrNumber *orig_attnos = NULL;
+	bool		should_store_inmem = CatalogMaybeStoreInMem(heapRelation);
 
 	if (indexOK &&
 		!IgnoreSystemIndexes &&
@@ -405,6 +411,8 @@ systable_beginscan(Relation heapRelation,
 	sysscan->heap_rel = heapRelation;
 	sysscan->irel = irel;
 	sysscan->slot = table_slot_create(heapRelation, NULL);
+	sysscan->inmem_started = false;
+	sysscan->inmemonlyscan = NULL;
 
 	if (snapshot == NULL)
 	{
@@ -423,11 +431,24 @@ systable_beginscan(Relation heapRelation,
 	{
 		int			i;
 
+		if (!IsBootstrapProcessingMode() &&
+			RelationGetRelid(heapRelation) != irel->rd_index->indrelid)
+			elog(ERROR, "systable_beginscan Internal error %u %u", RelationGetRelid(heapRelation), irel->rd_index->indrelid);
+
+		/* save original key attribute numbers in case we need them for an in-memory scan in addition to the index scan */
+		if (should_store_inmem)
+			orig_attnos = palloc0(nkeys * sizeof(AttrNumber));
+
 		/* Change attribute numbers to be index column numbers. */
 		for (i = 0; i < nkeys; i++)
 		{
 			int			j;
 
+			if (should_store_inmem)
+			{
+				Assert(key[i].sk_attno == irel->rd_index->indkey.values[i]);
+				orig_attnos[i] = key[i].sk_attno;
+			}
 			for (j = 0; j < IndexRelationGetNumberOfAttributes(irel); j++)
 			{
 				if (key[i].sk_attno == irel->rd_index->indkey.values[j])
@@ -468,6 +489,16 @@ systable_beginscan(Relation heapRelation,
 	if (TransactionIdIsValid(CheckXidAlive))
 		bsysscan = true;
 
+	/*
+	 * Check if there is in-memory-only tuples.
+	 * In the case of in-memory tuples, there is no need to check for
+	 * this mapping because it would be passed to the segments together
+	 * with the heap tuples.
+	 */
+	memheap = OidGetInMemHeapRelation(heapRelation->rd_id, INMEM_ONLY_MAPPING);
+	if (NULL != memheap)
+		sysscan->inmemonlyscan = InMemHeap_BeginScan(memheap, nkeys, key, orig_attnos, true, snapshot, NULL, true);
+
 	return sysscan;
 }
 
@@ -490,6 +521,25 @@ HandleConcurrentAbort()
 				 errmsg("transaction aborted during system catalog scan")));
 }
 
+HeapTuple
+systable_getnext(SysScanDesc sysscan)
+{
+	HeapTuple	htup = NULL;
+
+	if (!sysscan->inmem_started)
+	{
+		htup = systable_getnext_ext(sysscan);
+
+		if ((NULL == htup) && (NULL != sysscan->inmemonlyscan))
+			sysscan->inmem_started = true;
+	}
+
+	if (sysscan->inmem_started)
+		htup = InMemHeap_GetNext(sysscan->inmemonlyscan, ForwardScanDirection);
+
+	return htup;
+}
+
 /*
  * systable_getnext --- get next tuple in a heap-or-index scan
  *
@@ -502,8 +552,8 @@ HandleConcurrentAbort()
  * XXX: It'd probably make sense to offer a slot based interface, at least
  * optionally.
  */
-HeapTuple
-systable_getnext(SysScanDesc sysscan)
+static HeapTuple
+systable_getnext_ext(SysScanDesc sysscan)
 {
 	HeapTuple	htup = NULL;
 
@@ -567,6 +617,9 @@ systable_recheck_tuple(SysScanDesc sysscan, HeapTuple tup)
 	Snapshot	freshsnap;
 	bool		result;
 
+	if (sysscan->inmem_started)
+		return true;
+
 	Assert(tup == ExecFetchSlotHeapTuple(sysscan->slot, false, NULL));
 
 	/*
@@ -621,6 +674,12 @@ systable_endscan(SysScanDesc sysscan)
 	 */
 	if (TransactionIdIsValid(CheckXidAlive))
 		bsysscan = false;
+
+	if (sysscan->inmemonlyscan)
+	{
+		InMemHeap_EndScan(sysscan->inmemonlyscan, true);
+		sysscan->inmemonlyscan = NULL;
+	}
 
 	pfree(sysscan);
 }

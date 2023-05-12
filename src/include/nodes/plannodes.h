@@ -396,6 +396,11 @@ typedef struct SeqScan
 	Scan		scan;
 } SeqScan;
 
+typedef struct InmemCatalogScan
+{
+	Scan		scan;
+} InmemCatalogScan;
+
 /* ----------------
  *		table sample scan node
  * ----------------

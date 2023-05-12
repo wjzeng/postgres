@@ -817,4 +817,6 @@
 # CUSTOMIZED OPTIONS
 #------------------------------------------------------------------------------
 
+#in_memory_catalog_log = off
+
 # Add settings for extensions here

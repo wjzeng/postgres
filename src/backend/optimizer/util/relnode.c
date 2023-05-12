@@ -283,6 +283,7 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptInfo *parent)
 	rel->all_partrels = NULL;
 	rel->partexprs = NULL;
 	rel->nullable_partexprs = NULL;
+	rel->inmem_catalog = false;
 
 	/*
 	 * Pass assorted information down the inheritance hierarchy.

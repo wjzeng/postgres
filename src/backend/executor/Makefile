@@ -75,6 +75,7 @@ OBJS = \
 	nodeValuesscan.o \
 	nodeWindowAgg.o \
 	nodeWorktablescan.o \
+	nodeInmemcatalogscan.o \
 	spi.o \
 	tqueue.o \
 	tstoreReceiver.o

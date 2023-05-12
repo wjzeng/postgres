@@ -1476,6 +1476,11 @@ typedef struct SeqScanState
 	Size		pscan_len;		/* size of parallel heap scan descriptor */
 } SeqScanState;
 
+typedef struct InmemCatalogScanState
+{
+	ScanState	ss;				/* its first field is NodeTag */
+} InmemCatalogScanState;
+
 /* ----------------
  *	 SampleScanState information
  * ----------------

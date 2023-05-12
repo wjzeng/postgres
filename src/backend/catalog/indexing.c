@@ -21,6 +21,7 @@
 #include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/indexing.h"
+#include "catalog/inmemcatalog.h"
 #include "executor/executor.h"
 #include "utils/rel.h"
 
@@ -236,6 +237,12 @@ CatalogTupleInsert(Relation heapRel, HeapTuple tup)
 
 	CatalogTupleCheckConstraints(heapRel, tup);
 
+	if (IsTupleShouldStoreInMemCatalog(heapRel, tup))
+	{
+		InMemHeap_Insert(heapRel, tup);
+		return;
+	}
+
 	indstate = CatalogOpenIndexes(heapRel);
 
 	simple_heap_insert(heapRel, tup);
@@ -258,6 +265,12 @@ CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
 {
 	CatalogTupleCheckConstraints(heapRel, tup);
 
+	if (IsTupleShouldStoreInMemCatalog(heapRel, tup))
+	{
+		InMemHeap_Insert(heapRel, tup);
+		return;
+	}
+
 	simple_heap_insert(heapRel, tup);
 
 	CatalogIndexInsert(indstate, tup, TU_All);
@@ -273,8 +286,30 @@ void
 CatalogTuplesMultiInsertWithInfo(Relation heapRel, TupleTableSlot **slot,
 								 int ntuples, CatalogIndexState indstate)
 {
+	bool	in_mem_catalog = false;
+
 	/* Nothing to do */
 	if (ntuples <= 0)
+		return;
+
+	for (int i = 0; i < ntuples; i++)
+	{
+		bool		should_free;
+		HeapTuple	tuple;
+
+		tuple = ExecFetchSlotHeapTuple(slot[i], true, &should_free);
+		tuple->t_tableOid = slot[i]->tts_tableOid;
+		if (IsTupleShouldStoreInMemCatalog(heapRel, tuple))
+		{
+			InMemHeap_Insert(heapRel, tuple);
+			in_mem_catalog = true;
+		}
+
+		if (should_free)
+			heap_freetuple(tuple);
+	}
+
+	if (in_mem_catalog)
 		return;
 
 	heap_multi_insert(heapRel, slot, ntuples,
@@ -314,8 +349,16 @@ CatalogTupleUpdate(Relation heapRel, ItemPointer otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
 	TU_UpdateIndexes updateIndexes = TU_All;
+	uint32		pos;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
+
+	pos = GetMemTuplePosition(heapRel, otid);
+	if (BlockNumberIsValid(pos))
+	{
+		InMemHeap_Update(heapRel, tup, pos, false);
+		return;
+	}
 
 	indstate = CatalogOpenIndexes(heapRel);
 
@@ -338,8 +381,16 @@ CatalogTupleUpdateWithInfo(Relation heapRel, ItemPointer otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
 	TU_UpdateIndexes updateIndexes = TU_All;
+	uint32 	pos;
 
 	CatalogTupleCheckConstraints(heapRel, tup);
+
+	pos = GetMemTuplePosition(heapRel, otid);
+	if (BlockNumberIsValid(pos))
+	{
+		InMemHeap_Update(heapRel, tup, pos, false);
+		return;
+	}
 
 	simple_heap_update(heapRel, otid, tup, &updateIndexes);
 
@@ -364,5 +415,11 @@ CatalogTupleUpdateWithInfo(Relation heapRel, ItemPointer otid, HeapTuple tup,
 void
 CatalogTupleDelete(Relation heapRel, ItemPointer tid)
 {
-	simple_heap_delete(heapRel, tid);
+	uint32	pos;
+
+	pos = GetMemTuplePosition(heapRel, tid);
+	if (BlockNumberIsValid(pos))
+		InMemHeap_Delete(heapRel, pos);
+	else
+		simple_heap_delete(heapRel, tid);
 }

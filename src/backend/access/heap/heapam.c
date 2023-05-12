@@ -53,6 +53,7 @@
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
 #include "commands/vacuum.h"
+#include "catalog/inmemcatalog.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
@@ -73,8 +74,6 @@
 #include "utils/spccache.h"
 
 
-static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
-									 TransactionId xid, CommandId cid, int options);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer newbuf, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
@@ -87,11 +86,6 @@ static Bitmapset *HeapDetermineColumnsInfo(Relation relation,
 static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
 								 LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool *have_tuple_lock);
-static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
-									  uint16 old_infomask2, TransactionId add_to_xmax,
-									  LockTupleMode mode, bool is_update,
-									  TransactionId *result_xmax, uint16 *result_infomask,
-									  uint16 *result_infomask2);
 static TM_Result heap_lock_updated_tuple(Relation rel, HeapTuple tuple,
 										 ItemPointer ctid, TransactionId xid,
 										 LockTupleMode mode);
@@ -114,7 +108,7 @@ static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
-
+static HeapTuple heap_getnext_ext(TableScanDesc sscan, ScanDirection direction);
 
 /*
  * Each tuple lock mode has a corresponding heavyweight lock, and one or two
@@ -954,7 +948,7 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	/*
 	 * allocate and initialize scan descriptor
 	 */
-	scan = (HeapScanDesc) palloc(sizeof(HeapScanDescData));
+	scan = (HeapScanDesc) palloc0(sizeof(HeapScanDescData));
 
 	scan->rs_base.rs_rd = relation;
 	scan->rs_base.rs_snapshot = snapshot;
@@ -1091,6 +1085,36 @@ heap_endscan(TableScanDesc sscan)
 
 HeapTuple
 heap_getnext(TableScanDesc sscan, ScanDirection direction)
+{
+	HeapTuple tuple = NULL;
+
+	if (!sscan->inmem_started)
+	{
+		tuple = heap_getnext_ext(sscan, direction);
+		if (tuple)
+			return tuple;
+	}
+
+	if (sscan->inmemonlyscan != NULL)
+		sscan->inmem_started = true;
+
+	if (sscan->inmem_started)
+	{
+		tuple = InMemHeap_GetNext(sscan->inmemonlyscan, direction);
+		if (tuple)
+		{
+			if (in_memory_catalog_log)
+				elog(WARNING, "hint one record from memcatalog %s by heap_getnext", RelationGetRelationName(sscan->rs_rd));
+
+			return tuple;
+		}
+	}
+
+	return NULL;
+}
+
+static HeapTuple
+heap_getnext_ext(TableScanDesc sscan, ScanDirection direction)
 {
 	HeapScanDesc scan = (HeapScanDesc) sscan;
 
@@ -2010,7 +2034,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
  * version of the tuple if it was toasted, or the original tuple if not. Note
  * that in any case, the header fields are also set in the original tuple.
  */
-static HeapTuple
+HeapTuple
 heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
 					CommandId cid, int options)
 {
@@ -4877,7 +4901,7 @@ heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
  * window, but it's still possible to end up creating an unnecessary
  * MultiXactId.  Fortunately this is harmless.
  */
-static void
+void
 compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
 						  uint16 old_infomask2, TransactionId add_to_xmax,
 						  LockTupleMode mode, bool is_update,
@@ -5889,6 +5913,7 @@ heap_inplace_update(Relation relation, HeapTuple tuple)
 	HeapTupleHeader htup;
 	uint32		oldlen;
 	uint32		newlen;
+	uint32		pos;
 
 	/*
 	 * For now, we don't allow parallel updates.  Unlike a regular update,
@@ -5900,6 +5925,13 @@ heap_inplace_update(Relation relation, HeapTuple tuple)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot update tuples during a parallel operation")));
+
+	pos = GetMemTuplePosition(relation, &tuple->t_self);
+	if (BlockNumberIsValid(pos))
+	{
+		InMemHeap_Update(relation, tuple, pos, true);
+		return;
+	}
 
 	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(&(tuple->t_self)));
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);

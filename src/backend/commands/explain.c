@@ -1106,6 +1106,7 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 
 	switch (nodeTag(plan))
 	{
+		case T_InmemCatalogScan:
 		case T_SeqScan:
 		case T_SampleScan:
 		case T_IndexScan:
@@ -1257,6 +1258,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_SeqScan:
 			pname = sname = "Seq Scan";
+			break;
+		case T_InmemCatalogScan:
+			pname = sname  = "InmemCatalog Scan";
 			break;
 		case T_SampleScan:
 			pname = sname = "Sample Scan";
@@ -1481,6 +1485,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 	switch (nodeTag(plan))
 	{
+		case T_InmemCatalogScan:
 		case T_SeqScan:
 		case T_SampleScan:
 		case T_BitmapHeapScan:
@@ -1826,6 +1831,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 							 planstate, ancestors, es);
 			/* fall through to print additional fields the same as SeqScan */
 			/* FALLTHROUGH */
+		case T_InmemCatalogScan:
 		case T_SeqScan:
 		case T_ValuesScan:
 		case T_CteScan:
@@ -3813,6 +3819,7 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 
 	switch (nodeTag(plan))
 	{
+		case T_InmemCatalogScan:
 		case T_SeqScan:
 		case T_SampleScan:
 		case T_IndexScan:

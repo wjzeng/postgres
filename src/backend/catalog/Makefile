@@ -20,6 +20,7 @@ OBJS = \
 	heap.o \
 	index.o \
 	indexing.o \
+	inmemcatalog.o \
 	namespace.o \
 	objectaccess.o \
 	objectaddress.o \

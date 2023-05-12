@@ -14,8 +14,10 @@
  */
 #include "postgres.h"
 
+#include "catalog/catalog.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
+#include "catalog/inmemcatalog.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -207,6 +209,11 @@ add_other_rels_to_query(PlannerInfo *root)
 		/* Ignore any "otherrels" that were already added. */
 		if (rel->reloptkind != RELOPT_BASEREL)
 			continue;
+
+		if (rte->rtekind == RTE_RELATION &&
+			IsCatalogRelationOid(rte->relid) &&
+			OidGetInMemHeapRelation(rte->relid, INMEM_ONLY_MAPPING))
+			rte->inh = true;
 
 		/* If it's marked as inheritable, look for children. */
 		if (rte->inh)

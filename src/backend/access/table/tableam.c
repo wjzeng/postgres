@@ -24,6 +24,7 @@
 #include "access/syncscan.h"
 #include "access/tableam.h"
 #include "access/xact.h"
+#include "catalog/inmemcatalog.h"
 #include "optimizer/plancat.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
@@ -115,9 +116,19 @@ table_beginscan_catalog(Relation relation, int nkeys, struct ScanKeyData *key)
 	SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE | SO_TEMP_SNAPSHOT;
 	Oid			relid = RelationGetRelid(relation);
 	Snapshot	snapshot = RegisterSnapshot(GetCatalogSnapshot(relid));
+	TableScanDesc	desc;
 
-	return relation->rd_tableam->scan_begin(relation, snapshot, nkeys, key,
+	desc = relation->rd_tableam->scan_begin(relation, snapshot, nkeys, key,
 											NULL, flags);
+
+	if (CatalogMaybeStoreInMem(relation))
+	{
+		InMemHeapRelation memheap = OidGetInMemHeapRelation(RelationGetRelid(relation), INMEM_ONLY_MAPPING);
+		if (memheap)
+			desc->inmemonlyscan = InMemHeap_BeginScan(memheap, nkeys, key, NULL, true, snapshot, NULL, false);
+	}
+
+	return desc;
 }
 
 void

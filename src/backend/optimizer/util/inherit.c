@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/catalog.h"
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/partition.h"
@@ -165,9 +166,19 @@ expand_inherited_rtentry(PlannerInfo *root, RelOptInfo *rel,
 		 */
 		List	   *inhOIDs;
 		ListCell   *l;
+		bool		add_inmemcatalog_scan = false;
+		bool		first = true;
 
-		/* Scan for all members of inheritance set, acquire needed locks */
-		inhOIDs = find_all_inheritors(parentOID, lockmode, NULL);
+		if (IsCatalogRelationOid(rte->relid))
+		{
+			inhOIDs = list_make2_oid(rte->relid, rte->relid);
+			add_inmemcatalog_scan = true;
+		}
+		else
+		{
+			/* Scan for all members of inheritance set, acquire needed locks */
+			inhOIDs = find_all_inheritors(parentOID, lockmode, NULL);
+		}
 
 		/*
 		 * We used to special-case the situation where the table no longer has
@@ -193,6 +204,16 @@ expand_inherited_rtentry(PlannerInfo *root, RelOptInfo *rel,
 			Relation	newrelation;
 			RangeTblEntry *childrte;
 			Index		childRTindex;
+			bool		inmem_rel = false;
+			RelOptInfo	*child_rel;
+
+			if (first)
+				first = false;
+			else if (add_inmemcatalog_scan)
+			{
+				Assert(IsCatalogRelationOid(childOID));
+				inmem_rel = true;
+			}
 
 			/* Open rel if needed; we already have required locks */
 			if (childOID != parentOID)
@@ -218,7 +239,9 @@ expand_inherited_rtentry(PlannerInfo *root, RelOptInfo *rel,
 											&childrte, &childRTindex);
 
 			/* Create the otherrel RelOptInfo too. */
-			(void) build_simple_rel(root, childRTindex, rel);
+			child_rel = build_simple_rel(root, childRTindex, rel);
+
+			child_rel->inmem_catalog = inmem_rel;
 
 			/* Close child relations, but keep locks */
 			if (childOID != parentOID)

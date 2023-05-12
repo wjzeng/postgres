@@ -36,6 +36,7 @@
 #include "archive/archive_module.h"
 #include "catalog/namespace.h"
 #include "catalog/storage.h"
+#include "catalog/inmemcatalog.h"
 #include "commands/async.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
@@ -1998,6 +1999,15 @@ struct config_bool ConfigureNamesBool[] =
 			gettext_noop("Sets whether a WAL receiver should create a temporary replication slot if no permanent slot is configured."),
 		},
 		&wal_receiver_create_temp_slot,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"in_memory_catalog_log", PGC_USERSET, UNGROUPED,
+			gettext_noop("log in memory catalog."),
+		},
+		&in_memory_catalog_log,
 		false,
 		NULL, NULL, NULL
 	},

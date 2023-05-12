@@ -20,6 +20,7 @@
 #include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/xact.h"
+#include "catalog/inmemcatalog.h"
 #include "executor/tuptable.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
@@ -1008,6 +1009,12 @@ table_beginscan_analyze(Relation rel)
 static inline void
 table_endscan(TableScanDesc scan)
 {
+	if (scan->inmemonlyscan)
+	{
+		InMemHeap_EndScan(scan->inmemonlyscan, false);
+		scan->inmemonlyscan = NULL;
+	}
+
 	scan->rs_rd->rd_tableam->scan_end(scan);
 }
 

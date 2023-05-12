@@ -1019,6 +1019,8 @@ typedef struct RelOptInfo
 	/* Relids set of all partition relids */
 	Relids		all_partrels;
 
+	bool		inmem_catalog;
+
 	/*
 	 * These arrays are of length partkey->partnatts, which we don't have at
 	 * hand, so don't try to print

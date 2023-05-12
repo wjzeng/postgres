@@ -280,7 +280,13 @@ extern void simple_heap_update(Relation relation, ItemPointer otid,
 
 extern TransactionId heap_index_delete_tuples(Relation rel,
 											  TM_IndexDeleteOp *delstate);
-
+extern HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
+									 TransactionId xid, CommandId cid, int options);;
+extern void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
+									  uint16 old_infomask2, TransactionId add_to_xmax,
+									  LockTupleMode mode, bool is_update,
+									  TransactionId *result_xmax, uint16 *result_infomask,
+									  uint16 *result_infomask2);
 /* in heap/pruneheap.c */
 struct GlobalVisState;
 extern void heap_page_prune_opt(Relation relation, Buffer buffer);

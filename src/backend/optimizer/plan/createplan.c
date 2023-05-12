@@ -178,6 +178,7 @@ static void copy_plan_costsize(Plan *dest, Plan *src);
 static void label_sort_with_costsize(PlannerInfo *root, Sort *plan,
 									 double limit_tuples);
 static SeqScan *make_seqscan(List *qptlist, List *qpqual, Index scanrelid);
+static InmemCatalogScan *make_inmemcatalogscan(List *qptlist, List *qpqual, Index scanrelid);
 static SampleScan *make_samplescan(List *qptlist, List *qpqual, Index scanrelid,
 								   TableSampleClause *tsc);
 static IndexScan *make_indexscan(List *qptlist, List *qpqual, Index scanrelid,
@@ -2919,9 +2920,12 @@ create_seqscan_plan(PlannerInfo *root, Path *best_path,
 			replace_nestloop_params(root, (Node *) scan_clauses);
 	}
 
-	scan_plan = make_seqscan(tlist,
-							 scan_clauses,
-							 scan_relid);
+	if (best_path->parent->inmem_catalog)
+		scan_plan = (SeqScan *)make_inmemcatalogscan(tlist, scan_clauses, scan_relid);
+	else
+		scan_plan = make_seqscan(tlist,
+								 scan_clauses,
+								 scan_relid);
 
 	copy_generic_path_info(&scan_plan->scan.plan, best_path);
 
@@ -5469,6 +5473,23 @@ make_seqscan(List *qptlist,
 {
 	SeqScan    *node = makeNode(SeqScan);
 	Plan	   *plan = &node->scan.plan;
+
+	plan->targetlist = qptlist;
+	plan->qual = qpqual;
+	plan->lefttree = NULL;
+	plan->righttree = NULL;
+	node->scan.scanrelid = scanrelid;
+
+	return node;
+}
+
+static InmemCatalogScan *
+make_inmemcatalogscan(List *qptlist,
+			 List *qpqual,
+			 Index scanrelid)
+{
+	InmemCatalogScan	*node = makeNode(InmemCatalogScan);
+	Plan				*plan = &node->scan.plan;
 
 	plan->targetlist = qptlist;
 	plan->qual = qpqual;

@@ -330,6 +330,7 @@ search_plan_tree(PlanState *node, Oid table_oid,
 			 * relationship of such a node's current output tuple to the
 			 * children's current outputs.)
 			 */
+		case T_InmemCatalogScanState:
 		case T_SeqScanState:
 		case T_SampleScanState:
 		case T_IndexScanState:

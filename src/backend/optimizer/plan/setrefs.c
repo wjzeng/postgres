@@ -623,6 +623,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 	switch (nodeTag(plan))
 	{
 		case T_SeqScan:
+		case T_InmemCatalogScan:
 			{
 				SeqScan    *splan = (SeqScan *) plan;
 
