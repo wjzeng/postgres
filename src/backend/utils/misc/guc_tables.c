@@ -2780,7 +2780,7 @@ struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_XBLOCKS
 		},
 		&WalWriterFlushAfter,
-		(1024 * 1024) / XLOG_BLCKSZ, 0, INT_MAX,
+		DEFAULT_WAL_WRITER_FLUSH_AFTER, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -4568,7 +4568,7 @@ struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"io_direct", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+		{"debug_io_direct", PGC_POSTMASTER, DEVELOPER_OPTIONS,
 			gettext_noop("Use direct I/O for file access."),
 			NULL,
 			GUC_LIST_INPUT | GUC_NOT_IN_SAMPLE
