@@ -42,9 +42,7 @@ typedef struct
 	int			varno;			/* RT index of Var */
 	AttrNumber	varattno;		/* attr number of Var */
 	AttrNumber	resno;			/* TLE position of Var */
-#ifdef USE_ASSERT_CHECKING
 	Bitmapset  *varnullingrels; /* Var's varnullingrels */
-#endif
 } tlist_vinfo;
 
 typedef struct
@@ -2682,9 +2680,7 @@ build_tlist_index(List *tlist)
 			vinfo->varno = var->varno;
 			vinfo->varattno = var->varattno;
 			vinfo->resno = tle->resno;
-#ifdef USE_ASSERT_CHECKING
 			vinfo->varnullingrels = var->varnullingrels;
-#endif
 			vinfo++;
 		}
 		else if (tle->expr && IsA(tle->expr, PlaceHolderVar))
@@ -2737,9 +2733,7 @@ build_tlist_index_other_vars(List *tlist, int ignore_rel)
 				vinfo->varno = var->varno;
 				vinfo->varattno = var->varattno;
 				vinfo->resno = tle->resno;
-#ifdef USE_ASSERT_CHECKING
 				vinfo->varnullingrels = var->varnullingrels;
-#endif
 				vinfo++;
 			}
 		}
@@ -2786,7 +2780,7 @@ search_indexed_tlist_for_var(Var *var, indexed_tlist *itlist,
 			Var		   *newvar = copyVar(var);
 
 			/*
-			 * Assert that we kept all the nullingrels machinations straight.
+			 * Verify that we kept all the nullingrels machinations straight.
 			 *
 			 * XXX we skip the check for system columns and whole-row Vars.
 			 * That's because such Vars might be row identity Vars, which are
@@ -2799,12 +2793,16 @@ search_indexed_tlist_for_var(Var *var, indexed_tlist *itlist,
 			 * columns, it seems unlikely that a bug in nullingrels logic
 			 * would affect only system columns.)
 			 */
-			Assert(varattno <= 0 ||
-				   (nrm_match == NRM_SUBSET ?
-					bms_is_subset(var->varnullingrels, vinfo->varnullingrels) :
-					nrm_match == NRM_SUPERSET ?
-					bms_is_subset(vinfo->varnullingrels, var->varnullingrels) :
-					bms_equal(vinfo->varnullingrels, var->varnullingrels)));
+			if (!(varattno <= 0 ||
+				  (nrm_match == NRM_SUBSET ?
+				   bms_is_subset(var->varnullingrels, vinfo->varnullingrels) :
+				   nrm_match == NRM_SUPERSET ?
+				   bms_is_subset(vinfo->varnullingrels, var->varnullingrels) :
+				   bms_equal(vinfo->varnullingrels, var->varnullingrels))))
+				elog(ERROR, "wrong varnullingrels %s (expected %s) for Var %d/%d",
+					 bmsToString(var->varnullingrels),
+					 bmsToString(vinfo->varnullingrels),
+					 varno, varattno);
 
 			newvar->varno = newvarno;
 			newvar->varattno = vinfo->resno;
@@ -2851,12 +2849,16 @@ search_indexed_tlist_for_phv(PlaceHolderVar *phv,
 			if (phv->phid != subphv->phid)
 				continue;
 
-			/* Assert that we kept all the nullingrels machinations straight */
-			Assert(nrm_match == NRM_SUBSET ?
-				   bms_is_subset(phv->phnullingrels, subphv->phnullingrels) :
-				   nrm_match == NRM_SUPERSET ?
-				   bms_is_subset(subphv->phnullingrels, phv->phnullingrels) :
-				   bms_equal(subphv->phnullingrels, phv->phnullingrels));
+			/* Verify that we kept all the nullingrels machinations straight */
+			if (!(nrm_match == NRM_SUBSET ?
+				  bms_is_subset(phv->phnullingrels, subphv->phnullingrels) :
+				  nrm_match == NRM_SUPERSET ?
+				  bms_is_subset(subphv->phnullingrels, phv->phnullingrels) :
+				  bms_equal(subphv->phnullingrels, phv->phnullingrels)))
+				elog(ERROR, "wrong phnullingrels %s (expected %s) for PlaceHolderVar %d",
+					 bmsToString(phv->phnullingrels),
+					 bmsToString(subphv->phnullingrels),
+					 phv->phid);
 
 			/* Found a matching subplan output expression */
 			newvar = makeVarFromTargetEntry(newvarno, tle);
