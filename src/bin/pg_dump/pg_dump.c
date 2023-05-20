@@ -756,9 +756,9 @@ main(int argc, char **argv)
 		pg_fatal("%s", error_detail);
 
 	/*
-	 * Disable support for zstd workers for now - these are based on threading,
-	 * and it's unclear how it interacts with parallel dumps on platforms where
-	 * that relies on threads too (e.g. Windows).
+	 * Disable support for zstd workers for now - these are based on
+	 * threading, and it's unclear how it interacts with parallel dumps on
+	 * platforms where that relies on threads too (e.g. Windows).
 	 */
 	if (compression_spec.options & PG_COMPRESSION_OPTION_WORKERS)
 		pg_log_warning("compression option \"%s\" is not currently supported by pg_dump",
@@ -879,8 +879,8 @@ main(int argc, char **argv)
 	/*
 	 * Dumping LOs is the default for dumps where an inclusion switch is not
 	 * used (an "include everything" dump).  -B can be used to exclude LOs
-	 * from those dumps.  -b can be used to include LOs even when an
-	 * inclusion switch is used.
+	 * from those dumps.  -b can be used to include LOs even when an inclusion
+	 * switch is used.
 	 *
 	 * -s means "schema only" and LOs are data, not schema, so we never
 	 * include LOs when -s is used.
@@ -915,8 +915,8 @@ main(int argc, char **argv)
 	 * data or the associated metadata that resides in the pg_largeobject and
 	 * pg_largeobject_metadata tables, respectively.
 	 *
-	 * However, we do need to collect LO information as there may be
-	 * comments or other information on LOs that we do need to dump out.
+	 * However, we do need to collect LO information as there may be comments
+	 * or other information on LOs that we do need to dump out.
 	 */
 	if (dopt.outputLOs || dopt.binary_upgrade)
 		getLOs(fout);
@@ -1064,7 +1064,7 @@ help(const char *progname)
 	printf(_("  -j, --jobs=NUM               use this many parallel jobs to dump\n"));
 	printf(_("  -v, --verbose                verbose mode\n"));
 	printf(_("  -V, --version                output version information, then exit\n"));
-	printf(_("  -Z, --compress=METHOD[:LEVEL]\n"
+	printf(_("  -Z, --compress=METHOD[:DETAIL]\n"
 			 "                               compress as specified\n"));
 	printf(_("  --lock-wait-timeout=TIMEOUT  fail after waiting TIMEOUT for a table lock\n"));
 	printf(_("  --no-sync                    do not wait for changes to be written safely to disk\n"));
@@ -1072,10 +1072,10 @@ help(const char *progname)
 
 	printf(_("\nOptions controlling the output content:\n"));
 	printf(_("  -a, --data-only              dump only the data, not the schema\n"));
-	printf(_("  -b, --large-objects          include large objects in dump\n"
-			 "  --blobs                      (same as --large-objects, deprecated)\n"));
-	printf(_("  -B, --no-large-objects       exclude large objects in dump\n"
-			 "  --no-blobs                   (same as --no-large-objects, deprecated)\n"));
+	printf(_("  -b, --large-objects          include large objects in dump\n"));
+	printf(_("  --blobs                      (same as --large-objects, deprecated)\n"));
+	printf(_("  -B, --no-large-objects       exclude large objects in dump\n"));
+	printf(_("  --no-blobs                   (same as --no-large-objects, deprecated)\n"));
 	printf(_("  -c, --clean                  clean (drop) database objects before recreating\n"));
 	printf(_("  -C, --create                 include commands to create database in dump\n"));
 	printf(_("  -e, --extension=PATTERN      dump the specified extension(s) only\n"));
@@ -1096,8 +1096,8 @@ help(const char *progname)
 	printf(_("  --enable-row-security        enable row security (dump only content user has\n"
 			 "                               access to)\n"));
 	printf(_("  --exclude-table-and-children=PATTERN\n"
-			 "                               do NOT dump the specified table(s),\n"
-			 "                               including child and partition tables\n"));
+			 "                               do NOT dump the specified table(s), including\n"
+			 "                               child and partition tables\n"));
 	printf(_("  --exclude-table-data=PATTERN do NOT dump data for the specified table(s)\n"));
 	printf(_("  --exclude-table-data-and-children=PATTERN\n"
 			 "                               do NOT dump data for the specified table(s),\n"
@@ -1125,8 +1125,8 @@ help(const char *progname)
 	printf(_("  --snapshot=SNAPSHOT          use given snapshot for the dump\n"));
 	printf(_("  --strict-names               require table and/or schema include patterns to\n"
 			 "                               match at least one entity each\n"));
-	printf(_("  --table-and-children=PATTERN dump only the specified table(s),\n"
-			 "                               including child and partition tables\n"));
+	printf(_("  --table-and-children=PATTERN dump only the specified table(s), including\n"
+			 "                               child and partition tables\n"));
 	printf(_("  --use-set-session-authorization\n"
 			 "                               use SET SESSION AUTHORIZATION commands instead of\n"
 			 "                               ALTER OWNER commands to set ownership\n"));
@@ -3323,8 +3323,8 @@ dumpDatabase(Archive *fout)
 		appendPQExpBufferStr(loOutQry, "\n-- For binary upgrade, preserve pg_largeobject and index relfilenodes\n");
 		for (int i = 0; i < PQntuples(lo_res); ++i)
 		{
-			Oid		oid;
-			RelFileNumber	relfilenumber;
+			Oid			oid;
+			RelFileNumber relfilenumber;
 
 			appendPQExpBuffer(loHorizonQry, "UPDATE pg_catalog.pg_class\n"
 							  "SET relfrozenxid = '%u', relminmxid = '%u'\n"
@@ -3590,8 +3590,8 @@ getLOs(Archive *fout)
 			loinfo[i].dobj.components |= DUMP_COMPONENT_ACL;
 
 		/*
-		 * In binary-upgrade mode for LOs, we do *not* dump out the LO
-		 * data, as it will be copied by pg_upgrade, which simply copies the
+		 * In binary-upgrade mode for LOs, we do *not* dump out the LO data,
+		 * as it will be copied by pg_upgrade, which simply copies the
 		 * pg_largeobject table. We *do* however dump out anything but the
 		 * data, as pg_upgrade copies just pg_largeobject, but not
 		 * pg_largeobject_metadata, after the dump is restored.
@@ -14828,7 +14828,10 @@ dumpSecLabel(Archive *fout, const char *type, const char *name,
 	if (dopt->no_security_labels)
 		return;
 
-	/* Security labels are schema not data ... except large object labels are data */
+	/*
+	 * Security labels are schema not data ... except large object labels are
+	 * data
+	 */
 	if (strcmp(type, "LARGE OBJECT") != 0)
 	{
 		if (dopt->dataOnly)
@@ -15161,7 +15164,7 @@ dumpTable(Archive *fout, const TableInfo *tbinfo)
 	if (tbinfo->dobj.dump & DUMP_COMPONENT_ACL)
 	{
 		const char *objtype =
-		(tbinfo->relkind == RELKIND_SEQUENCE) ? "SEQUENCE" : "TABLE";
+			(tbinfo->relkind == RELKIND_SEQUENCE) ? "SEQUENCE" : "TABLE";
 
 		tableAclDumpId =
 			dumpACL(fout, tbinfo->dobj.dumpId, InvalidDumpId,
@@ -16632,10 +16635,12 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 		{
 			appendPQExpBufferStr(q,
 								 coninfo->contype == 'p' ? "PRIMARY KEY" : "UNIQUE");
+
 			/*
 			 * PRIMARY KEY constraints should not be using NULLS NOT DISTINCT
 			 * indexes. Being able to create this was fixed, but we need to
-			 * make the index distinct in order to be able to restore the dump.
+			 * make the index distinct in order to be able to restore the
+			 * dump.
 			 */
 			if (indxinfo->indnullsnotdistinct && coninfo->contype != 'p')
 				appendPQExpBufferStr(q, " NULLS NOT DISTINCT");
@@ -17857,7 +17862,7 @@ processExtensionTables(Archive *fout, ExtensionInfo extinfo[],
 				TableInfo  *configtbl;
 				Oid			configtbloid = atooid(extconfigarray[j]);
 				bool		dumpobj =
-				curext->dobj.dump & DUMP_COMPONENT_DEFINITION;
+					curext->dobj.dump & DUMP_COMPONENT_DEFINITION;
 
 				configtbl = findTableByOid(configtbloid);
 				if (configtbl == NULL)
