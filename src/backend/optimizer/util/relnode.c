@@ -1158,7 +1158,7 @@ build_joinrel_tlist(PlannerInfo *root, RelOptInfo *joinrel,
 		{
 			/* UPDATE/DELETE/MERGE row identity vars are always needed */
 			RowIdentityVarInfo *ridinfo = (RowIdentityVarInfo *)
-			list_nth(root->row_identity_vars, var->varattno - 1);
+				list_nth(root->row_identity_vars, var->varattno - 1);
 
 			/* Update reltarget width estimate from RowIdentityVarInfo */
 			joinrel->reltarget->width += ridinfo->rowidwidth;
@@ -1346,8 +1346,7 @@ subbuild_joinrel_restrictlist(PlannerInfo *root,
 				Assert(!RINFO_IS_PUSHED_DOWN(rinfo, joinrel->relids));
 				if (!bms_is_subset(rinfo->required_relids, both_input_relids))
 					continue;
-				if (!clause_is_computable_at(root, rinfo->clause_relids,
-											 both_input_relids))
+				if (!clause_is_computable_at(root, rinfo, both_input_relids))
 					continue;
 			}
 			else
@@ -1358,13 +1357,13 @@ subbuild_joinrel_restrictlist(PlannerInfo *root,
 				 */
 #ifdef USE_ASSERT_CHECKING
 				if (RINFO_IS_PUSHED_DOWN(rinfo, joinrel->relids))
-					Assert(clause_is_computable_at(root, rinfo->clause_relids,
+					Assert(clause_is_computable_at(root, rinfo,
 												   joinrel->relids));
 				else
 				{
 					Assert(bms_is_subset(rinfo->required_relids,
 										 both_input_relids));
-					Assert(clause_is_computable_at(root, rinfo->clause_relids,
+					Assert(clause_is_computable_at(root, rinfo,
 												   both_input_relids));
 				}
 #endif

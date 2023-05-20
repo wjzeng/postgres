@@ -1051,9 +1051,9 @@ libpq_prng_init(PGconn *conn)
 	gettimeofday(&tval, NULL);
 
 	rseed = ((uintptr_t) conn) ^
-			((uint64) getpid()) ^
-			((uint64) tval.tv_usec) ^
-			((uint64) tval.tv_sec);
+		((uint64) getpid()) ^
+		((uint64) tval.tv_usec) ^
+		((uint64) tval.tv_sec);
 
 	pg_prng_seed(&conn->prng_state, rseed);
 }
@@ -1543,7 +1543,7 @@ connectOptions2(PGconn *conn)
 		&& strcmp(conn->sslmode, "verify-full") != 0)
 	{
 		conn->status = CONNECTION_BAD;
-		libpq_append_conn_error(conn, "weak sslmode \"%s\" may not be used with sslrootcert=system (use verify-full)",
+		libpq_append_conn_error(conn, "weak sslmode \"%s\" may not be used with sslrootcert=system (use \"verify-full\")",
 								conn->sslmode);
 		return false;
 	}
