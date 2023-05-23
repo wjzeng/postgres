@@ -18,7 +18,49 @@
    </para>
 
    <itemizedlist>
-    <listitem><para>ADD HERE</para></listitem>
+
+    <listitem>
+     <para>
+      Allow parallel execution of queries with OUTER and FULL joins
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Allow logical replication from standbys servers
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Allow logical replication subscribers to apply large transactions in parallel
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Allow monitoring of I/O statistics using the new pg_stat_io view
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Add SQL/JSON constructors and identity functions
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Improve performance of vacuum freezing
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      Add support for regular expression matching of user and database names in pg_hba.conf, and user names in pg_ident.conf
+     </para>
+    </listitem>
+
    </itemizedlist>
 
    <para>
@@ -280,7 +322,7 @@ Author: Thomas Munro <tmunro@postgresql.org>
 
 <listitem>
 <para>
-Allow full and outer joins to be performed in parallel (Melanie Plageman, Thomas Munro)
+Allow outer and full joins to be performed in parallel (Melanie Plageman, Thomas Munro)
 </para>
 </listitem>
 
@@ -313,7 +355,7 @@ Author: Andres Freund <andres@anarazel.de>
 
 <listitem>
 <para>
-Allow more efficient addition of multiple heap and index pages (Andres Freund)
+Allow more efficient addition of heap and index pages (Andres Freund)
 </para>
 </listitem>
 
@@ -912,6 +954,10 @@ Author: Robert Haas <rhaas@postgresql.org>
 <para>
 Prevent removal of superuser privileges for the bootstrap user (Robert Haas)
 </para>
+
+<para>
+Restoring such users could lead to errors.
+</para>
 </listitem>
 
 <!--
@@ -949,7 +995,8 @@ Add support for Kerberos credential delegation (Stephen Frost)
 </para>
 
 <para>
-This is enabled with server variable gss_accept_delegation.
+This is enabled with server variable gss_accept_delegation
+and libpq connection parameter gssdelegation.
 </para>
 </listitem>
 
@@ -1285,26 +1332,24 @@ ADD THIS?
 <!--
 Author: Andres Freund <andres@anarazel.de>
 2023-04-08 [0fdab27ad] Allow logical decoding on standbys
--->
-
-<listitem>
-<para>
-Allow logical decoding on standbys (Bertrand Drouvot, Andres Freund, Amit Khandekar)
-</para>
-</listitem>
-
-<!--
+Author: Andres Freund <andres@anarazel.de>
+2023-04-07 [be87200ef] Support invalidating replication slots due to horizon an
+Author: Andres Freund <andres@anarazel.de>
+2023-04-08 [26669757b] Handle logical slot conflicts on standby
 Author: Andres Freund <andres@anarazel.de>
 2023-04-08 [0fdab27ad] Allow logical decoding on standbys
 -->
 
 <listitem>
 <para>
-Add function pg_log_standby_snapshot() to force creation of a WAL snapshot (Bertrand Drouvot)
+Allow logical decoding on standbys (Bertrand Drouvot, Andres Freund, Amit Khandekar, Bertrand Drouvot)
 </para>
+</listitem>
 
+<listitem>
 <para>
-WAL snapshots are required for logical slot creation so this function speeds their creation on standbys.
+Snapshot WAL records are required for logical slot creation but cannot be created on standbys.
+To avoid delays, the new function pg_log_standby_snapshot() allows creation of such records.
 </para>
 </listitem>
 
@@ -1425,23 +1470,6 @@ Have wal_retrieve_retry_interval operate on a per-subscription basis (Nathan Bos
 
 <para>
 Previously the retry time was applied globally.  This also adds wait events LogicalRepLauncherDSA and LogicalRepLauncherHash.
-</para>
-</listitem>
-
-<!--
-Author: Andres Freund <andres@anarazel.de>
-2023-04-07 [be87200ef] Support invalidating replication slots due to horizon an
-Author: Andres Freund <andres@anarazel.de>
-2023-04-08 [26669757b] Handle logical slot conflicts on standby
--->
-
-<listitem>
-<para>
-Allow invalidation of replication slots due to row removal, wal_level, and conflicts (Bertrand Drouvot, Andres Freund, Amit Khandekar)
-</para>
-
-<para>
-Invalidated slots are indicated in the pg_replication_slots.conflicting column.
 </para>
 </listitem>
 
