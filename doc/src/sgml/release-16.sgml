@@ -27,7 +27,7 @@
 
     <listitem>
      <para>
-      Allow logical replication from standbys servers
+      Allow logical replication from standby servers
      </para>
     </listitem>
 
@@ -126,11 +126,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 
 <listitem>
 <para>
-Change REINDEX DATABASE and reindexedb to not process indexes on system catalogs (Simon Riggs)
+Change REINDEX DATABASE and reindexdb to not process indexes on system catalogs (Simon Riggs)
 </para>
 
 <para>
-Processing such indexes is still possible using REINDEX SYSTEM and reindexedb --system.
+Processing such indexes is still possible using REINDEX SYSTEM and reindexdb --system.
 </para>
 </listitem>
 
@@ -474,6 +474,28 @@ Improve the speed of updating the process title (David Rowley)
 </para>
 </listitem>
 
+<!--
+Author: John Naylor <john.naylor@postgresql.org>
+2022-08-11 [37a6e5df3] Optimize xid/subxid searches in XidInMVCCSnapshot().
+Author: John Naylor <john.naylor@postgresql.org>
+2022-08-26 [121d2d3d7] Use SSE2 in is_valid_ascii() where available.
+Author: John Naylor <john.naylor@postgresql.org>
+2022-08-10 [b6ef16756] Introduce optimized routine for linear searches of array
+Author: John Naylor <john.naylor@postgresql.org>
+2022-08-26 [e813e0e16] Add optimized functions for linear search within byte ar
+-->
+
+<listitem>
+<para>
+Allow xid/subxid searches and ASCII string detection to use vector operations (Nathan Bossart, John Naylor)
+</para>
+
+<para>
+ASCII detection is particularly useful for COPY FROM.  Vector operations are also used for some C array searches.
+</para>
+
+</listitem>
+
      </itemizedlist>
 
     </sect4>
@@ -571,7 +593,7 @@ Create subscription statistics entries at subscription creation time so stats_re
 </para>
 
 <para>
-Previously entries were created only created when the first statistics were reported.
+Previously entries were created only when the first statistics were reported.
 </para>
 </listitem>
 
@@ -755,7 +777,7 @@ Simplify permissions for LOCK TABLE (Jeff Davis)
 </para>
 
 <para>
-Previously the ability to perform LOCK TABLE at various lock levels was bound to specific query-type permissions.  For example, UPDATE could could perform all lock levels except ACCESS SHARE, which
+Previously the ability to perform LOCK TABLE at various lock levels was bound to specific query-type permissions.  For example, UPDATE could perform all lock levels except ACCESS SHARE, which
 required SELECT permissions.  Now UPDATE can issue all lock levels.  MORE?
 </para>
 </listitem>
@@ -786,7 +808,7 @@ Restrict the privileges of CREATEROLE roles (Robert Haas)
 </para>
 
 <para>
-Previously roles with CREATEROLE privileges could change many aspects of any non-superuser role.  Such changes, including adding members, are now require the role requesting the change to have ADMIN OPTION
+Previously roles with CREATEROLE privileges could change many aspects of any non-superuser role.  Such changes, including adding members, now require the role requesting the change to have ADMIN OPTION
 permission.
 </para>
 </listitem>
@@ -924,7 +946,7 @@ Add dependency tracking of grantors for GRANT records (Robert Haas)
 </para>
 
 <para>
-This will guarantee that pg_auth_members.grantor values is always valid.
+This guarantees that pg_auth_members.grantor values are always valid.
 </para>
 </listitem>
 
@@ -1782,6 +1804,17 @@ The IS JSON checks include checks for values, arrays, objects, scalars, and uniq
 </listitem>
 
 <!--
+Author: John Naylor <john.naylor@postgresql.org>
+2022-09-02 [0a8de93a4] Speed up lexing of long JSON strings
+-->
+
+<listitem>
+<para>
+Allow JSON string parsing to use vector operations (John Naylor)
+</para>
+</listitem>
+
+<!--
 Author: Tom Lane <tgl@sss.pgh.pa.us>
 2023-01-19 [5a617d75d] Fix ts_headline() to handle ORs and phrase queries more 
 -->
@@ -2524,56 +2557,6 @@ Add support for Advanced SIMD (Single Instruction Multiple Data) (NEON) instruct
 </listitem>
 
 <!--
-Author: John Naylor <john.naylor@postgresql.org>
-2022-08-26 [121d2d3d7] Use SSE2 in is_valid_ascii() where available.
--->
-
-<listitem>
-<para>
-Allow ASCII string detection to use vector operations on x86-64 architectures (John Naylor)
-</para>
-</listitem>
-
-<!--
-Author: John Naylor <john.naylor@postgresql.org>
-2022-09-02 [0a8de93a4] Speed up lexing of long JSON strings
--->
-
-<listitem>
-<para>
-Allow JSON string processing to use vector operations on x86-64 architectures (John Naylor)
-</para>
-
-<para>
-ARM?
-</para>
-</listitem>
-
-<!--
-Author: John Naylor <john.naylor@postgresql.org>
-2022-08-10 [b6ef16756] Introduce optimized routine for linear searches of array
-Author: John Naylor <john.naylor@postgresql.org>
-2022-08-26 [e813e0e16] Add optimized functions for linear search within byte ar
--->
-
-<listitem>
-<para>
-Allow arrays searches to use vector operations on x86-64 architectures (John Naylor)
-</para>
-</listitem>
-
-<!--
-Author: John Naylor <john.naylor@postgresql.org>
-2022-08-11 [37a6e5df3] Optimize xid/subxid searches in XidInMVCCSnapshot().
--->
-
-<listitem>
-<para>
-Allow xid/subxid searches to use vector operations on x86-64 architectures (Nathan Bossart)
-</para>
-</listitem>
-
-<!--
 Author: Michael Paquier <michael@paquier.xyz>
 2022-08-28 [36389a060] Enable RandomizedBaseAddress (ASLR) on Windows with MSVC
 -->
@@ -3034,7 +3017,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 
 <listitem>
 <para>
-Allow required extensions to marked as non-relocatable using "no_relocate" (Regina Obe)
+Allow required extensions to be marked as non-relocatable using "no_relocate" (Regina Obe)
 </para>
 
 <para>
