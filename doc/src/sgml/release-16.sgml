@@ -21,7 +21,7 @@
 
     <listitem>
      <para>
-      Allow parallel execution of queries with OUTER and FULL joins
+      Allow parallelization of FULL and internal right OUTER hash joins
      </para>
     </listitem>
 
@@ -322,7 +322,7 @@ Author: Thomas Munro <tmunro@postgresql.org>
 
 <listitem>
 <para>
-Allow outer and full joins to be performed in parallel (Melanie Plageman, Thomas Munro)
+Allow parallelization of FULL and internal right OUTER hash joins (Melanie Plageman, Thomas Munro)
 </para>
 </listitem>
 
@@ -494,6 +494,17 @@ Allow xid/subxid searches and ASCII string detection to use vector operations (N
 ASCII detection is particularly useful for COPY FROM.  Vector operations are also used for some C array searches.
 </para>
 
+</listitem>
+
+<!--
+Author: David Rowley <drowley@postgresql.org>
+2022-08-29 [c6e0fe1f2] Improve performance of and reduce overheads of memory ma
+-->
+
+<listitem>
+<para>
+Reduce overhead of memory allocations (Andres Freund, David Rowley)
+</para>
 </listitem>
 
      </itemizedlist>
@@ -1294,7 +1305,7 @@ Determine the ICU default locale from the environment (Jeff Davis)
 </para>
 
 <para>
-However, ICU doesn't support the C local so UTF-8 is used in such cases.  Previously the default was always UTF-8.
+However, ICU doesn't support the C locale so UTF-8 is used in such cases.  Previously the default was always UTF-8.
 </para>
 </listitem>
 
@@ -1335,8 +1346,11 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 
 <listitem>
 <para>
-Add Windows process the system collations (Jose Santamaria Flecha)
-ADD THIS?
+Allow Windows to import system locales automatically (Juan José Santamaría Flecha)
+</para>
+
+<para>
+Previously, only ICU locales could be imported on Windows.
 </para>
 </listitem>
 
@@ -1358,13 +1372,11 @@ Author: Andres Freund <andres@anarazel.de>
 2023-04-07 [be87200ef] Support invalidating replication slots due to horizon an
 Author: Andres Freund <andres@anarazel.de>
 2023-04-08 [26669757b] Handle logical slot conflicts on standby
-Author: Andres Freund <andres@anarazel.de>
-2023-04-08 [0fdab27ad] Allow logical decoding on standbys
 -->
 
 <listitem>
 <para>
-Allow logical decoding on standbys (Bertrand Drouvot, Andres Freund, Amit Khandekar, Bertrand Drouvot)
+Allow logical decoding on standbys (Bertrand Drouvot, Andres Freund, Amit Khandekar)
 </para>
 </listitem>
 
@@ -1458,7 +1470,7 @@ Allow logical replication subscribers to process only changes that have no origi
 </para>
 
 <para>
-This can be used to avoid replication loops.
+This can be used to avoid replication loops.  This is controlled by the new CREATE SUBSCRIPTION "origin" option.
 </para>
 </listitem>
 
@@ -2152,6 +2164,21 @@ Add "FOREIGN" designation to psql \d+ for foreign table children and partitions 
 </listitem>
 
 <!--
+Author: Tom Lane <tgl@sss.pgh.pa.us>
+2023-03-02 [3dfae91f7] Show "internal name" not "source code" in psql's \df+ co
+-->
+
+<listitem>
+<para>
+Prevent \df+ from showing function source code (Isaac Morland)
+</para>
+
+<para>
+Function bodies are more easily viewed with \ev and \ef.
+</para>
+</listitem>
+
+<!--
 Author: Peter Eisentraut <peter@eisentraut.org>
 2022-11-15 [5b66de343] psql: Add command to use extended query protocol
 -->
@@ -2837,12 +2864,12 @@ Author: Michael Paquier <michael@paquier.xyz>
 
 <listitem>
 <para>
-Allow auto_explain to log query parameters used in executing prepared statements (Dagfinn Ilmari Mannsåker)
+Allow auto_explain to log values passed to parameterized statements (Dagfinn Ilmari Mannsåker)
 </para>
 
 <para>
-This is controlled by auto_explain.log_parameter_max_length, and by default query parameters will be logged with no length restriction.
-SHOULD THIS BE MORE CLEARLY IDENTIFIED AS CONTROLLING THE EXECUTION OF PREPARED STATEMENTS?
+This affects queries using server-side PRAPARE/EXECUTE and client-side parse/bind.  Logging is controlled by auto_explain.log_parameter_max_length;  by default query parameters will
+be logged with no length restriction.
 </para>
 </listitem>
 
