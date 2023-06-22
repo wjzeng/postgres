@@ -421,12 +421,15 @@ have_unsafe_outer_join_ref(PlannerInfo *root,
 
 /*
  * paraminfo_get_equal_hashops
- *		Determine if param_info and innerrel's lateral_vars can be hashed.
- *		Returns true the hashing is possible, otherwise return false.
+ *		Determine if the clauses in param_info and innerrel's lateral_vars
+ *		can be hashed.
+ *		Returns true if hashing is possible, otherwise false.
  *
- * Additionally we also collect the outer exprs and the hash operators for
- * each parameter to innerrel.  These set in 'param_exprs', 'operators' and
- * 'binary_mode' when we return true.
+ * Additionally, on success we collect the outer expressions and the
+ * appropriate equality operators for each hashable parameter to innerrel.
+ * These are returned in parallel lists in *param_exprs and *operators.
+ * We also set *binary_mode to indicate whether strict binary matching is
+ * required.
  */
 static bool
 paraminfo_get_equal_hashops(PlannerInfo *root, ParamPathInfo *param_info,
@@ -441,6 +444,7 @@ paraminfo_get_equal_hashops(PlannerInfo *root, ParamPathInfo *param_info,
 	*operators = NIL;
 	*binary_mode = false;
 
+	/* Add join clauses from param_info to the hash key */
 	if (param_info != NULL)
 	{
 		List	   *clauses = param_info->ppi_clauses;
@@ -510,7 +514,7 @@ paraminfo_get_equal_hashops(PlannerInfo *root, ParamPathInfo *param_info,
 		Node	   *expr = (Node *) lfirst(lc);
 		TypeCacheEntry *typentry;
 
-		/* Reject if there are any volatile functions */
+		/* Reject if there are any volatile functions in PHVs */
 		if (contain_volatile_functions(expr))
 		{
 			list_free(*operators);
@@ -521,7 +525,7 @@ paraminfo_get_equal_hashops(PlannerInfo *root, ParamPathInfo *param_info,
 		typentry = lookup_type_cache(exprType(expr),
 									 TYPECACHE_HASH_PROC | TYPECACHE_EQ_OPR);
 
-		/* can't use a memoize node without a valid hash equals operator */
+		/* can't use memoize without a valid hash proc and equals operator */
 		if (!OidIsValid(typentry->hash_proc) || !OidIsValid(typentry->eq_opr))
 		{
 			list_free(*operators);
