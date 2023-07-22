@@ -199,7 +199,7 @@ worker_spi_main(Datum main_arg)
 		(void) WaitLatch(MyLatch,
 						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 						 worker_spi_naptime * 1000L,
-						 PG_WAIT_EXTENSION);
+						 WAIT_EVENT_EXTENSION);
 		ResetLatch(MyLatch);
 
 		CHECK_FOR_INTERRUPTS();
@@ -283,6 +283,11 @@ _PG_init(void)
 	BackgroundWorker worker;
 
 	/* get the configuration */
+
+	/*
+	 * These GUCs are defined even if this library is not loaded with
+	 * shared_preload_libraries, for worker_spi_launch().
+	 */
 	DefineCustomIntVariable("worker_spi.naptime",
 							"Duration between each check (in seconds).",
 							NULL,
@@ -295,6 +300,15 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
+
+	DefineCustomStringVariable("worker_spi.database",
+							   "Database to connect to.",
+							   NULL,
+							   &worker_spi_database,
+							   "postgres",
+							   PGC_SIGHUP,
+							   0,
+							   NULL, NULL, NULL);
 
 	if (!process_shared_preload_libraries_in_progress)
 		return;
@@ -311,15 +325,6 @@ _PG_init(void)
 							NULL,
 							NULL,
 							NULL);
-
-	DefineCustomStringVariable("worker_spi.database",
-							   "Database to connect to.",
-							   NULL,
-							   &worker_spi_database,
-							   "postgres",
-							   PGC_POSTMASTER,
-							   0,
-							   NULL, NULL, NULL);
 
 	MarkGUCPrefixReserved("worker_spi");
 
