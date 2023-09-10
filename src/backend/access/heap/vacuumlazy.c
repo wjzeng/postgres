@@ -1588,7 +1588,7 @@ retry:
 	 * that were deleted from indexes.
 	 */
 	tuples_deleted = heap_page_prune(rel, buf, vacrel->vistest,
-									 InvalidTransactionId, 0, &nnewlpdead,
+									 &nnewlpdead,
 									 &vacrel->offnum);
 
 	/*
@@ -2865,18 +2865,13 @@ lazy_cleanup_one_index(Relation indrel, IndexBulkDeleteResult *istat,
  * in effect in any case.  lazy_scan_prune makes the optimistic assumption
  * that any LP_DEAD items it encounters will always be LP_UNUSED by the time
  * we're called.
- *
- * Also don't attempt it if we are doing early pruning/vacuuming, because a
- * scan which cannot find a truncated heap page cannot determine that the
- * snapshot is too old to read that page.
  */
 static bool
 should_attempt_truncation(LVRelState *vacrel)
 {
 	BlockNumber possibly_freeable;
 
-	if (!vacrel->do_rel_truncate || VacuumFailsafeActive ||
-		old_snapshot_threshold >= 0)
+	if (!vacrel->do_rel_truncate || VacuumFailsafeActive)
 		return false;
 
 	possibly_freeable = vacrel->rel_pages - vacrel->nonempty_pages;

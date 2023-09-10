@@ -522,8 +522,50 @@ sub init
 	mkdir $self->backup_dir;
 	mkdir $self->archive_dir;
 
-	PostgreSQL::Test::Utils::system_or_bail('initdb', '-D', $pgdata, '-A',
-		'trust', '-N', @{ $params{extra} });
+	# If available and if there aren't any parameters, use a previously
+	# initdb'd cluster as a template by copying it. For a lot of tests, that's
+	# substantially cheaper. Do so only if there aren't parameters, it doesn't
+	# seem worth figuring out whether they affect compatibility.
+	#
+	# There's very similar code in pg_regress.c, but we can't easily
+	# deduplicate it until we require perl at build time.
+	if (defined $params{extra} or !defined $ENV{INITDB_TEMPLATE})
+	{
+		note("initializing database system by running initdb");
+		PostgreSQL::Test::Utils::system_or_bail('initdb', '-D', $pgdata, '-A',
+			'trust', '-N', @{ $params{extra} });
+	}
+	else
+	{
+		my @copycmd;
+		my $expected_exitcode;
+
+		note("initializing database system by copying initdb template");
+
+		if ($PostgreSQL::Test::Utils::windows_os)
+		{
+			@copycmd = qw(robocopy /E /NJS /NJH /NFL /NDL /NP);
+			$expected_exitcode = 1;    # 1 denotes files were copied
+		}
+		else
+		{
+			@copycmd = qw(cp -RPp);
+			$expected_exitcode = 0;
+		}
+
+		@copycmd = (@copycmd, $ENV{INITDB_TEMPLATE}, $pgdata);
+
+		my $ret = PostgreSQL::Test::Utils::system_log(@copycmd);
+
+		# See http://perldoc.perl.org/perlvar.html#%24CHILD_ERROR
+		if ($ret & 127 or $ret >> 8 != $expected_exitcode)
+		{
+			BAIL_OUT(
+				sprintf("failed to execute command \"%s\": $ret",
+					join(" ", @copycmd)));
+		}
+	}
+
 	PostgreSQL::Test::Utils::system_or_bail($ENV{PG_REGRESS},
 		'--config-auth', $pgdata, @{ $params{auth_extra} });
 
@@ -1570,9 +1612,8 @@ sub can_bind
 	my ($host, $port) = @_;
 	my $iaddr = inet_aton($host);
 	my $paddr = sockaddr_in($port, $iaddr);
-	my $proto = getprotobyname("tcp");
 
-	socket(SOCK, PF_INET, SOCK_STREAM, $proto)
+	socket(SOCK, PF_INET, SOCK_STREAM, 0)
 	  or die "socket failed: $!";
 
 	# As in postmaster, don't use SO_REUSEADDR on Windows
@@ -2099,7 +2140,6 @@ sub _pgbench_make_files
 			# cleanup file weight
 			$filename =~ s/\@\d+$//;
 
-			#push @filenames, $filename;
 			# filenames are expected to be unique on a test
 			if (-e $filename)
 			{

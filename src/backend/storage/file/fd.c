@@ -162,7 +162,7 @@ int			max_safe_fds = FD_MINFREE;	/* default if not changed */
 bool		data_sync_retry = false;
 
 /* How SyncDataDirectory() should do its job. */
-int			recovery_init_sync_method = RECOVERY_INIT_SYNC_METHOD_FSYNC;
+int			recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
 
 /* Which kinds of files should be opened with PG_O_DIRECT. */
 int			io_direct_flags;
@@ -3513,7 +3513,7 @@ SyncDataDirectory(void)
 	}
 
 #ifdef HAVE_SYNCFS
-	if (recovery_init_sync_method == RECOVERY_INIT_SYNC_METHOD_SYNCFS)
+	if (recovery_init_sync_method == DATA_DIR_SYNC_METHOD_SYNCFS)
 	{
 		DIR		   *dir;
 		struct dirent *de;
@@ -3884,7 +3884,7 @@ data_sync_elevel(int elevel)
 }
 
 bool
-check_io_direct(char **newval, void **extra, GucSource source)
+check_debug_io_direct(char **newval, void **extra, GucSource source)
 {
 	bool		result = true;
 	int			flags;
@@ -3958,7 +3958,7 @@ check_io_direct(char **newval, void **extra, GucSource source)
 	if (!result)
 		return result;
 
-	/* Save the flags in *extra, for use by assign_io_direct */
+	/* Save the flags in *extra, for use by assign_debug_io_direct */
 	*extra = guc_malloc(ERROR, sizeof(int));
 	*((int *) *extra) = flags;
 
@@ -3966,7 +3966,7 @@ check_io_direct(char **newval, void **extra, GucSource source)
 }
 
 extern void
-assign_io_direct(const char *newval, void *extra)
+assign_debug_io_direct(const char *newval, void *extra)
 {
 	int		   *flags = (int *) extra;
 

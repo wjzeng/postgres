@@ -138,7 +138,6 @@
 <!ENTITY lo              SYSTEM "lo.sgml">
 <!ENTITY ltree           SYSTEM "ltree.sgml">
 <!ENTITY oid2name        SYSTEM "oid2name.sgml">
-<!ENTITY oldsnapshot     SYSTEM "oldsnapshot.sgml">
 <!ENTITY pageinspect     SYSTEM "pageinspect.sgml">
 <!ENTITY passwordcheck   SYSTEM "passwordcheck.sgml">
 <!ENTITY pgbuffercache   SYSTEM "pgbuffercache.sgml">
@@ -184,6 +183,7 @@
 <!ENTITY acronyms   SYSTEM "acronyms.sgml">
 <!ENTITY glossary   SYSTEM "glossary.sgml">
 <!ENTITY color      SYSTEM "color.sgml">
+<!ENTITY syncfs     SYSTEM "syncfs.sgml">
 
 <!ENTITY features-supported   SYSTEM "features-supported.sgml">
 <!ENTITY features-unsupported SYSTEM "features-unsupported.sgml">

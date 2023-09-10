@@ -41,6 +41,7 @@
 #include "commands/trigger.h"
 #include "commands/user.h"
 #include "commands/vacuum.h"
+#include "common/file_utils.h"
 #include "common/scram-common.h"
 #include "jit/jit.h"
 #include "libpq/auth.h"
@@ -420,9 +421,9 @@ static const struct config_enum_entry ssl_protocol_versions_info[] = {
 	{NULL, 0, false}
 };
 
-static const struct config_enum_entry logical_replication_mode_options[] = {
-	{"buffered", LOGICAL_REP_MODE_BUFFERED, false},
-	{"immediate", LOGICAL_REP_MODE_IMMEDIATE, false},
+static const struct config_enum_entry debug_logical_replication_streaming_options[] = {
+	{"buffered", DEBUG_LOGICAL_REP_STREAMING_BUFFERED, false},
+	{"immediate", DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE, false},
 	{NULL, 0, false}
 };
 
@@ -430,9 +431,9 @@ StaticAssertDecl(lengthof(ssl_protocol_versions_info) == (PG_TLS1_3_VERSION + 2)
 				 "array length mismatch");
 
 static const struct config_enum_entry recovery_init_sync_method_options[] = {
-	{"fsync", RECOVERY_INIT_SYNC_METHOD_FSYNC, false},
+	{"fsync", DATA_DIR_SYNC_METHOD_FSYNC, false},
 #ifdef HAVE_SYNCFS
-	{"syncfs", RECOVERY_INIT_SYNC_METHOD_SYNCFS, false},
+	{"syncfs", DATA_DIR_SYNC_METHOD_SYNCFS, false},
 #endif
 	{NULL, 0, false}
 };
@@ -571,7 +572,7 @@ static char *datestyle_string;
 static char *server_encoding_string;
 static char *server_version_string;
 static int	server_version_num;
-static char *io_direct_string;
+static char *debug_io_direct_string;
 
 #ifdef HAVE_SYSLOG
 #define	DEFAULT_SYSLOG_FACILITY LOG_LOCAL0
@@ -3166,7 +3167,7 @@ struct config_int ConfigureNamesInt[] =
 		DEFAULT_XLOG_SEG_SIZE,
 		WalSegMinSize,
 		WalSegMaxSize,
-		NULL, NULL, NULL
+		check_wal_segment_size, NULL, NULL
 	},
 
 	{
@@ -3280,17 +3281,6 @@ struct config_int ConfigureNamesInt[] =
 		&autovacuum_work_mem,
 		-1, -1, MAX_KILOBYTES,
 		check_autovacuum_work_mem, NULL, NULL
-	},
-
-	{
-		{"old_snapshot_threshold", PGC_POSTMASTER, RESOURCES_ASYNCHRONOUS,
-			gettext_noop("Time before a snapshot is too old to read pages changed after the snapshot was taken."),
-			gettext_noop("A value of -1 disables this feature."),
-			GUC_UNIT_MIN
-		},
-		&old_snapshot_threshold,
-		-1, -1, MINS_PER_HOUR * HOURS_PER_DAY * 60,
-		NULL, NULL, NULL
 	},
 
 	{
@@ -4546,9 +4536,9 @@ struct config_string ConfigureNamesString[] =
 			NULL,
 			GUC_LIST_INPUT | GUC_NOT_IN_SAMPLE
 		},
-		&io_direct_string,
+		&debug_io_direct_string,
 		"",
-		check_io_direct, assign_io_direct, NULL
+		check_debug_io_direct, assign_debug_io_direct, NULL
 	},
 
 	/* End-of-list marker */
@@ -4964,20 +4954,20 @@ struct config_enum ConfigureNamesEnum[] =
 			gettext_noop("Sets the method for synchronizing the data directory before crash recovery."),
 		},
 		&recovery_init_sync_method,
-		RECOVERY_INIT_SYNC_METHOD_FSYNC, recovery_init_sync_method_options,
+		DATA_DIR_SYNC_METHOD_FSYNC, recovery_init_sync_method_options,
 		NULL, NULL, NULL
 	},
 
 	{
-		{"logical_replication_mode", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Controls when to replicate or apply each change."),
+		{"debug_logical_replication_streaming", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Forces immediate streaming or serialization of changes in large transactions."),
 			gettext_noop("On the publisher, it allows streaming or serializing each change in logical decoding. "
 						 "On the subscriber, it allows serialization of all changes to files and notifies the "
 						 "parallel apply workers to read and apply them at the end of the transaction."),
 			GUC_NOT_IN_SAMPLE
 		},
-		&logical_replication_mode,
-		LOGICAL_REP_MODE_BUFFERED, logical_replication_mode_options,
+		&debug_logical_replication_streaming,
+		DEBUG_LOGICAL_REP_STREAMING_BUFFERED, debug_logical_replication_streaming_options,
 		NULL, NULL, NULL
 	},
 

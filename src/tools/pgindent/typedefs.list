@@ -319,6 +319,7 @@ BufferDesc
 BufferDescPadded
 BufferHeapTupleTableSlot
 BufferLookupEnt
+BufferManagerRelation
 BufferStrategyControl
 BufferTag
 BufferUsage
@@ -544,6 +545,7 @@ DR_printtup
 DR_sqlfunction
 DR_transientrel
 DWORD
+DataDirSyncMethod
 DataDumperPtr
 DataPageDeleteStack
 DatabaseInfo
@@ -713,7 +715,6 @@ ExprEvalStep
 ExprSetupInfo
 ExprState
 ExprStateEvalFunc
-ExtendBufferedWhat
 ExtensibleNode
 ExtensibleNodeEntry
 ExtensibleNodeMethods
@@ -1274,6 +1275,7 @@ JsonManifestWALRangeField
 JsonObjectAgg
 JsonObjectConstructor
 JsonOutput
+JsonParseExpr
 JsonParseContext
 JsonParseErrorType
 JsonPath
@@ -1295,7 +1297,9 @@ JsonPathParseResult
 JsonPathPredicateCallback
 JsonPathString
 JsonReturning
+JsonScalarExpr
 JsonSemAction
+JsonSerializeExpr
 JsonTokenType
 JsonTransformStringValuesAction
 JsonTypeCategory
@@ -1497,6 +1501,7 @@ LogicalRepStreamAbortData
 LogicalRepTupleData
 LogicalRepTyp
 LogicalRepWorker
+LogicalRepWorkerType
 LogicalRewriteMappingData
 LogicalTape
 LogicalTapeSet
@@ -1655,8 +1660,6 @@ OffsetVarNodes_context
 Oid
 OidOptions
 OkeysState
-OldSnapshotControlData
-OldSnapshotTimeMapping
 OldToNewMapping
 OldToNewMappingData
 OnCommitAction
@@ -1683,8 +1686,6 @@ OuterJoinClauseInfo
 OutputPluginCallbacks
 OutputPluginOptions
 OutputPluginOutputType
-OverrideSearchPath
-OverrideStackEntry
 OverridingKind
 PACE_HEADER
 PACL
@@ -2461,6 +2462,7 @@ ScanState
 ScanTypeControl
 ScannerCallbackState
 SchemaQuery
+SearchPathMatcher
 SecBuffer
 SecBufferDesc
 SecLabelItem
@@ -2989,6 +2991,9 @@ WaitEventActivity
 WaitEventBufferPin
 WaitEventClient
 WaitEventExtension
+WaitEventExtensionCounterData
+WaitEventExtensionEntryById
+WaitEventExtensionEntryByName
 WaitEventIO
 WaitEventIPC
 WaitEventSet
@@ -3473,6 +3478,7 @@ mbstr_verifier
 memoize_hash
 memoize_iterator
 metastring
+missing_cache_key
 mix_data_t
 mixedStruct
 mode_t
@@ -3859,6 +3865,7 @@ wchar2mb_with_len_converter
 wchar_t
 win32_deadchild_waitinfo
 wint_t
+worker_spi_state
 worker_state
 worktable
 wrap

@@ -432,6 +432,7 @@ sub GenerateFiles
 		USE_LZ4 => undef,
 		USE_LDAP => $self->{options}->{ldap} ? 1 : undef,
 		USE_LLVM => undef,
+		USE_LOONGARCH_CRC32C => undef,
 		USE_NAMED_POSIX_SEMAPHORES => undef,
 		USE_OPENSSL => undef,
 		USE_PAM => undef,
@@ -587,7 +588,8 @@ sub GenerateFiles
 			'src/include/utils/wait_event_types.h',
 			'src/backend/utils/activity/wait_event_names.txt'))
 	{
-		print "Generating pgstat_wait_event.c and wait_event_types.h...\n";
+		print
+		  "Generating pgstat_wait_event.c, wait_event_types.h and wait_event_funcs_data.c...\n";
 		my $activ = 'src/backend/utils/activity';
 		system(
 			"perl $activ/generate-wait_event_types.pl --outdir $activ --code $activ/wait_event_names.txt"
