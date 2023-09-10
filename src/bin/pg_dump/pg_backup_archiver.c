@@ -66,7 +66,8 @@ typedef struct _parallelReadyList
 static ArchiveHandle *_allocAH(const char *FileSpec, const ArchiveFormat fmt,
 							   const pg_compress_specification compression_spec,
 							   bool dosync, ArchiveMode mode,
-							   SetupWorkerPtrType setupWorkerPtr);
+							   SetupWorkerPtrType setupWorkerPtr,
+							   DataDirSyncMethod sync_method);
 static void _getObjectDescription(PQExpBuffer buf, const TocEntry *te);
 static void _printTocEntry(ArchiveHandle *AH, TocEntry *te, bool isData);
 static char *sanitize_line(const char *str, bool want_hyphen);
@@ -238,11 +239,12 @@ Archive *
 CreateArchive(const char *FileSpec, const ArchiveFormat fmt,
 			  const pg_compress_specification compression_spec,
 			  bool dosync, ArchiveMode mode,
-			  SetupWorkerPtrType setupDumpWorker)
+			  SetupWorkerPtrType setupDumpWorker,
+			  DataDirSyncMethod sync_method)
 
 {
 	ArchiveHandle *AH = _allocAH(FileSpec, fmt, compression_spec,
-								 dosync, mode, setupDumpWorker);
+								 dosync, mode, setupDumpWorker, sync_method);
 
 	return (Archive *) AH;
 }
@@ -257,7 +259,8 @@ OpenArchive(const char *FileSpec, const ArchiveFormat fmt)
 
 	compression_spec.algorithm = PG_COMPRESSION_NONE;
 	AH = _allocAH(FileSpec, fmt, compression_spec, true,
-				  archModeRead, setupRestoreWorker);
+				  archModeRead, setupRestoreWorker,
+				  DATA_DIR_SYNC_METHOD_FSYNC);
 
 	return (Archive *) AH;
 }
@@ -386,10 +389,11 @@ RestoreArchive(Archive *AHX)
 		{
 			if (te->hadDumper && (te->reqs & REQ_DATA) != 0)
 			{
-				char *errmsg = supports_compression(AH->compression_spec);
+				char	   *errmsg = supports_compression(AH->compression_spec);
+
 				if (errmsg)
 					pg_fatal("cannot restore from compressed archive (%s)",
-							  errmsg);
+							 errmsg);
 				else
 					break;
 			}
@@ -2232,7 +2236,7 @@ static ArchiveHandle *
 _allocAH(const char *FileSpec, const ArchiveFormat fmt,
 		 const pg_compress_specification compression_spec,
 		 bool dosync, ArchiveMode mode,
-		 SetupWorkerPtrType setupWorkerPtr)
+		 SetupWorkerPtrType setupWorkerPtr, DataDirSyncMethod sync_method)
 {
 	ArchiveHandle *AH;
 	CompressFileHandle *CFH;
@@ -2286,6 +2290,7 @@ _allocAH(const char *FileSpec, const ArchiveFormat fmt,
 	AH->mode = mode;
 	AH->compression_spec = compression_spec;
 	AH->dosync = dosync;
+	AH->sync_method = sync_method;
 
 	memset(&(AH->sqlparse), 0, sizeof(AH->sqlparse));
 
@@ -2985,11 +2990,11 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 	if (!te->hadDumper)
 	{
 		/*
-		 * Special Case: If 'SEQUENCE SET' or anything to do with LOs, then
-		 * it is considered a data entry.  We don't need to check for the
-		 * BLOBS entry or old-style BLOB COMMENTS, because they will have
-		 * hadDumper = true ... but we do need to check new-style BLOB ACLs,
-		 * comments, etc.
+		 * Special Case: If 'SEQUENCE SET' or anything to do with LOs, then it
+		 * is considered a data entry.  We don't need to check for the BLOBS
+		 * entry or old-style BLOB COMMENTS, because they will have hadDumper
+		 * = true ... but we do need to check new-style BLOB ACLs, comments,
+		 * etc.
 		 */
 		if (strcmp(te->desc, "SEQUENCE SET") == 0 ||
 			strcmp(te->desc, "BLOB") == 0 ||
@@ -3480,6 +3485,7 @@ _getObjectDescription(PQExpBuffer buf, const TocEntry *te)
 	{
 		appendPQExpBuffer(buf, "LARGE OBJECT %s", te->tag);
 	}
+
 	/*
 	 * These object types require additional decoration.  Fortunately, the
 	 * information needed is exactly what's in the DROP command.
@@ -3639,6 +3645,7 @@ _printTocEntry(ArchiveHandle *AH, TocEntry *te, bool isData)
 
 		initPQExpBuffer(&temp);
 		_getObjectDescription(&temp, te);
+
 		/*
 		 * If _getObjectDescription() didn't fill the buffer, then there is no
 		 * owner.
@@ -3802,7 +3809,7 @@ ReadHead(ArchiveHandle *AH)
 	if (errmsg)
 	{
 		pg_log_warning("archive is compressed, but this installation does not support compression (%s) -- no data will be available",
-						errmsg);
+					   errmsg);
 		pg_free(errmsg);
 	}
 

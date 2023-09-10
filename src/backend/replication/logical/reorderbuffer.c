@@ -210,7 +210,7 @@ int			logical_decoding_work_mem;
 static const Size max_changes_in_memory = 4096; /* XXX for restore only */
 
 /* GUC variable */
-int			logical_replication_mode = LOGICAL_REP_MODE_BUFFERED;
+int			debug_logical_replication_streaming = DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
 
 /* ---------------------------------------
  * primary reorderbuffer support routines
@@ -1408,7 +1408,7 @@ ReorderBufferIterTXNNext(ReorderBuffer *rb, ReorderBufferIterTXNState *state)
 	{
 		dlist_node *next = dlist_next_node(&entry->txn->changes, &change->node);
 		ReorderBufferChange *next_change =
-		dlist_container(ReorderBufferChange, node, next);
+			dlist_container(ReorderBufferChange, node, next);
 
 		/* txn stays the same */
 		state->entries[off].lsn = next_change->lsn;
@@ -1439,8 +1439,8 @@ ReorderBufferIterTXNNext(ReorderBuffer *rb, ReorderBufferIterTXNState *state)
 		{
 			/* successfully restored changes from disk */
 			ReorderBufferChange *next_change =
-			dlist_head_element(ReorderBufferChange, node,
-							   &entry->txn->changes);
+				dlist_head_element(ReorderBufferChange, node,
+								   &entry->txn->changes);
 
 			elog(DEBUG2, "restored %u/%u changes from disk",
 				 (uint32) entry->txn->nentries_mem,
@@ -1582,7 +1582,7 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		dclist_delete_from(&rb->catchange_txns, &txn->catchange_node);
 
 	/* now remove reference from buffer */
-	hash_search(rb->by_txn,	&txn->xid, HASH_REMOVE,	&found);
+	hash_search(rb->by_txn, &txn->xid, HASH_REMOVE, &found);
 	Assert(found);
 
 	/* remove entries spilled to disk */
@@ -3566,8 +3566,8 @@ ReorderBufferLargestStreamableTopTXN(ReorderBuffer *rb)
  * pick the largest (sub)transaction at-a-time to evict and spill its changes to
  * disk or send to the output plugin until we reach under the memory limit.
  *
- * If logical_replication_mode is set to "immediate", stream or serialize the
- * changes immediately.
+ * If debug_logical_replication_streaming is set to "immediate", stream or
+ * serialize the changes immediately.
  *
  * XXX At this point we select the transactions until we reach under the memory
  * limit, but we might also adapt a more elaborate eviction strategy - for example
@@ -3580,30 +3580,30 @@ ReorderBufferCheckMemoryLimit(ReorderBuffer *rb)
 	ReorderBufferTXN *txn;
 
 	/*
-	 * Bail out if logical_replication_mode is buffered and we haven't exceeded
-	 * the memory limit.
+	 * Bail out if debug_logical_replication_streaming is buffered and we
+	 * haven't exceeded the memory limit.
 	 */
-	if (logical_replication_mode == LOGICAL_REP_MODE_BUFFERED &&
+	if (debug_logical_replication_streaming == DEBUG_LOGICAL_REP_STREAMING_BUFFERED &&
 		rb->size < logical_decoding_work_mem * 1024L)
 		return;
 
 	/*
-	 * If logical_replication_mode is immediate, loop until there's no change.
-	 * Otherwise, loop until we reach under the memory limit. One might think
-	 * that just by evicting the largest (sub)transaction we will come under
-	 * the memory limit based on assumption that the selected transaction is
-	 * at least as large as the most recent change (which caused us to go over
-	 * the memory limit). However, that is not true because a user can reduce
-	 * the logical_decoding_work_mem to a smaller value before the most recent
-	 * change.
+	 * If debug_logical_replication_streaming is immediate, loop until there's
+	 * no change. Otherwise, loop until we reach under the memory limit. One
+	 * might think that just by evicting the largest (sub)transaction we will
+	 * come under the memory limit based on assumption that the selected
+	 * transaction is at least as large as the most recent change (which
+	 * caused us to go over the memory limit). However, that is not true
+	 * because a user can reduce the logical_decoding_work_mem to a smaller
+	 * value before the most recent change.
 	 */
 	while (rb->size >= logical_decoding_work_mem * 1024L ||
-		   (logical_replication_mode == LOGICAL_REP_MODE_IMMEDIATE &&
+		   (debug_logical_replication_streaming == DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE &&
 			rb->size > 0))
 	{
 		/*
-		 * Pick the largest transaction (or subtransaction) and evict it from
-		 * memory by streaming, if possible.  Otherwise, spill to disk.
+		 * Pick the largest transaction and evict it from memory by streaming,
+		 * if possible.  Otherwise, spill to disk.
 		 */
 		if (ReorderBufferCanStartStreaming(rb) &&
 			(txn = ReorderBufferLargestStreamableTopTXN(rb)) != NULL)
@@ -3841,7 +3841,7 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			{
 				char	   *data;
 				Size		inval_size = sizeof(SharedInvalidationMessage) *
-				change->data.inval.ninvalidations;
+					change->data.inval.ninvalidations;
 
 				sz += inval_size;
 
@@ -4010,10 +4010,10 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	 * After that we need to reuse the snapshot from the previous run.
 	 *
 	 * Unlike DecodeCommit which adds xids of all the subtransactions in
-	 * snapshot's xip array via SnapBuildCommitTxn, we can't do that here
-	 * but we do add them to subxip array instead via ReorderBufferCopySnap.
-	 * This allows the catalog changes made in subtransactions decoded till
-	 * now to be visible.
+	 * snapshot's xip array via SnapBuildCommitTxn, we can't do that here but
+	 * we do add them to subxip array instead via ReorderBufferCopySnap. This
+	 * allows the catalog changes made in subtransactions decoded till now to
+	 * be visible.
 	 */
 	if (txn->snapshot_now == NULL)
 	{
@@ -4206,7 +4206,7 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	dlist_foreach_modify(cleanup_iter, &txn->changes)
 	{
 		ReorderBufferChange *cleanup =
-		dlist_container(ReorderBufferChange, node, cleanup_iter.cur);
+			dlist_container(ReorderBufferChange, node, cleanup_iter.cur);
 
 		dlist_delete(&cleanup->node);
 		ReorderBufferReturnChange(rb, cleanup, true);
@@ -4431,7 +4431,7 @@ ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_INVALIDATION:
 			{
 				Size		inval_size = sizeof(SharedInvalidationMessage) *
-				change->data.inval.ninvalidations;
+					change->data.inval.ninvalidations;
 
 				change->data.inval.invalidations =
 					MemoryContextAlloc(rb->context, inval_size);
@@ -4840,16 +4840,16 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		/* stitch toast tuple back together from its parts */
 		dlist_foreach(it, &ent->chunks)
 		{
-			bool		isnull;
+			bool		cisnull;
 			ReorderBufferChange *cchange;
 			ReorderBufferTupleBuf *ctup;
 			Pointer		chunk;
 
 			cchange = dlist_container(ReorderBufferChange, node, it.cur);
 			ctup = cchange->data.tp.newtuple;
-			chunk = DatumGetPointer(fastgetattr(&ctup->tuple, 3, toast_desc, &isnull));
+			chunk = DatumGetPointer(fastgetattr(&ctup->tuple, 3, toast_desc, &cisnull));
 
-			Assert(!isnull);
+			Assert(!cisnull);
 			Assert(!VARATT_IS_EXTERNAL(chunk));
 			Assert(!VARATT_IS_SHORT(chunk));
 
@@ -4936,7 +4936,7 @@ ReorderBufferToastReset(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		dlist_foreach_modify(it, &ent->chunks)
 		{
 			ReorderBufferChange *change =
-			dlist_container(ReorderBufferChange, node, it.cur);
+				dlist_container(ReorderBufferChange, node, it.cur);
 
 			dlist_delete(&change->node);
 			ReorderBufferReturnChange(rb, change, true);

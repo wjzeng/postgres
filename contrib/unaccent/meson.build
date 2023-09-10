@@ -37,6 +37,5 @@ tests += {
     'sql': [
       'unaccent',
     ],
-    'regress_args': ['--encoding=UTF8', '--no-locale'],
   },
 }

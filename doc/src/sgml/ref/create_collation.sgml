@@ -85,9 +85,16 @@ CREATE COLLATION [ IF NOT EXISTS ] <replaceable>name</replaceable> FROM <replace
 
      <listitem>
       <para>
-       This is a shortcut for setting <symbol>LC_COLLATE</symbol>
-       and <symbol>LC_CTYPE</symbol> at once.  If you specify this,
-       you cannot specify either of those parameters.
+       The locale name for this collation. See <xref
+       linkend="collation-managing-create-libc"/> and <xref
+       linkend="collation-managing-create-icu"/> for details.
+      </para>
+      <para>
+       If <replaceable>provider</replaceable> is <literal>libc</literal>, this
+       is a shortcut for setting <symbol>LC_COLLATE</symbol> and
+       <symbol>LC_CTYPE</symbol> at once.  If you specify
+       <replaceable>locale</replaceable>, you cannot specify either of those
+       parameters.
       </para>
      </listitem>
     </varlistentry>
@@ -97,8 +104,9 @@ CREATE COLLATION [ IF NOT EXISTS ] <replaceable>name</replaceable> FROM <replace
 
      <listitem>
       <para>
-       Use the specified operating system locale for
-       the <symbol>LC_COLLATE</symbol> locale category.
+       If <replaceable>provider</replaceable> is <literal>libc</literal>, use
+       the specified operating system locale for the
+       <symbol>LC_COLLATE</symbol> locale category.
       </para>
      </listitem>
     </varlistentry>
@@ -108,8 +116,9 @@ CREATE COLLATION [ IF NOT EXISTS ] <replaceable>name</replaceable> FROM <replace
 
      <listitem>
       <para>
-       Use the specified operating system locale for
-       the <symbol>LC_CTYPE</symbol> locale category.
+       If <replaceable>provider</replaceable> is <literal>libc</literal>, use
+       the specified operating system locale for the <symbol>LC_CTYPE</symbol>
+       locale category.
       </para>
      </listitem>
     </varlistentry>
@@ -156,9 +165,8 @@ CREATE COLLATION [ IF NOT EXISTS ] <replaceable>name</replaceable> FROM <replace
      <listitem>
       <para>
        Specifies additional collation rules to customize the behavior of the
-       collation.  This is supported for ICU only.  See <ulink
-       url="https://unicode-org.github.io/icu/userguide/collation/customization/"/>
-       for details on the syntax.
+       collation.  This is supported for ICU only.  See <xref
+       linkend="icu-tailoring-rules"/> for details.
       </para>
      </listitem>
     </varlistentry>
@@ -248,12 +256,8 @@ CREATE COLLATION german_phonebook (provider = icu, locale = 'de-u-co-phonebk');
 <programlisting>
 <![CDATA[CREATE COLLATION custom (provider = icu, locale = 'und', rules = '&V << w <<< W');]]>
 </programlisting>
-   With this rule, the letter <quote>W</quote> is sorted after
-   <quote>V</quote>, but is treated as a secondary difference similar to an
-   accent.  Rules like this are contained in the locale definitions of some
-   languages.  (Of course, if a locale definition already contains the desired
-   rules, then they don't need to be specified again explicitly.)  See the ICU
-   documentation for further details and examples on the rules syntax.
+   See <xref linkend="icu-tailoring-rules"/> for further details and examples
+   on the rules syntax.
   </para>
 
   <para>

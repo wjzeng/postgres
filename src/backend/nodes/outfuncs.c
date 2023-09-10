@@ -513,6 +513,7 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 			WRITE_BOOL_FIELD(security_barrier);
 			/* we re-use these RELATION fields, too: */
 			WRITE_OID_FIELD(relid);
+			WRITE_CHAR_FIELD(relkind);
 			WRITE_INT_FIELD(rellockmode);
 			WRITE_UINT_FIELD(perminfoindex);
 			break;
@@ -717,6 +718,11 @@ _outConstraint(StringInfo str, const Constraint *node)
 
 		case CONSTR_NOTNULL:
 			appendStringInfoString(str, "NOT_NULL");
+			WRITE_NODE_FIELD(keys);
+			WRITE_INT_FIELD(inhcount);
+			WRITE_BOOL_FIELD(is_no_inherit);
+			WRITE_BOOL_FIELD(skip_validation);
+			WRITE_BOOL_FIELD(initially_valid);
 			break;
 
 		case CONSTR_DEFAULT:

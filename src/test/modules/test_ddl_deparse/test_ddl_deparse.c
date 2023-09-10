@@ -129,11 +129,11 @@ get_altertable_subcmdinfo(PG_FUNCTION_ARGS)
 			case AT_SetNotNull:
 				strtype = "SET NOT NULL";
 				break;
+			case AT_SetAttNotNull:
+				strtype = "SET ATTNOTNULL";
+				break;
 			case AT_DropExpression:
 				strtype = "DROP EXPRESSION";
-				break;
-			case AT_CheckNotNull:
-				strtype = "CHECK NOT NULL";
 				break;
 			case AT_SetStatistics:
 				strtype = "SET STATS";
@@ -318,6 +318,7 @@ get_altertable_subcmdinfo(PG_FUNCTION_ARGS)
 		if (OidIsValid(sub->address.objectId))
 		{
 			char	   *objdesc;
+
 			objdesc = getObjectDescription((const ObjectAddress *) &sub->address, false);
 			values[1] = CStringGetTextDatum(objdesc);
 		}

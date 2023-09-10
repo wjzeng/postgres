@@ -14,6 +14,36 @@
 #
 # $ git log --pretty=format:"%H # %cd%n# %s" $PGINDENTGITHASH -1 --date=iso
 
+bc6041b61f6678d32a5cfb70744653cd8f8d01c0 # 2023-08-30 15:56:22 +0900
+# Fix code indentation vioaltion introduced in commit 3c662643c4.
+
+89be0b89ae60c63856fd26d82a104781540e2312 # 2023-08-15 17:45:00 +0900
+# Fix code indentation vioaltion introduced in commit 9e9931d2b.
+
+5dc456b7dda4f7d0d7735b066607c190c74d174a # 2023-08-11 20:43:34 +0900
+# Fix code indentation violations introduced by recent commit
+
+62e9af4c63fbd36fb9af8450fb44bece76d7766f # 2023-07-25 12:35:58 +0530
+# Fix code indentation vioaltion introduced in commit d38ad8e31d.
+
+4e465aac36ce9a9533c68dbdc83e67579880e628 # 2023-07-18 14:04:31 +0900
+# Fix indentation in twophase.c
+
+328f492d2565cfbe383f13a69425d751fd79415f # 2023-07-13 22:26:10 +0900
+# Fix code indentation violation in commit b6e1157e7d
+
+69a674a170058e63e8178aec8a36a673efce8801 # 2023-07-06 11:49:18 +0530
+# Fix code indentation vioaltion introduced in commit cc32ec24fd.
+
+a4cfeeca5a97f2b5969c31aa69ba775af95ee5a3 # 2023-07-03 12:47:49 +0200
+# Fix code indentation violations
+
+b334612b8aee9f9a34378982d8938b201dfad323 # 2023-06-20 09:50:43 -0400
+# Pre-beta2 mechanical code beautification.
+
+0245f8db36f375326c2bae0c3420d3c77714e72d # 2023-05-19 17:24:48 -0400
+# Pre-beta mechanical code beautification.
+
 b6dfee28f2b44e28b123b77a91fb05c47da63501 # 2023-03-09 15:09:45 +0900
 # Run pgindent on libpq's fe-auth.c, fe-auth-scram.c and fe-connect.c
 
@@ -193,6 +223,9 @@ f99a569a2ee3763b4ae174e81250c95ca0fdcbb6 # 2006-10-04 00:30:14 +0000
 
 1dc34982511d91ef8a2b71bdcb870f067c1b3da9 # 2005-10-15 02:49:52 +0000
 # Standard pgindent run for 8.1.
+
+b3364fc81b78538006da3b3ad5680530d2af8c47 # 2005-09-22 20:44:36 +0000
+# pgindent new GIST index code, per request from Tom.
 
 15d3f9f6b7849a70281f151f0def7a6d335767d7 # 2004-08-30 02:54:42 +0000
 # Another pgindent run with lib typedefs added.

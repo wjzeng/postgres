@@ -1263,11 +1263,18 @@ ReportSlotInvalidation(ReplicationSlotInvalidationCause cause,
 	switch (cause)
 	{
 		case RS_INVAL_WAL_REMOVED:
-			hint = true;
-			appendStringInfo(&err_detail, _("The slot's restart_lsn %X/%X exceeds the limit by %llu bytes."),
-							 LSN_FORMAT_ARGS(restart_lsn),
-							 (unsigned long long) (oldestLSN - restart_lsn));
-			break;
+			{
+				unsigned long long ex = oldestLSN - restart_lsn;
+
+				hint = true;
+				appendStringInfo(&err_detail,
+								 ngettext("The slot's restart_lsn %X/%X exceeds the limit by %llu byte.",
+										  "The slot's restart_lsn %X/%X exceeds the limit by %llu bytes.",
+										  ex),
+								 LSN_FORMAT_ARGS(restart_lsn),
+								 ex);
+				break;
+			}
 		case RS_INVAL_HORIZON:
 			appendStringInfo(&err_detail, _("The slot conflicted with xid horizon %u."),
 							 snapshotConflictHorizon);
@@ -1287,7 +1294,7 @@ ReportSlotInvalidation(ReplicationSlotInvalidationCause cause,
 			errmsg("invalidating obsolete replication slot \"%s\"",
 				   NameStr(slotname)),
 			errdetail_internal("%s", err_detail.data),
-			hint ? errhint("You might need to increase max_slot_wal_keep_size.") : 0);
+			hint ? errhint("You might need to increase %s.", "max_slot_wal_keep_size") : 0);
 
 	pfree(err_detail.data);
 }

@@ -221,6 +221,8 @@ llvm_release_context(JitContext *context)
 	}
 	list_free(llvm_context->handles);
 	llvm_context->handles = NIL;
+
+	llvm_leave_fatal_on_oom();
 }
 
 /*
@@ -720,8 +722,6 @@ llvm_compile_module(LLVMJitContext *context)
 			elog(ERROR, "failed to JIT module: %s",
 				 llvm_error_message(error));
 
-		handle->lljit = compile_orc;
-
 		/* LLVMOrcLLJITAddLLVMIRModuleWithRT takes ownership of the module */
 	}
 #elif LLVM_VERSION_MAJOR > 6
@@ -799,9 +799,9 @@ llvm_session_initialize(void)
 	LLVMInitializeNativeAsmParser();
 
 	/*
-	 * When targeting an LLVM version with opaque pointers enabled by
-	 * default, turn them off for the context we build our code in.  We don't
-	 * need to do so for other contexts (e.g. llvm_ts_context).  Once the IR is
+	 * When targeting an LLVM version with opaque pointers enabled by default,
+	 * turn them off for the context we build our code in.  We don't need to
+	 * do so for other contexts (e.g. llvm_ts_context).  Once the IR is
 	 * generated, it carries the necessary information.
 	 */
 #if LLVM_VERSION_MAJOR > 14
@@ -1118,7 +1118,7 @@ llvm_resolve_symbol(const char *symname, void *ctx)
 
 static LLVMErrorRef
 llvm_resolve_symbols(LLVMOrcDefinitionGeneratorRef GeneratorObj, void *Ctx,
-					 LLVMOrcLookupStateRef * LookupState, LLVMOrcLookupKind Kind,
+					 LLVMOrcLookupStateRef *LookupState, LLVMOrcLookupKind Kind,
 					 LLVMOrcJITDylibRef JD, LLVMOrcJITDylibLookupFlags JDLookupFlags,
 					 LLVMOrcCLookupSet LookupSet, size_t LookupSetSize)
 {
@@ -1175,7 +1175,7 @@ static LLVMOrcObjectLayerRef
 llvm_create_object_layer(void *Ctx, LLVMOrcExecutionSessionRef ES, const char *Triple)
 {
 	LLVMOrcObjectLayerRef objlayer =
-	LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager(ES);
+		LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager(ES);
 
 #if defined(HAVE_DECL_LLVMCREATEGDBREGISTRATIONLISTENER) && HAVE_DECL_LLVMCREATEGDBREGISTRATIONLISTENER
 	if (jit_debugging_support)

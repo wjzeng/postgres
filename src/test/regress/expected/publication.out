@@ -132,6 +132,15 @@ Tables:
 Tables from schemas:
     "pub_test"
 
+-- weird parser corner case
+CREATE PUBLICATION testpub_parsertst FOR TABLE pub_test.testpub_nopk, CURRENT_SCHEMA;
+ERROR:  invalid table name
+LINE 1: ...estpub_parsertst FOR TABLE pub_test.testpub_nopk, CURRENT_SC...
+                                                             ^
+CREATE PUBLICATION testpub_parsertst FOR TABLES IN SCHEMA foo, test.foo;
+ERROR:  invalid schema name
+LINE 1: ...CATION testpub_parsertst FOR TABLES IN SCHEMA foo, test.foo;
+                                                              ^
 -- should be able to add a table of the same schema to the schema publication
 ALTER PUBLICATION testpub_forschema ADD TABLE pub_test.testpub_nopk;
 \dRp+ testpub_forschema
@@ -184,6 +193,8 @@ Indexes:
     "testpub_tbl2_pkey" PRIMARY KEY, btree (id)
 Publications:
     "testpub_foralltables"
+Not-null constraints:
+    "testpub_tbl2_id_not_null" NOT NULL "id"
 
 \dRp+ testpub_foralltables
                               Publication testpub_foralltables
@@ -1138,6 +1149,8 @@ Publications:
     "testpib_ins_trunct"
     "testpub_default"
     "testpub_fortbl"
+Not-null constraints:
+    "testpub_tbl1_id_not_null" NOT NULL "id"
 
 \dRp+ testpub_default
                                 Publication testpub_default
@@ -1163,6 +1176,8 @@ Indexes:
 Publications:
     "testpib_ins_trunct"
     "testpub_fortbl"
+Not-null constraints:
+    "testpub_tbl1_id_not_null" NOT NULL "id"
 
 -- verify relation cache invalidation when a primary key is added using
 -- an existing index

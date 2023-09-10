@@ -451,7 +451,7 @@ static Buffer ReadBuffer_common(SMgrRelation smgr, char relpersistence,
 								ForkNumber forkNum, BlockNumber blockNum,
 								ReadBufferMode mode, BufferAccessStrategy strategy,
 								bool *hit);
-static BlockNumber ExtendBufferedRelCommon(ExtendBufferedWhat eb,
+static BlockNumber ExtendBufferedRelCommon(BufferManagerRelation bmr,
 										   ForkNumber fork,
 										   BufferAccessStrategy strategy,
 										   uint32 flags,
@@ -459,7 +459,7 @@ static BlockNumber ExtendBufferedRelCommon(ExtendBufferedWhat eb,
 										   BlockNumber extend_upto,
 										   Buffer *buffers,
 										   uint32 *extended_by);
-static BlockNumber ExtendBufferedRelShared(ExtendBufferedWhat eb,
+static BlockNumber ExtendBufferedRelShared(BufferManagerRelation bmr,
 										   ForkNumber fork,
 										   BufferAccessStrategy strategy,
 										   uint32 flags,
@@ -809,7 +809,7 @@ ReadBufferWithoutRelcache(RelFileLocator rlocator, ForkNumber forkNum,
  * Convenience wrapper around ExtendBufferedRelBy() extending by one block.
  */
 Buffer
-ExtendBufferedRel(ExtendBufferedWhat eb,
+ExtendBufferedRel(BufferManagerRelation bmr,
 				  ForkNumber forkNum,
 				  BufferAccessStrategy strategy,
 				  uint32 flags)
@@ -817,7 +817,7 @@ ExtendBufferedRel(ExtendBufferedWhat eb,
 	Buffer		buf;
 	uint32		extend_by = 1;
 
-	ExtendBufferedRelBy(eb, forkNum, strategy, flags, extend_by,
+	ExtendBufferedRelBy(bmr, forkNum, strategy, flags, extend_by,
 						&buf, &extend_by);
 
 	return buf;
@@ -841,7 +841,7 @@ ExtendBufferedRel(ExtendBufferedWhat eb,
  * be empty.
  */
 BlockNumber
-ExtendBufferedRelBy(ExtendBufferedWhat eb,
+ExtendBufferedRelBy(BufferManagerRelation bmr,
 					ForkNumber fork,
 					BufferAccessStrategy strategy,
 					uint32 flags,
@@ -849,17 +849,17 @@ ExtendBufferedRelBy(ExtendBufferedWhat eb,
 					Buffer *buffers,
 					uint32 *extended_by)
 {
-	Assert((eb.rel != NULL) != (eb.smgr != NULL));
-	Assert(eb.smgr == NULL || eb.relpersistence != 0);
+	Assert((bmr.rel != NULL) != (bmr.smgr != NULL));
+	Assert(bmr.smgr == NULL || bmr.relpersistence != 0);
 	Assert(extend_by > 0);
 
-	if (eb.smgr == NULL)
+	if (bmr.smgr == NULL)
 	{
-		eb.smgr = RelationGetSmgr(eb.rel);
-		eb.relpersistence = eb.rel->rd_rel->relpersistence;
+		bmr.smgr = RelationGetSmgr(bmr.rel);
+		bmr.relpersistence = bmr.rel->rd_rel->relpersistence;
 	}
 
-	return ExtendBufferedRelCommon(eb, fork, strategy, flags,
+	return ExtendBufferedRelCommon(bmr, fork, strategy, flags,
 								   extend_by, InvalidBlockNumber,
 								   buffers, extended_by);
 }
@@ -873,7 +873,7 @@ ExtendBufferedRelBy(ExtendBufferedWhat eb,
  * crash recovery).
  */
 Buffer
-ExtendBufferedRelTo(ExtendBufferedWhat eb,
+ExtendBufferedRelTo(BufferManagerRelation bmr,
 					ForkNumber fork,
 					BufferAccessStrategy strategy,
 					uint32 flags,
@@ -885,14 +885,14 @@ ExtendBufferedRelTo(ExtendBufferedWhat eb,
 	Buffer		buffer = InvalidBuffer;
 	Buffer		buffers[64];
 
-	Assert((eb.rel != NULL) != (eb.smgr != NULL));
-	Assert(eb.smgr == NULL || eb.relpersistence != 0);
+	Assert((bmr.rel != NULL) != (bmr.smgr != NULL));
+	Assert(bmr.smgr == NULL || bmr.relpersistence != 0);
 	Assert(extend_to != InvalidBlockNumber && extend_to > 0);
 
-	if (eb.smgr == NULL)
+	if (bmr.smgr == NULL)
 	{
-		eb.smgr = RelationGetSmgr(eb.rel);
-		eb.relpersistence = eb.rel->rd_rel->relpersistence;
+		bmr.smgr = RelationGetSmgr(bmr.rel);
+		bmr.relpersistence = bmr.rel->rd_rel->relpersistence;
 	}
 
 	/*
@@ -901,21 +901,21 @@ ExtendBufferedRelTo(ExtendBufferedWhat eb,
 	 * an smgrexists call.
 	 */
 	if ((flags & EB_CREATE_FORK_IF_NEEDED) &&
-		(eb.smgr->smgr_cached_nblocks[fork] == 0 ||
-		 eb.smgr->smgr_cached_nblocks[fork] == InvalidBlockNumber) &&
-		!smgrexists(eb.smgr, fork))
+		(bmr.smgr->smgr_cached_nblocks[fork] == 0 ||
+		 bmr.smgr->smgr_cached_nblocks[fork] == InvalidBlockNumber) &&
+		!smgrexists(bmr.smgr, fork))
 	{
-		LockRelationForExtension(eb.rel, ExclusiveLock);
+		LockRelationForExtension(bmr.rel, ExclusiveLock);
 
 		/* could have been closed while waiting for lock */
-		if (eb.rel)
-			eb.smgr = RelationGetSmgr(eb.rel);
+		if (bmr.rel)
+			bmr.smgr = RelationGetSmgr(bmr.rel);
 
 		/* recheck, fork might have been created concurrently */
-		if (!smgrexists(eb.smgr, fork))
-			smgrcreate(eb.smgr, fork, flags & EB_PERFORMING_RECOVERY);
+		if (!smgrexists(bmr.smgr, fork))
+			smgrcreate(bmr.smgr, fork, flags & EB_PERFORMING_RECOVERY);
 
-		UnlockRelationForExtension(eb.rel, ExclusiveLock);
+		UnlockRelationForExtension(bmr.rel, ExclusiveLock);
 	}
 
 	/*
@@ -923,13 +923,13 @@ ExtendBufferedRelTo(ExtendBufferedWhat eb,
 	 * kernel.
 	 */
 	if (flags & EB_CLEAR_SIZE_CACHE)
-		eb.smgr->smgr_cached_nblocks[fork] = InvalidBlockNumber;
+		bmr.smgr->smgr_cached_nblocks[fork] = InvalidBlockNumber;
 
 	/*
 	 * Estimate how many pages we'll need to extend by. This avoids acquiring
 	 * unnecessarily many victim buffers.
 	 */
-	current_size = smgrnblocks(eb.smgr, fork);
+	current_size = smgrnblocks(bmr.smgr, fork);
 
 	/*
 	 * Since no-one else can be looking at the page contents yet, there is no
@@ -948,12 +948,11 @@ ExtendBufferedRelTo(ExtendBufferedWhat eb,
 		if ((uint64) current_size + num_pages > extend_to)
 			num_pages = extend_to - current_size;
 
-		first_block = ExtendBufferedRelCommon(eb, fork, strategy, flags,
+		first_block = ExtendBufferedRelCommon(bmr, fork, strategy, flags,
 											  num_pages, extend_to,
 											  buffers, &extended_by);
 
 		current_size = first_block + extended_by;
-		Assert(current_size <= extend_to);
 		Assert(num_pages != 0 || current_size >= extend_to);
 
 		for (int i = 0; i < extended_by; i++)
@@ -976,7 +975,7 @@ ExtendBufferedRelTo(ExtendBufferedWhat eb,
 		bool		hit;
 
 		Assert(extended_by == 0);
-		buffer = ReadBuffer_common(eb.smgr, eb.relpersistence,
+		buffer = ReadBuffer_common(bmr.smgr, bmr.relpersistence,
 								   fork, extend_to - 1, mode, strategy,
 								   &hit);
 	}
@@ -1020,7 +1019,7 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		if (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK)
 			flags |= EB_LOCK_FIRST;
 
-		return ExtendBufferedRel(EB_SMGR(smgr, relpersistence),
+		return ExtendBufferedRel(BMR_SMGR(smgr, relpersistence),
 								 forkNum, strategy, flags);
 	}
 
@@ -1685,7 +1684,7 @@ again:
 		FlushBuffer(buf_hdr, NULL, IOOBJECT_RELATION, io_context);
 		LWLockRelease(content_lock);
 
-		ScheduleBufferTagForWriteback(&BackendWritebackContext,
+		ScheduleBufferTagForWriteback(&BackendWritebackContext, io_context,
 									  &buf_hdr->tag);
 	}
 
@@ -1768,7 +1767,7 @@ LimitAdditionalPins(uint32 *additional_pins)
 	 */
 	max_proportional_pins -= PrivateRefCountOverflowed + REFCOUNT_ARRAY_ENTRIES;
 
-	if (max_proportional_pins < 0)
+	if (max_proportional_pins <= 0)
 		max_proportional_pins = 1;
 
 	if (*additional_pins > max_proportional_pins)
@@ -1780,7 +1779,7 @@ LimitAdditionalPins(uint32 *additional_pins)
  * avoid duplicating the tracing and relpersistence related logic.
  */
 static BlockNumber
-ExtendBufferedRelCommon(ExtendBufferedWhat eb,
+ExtendBufferedRelCommon(BufferManagerRelation bmr,
 						ForkNumber fork,
 						BufferAccessStrategy strategy,
 						uint32 flags,
@@ -1792,27 +1791,27 @@ ExtendBufferedRelCommon(ExtendBufferedWhat eb,
 	BlockNumber first_block;
 
 	TRACE_POSTGRESQL_BUFFER_EXTEND_START(fork,
-										 eb.smgr->smgr_rlocator.locator.spcOid,
-										 eb.smgr->smgr_rlocator.locator.dbOid,
-										 eb.smgr->smgr_rlocator.locator.relNumber,
-										 eb.smgr->smgr_rlocator.backend,
+										 bmr.smgr->smgr_rlocator.locator.spcOid,
+										 bmr.smgr->smgr_rlocator.locator.dbOid,
+										 bmr.smgr->smgr_rlocator.locator.relNumber,
+										 bmr.smgr->smgr_rlocator.backend,
 										 extend_by);
 
-	if (eb.relpersistence == RELPERSISTENCE_TEMP)
-		first_block = ExtendBufferedRelLocal(eb, fork, flags,
+	if (bmr.relpersistence == RELPERSISTENCE_TEMP)
+		first_block = ExtendBufferedRelLocal(bmr, fork, flags,
 											 extend_by, extend_upto,
 											 buffers, &extend_by);
 	else
-		first_block = ExtendBufferedRelShared(eb, fork, strategy, flags,
+		first_block = ExtendBufferedRelShared(bmr, fork, strategy, flags,
 											  extend_by, extend_upto,
 											  buffers, &extend_by);
 	*extended_by = extend_by;
 
 	TRACE_POSTGRESQL_BUFFER_EXTEND_DONE(fork,
-										eb.smgr->smgr_rlocator.locator.spcOid,
-										eb.smgr->smgr_rlocator.locator.dbOid,
-										eb.smgr->smgr_rlocator.locator.relNumber,
-										eb.smgr->smgr_rlocator.backend,
+										bmr.smgr->smgr_rlocator.locator.spcOid,
+										bmr.smgr->smgr_rlocator.locator.dbOid,
+										bmr.smgr->smgr_rlocator.locator.relNumber,
+										bmr.smgr->smgr_rlocator.backend,
 										*extended_by,
 										first_block);
 
@@ -1824,7 +1823,7 @@ ExtendBufferedRelCommon(ExtendBufferedWhat eb,
  * shared buffers.
  */
 static BlockNumber
-ExtendBufferedRelShared(ExtendBufferedWhat eb,
+ExtendBufferedRelShared(BufferManagerRelation bmr,
 						ForkNumber fork,
 						BufferAccessStrategy strategy,
 						uint32 flags,
@@ -1875,9 +1874,9 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 	 */
 	if (!(flags & EB_SKIP_EXTENSION_LOCK))
 	{
-		LockRelationForExtension(eb.rel, ExclusiveLock);
-		if (eb.rel)
-			eb.smgr = RelationGetSmgr(eb.rel);
+		LockRelationForExtension(bmr.rel, ExclusiveLock);
+		if (bmr.rel)
+			bmr.smgr = RelationGetSmgr(bmr.rel);
 	}
 
 	/*
@@ -1885,9 +1884,9 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 	 * kernel.
 	 */
 	if (flags & EB_CLEAR_SIZE_CACHE)
-		eb.smgr->smgr_cached_nblocks[fork] = InvalidBlockNumber;
+		bmr.smgr->smgr_cached_nblocks[fork] = InvalidBlockNumber;
 
-	first_block = smgrnblocks(eb.smgr, fork);
+	first_block = smgrnblocks(bmr.smgr, fork);
 
 	/*
 	 * Now that we have the accurate relation size, check if the caller wants
@@ -1919,7 +1918,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 		if (extend_by == 0)
 		{
 			if (!(flags & EB_SKIP_EXTENSION_LOCK))
-				UnlockRelationForExtension(eb.rel, ExclusiveLock);
+				UnlockRelationForExtension(bmr.rel, ExclusiveLock);
 			*extended_by = extend_by;
 			return first_block;
 		}
@@ -1930,7 +1929,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("cannot extend relation %s beyond %u blocks",
-						relpath(eb.smgr->smgr_rlocator, fork),
+						relpath(bmr.smgr->smgr_rlocator, fork),
 						MaxBlockNumber)));
 
 	/*
@@ -1948,7 +1947,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 		LWLock	   *partition_lock;
 		int			existing_id;
 
-		InitBufferTag(&tag, &eb.smgr->smgr_rlocator.locator, fork, first_block + i);
+		InitBufferTag(&tag, &bmr.smgr->smgr_rlocator.locator, fork, first_block + i);
 		hash = BufTableHashCode(&tag);
 		partition_lock = BufMappingPartitionLock(hash);
 
@@ -1997,7 +1996,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 			if (valid && !PageIsNew((Page) buf_block))
 				ereport(ERROR,
 						(errmsg("unexpected data beyond EOF in block %u of relation %s",
-								existing_hdr->tag.blockNum, relpath(eb.smgr->smgr_rlocator, fork)),
+								existing_hdr->tag.blockNum, relpath(bmr.smgr->smgr_rlocator, fork)),
 						 errhint("This has been seen to occur with buggy kernels; consider updating your system.")));
 
 			/*
@@ -2031,7 +2030,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 			victim_buf_hdr->tag = tag;
 
 			buf_state |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
-			if (eb.relpersistence == RELPERSISTENCE_PERMANENT || fork == INIT_FORKNUM)
+			if (bmr.relpersistence == RELPERSISTENCE_PERMANENT || fork == INIT_FORKNUM)
 				buf_state |= BM_PERMANENT;
 
 			UnlockBufHdr(victim_buf_hdr, buf_state);
@@ -2055,7 +2054,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 	 *
 	 * We don't need to set checksum for all-zero pages.
 	 */
-	smgrzeroextend(eb.smgr, fork, first_block, extend_by, false);
+	smgrzeroextend(bmr.smgr, fork, first_block, extend_by, false);
 
 	/*
 	 * Release the file-extension lock; it's now OK for someone else to extend
@@ -2065,7 +2064,7 @@ ExtendBufferedRelShared(ExtendBufferedWhat eb,
 	 * take noticeable time.
 	 */
 	if (!(flags & EB_SKIP_EXTENSION_LOCK))
-		UnlockRelationForExtension(eb.rel, ExclusiveLock);
+		UnlockRelationForExtension(bmr.rel, ExclusiveLock);
 
 	pgstat_count_io_op_time(IOOBJECT_RELATION, io_context, IOOP_EXTEND,
 							io_start, extend_by);
@@ -2667,7 +2666,7 @@ BufferSync(int flags)
 	{
 		BufferDesc *bufHdr = NULL;
 		CkptTsStatus *ts_stat = (CkptTsStatus *)
-		DatumGetPointer(binaryheap_first(ts_heap));
+			DatumGetPointer(binaryheap_first(ts_heap));
 
 		buf_id = CkptBufferIds[ts_stat->index].buf_id;
 		Assert(buf_id != -1);
@@ -2725,8 +2724,11 @@ BufferSync(int flags)
 		CheckpointWriteDelay(flags, (double) num_processed / num_to_scan);
 	}
 
-	/* issue all pending flushes */
-	IssuePendingWritebacks(&wb_context);
+	/*
+	 * Issue all pending flushes. Only checkpointer calls BufferSync(), so
+	 * IOContext will always be IOCONTEXT_NORMAL.
+	 */
+	IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);
 
 	pfree(per_ts_stat);
 	per_ts_stat = NULL;
@@ -3110,7 +3112,11 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 
 	UnpinBuffer(bufHdr);
 
-	ScheduleBufferTagForWriteback(wb_context, &tag);
+	/*
+	 * SyncOneBuffer() is only called by checkpointer and bgwriter, so
+	 * IOContext will always be IOCONTEXT_NORMAL.
+	 */
+	ScheduleBufferTagForWriteback(wb_context, IOCONTEXT_NORMAL, &tag);
 
 	return result | BUF_WRITTEN;
 }
@@ -4895,7 +4901,7 @@ LockBufferForCleanup(Buffer buffer)
 			SetStartupBufferPinWaitBufId(-1);
 		}
 		else
-			ProcWaitForSignal(PG_WAIT_BUFFER_PIN);
+			ProcWaitForSignal(WAIT_EVENT_BUFFER_PIN);
 
 		/*
 		 * Remove flag marking us as waiter. Normally this will not be set
@@ -4917,8 +4923,8 @@ LockBufferForCleanup(Buffer buffer)
 }
 
 /*
- * Check called from RecoveryConflictInterrupt handler when Startup
- * process requests cancellation of all pin holders that are blocking it.
+ * Check called from ProcessRecoveryConflictInterrupts() when Startup process
+ * requests cancellation of all pin holders that are blocking it.
  */
 bool
 HoldingBufferPinThatDelaysRecovery(void)
@@ -5445,7 +5451,8 @@ WritebackContextInit(WritebackContext *context, int *max_pending)
  * Add buffer to list of pending writeback requests.
  */
 void
-ScheduleBufferTagForWriteback(WritebackContext *context, BufferTag *tag)
+ScheduleBufferTagForWriteback(WritebackContext *wb_context, IOContext io_context,
+							  BufferTag *tag)
 {
 	PendingWriteback *pending;
 
@@ -5456,11 +5463,11 @@ ScheduleBufferTagForWriteback(WritebackContext *context, BufferTag *tag)
 	 * Add buffer to the pending writeback array, unless writeback control is
 	 * disabled.
 	 */
-	if (*context->max_pending > 0)
+	if (*wb_context->max_pending > 0)
 	{
-		Assert(*context->max_pending <= WRITEBACK_MAX_PENDING_FLUSHES);
+		Assert(*wb_context->max_pending <= WRITEBACK_MAX_PENDING_FLUSHES);
 
-		pending = &context->pending_writebacks[context->nr_pending++];
+		pending = &wb_context->pending_writebacks[wb_context->nr_pending++];
 
 		pending->tag = *tag;
 	}
@@ -5470,8 +5477,8 @@ ScheduleBufferTagForWriteback(WritebackContext *context, BufferTag *tag)
 	 * includes the case where previously an item has been added, but control
 	 * is now disabled.
 	 */
-	if (context->nr_pending >= *context->max_pending)
-		IssuePendingWritebacks(context);
+	if (wb_context->nr_pending >= *wb_context->max_pending)
+		IssuePendingWritebacks(wb_context, io_context);
 }
 
 #define ST_SORT sort_pending_writebacks
@@ -5489,25 +5496,29 @@ ScheduleBufferTagForWriteback(WritebackContext *context, BufferTag *tag)
  * error out - it's just a hint.
  */
 void
-IssuePendingWritebacks(WritebackContext *context)
+IssuePendingWritebacks(WritebackContext *wb_context, IOContext io_context)
 {
+	instr_time	io_start;
 	int			i;
 
-	if (context->nr_pending == 0)
+	if (wb_context->nr_pending == 0)
 		return;
 
 	/*
 	 * Executing the writes in-order can make them a lot faster, and allows to
 	 * merge writeback requests to consecutive blocks into larger writebacks.
 	 */
-	sort_pending_writebacks(context->pending_writebacks, context->nr_pending);
+	sort_pending_writebacks(wb_context->pending_writebacks,
+							wb_context->nr_pending);
+
+	io_start = pgstat_prepare_io_time();
 
 	/*
 	 * Coalesce neighbouring writes, but nothing else. For that we iterate
 	 * through the, now sorted, array of pending flushes, and look forward to
 	 * find all neighbouring (or identical) writes.
 	 */
-	for (i = 0; i < context->nr_pending; i++)
+	for (i = 0; i < wb_context->nr_pending; i++)
 	{
 		PendingWriteback *cur;
 		PendingWriteback *next;
@@ -5517,7 +5528,7 @@ IssuePendingWritebacks(WritebackContext *context)
 		RelFileLocator currlocator;
 		Size		nblocks = 1;
 
-		cur = &context->pending_writebacks[i];
+		cur = &wb_context->pending_writebacks[i];
 		tag = cur->tag;
 		currlocator = BufTagGetRelFileLocator(&tag);
 
@@ -5525,10 +5536,10 @@ IssuePendingWritebacks(WritebackContext *context)
 		 * Peek ahead, into following writeback requests, to see if they can
 		 * be combined with the current one.
 		 */
-		for (ahead = 0; i + ahead + 1 < context->nr_pending; ahead++)
+		for (ahead = 0; i + ahead + 1 < wb_context->nr_pending; ahead++)
 		{
 
-			next = &context->pending_writebacks[i + ahead + 1];
+			next = &wb_context->pending_writebacks[i + ahead + 1];
 
 			/* different file, stop */
 			if (!RelFileLocatorEquals(currlocator,
@@ -5555,22 +5566,12 @@ IssuePendingWritebacks(WritebackContext *context)
 		smgrwriteback(reln, BufTagGetForkNum(&tag), tag.blockNum, nblocks);
 	}
 
-	context->nr_pending = 0;
-}
+	/*
+	 * Assume that writeback requests are only issued for buffers containing
+	 * blocks of permanent relations.
+	 */
+	pgstat_count_io_op_time(IOOBJECT_RELATION, io_context,
+							IOOP_WRITEBACK, io_start, wb_context->nr_pending);
 
-
-/*
- * Implement slower/larger portions of TestForOldSnapshot
- *
- * Smaller/faster portions are put inline, but the entire set of logic is too
- * big for that.
- */
-void
-TestForOldSnapshot_impl(Snapshot snapshot, Relation relation)
-{
-	if (RelationAllowsEarlyPruning(relation)
-		&& (snapshot)->whenTaken < GetOldSnapshotThresholdTimestamp())
-		ereport(ERROR,
-				(errcode(ERRCODE_SNAPSHOT_TOO_OLD),
-				 errmsg("snapshot too old")));
+	wb_context->nr_pending = 0;
 }

@@ -1824,6 +1824,10 @@ typedef struct SubqueryScanPath
  * ForeignPath represents a potential scan of a foreign table, foreign join
  * or foreign upper-relation.
  *
+ * In the case of a foreign join, fdw_restrictinfo stores the RestrictInfos to
+ * apply to the join, which are used by createplan.c to get pseudoconstant
+ * clauses evaluated as one-time quals in a gating Result plan node.
+ *
  * fdw_private stores FDW private data about the scan.  While fdw_private is
  * not actually touched by the core code during normal operations, it's
  * generally a good idea to use a representation that can be dumped by
@@ -1834,19 +1838,27 @@ typedef struct ForeignPath
 {
 	Path		path;
 	Path	   *fdw_outerpath;
+	List	   *fdw_restrictinfo;
 	List	   *fdw_private;
 } ForeignPath;
 
 /*
- * CustomPath represents a table scan done by some out-of-core extension.
+ * CustomPath represents a table scan or a table join done by some out-of-core
+ * extension.
  *
  * We provide a set of hooks here - which the provider must take care to set
  * up correctly - to allow extensions to supply their own methods of scanning
- * a relation.  For example, a provider might provide GPU acceleration, a
- * cache-based scan, or some other kind of logic we haven't dreamed up yet.
+ * a relation or joing relations.  For example, a provider might provide GPU
+ * acceleration, a cache-based scan, or some other kind of logic we haven't
+ * dreamed up yet.
  *
- * CustomPaths can be injected into the planning process for a relation by
- * set_rel_pathlist_hook functions.
+ * CustomPaths can be injected into the planning process for a base or join
+ * relation by set_rel_pathlist_hook or set_join_pathlist_hook functions,
+ * respectively.
+ *
+ * In the case of a table join, custom_restrictinfo stores the RestrictInfos
+ * to apply to the join, which are used by createplan.c to get pseudoconstant
+ * clauses evaluated as one-time quals in a gating Result plan node.
  *
  * Core code must avoid assuming that the CustomPath is only as large as
  * the structure declared here; providers are allowed to make it the first
@@ -1864,6 +1876,7 @@ typedef struct CustomPath
 	uint32		flags;			/* mask of CUSTOMPATH_* flags, see
 								 * nodes/extensible.h */
 	List	   *custom_paths;	/* list of child Path nodes, if any */
+	List	   *custom_restrictinfo;
 	List	   *custom_private;
 	const struct CustomPathMethods *methods;
 } CustomPath;
@@ -2432,6 +2445,15 @@ typedef struct LimitPath
  * conditions.  Possibly we should rename it to reflect that meaning?  But
  * see also the comments for RINFO_IS_PUSHED_DOWN, below.)
  *
+ * There is also an incompatible_relids field, which is a set of outer-join
+ * relids above which we cannot evaluate the clause (because they might null
+ * Vars it uses that should not be nulled yet).  In principle this could be
+ * filled in any RestrictInfo as the set of OJ relids that appear above the
+ * clause and null Vars that it uses.  In practice we only bother to populate
+ * it for "clone" clauses, as it's currently only needed to prevent multiple
+ * clones of the same clause from being accepted for evaluation at the same
+ * join level.
+ *
  * There is also an outer_relids field, which is NULL except for outer join
  * clauses; for those, it is the set of relids on the outer side of the
  * clause's outer join.  (These are rels that the clause cannot be applied to
@@ -2538,6 +2560,9 @@ typedef struct RestrictInfo
 
 	/* The set of relids required to evaluate the clause: */
 	Relids		required_relids;
+
+	/* Relids above which we cannot evaluate the clause (see comment above) */
+	Relids		incompatible_relids;
 
 	/* If an outer-join clause, the outer-side relations, else NULL: */
 	Relids		outer_relids;
@@ -2785,11 +2810,15 @@ typedef struct PlaceHolderVar
  * 3, when this join is in the RHS of the upper join (so, this is the lower
  * join in the second form of the identity).
  *
- * commute_below is filled with the relids of syntactically-lower outer joins
- * that have been found to commute with this one per outer join identity 3.
- * (We need not record which side they are on, since that can be determined
- * by seeing whether the lower join's relid appears in syn_lefthand or
- * syn_righthand.)
+ * commute_below_l is filled with the relids of syntactically-lower outer
+ * joins that have been found to commute with this one per outer join identity
+ * 3 and are in the LHS of this join (so, this is the upper join in the first
+ * form of the identity).
+ *
+ * commute_below_r is filled with the relids of syntactically-lower outer
+ * joins that have been found to commute with this one per outer join identity
+ * 3 and are in the RHS of this join (so, this is the upper join in the second
+ * form of the identity).
  *
  * lhs_strict is true if the special join's condition cannot succeed when the
  * LHS variables are all NULL (this means that an outer join can commute with
@@ -2831,7 +2860,8 @@ struct SpecialJoinInfo
 	Index		ojrelid;		/* outer join's RT index; 0 if none */
 	Relids		commute_above_l;	/* commuting OJs above this one, if LHS */
 	Relids		commute_above_r;	/* commuting OJs above this one, if RHS */
-	Relids		commute_below;	/* commuting OJs below this one */
+	Relids		commute_below_l;	/* commuting OJs in this one's LHS */
+	Relids		commute_below_r;	/* commuting OJs in this one's RHS */
 	bool		lhs_strict;		/* joinclause is strict for some LHS rel */
 	/* Remaining fields are set only for JOIN_SEMI jointype: */
 	bool		semi_can_btree; /* true if semi_operators are all btree */

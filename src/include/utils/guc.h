@@ -250,7 +250,7 @@ extern PGDLLIMPORT bool log_statement_stats;
 extern PGDLLIMPORT bool log_btree_build_stats;
 
 extern PGDLLIMPORT bool check_function_bodies;
-extern PGDLLIMPORT bool session_auth_is_superuser;
+extern PGDLLIMPORT bool current_role_is_superuser;
 
 extern PGDLLIMPORT bool log_duration;
 extern PGDLLIMPORT int log_parameter_max_length;
@@ -391,14 +391,13 @@ extern void AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt);
 extern char *GetConfigOptionByName(const char *name, const char **varname,
 								   bool missing_ok);
 
-extern void ProcessGUCArray(ArrayType *array, ArrayType *usersetArray,
+extern void TransformGUCArray(ArrayType *array, List **configNames,
+							  List **configValues);
+extern void ProcessGUCArray(ArrayType *array,
 							GucContext context, GucSource source, GucAction action);
-extern ArrayType *GUCArrayAdd(ArrayType *array, ArrayType **usersetArray,
-							  const char *name, const char *value,
-							  bool user_set);
-extern ArrayType *GUCArrayDelete(ArrayType *array, ArrayType **usersetArray,
-								 const char *name);
-extern ArrayType *GUCArrayReset(ArrayType *array, ArrayType **usersetArray);
+extern ArrayType *GUCArrayAdd(ArrayType *array, const char *name, const char *value);
+extern ArrayType *GUCArrayDelete(ArrayType *array, const char *name);
+extern ArrayType *GUCArrayReset(ArrayType *array);
 
 extern void *guc_malloc(int elevel, size_t size);
 extern pg_nodiscard void *guc_realloc(int elevel, void *old, size_t size);

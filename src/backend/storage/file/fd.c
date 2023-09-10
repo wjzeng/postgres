@@ -162,7 +162,7 @@ int			max_safe_fds = FD_MINFREE;	/* default if not changed */
 bool		data_sync_retry = false;
 
 /* How SyncDataDirectory() should do its job. */
-int			recovery_init_sync_method = RECOVERY_INIT_SYNC_METHOD_FSYNC;
+int			recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
 
 /* Which kinds of files should be opened with PG_O_DIRECT. */
 int			io_direct_flags;
@@ -399,7 +399,7 @@ pg_fsync(int fd)
 #endif
 
 	/* #if is to skip the sync_method test if there's no need for it */
-#if defined(HAVE_FSYNC_WRITETHROUGH) && !defined(FSYNC_WRITETHROUGH_IS_FSYNC)
+#if defined(HAVE_FSYNC_WRITETHROUGH)
 	if (sync_method == SYNC_METHOD_FSYNC_WRITETHROUGH)
 		return pg_fsync_writethrough(fd);
 	else
@@ -415,10 +415,18 @@ pg_fsync(int fd)
 int
 pg_fsync_no_writethrough(int fd)
 {
-	if (enableFsync)
-		return fsync(fd);
-	else
+	int			rc;
+
+	if (!enableFsync)
 		return 0;
+
+retry:
+	rc = fsync(fd);
+
+	if (rc == -1 && errno == EINTR)
+		goto retry;
+
+	return rc;
 }
 
 /*
@@ -429,9 +437,7 @@ pg_fsync_writethrough(int fd)
 {
 	if (enableFsync)
 	{
-#ifdef WIN32
-		return _commit(fd);
-#elif defined(F_FULLFSYNC)
+#if defined(F_FULLFSYNC)
 		return (fcntl(fd, F_FULLFSYNC, 0) == -1) ? -1 : 0;
 #else
 		errno = ENOSYS;
@@ -448,10 +454,18 @@ pg_fsync_writethrough(int fd)
 int
 pg_fdatasync(int fd)
 {
-	if (enableFsync)
-		return fdatasync(fd);
-	else
+	int			rc;
+
+	if (!enableFsync)
 		return 0;
+
+retry:
+	rc = fdatasync(fd);
+
+	if (rc == -1 && errno == EINTR)
+		goto retry;
+
+	return rc;
 }
 
 /*
@@ -483,6 +497,8 @@ pg_flush_data(int fd, off_t offset, off_t nbytes)
 		if (not_implemented_by_kernel)
 			return;
 
+retry:
+
 		/*
 		 * sync_file_range(SYNC_FILE_RANGE_WRITE), currently linux specific,
 		 * tells the OS that writeback for the specified blocks should be
@@ -497,6 +513,9 @@ pg_flush_data(int fd, off_t offset, off_t nbytes)
 		if (rc != 0)
 		{
 			int			elevel;
+
+			if (rc == EINTR)
+				goto retry;
 
 			/*
 			 * For systems that don't have an implementation of
@@ -630,31 +649,53 @@ pg_flush_data(int fd, off_t offset, off_t nbytes)
 }
 
 /*
+ * Truncate an open file to a given length.
+ */
+static int
+pg_ftruncate(int fd, off_t length)
+{
+	int			ret;
+
+retry:
+	ret = ftruncate(fd, length);
+
+	if (ret == -1 && errno == EINTR)
+		goto retry;
+
+	return ret;
+}
+
+/*
  * Truncate a file to a given length by name.
  */
 int
 pg_truncate(const char *path, off_t length)
 {
+	int			ret;
 #ifdef WIN32
 	int			save_errno;
-	int			ret;
 	int			fd;
 
 	fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
 	if (fd >= 0)
 	{
-		ret = ftruncate(fd, length);
+		ret = pg_ftruncate(fd, length);
 		save_errno = errno;
 		CloseTransientFile(fd);
 		errno = save_errno;
 	}
 	else
 		ret = -1;
+#else
+
+retry:
+	ret = truncate(path, length);
+
+	if (ret == -1 && errno == EINTR)
+		goto retry;
+#endif
 
 	return ret;
-#else
-	return truncate(path, length);
-#endif
 }
 
 /*
@@ -2001,10 +2042,14 @@ FilePrefetch(File file, off_t offset, off_t amount, uint32 wait_event_info)
 	if (returnCode < 0)
 		return returnCode;
 
+retry:
 	pgstat_report_wait_start(wait_event_info);
 	returnCode = posix_fadvise(VfdCache[file].fd, offset, amount,
 							   POSIX_FADV_WILLNEED);
 	pgstat_report_wait_end();
+
+	if (returnCode == EINTR)
+		goto retry;
 
 	return returnCode;
 #else
@@ -2281,12 +2326,15 @@ FileFallocate(File file, off_t offset, off_t amount, uint32 wait_event_info)
 	if (returnCode < 0)
 		return -1;
 
+retry:
 	pgstat_report_wait_start(wait_event_info);
 	returnCode = posix_fallocate(VfdCache[file].fd, offset, amount);
 	pgstat_report_wait_end();
 
 	if (returnCode == 0)
 		return 0;
+	else if (returnCode == EINTR)
+		goto retry;
 
 	/* for compatibility with %m printing etc */
 	errno = returnCode;
@@ -2334,7 +2382,7 @@ FileTruncate(File file, off_t offset, uint32 wait_event_info)
 		return returnCode;
 
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = ftruncate(VfdCache[file].fd, offset);
+	returnCode = pg_ftruncate(VfdCache[file].fd, offset);
 	pgstat_report_wait_end();
 
 	if (returnCode == 0 && VfdCache[file].fileSize > offset)
@@ -3465,7 +3513,7 @@ SyncDataDirectory(void)
 	}
 
 #ifdef HAVE_SYNCFS
-	if (recovery_init_sync_method == RECOVERY_INIT_SYNC_METHOD_SYNCFS)
+	if (recovery_init_sync_method == DATA_DIR_SYNC_METHOD_SYNCFS)
 	{
 		DIR		   *dir;
 		struct dirent *de;
@@ -3836,7 +3884,7 @@ data_sync_elevel(int elevel)
 }
 
 bool
-check_io_direct(char **newval, void **extra, GucSource source)
+check_debug_io_direct(char **newval, void **extra, GucSource source)
 {
 	bool		result = true;
 	int			flags;
@@ -3844,7 +3892,7 @@ check_io_direct(char **newval, void **extra, GucSource source)
 #if PG_O_DIRECT == 0
 	if (strcmp(*newval, "") != 0)
 	{
-		GUC_check_errdetail("io_direct is not supported on this platform.");
+		GUC_check_errdetail("debug_io_direct is not supported on this platform.");
 		result = false;
 	}
 	flags = 0;
@@ -3859,7 +3907,7 @@ check_io_direct(char **newval, void **extra, GucSource source)
 	if (!SplitGUCList(rawstring, ',', &elemlist))
 	{
 		GUC_check_errdetail("invalid list syntax in parameter \"%s\"",
-							"io_direct");
+							"debug_io_direct");
 		pfree(rawstring);
 		list_free(elemlist);
 		return false;
@@ -3891,14 +3939,14 @@ check_io_direct(char **newval, void **extra, GucSource source)
 #if XLOG_BLCKSZ < PG_IO_ALIGN_SIZE
 	if (result && (flags & (IO_DIRECT_WAL | IO_DIRECT_WAL_INIT)))
 	{
-		GUC_check_errdetail("io_direct is not supported for WAL because XLOG_BLCKSZ is too small");
+		GUC_check_errdetail("debug_io_direct is not supported for WAL because XLOG_BLCKSZ is too small");
 		result = false;
 	}
 #endif
 #if BLCKSZ < PG_IO_ALIGN_SIZE
 	if (result && (flags & IO_DIRECT_DATA))
 	{
-		GUC_check_errdetail("io_direct is not supported for data because BLCKSZ is too small");
+		GUC_check_errdetail("debug_io_direct is not supported for data because BLCKSZ is too small");
 		result = false;
 	}
 #endif
@@ -3910,7 +3958,7 @@ check_io_direct(char **newval, void **extra, GucSource source)
 	if (!result)
 		return result;
 
-	/* Save the flags in *extra, for use by assign_io_direct */
+	/* Save the flags in *extra, for use by assign_debug_io_direct */
 	*extra = guc_malloc(ERROR, sizeof(int));
 	*((int *) *extra) = flags;
 
@@ -3918,7 +3966,7 @@ check_io_direct(char **newval, void **extra, GucSource source)
 }
 
 extern void
-assign_io_direct(const char *newval, void *extra)
+assign_debug_io_direct(const char *newval, void *extra)
 {
 	int		   *flags = (int *) extra;
 

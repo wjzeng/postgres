@@ -462,7 +462,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 					 * For btrees, get tree height while we have the index
 					 * open
 					 */
-					info->tree_height = _bt_getrootheight(indexRelation, relation);
+					info->tree_height = _bt_getrootheight(indexRelation);
 				}
 				else
 				{
@@ -1644,6 +1644,8 @@ relation_excluded_by_constraints(PlannerInfo *root,
 	 * Currently, attnotnull constraints must be treated as NO INHERIT unless
 	 * this is a partitioned table.  In future we might track their
 	 * inheritance status more accurately, allowing this to be refined.
+	 *
+	 * XXX do we need/want to change this?
 	 */
 	include_notnull = (!rte->inh || rte->relkind == RELKIND_PARTITIONED_TABLE);
 

@@ -1215,6 +1215,22 @@ pg_get_indexdef_columns(Oid indexrelid, bool pretty)
 								  prettyFlags, false);
 }
 
+/* Internal version, extensible with flags to control its behavior */
+char *
+pg_get_indexdef_columns_extended(Oid indexrelid, bits16 flags)
+{
+	bool		pretty = ((flags & RULE_INDEXDEF_PRETTY) != 0);
+	bool		keys_only = ((flags & RULE_INDEXDEF_KEYS_ONLY) != 0);
+	int			prettyFlags;
+
+	prettyFlags = GET_PRETTY_FLAGS(pretty);
+
+	return pg_get_indexdef_worker(indexrelid, 0, NULL,
+								  true, keys_only,
+								  false, false,
+								  prettyFlags, false);
+}
+
 /*
  * Internal workhorse to decompile an index definition.
  *
@@ -2474,6 +2490,20 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 								 conForm->connoinherit ? " NO INHERIT" : "");
 				break;
 			}
+		case CONSTRAINT_NOTNULL:
+			{
+				AttrNumber	attnum;
+
+				attnum = extractNotNullColumn(tup);
+
+				appendStringInfo(&buf, "NOT NULL %s",
+								 quote_identifier(get_attname(conForm->conrelid,
+															  attnum, false)));
+				if (((Form_pg_constraint) GETSTRUCT(tup))->connoinherit)
+					appendStringInfoString(&buf, " NO INHERIT");
+				break;
+			}
+
 		case CONSTRAINT_TRIGGER:
 
 			/*
@@ -3267,7 +3297,7 @@ print_function_arguments(StringInfo buf, HeapTuple proctup,
 		HeapTuple	aggtup;
 		Form_pg_aggregate agg;
 
-		aggtup = SearchSysCache1(AGGFNOID, proc->oid);
+		aggtup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(proc->oid));
 		if (!HeapTupleIsValid(aggtup))
 			elog(ERROR, "cache lookup failed for aggregate %u",
 				 proc->oid);
@@ -8254,6 +8284,7 @@ isSimpleNode(Node *node, Node *parentNode, int prettyFlags)
 		case T_RowExpr:
 		case T_CoalesceExpr:
 		case T_MinMaxExpr:
+		case T_SQLValueFunction:
 		case T_XmlExpr:
 		case T_NextValueExpr:
 		case T_NullIfExpr:
@@ -9242,6 +9273,67 @@ get_rule_expr(Node *node, deparse_context *context,
 			}
 			break;
 
+		case T_SQLValueFunction:
+			{
+				SQLValueFunction *svf = (SQLValueFunction *) node;
+
+				/*
+				 * Note: this code knows that typmod for time, timestamp, and
+				 * timestamptz just prints as integer.
+				 */
+				switch (svf->op)
+				{
+					case SVFOP_CURRENT_DATE:
+						appendStringInfoString(buf, "CURRENT_DATE");
+						break;
+					case SVFOP_CURRENT_TIME:
+						appendStringInfoString(buf, "CURRENT_TIME");
+						break;
+					case SVFOP_CURRENT_TIME_N:
+						appendStringInfo(buf, "CURRENT_TIME(%d)", svf->typmod);
+						break;
+					case SVFOP_CURRENT_TIMESTAMP:
+						appendStringInfoString(buf, "CURRENT_TIMESTAMP");
+						break;
+					case SVFOP_CURRENT_TIMESTAMP_N:
+						appendStringInfo(buf, "CURRENT_TIMESTAMP(%d)",
+										 svf->typmod);
+						break;
+					case SVFOP_LOCALTIME:
+						appendStringInfoString(buf, "LOCALTIME");
+						break;
+					case SVFOP_LOCALTIME_N:
+						appendStringInfo(buf, "LOCALTIME(%d)", svf->typmod);
+						break;
+					case SVFOP_LOCALTIMESTAMP:
+						appendStringInfoString(buf, "LOCALTIMESTAMP");
+						break;
+					case SVFOP_LOCALTIMESTAMP_N:
+						appendStringInfo(buf, "LOCALTIMESTAMP(%d)",
+										 svf->typmod);
+						break;
+					case SVFOP_CURRENT_ROLE:
+						appendStringInfoString(buf, "CURRENT_ROLE");
+						break;
+					case SVFOP_CURRENT_USER:
+						appendStringInfoString(buf, "CURRENT_USER");
+						break;
+					case SVFOP_USER:
+						appendStringInfoString(buf, "USER");
+						break;
+					case SVFOP_SESSION_USER:
+						appendStringInfoString(buf, "SESSION_USER");
+						break;
+					case SVFOP_CURRENT_CATALOG:
+						appendStringInfoString(buf, "CURRENT_CATALOG");
+						break;
+					case SVFOP_CURRENT_SCHEMA:
+						appendStringInfoString(buf, "CURRENT_SCHEMA");
+						break;
+				}
+			}
+			break;
+
 		case T_XmlExpr:
 			{
 				XmlExpr    *xexpr = (XmlExpr *) node;
@@ -9816,6 +9908,7 @@ looks_like_function(Node *node)
 		case T_NullIfExpr:
 		case T_CoalesceExpr:
 		case T_MinMaxExpr:
+		case T_SQLValueFunction:
 		case T_XmlExpr:
 			/* these are all accepted by func_expr_common_subexpr */
 			return true;
@@ -10218,33 +10311,6 @@ get_windowfunc_expr_helper(WindowFunc *wfunc, deparse_context *context,
 }
 
 /*
- * get_func_sql_syntax_time
- *
- * Parse back argument of SQL-syntax function call related to a time or a
- * timestamp.  These require a specific handling when their typmod is given
- * by the function caller through their SQL keyword.
- */
-static void
-get_func_sql_syntax_time(List *args, deparse_context *context)
-{
-	StringInfo	buf = context->buf;
-	Const	   *cons;
-
-	if (list_length(args) != 1)
-		return;
-
-	cons = (Const *) linitial(args);
-	Assert(IsA(cons, Const));
-
-	if (!cons->constisnull)
-	{
-		appendStringInfoString(buf, "(");
-		get_rule_expr((Node *) cons, context, false);
-		appendStringInfoString(buf, ")");
-	}
-}
-
-/*
  * get_func_sql_syntax		- Parse back a SQL-syntax function call
  *
  * Returns true if we successfully deparsed, false if we did not
@@ -10470,46 +10536,8 @@ get_func_sql_syntax(FuncExpr *expr, deparse_context *context)
 			appendStringInfoChar(buf, ')');
 			return true;
 
-		case F_CURRENT_CATALOG:
-			appendStringInfoString(buf, "CURRENT_CATALOG");
-			return true;
-		case F_CURRENT_ROLE:
-			appendStringInfoString(buf, "CURRENT_ROLE");
-			return true;
-		case F_CURRENT_SCHEMA:
-			appendStringInfoString(buf, "CURRENT_SCHEMA");
-			return true;
-		case F_CURRENT_USER:
-			appendStringInfoString(buf, "CURRENT_USER");
-			return true;
-		case F_USER:
-			appendStringInfoString(buf, "USER");
-			return true;
-		case F_SESSION_USER:
-			appendStringInfoString(buf, "SESSION_USER");
-			return true;
 		case F_SYSTEM_USER:
 			appendStringInfoString(buf, "SYSTEM_USER");
-			return true;
-
-		case F_CURRENT_DATE:
-			appendStringInfoString(buf, "CURRENT_DATE");
-			return true;
-		case F_CURRENT_TIME:
-			appendStringInfoString(buf, "CURRENT_TIME");
-			get_func_sql_syntax_time(expr->args, context);
-			return true;
-		case F_CURRENT_TIMESTAMP:
-			appendStringInfoString(buf, "CURRENT_TIMESTAMP");
-			get_func_sql_syntax_time(expr->args, context);
-			return true;
-		case F_LOCALTIME:
-			appendStringInfoString(buf, "LOCALTIME");
-			get_func_sql_syntax_time(expr->args, context);
-			return true;
-		case F_LOCALTIMESTAMP:
-			appendStringInfoString(buf, "LOCALTIMESTAMP");
-			get_func_sql_syntax_time(expr->args, context);
 			return true;
 
 		case F_XMLEXISTS:
@@ -10818,6 +10846,15 @@ get_json_constructor(JsonConstructorExpr *ctor, deparse_context *context,
 		case JSCTOR_JSON_ARRAY:
 			funcname = "JSON_ARRAY";
 			break;
+		case JSCTOR_JSON_PARSE:
+			funcname = "JSON";
+			break;
+		case JSCTOR_JSON_SCALAR:
+			funcname = "JSON_SCALAR";
+			break;
+		case JSCTOR_JSON_SERIALIZE:
+			funcname = "JSON_SERIALIZE";
+			break;
 		default:
 			elog(ERROR, "invalid JsonConstructorType %d", ctor->type);
 	}
@@ -10865,7 +10902,12 @@ get_json_constructor_options(JsonConstructorExpr *ctor, StringInfo buf)
 	if (ctor->unique)
 		appendStringInfoString(buf, " WITH UNIQUE KEYS");
 
-	get_json_returning(ctor->returning, buf, true);
+	/*
+	 * Append RETURNING clause if needed; JSON() and JSON_SCALAR() don't
+	 * support one.
+	 */
+	if (ctor->type != JSCTOR_JSON_PARSE && ctor->type != JSCTOR_JSON_SCALAR)
+		get_json_returning(ctor->returning, buf, true);
 }
 
 /*
@@ -12573,7 +12615,7 @@ get_range_partbound_string(List *bound_datums)
 	foreach(cell, bound_datums)
 	{
 		PartitionRangeDatum *datum =
-		lfirst_node(PartitionRangeDatum, cell);
+			lfirst_node(PartitionRangeDatum, cell);
 
 		appendStringInfoString(buf, sep);
 		if (datum->kind == PARTITION_RANGE_DATUM_MINVALUE)

@@ -169,7 +169,7 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
 	MemoryContext oldcxt = CurrentMemoryContext;
 	bool		autosummarize = BrinGetAutoSummarize(idxRel);
 
-	revmap = brinRevmapInitialize(idxRel, &pagesPerRange, NULL);
+	revmap = brinRevmapInitialize(idxRel, &pagesPerRange);
 
 	/*
 	 * origHeapBlk is the block number where the insertion occurred.  heapBlk
@@ -202,7 +202,7 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
 
 			lastPageTuple =
 				brinGetTupleForHeapBlock(revmap, lastPageRange, &buf, &off,
-										 NULL, BUFFER_LOCK_SHARE, NULL);
+										 NULL, BUFFER_LOCK_SHARE);
 			if (!lastPageTuple)
 			{
 				bool		recorded;
@@ -222,7 +222,7 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
 		}
 
 		brtup = brinGetTupleForHeapBlock(revmap, heapBlk, &buf, &off,
-										 NULL, BUFFER_LOCK_SHARE, NULL);
+										 NULL, BUFFER_LOCK_SHARE);
 
 		/* if range is unsummarized, there's nothing to do */
 		if (!brtup)
@@ -332,8 +332,7 @@ brinbeginscan(Relation r, int nkeys, int norderbys)
 	scan = RelationGetIndexScan(r, nkeys, norderbys);
 
 	opaque = palloc_object(BrinOpaque);
-	opaque->bo_rmAccess = brinRevmapInitialize(r, &opaque->bo_pagesPerRange,
-											   scan->xs_snapshot);
+	opaque->bo_rmAccess = brinRevmapInitialize(r, &opaque->bo_pagesPerRange);
 	opaque->bo_bdesc = brin_build_desc(r);
 	scan->opaque = opaque;
 
@@ -537,8 +536,7 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		MemoryContextResetAndDeleteChildren(perRangeCxt);
 
 		tup = brinGetTupleForHeapBlock(opaque->bo_rmAccess, heapBlk, &buf,
-									   &off, &size, BUFFER_LOCK_SHARE,
-									   scan->xs_snapshot);
+									   &off, &size, BUFFER_LOCK_SHARE);
 		if (tup)
 		{
 			gottuple = true;
@@ -591,6 +589,17 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 						continue;
 
 					bval = &dtup->bt_columns[attno - 1];
+
+					/*
+					 * If the BRIN tuple indicates that this range is empty,
+					 * we can skip it: there's nothing to match.  We don't
+					 * need to examine the next columns.
+					 */
+					if (dtup->bt_empty_range)
+					{
+						addrange = false;
+						break;
+					}
 
 					/*
 					 * First check if there are any IS [NOT] NULL scan keys,
@@ -689,8 +698,8 @@ bringetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 					}
 
 					/*
-					 * If we found a scan key eliminating the range, no need to
-					 * check additional ones.
+					 * If we found a scan key eliminating the range, no need
+					 * to check additional ones.
 					 */
 					if (!addrange)
 						break;
@@ -837,7 +846,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * whole relation will be rolled back.
 	 */
 
-	meta = ExtendBufferedRel(EB_REL(index), MAIN_FORKNUM, NULL,
+	meta = ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, NULL,
 							 EB_LOCK_FIRST | EB_SKIP_EXTENSION_LOCK);
 	Assert(BufferGetBlockNumber(meta) == BRIN_METAPAGE_BLKNO);
 
@@ -869,7 +878,7 @@ brinbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	/*
 	 * Initialize our state, including the deformed tuple state.
 	 */
-	revmap = brinRevmapInitialize(index, &pagesPerRange, NULL);
+	revmap = brinRevmapInitialize(index, &pagesPerRange);
 	state = initialize_brin_buildstate(index, revmap, pagesPerRange);
 
 	/*
@@ -904,7 +913,7 @@ brinbuildempty(Relation index)
 	Buffer		metabuf;
 
 	/* An empty BRIN index has a metapage only. */
-	metabuf = ExtendBufferedRel(EB_REL(index), INIT_FORKNUM, NULL,
+	metabuf = ExtendBufferedRel(BMR_REL(index), INIT_FORKNUM, NULL,
 								EB_LOCK_FIRST | EB_SKIP_EXTENSION_LOCK);
 
 	/* Initialize and xlog metabuffer. */
@@ -1212,7 +1221,7 @@ brin_build_desc(Relation rel)
 	 * Obtain BrinOpcInfo for each indexed column.  While at it, accumulate
 	 * the number of columns stored, since the number is opclass-defined.
 	 */
-	opcinfo = palloc_array(BrinOpcInfo*, tupdesc->natts);
+	opcinfo = palloc_array(BrinOpcInfo *, tupdesc->natts);
 	for (keyno = 0; keyno < tupdesc->natts; keyno++)
 	{
 		FmgrInfo   *opcInfoFn;
@@ -1447,8 +1456,7 @@ summarize_range(IndexInfo *indexInfo, BrinBuildState *state, Relation heapRel,
 		 * the same.)
 		 */
 		phtup = brinGetTupleForHeapBlock(state->bs_rmAccess, heapBlk, &phbuf,
-										 &offset, &phsz, BUFFER_LOCK_SHARE,
-										 NULL);
+										 &offset, &phsz, BUFFER_LOCK_SHARE);
 		/* the placeholder tuple must exist */
 		if (phtup == NULL)
 			elog(ERROR, "missing placeholder tuple");
@@ -1485,7 +1493,7 @@ brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 	Buffer		buf;
 	BlockNumber startBlk;
 
-	revmap = brinRevmapInitialize(index, &pagesPerRange, NULL);
+	revmap = brinRevmapInitialize(index, &pagesPerRange);
 
 	/* determine range of pages to process */
 	heapNumBlocks = RelationGetNumberOfBlocks(heapRel);
@@ -1526,7 +1534,7 @@ brinsummarize(Relation index, Relation heapRel, BlockNumber pageRange,
 		CHECK_FOR_INTERRUPTS();
 
 		tup = brinGetTupleForHeapBlock(revmap, startBlk, &buf, &off, NULL,
-									   BUFFER_LOCK_SHARE, NULL);
+									   BUFFER_LOCK_SHARE);
 		if (tup == NULL)
 		{
 			/* no revmap entry for this heap range. Summarize it. */
@@ -1606,6 +1614,64 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
 	db = brin_deform_tuple(bdesc, b, NULL);
 	MemoryContextSwitchTo(oldcxt);
 
+	/*
+	 * Check if the ranges are empty.
+	 *
+	 * If at least one of them is empty, we don't need to call per-key union
+	 * functions at all. If "b" is empty, we just use "a" as the result (it
+	 * might be empty fine, but that's fine). If "a" is empty but "b" is not,
+	 * we use "b" as the result (but we have to copy the data into "a" first).
+	 *
+	 * Only when both ranges are non-empty, we actually do the per-key merge.
+	 */
+
+	/* If "b" is empty - ignore it and just use "a" (even if it's empty etc.). */
+	if (db->bt_empty_range)
+	{
+		/* skip the per-key merge */
+		MemoryContextDelete(cxt);
+		return;
+	}
+
+	/*
+	 * Now we know "b" is not empty. If "a" is empty, then "b" is the result.
+	 * But we need to copy the data from "b" to "a" first, because that's how
+	 * we pass result out.
+	 *
+	 * We have to copy all the global/per-key flags etc. too.
+	 */
+	if (a->bt_empty_range)
+	{
+		for (keyno = 0; keyno < bdesc->bd_tupdesc->natts; keyno++)
+		{
+			int			i;
+			BrinValues *col_a = &a->bt_columns[keyno];
+			BrinValues *col_b = &db->bt_columns[keyno];
+			BrinOpcInfo *opcinfo = bdesc->bd_info[keyno];
+
+			col_a->bv_allnulls = col_b->bv_allnulls;
+			col_a->bv_hasnulls = col_b->bv_hasnulls;
+
+			/* If "b" has no data, we're done. */
+			if (col_b->bv_allnulls)
+				continue;
+
+			for (i = 0; i < opcinfo->oi_nstored; i++)
+				col_a->bv_values[i] =
+					datumCopy(col_b->bv_values[i],
+							  opcinfo->oi_typcache[i]->typbyval,
+							  opcinfo->oi_typcache[i]->typlen);
+		}
+
+		/* "a" started empty, but "b" was not empty, so remember that */
+		a->bt_empty_range = false;
+
+		/* skip the per-key merge */
+		MemoryContextDelete(cxt);
+		return;
+	}
+
+	/* Now we know neither range is empty. */
 	for (keyno = 0; keyno < bdesc->bd_tupdesc->natts; keyno++)
 	{
 		FmgrInfo   *unionFn;
@@ -1615,8 +1681,11 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
 
 		if (opcinfo->oi_regular_nulls)
 		{
+			/* Does the "b" summary represent any NULL values? */
+			bool		b_has_nulls = (col_b->bv_hasnulls || col_b->bv_allnulls);
+
 			/* Adjust "hasnulls". */
-			if (!col_a->bv_hasnulls && col_b->bv_hasnulls)
+			if (!col_a->bv_allnulls && b_has_nulls)
 				col_a->bv_hasnulls = true;
 
 			/* If there are no values in B, there's nothing left to do. */
@@ -1628,12 +1697,17 @@ union_tuples(BrinDesc *bdesc, BrinMemTuple *a, BrinTuple *b)
 			 * values from B into A, and we're done.  We cannot run the
 			 * operators in this case, because values in A might contain
 			 * garbage.  Note we already established that B contains values.
+			 *
+			 * Also adjust "hasnulls" in order not to forget the summary
+			 * represents NULL values. This is not redundant with the earlier
+			 * update, because that only happens when allnulls=false.
 			 */
 			if (col_a->bv_allnulls)
 			{
 				int			i;
 
 				col_a->bv_allnulls = false;
+				col_a->bv_hasnulls = true;
 
 				for (i = 0; i < opcinfo->oi_nstored; i++)
 					col_a->bv_values[i] =
@@ -1703,7 +1777,9 @@ add_values_to_range(Relation idxRel, BrinDesc *bdesc, BrinMemTuple *dtup,
 					Datum *values, bool *nulls)
 {
 	int			keyno;
-	bool		modified = false;
+
+	/* If the range starts empty, we're certainly going to modify it. */
+	bool		modified = dtup->bt_empty_range;
 
 	/*
 	 * Compare the key values of the new tuple to the stored index values; our
@@ -1717,9 +1793,24 @@ add_values_to_range(Relation idxRel, BrinDesc *bdesc, BrinMemTuple *dtup,
 		Datum		result;
 		BrinValues *bval;
 		FmgrInfo   *addValue;
+		bool		has_nulls;
 
 		bval = &dtup->bt_columns[keyno];
 
+		/*
+		 * Does the range have actual NULL values? Either of the flags can be
+		 * set, but we ignore the state before adding first row.
+		 *
+		 * We have to remember this, because we'll modify the flags and we
+		 * need to know if the range started as empty.
+		 */
+		has_nulls = ((!dtup->bt_empty_range) &&
+					 (bval->bv_hasnulls || bval->bv_allnulls));
+
+		/*
+		 * If the value we're adding is NULL, handle it locally. Otherwise
+		 * call the BRIN_PROCNUM_ADDVALUE procedure.
+		 */
 		if (bdesc->bd_info[keyno]->oi_regular_nulls && nulls[keyno])
 		{
 			/*
@@ -1745,7 +1836,32 @@ add_values_to_range(Relation idxRel, BrinDesc *bdesc, BrinMemTuple *dtup,
 								   nulls[keyno]);
 		/* if that returned true, we need to insert the updated tuple */
 		modified |= DatumGetBool(result);
+
+		/*
+		 * If the range was had actual NULL values (i.e. did not start empty),
+		 * make sure we don't forget about the NULL values. Either the
+		 * allnulls flag is still set to true, or (if the opclass cleared it)
+		 * we need to set hasnulls=true.
+		 *
+		 * XXX This can only happen when the opclass modified the tuple, so
+		 * the modified flag should be set.
+		 */
+		if (has_nulls && !(bval->bv_hasnulls || bval->bv_allnulls))
+		{
+			Assert(modified);
+			bval->bv_hasnulls = true;
+		}
 	}
+
+	/*
+	 * After updating summaries for all the keys, mark it as not empty.
+	 *
+	 * If we're actually changing the flag value (i.e. tuple started as
+	 * empty), we should have modified the tuple. So we should not see empty
+	 * range that was not modified.
+	 */
+	Assert(!dtup->bt_empty_range || modified);
+	dtup->bt_empty_range = false;
 
 	return modified;
 }

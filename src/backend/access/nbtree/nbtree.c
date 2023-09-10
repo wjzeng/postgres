@@ -151,31 +151,33 @@ bthandler(PG_FUNCTION_ARGS)
 void
 btbuildempty(Relation index)
 {
+	bool		allequalimage = _bt_allequalimage(index, false);
+	Buffer		metabuf;
 	Page		metapage;
 
-	/* Construct metapage. */
-	metapage = (Page) palloc_aligned(BLCKSZ, PG_IO_ALIGN_SIZE, 0);
-	_bt_initmetapage(metapage, P_NONE, 0, _bt_allequalimage(index, false));
-
 	/*
-	 * Write the page and log it.  It might seem that an immediate sync would
-	 * be sufficient to guarantee that the file exists on disk, but recovery
-	 * itself might remove it while replaying, for example, an
-	 * XLOG_DBASE_CREATE* or XLOG_TBLSPC_CREATE record.  Therefore, we need
-	 * this even when wal_level=minimal.
+	 * Initalize the metapage.
+	 *
+	 * Regular index build bypasses the buffer manager and uses smgr functions
+	 * directly, with an smgrimmedsync() call at the end.  That makes sense
+	 * when the index is large, but for an empty index, it's better to use the
+	 * buffer cache to avoid the smgrimmedsync().
 	 */
-	PageSetChecksumInplace(metapage, BTREE_METAPAGE);
-	smgrwrite(RelationGetSmgr(index), INIT_FORKNUM, BTREE_METAPAGE,
-			  metapage, true);
-	log_newpage(&RelationGetSmgr(index)->smgr_rlocator.locator, INIT_FORKNUM,
-				BTREE_METAPAGE, metapage, true);
+	metabuf = ReadBufferExtended(index, INIT_FORKNUM, P_NEW, RBM_NORMAL, NULL);
+	Assert(BufferGetBlockNumber(metabuf) == BTREE_METAPAGE);
+	_bt_lockbuf(index, metabuf, BT_WRITE);
 
-	/*
-	 * An immediate sync is required even if we xlog'd the page, because the
-	 * write did not go through shared_buffers and therefore a concurrent
-	 * checkpoint may have moved the redo pointer past our xlog record.
-	 */
-	smgrimmedsync(RelationGetSmgr(index), INIT_FORKNUM);
+	START_CRIT_SECTION();
+
+	metapage = BufferGetPage(metabuf);
+	_bt_initmetapage(metapage, P_NONE, 0, allequalimage);
+	MarkBufferDirty(metabuf);
+	log_newpage_buffer(metabuf, true);
+
+	END_CRIT_SECTION();
+
+	_bt_unlockbuf(index, metabuf);
+	ReleaseBuffer(metabuf);
 }
 
 /*
@@ -835,7 +837,7 @@ btvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	if (stats == NULL)
 	{
 		/* Check if VACUUM operation can entirely avoid btvacuumscan() call */
-		if (!_bt_vacuum_needs_cleanup(info->index, info->heaprel))
+		if (!_bt_vacuum_needs_cleanup(info->index))
 			return NULL;
 
 		/*
@@ -871,7 +873,7 @@ btvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 */
 	Assert(stats->pages_deleted >= stats->pages_free);
 	num_delpages = stats->pages_deleted - stats->pages_free;
-	_bt_set_cleanup_info(info->index, info->heaprel, num_delpages);
+	_bt_set_cleanup_info(info->index, num_delpages);
 
 	/*
 	 * It's quite possible for us to be fooled by concurrent page splits into
@@ -1093,8 +1095,7 @@ backtrack:
 		 * can't be half-dead because only an interrupted VACUUM process can
 		 * leave pages in that state, so we'd definitely have dealt with it
 		 * back when the page was the scanblkno page (half-dead pages are
-		 * always marked fully deleted by _bt_pagedel()).  This assumes that
-		 * there can be only one vacuum process running at a time.
+		 * always marked fully deleted by _bt_pagedel(), barring corruption).
 		 */
 		if (!opaque || !P_ISLEAF(opaque) || P_ISHALFDEAD(opaque))
 		{

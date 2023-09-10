@@ -34,7 +34,7 @@ $node->issues_sql_like(
 	'create a superuser');
 $node->issues_sql_like(
 	[
-		'createuser',    '-a',
+		'createuser', '-a',
 		'regress_user1', '-a',
 		'regress user2', 'regress user #4'
 	],
@@ -42,9 +42,8 @@ $node->issues_sql_like(
 	'add a role as a member with admin option of the newly created role');
 $node->issues_sql_like(
 	[
-		'createuser',      '-m',
-		'regress_user3',   '-m',
-		'regress user #4', 'REGRESS_USER5'
+		'createuser', 'REGRESS_USER5', '-m', 'regress_user3',
+		'-m', 'regress user #4'
 	],
 	qr/statement: CREATE ROLE "REGRESS_USER5" NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT LOGIN NOREPLICATION NOBYPASSRLS ROLE regress_user3,"regress user #4";/,
 	'add a role as a member of the newly created role');
@@ -60,8 +59,27 @@ $node->issues_sql_like(
 	[ 'createuser', '--no-bypassrls', 'regress_user8' ],
 	qr/statement: CREATE ROLE regress_user8 NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT LOGIN NOREPLICATION NOBYPASSRLS;/,
 	'create a role without BYPASSRLS');
+$node->issues_sql_like(
+	[ 'createuser', '--with-admin', 'regress_user1', 'regress_user9' ],
+	qr/statement: CREATE ROLE regress_user9 NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT LOGIN NOREPLICATION NOBYPASSRLS ADMIN regress_user1;/,
+	'--with-admin');
+$node->issues_sql_like(
+	[ 'createuser', '--with-member', 'regress_user1', 'regress_user10' ],
+	qr/statement: CREATE ROLE regress_user10 NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT LOGIN NOREPLICATION NOBYPASSRLS ROLE regress_user1;/,
+	'--with-member');
+$node->issues_sql_like(
+	[ 'createuser', '--role', 'regress_user1', 'regress_user11' ],
+	qr/statement: CREATE ROLE regress_user11 NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT LOGIN NOREPLICATION NOBYPASSRLS IN ROLE regress_user1;/,
+	'--role');
+$node->issues_sql_like(
+	[ 'createuser', 'regress_user12', '--member-of', 'regress_user1' ],
+	qr/statement: CREATE ROLE regress_user12 NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT LOGIN NOREPLICATION NOBYPASSRLS IN ROLE regress_user1;/,
+	'--member-of');
 
 $node->command_fails([ 'createuser', 'regress_user1' ],
 	'fails if role already exists');
+$node->command_fails(
+	[ 'createuser', 'regress_user1', '-m', 'regress_user2', 'regress_user3' ],
+	'fails for too many non-options');
 
 done_testing();

@@ -1264,6 +1264,8 @@ typedef struct CaseWhen
  *	  see build_coercion_expression().
  *	* Nested FieldStore/SubscriptingRef assignment expressions in INSERT/UPDATE;
  *	  see transformAssignmentIndirection().
+ *	* Placeholder for intermediate results in some SQL/JSON expression nodes,
+ *	  such as JsonConstructorExpr.
  *
  * The uses in CaseExpr and ArrayCoerceExpr are safe only to the extent that
  * there is not any other CaseExpr or ArrayCoerceExpr between the value source
@@ -1446,6 +1448,50 @@ typedef struct MinMaxExpr
 } MinMaxExpr;
 
 /*
+ * SQLValueFunction - parameterless functions with special grammar productions
+ *
+ * The SQL standard categorizes some of these as <datetime value function>
+ * and others as <general value specification>.  We call 'em SQLValueFunctions
+ * for lack of a better term.  We store type and typmod of the result so that
+ * some code doesn't need to know each function individually, and because
+ * we would need to store typmod anyway for some of the datetime functions.
+ * Note that currently, all variants return non-collating datatypes, so we do
+ * not need a collation field; also, all these functions are stable.
+ */
+typedef enum SQLValueFunctionOp
+{
+	SVFOP_CURRENT_DATE,
+	SVFOP_CURRENT_TIME,
+	SVFOP_CURRENT_TIME_N,
+	SVFOP_CURRENT_TIMESTAMP,
+	SVFOP_CURRENT_TIMESTAMP_N,
+	SVFOP_LOCALTIME,
+	SVFOP_LOCALTIME_N,
+	SVFOP_LOCALTIMESTAMP,
+	SVFOP_LOCALTIMESTAMP_N,
+	SVFOP_CURRENT_ROLE,
+	SVFOP_CURRENT_USER,
+	SVFOP_USER,
+	SVFOP_SESSION_USER,
+	SVFOP_CURRENT_CATALOG,
+	SVFOP_CURRENT_SCHEMA
+} SQLValueFunctionOp;
+
+typedef struct SQLValueFunction
+{
+	Expr		xpr;
+	SQLValueFunctionOp op;		/* which function this is */
+
+	/*
+	 * Result type/typmod.  Type is fully determined by "op", so no need to
+	 * include this Oid in the query jumbling.
+	 */
+	Oid			type pg_node_attr(query_jumble_ignore);
+	int32		typmod;
+	int			location;		/* token location, or -1 if unknown */
+} SQLValueFunction;
+
+/*
  * XmlExpr - various SQL/XML functions requiring special grammar productions
  *
  * 'name' carries the "NAME foo" argument (already XML-escaped).
@@ -1549,12 +1595,16 @@ typedef struct JsonReturning
 /*
  * JsonValueExpr -
  *		representation of JSON value expression (expr [FORMAT JsonFormat])
+ *
+ * The actual value is obtained by evaluating formatted_expr.  raw_expr is
+ * only there for displaying the original user-written expression and is not
+ * evaluated by ExecInterpExpr() and eval_const_exprs_mutator().
  */
 typedef struct JsonValueExpr
 {
 	NodeTag		type;
 	Expr	   *raw_expr;		/* raw expression */
-	Expr	   *formatted_expr; /* formatted expression or NULL */
+	Expr	   *formatted_expr; /* formatted expression */
 	JsonFormat *format;			/* FORMAT clause, if specified */
 } JsonValueExpr;
 
@@ -1563,7 +1613,10 @@ typedef enum JsonConstructorType
 	JSCTOR_JSON_OBJECT = 1,
 	JSCTOR_JSON_ARRAY = 2,
 	JSCTOR_JSON_OBJECTAGG = 3,
-	JSCTOR_JSON_ARRAYAGG = 4
+	JSCTOR_JSON_ARRAYAGG = 4,
+	JSCTOR_JSON_PARSE = 5,
+	JSCTOR_JSON_SCALAR = 6,
+	JSCTOR_JSON_SERIALIZE = 7
 } JsonConstructorType;
 
 /*

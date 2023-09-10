@@ -605,9 +605,7 @@ signal_cleanup(SIGNAL_ARGS)
 static int
 pg_fsync_writethrough(int fd)
 {
-#ifdef WIN32
-	return _commit(fd);
-#elif defined(F_FULLFSYNC)
+#if defined(F_FULLFSYNC)
 	return (fcntl(fd, F_FULLFSYNC, 0) == -1) ? -1 : 0;
 #else
 	errno = ENOSYS;
@@ -623,7 +621,7 @@ static void
 print_elapse(struct timeval start_t, struct timeval stop_t, int ops)
 {
 	double		total_time = (stop_t.tv_sec - start_t.tv_sec) +
-	(stop_t.tv_usec - start_t.tv_usec) * 0.000001;
+		(stop_t.tv_usec - start_t.tv_usec) * 0.000001;
 	double		per_second = ops / total_time;
 	double		avg_op_time_us = (total_time / ops) * USECS_SEC;
 

@@ -61,9 +61,9 @@ gen_db_file_maps(DbInfo *old_db, DbInfo *new_db,
 		   new_relnum < new_db->rel_arr.nrels)
 	{
 		RelInfo    *old_rel = (old_relnum < old_db->rel_arr.nrels) ?
-		&old_db->rel_arr.rels[old_relnum] : NULL;
+			&old_db->rel_arr.rels[old_relnum] : NULL;
 		RelInfo    *new_rel = (new_relnum < new_db->rel_arr.nrels) ?
-		&new_db->rel_arr.rels[new_relnum] : NULL;
+			&new_db->rel_arr.rels[new_relnum] : NULL;
 
 		/* handle running off one array before the other */
 		if (!new_rel)
@@ -302,14 +302,14 @@ get_db_and_rel_infos(ClusterInfo *cluster)
 static void
 get_template0_info(ClusterInfo *cluster)
 {
-	PGconn			*conn = connectToServer(cluster, "template1");
-	DbLocaleInfo	*locale;
-	PGresult		*dbres;
-	int				 i_datencoding;
-	int				 i_datlocprovider;
-	int				 i_datcollate;
-	int				 i_datctype;
-	int				 i_daticulocale;
+	PGconn	   *conn = connectToServer(cluster, "template1");
+	DbLocaleInfo *locale;
+	PGresult   *dbres;
+	int			i_datencoding;
+	int			i_datlocprovider;
+	int			i_datcollate;
+	int			i_datctype;
+	int			i_daticulocale;
 
 	if (GET_MAJOR_VERSION(cluster->major_version) >= 1500)
 		dbres = executeQueryOrDie(conn,
@@ -642,7 +642,7 @@ print_db_infos(DbInfoArr *db_arr)
 
 	for (dbnum = 0; dbnum < db_arr->ndbs; dbnum++)
 	{
-		pg_log(PG_VERBOSE, "Database: %s", db_arr->dbs[dbnum].db_name);
+		pg_log(PG_VERBOSE, "Database: \"%s\"", db_arr->dbs[dbnum].db_name);
 		print_rel_infos(&db_arr->dbs[dbnum].rel_arr);
 	}
 }
@@ -654,7 +654,7 @@ print_rel_infos(RelInfoArr *rel_arr)
 	int			relnum;
 
 	for (relnum = 0; relnum < rel_arr->nrels; relnum++)
-		pg_log(PG_VERBOSE, "relname: %s.%s: reloid: %u reltblspace: %s",
+		pg_log(PG_VERBOSE, "relname: \"%s.%s\", reloid: %u, reltblspace: \"%s\"",
 			   rel_arr->rels[relnum].nspname,
 			   rel_arr->rels[relnum].relname,
 			   rel_arr->rels[relnum].reloid,

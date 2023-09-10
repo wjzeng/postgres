@@ -155,7 +155,7 @@ xlog_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_PARAMETER_CHANGE:
 			{
 				xl_parameter_change *xlrec =
-				(xl_parameter_change *) XLogRecGetData(buf->record);
+					(xl_parameter_change *) XLogRecGetData(buf->record);
 
 				/*
 				 * If wal_level on the primary is reduced to less than
@@ -164,8 +164,8 @@ xlog_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 				 * invalidated when this WAL record is replayed; and further,
 				 * slot creation fails when wal_level is not sufficient; but
 				 * all these operations are not synchronized, so a logical
-				 * slot may creep in while the wal_level is being
-				 * reduced. Hence this extra check.
+				 * slot may creep in while the wal_level is being reduced.
+				 * Hence this extra check.
 				 */
 				if (xlrec->wal_level < WAL_LEVEL_LOGICAL)
 				{
@@ -422,8 +422,7 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	switch (info)
 	{
 		case XLOG_HEAP2_MULTI_INSERT:
-			if (!ctx->fast_forward &&
-				SnapBuildProcessChange(builder, xid, buf->origptr))
+			if (SnapBuildProcessChange(builder, xid, buf->origptr))
 				DecodeMultiInsert(ctx, buf);
 			break;
 		case XLOG_HEAP2_NEW_CID:
@@ -752,7 +751,7 @@ DecodePrepare(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	SnapBuild  *builder = ctx->snapshot_builder;
 	XLogRecPtr	origin_lsn = parsed->origin_lsn;
 	TimestampTz prepare_time = parsed->xact_time;
-	RepOriginId	origin_id = XLogRecGetOrigin(buf->record);
+	RepOriginId origin_id = XLogRecGetOrigin(buf->record);
 	int			i;
 	TransactionId xid = parsed->twophase_xid;
 
@@ -828,7 +827,7 @@ DecodeAbort(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	int			i;
 	XLogRecPtr	origin_lsn = InvalidXLogRecPtr;
 	TimestampTz abort_time = parsed->xact_time;
-	RepOriginId	origin_id = XLogRecGetOrigin(buf->record);
+	RepOriginId origin_id = XLogRecGetOrigin(buf->record);
 	bool		skip_xact;
 
 	if (parsed->xinfo & XACT_XINFO_HAS_ORIGIN)
@@ -1090,7 +1089,7 @@ DecodeTruncate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 }
 
 /*
- * Decode XLOG_HEAP2_MULTI_INSERT_insert record into multiple tuplebufs.
+ * Decode XLOG_HEAP2_MULTI_INSERT record into multiple tuplebufs.
  *
  * Currently MULTI_INSERT will always contain the full tuples.
  */

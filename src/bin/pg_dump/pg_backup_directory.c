@@ -613,7 +613,7 @@ _CloseArchive(ArchiveHandle *AH)
 		 * individually. Just recurse once through all the files generated.
 		 */
 		if (AH->dosync)
-			fsync_dir_recurse(ctx->directory);
+			sync_dir_recurse(ctx->directory, AH->sync_method);
 	}
 	AH->FH = NULL;
 }
@@ -697,7 +697,13 @@ _EndLO(ArchiveHandle *AH, TocEntry *te, Oid oid)
 	/* register the LO in blobs.toc */
 	len = snprintf(buf, sizeof(buf), "%u blob_%u.dat\n", oid, oid);
 	if (!CFH->write_func(buf, len, CFH))
-		pg_fatal("could not write to LOs TOC file");
+	{
+		/* if write didn't set errno, assume problem is no disk space */
+		if (errno == 0)
+			errno = ENOSPC;
+		pg_fatal("could not write to LOs TOC file: %s",
+				 CFH->get_error_func(CFH));
+	}
 }
 
 /*

@@ -192,8 +192,10 @@ main(int argc, char **argv)
 	{
 		prep_status("Sync data directory to disk");
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-				  "\"%s/initdb\" --sync-only \"%s\"", new_cluster.bindir,
-				  new_cluster.pgdata);
+				  "\"%s/initdb\" --sync-only \"%s\" --sync-method %s",
+				  new_cluster.bindir,
+				  new_cluster.pgdata,
+				  user_opts.sync_method);
 		check_ok();
 	}
 
@@ -379,10 +381,10 @@ setup(char *argv0, bool *live_check)
 static void
 set_locale_and_encoding(void)
 {
-	PGconn		*conn_new_template1;
-	char		*datcollate_literal;
-	char		*datctype_literal;
-	char		*daticulocale_literal	= NULL;
+	PGconn	   *conn_new_template1;
+	char	   *datcollate_literal;
+	char	   *datctype_literal;
+	char	   *daticulocale_literal = NULL;
 	DbLocaleInfo *locale = old_cluster.template0;
 
 	prep_status("Setting locale and encoding for new cluster");

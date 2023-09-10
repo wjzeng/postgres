@@ -77,7 +77,7 @@ typedef struct PgBackendGSSStatus
 	char		gss_princ[NAMEDATALEN]; /* GSSAPI Principal used to auth */
 	bool		gss_auth;		/* If GSSAPI authentication was used */
 	bool		gss_enc;		/* If encryption is being used */
-	bool		gss_deleg;		/* If credentials delegated */
+	bool		gss_delegation; /* If credentials delegated */
 
 } PgBackendGSSStatus;
 
@@ -271,13 +271,13 @@ typedef struct LocalPgBackendStatus
 	/*
 	 * Number of cached subtransactions in the current session.
 	 */
-	int	backend_subxact_count;
+	int			backend_subxact_count;
 
 	/*
 	 * The number of subtransactions in the current session which exceeded the
 	 * cached subtransaction limit.
 	 */
-	bool backend_subxact_overflowed;
+	bool		backend_subxact_overflowed;
 } LocalPgBackendStatus;
 
 
@@ -333,8 +333,9 @@ extern uint64 pgstat_get_my_query_id(void);
  * ----------
  */
 extern int	pgstat_fetch_stat_numbackends(void);
-extern PgBackendStatus *pgstat_fetch_stat_beentry(BackendId beid);
-extern LocalPgBackendStatus *pgstat_fetch_stat_local_beentry(int beid);
+extern PgBackendStatus *pgstat_get_beentry_by_backend_id(BackendId beid);
+extern LocalPgBackendStatus *pgstat_get_local_beentry_by_backend_id(BackendId beid);
+extern LocalPgBackendStatus *pgstat_get_local_beentry_by_index(int idx);
 extern char *pgstat_clip_activity(const char *raw_activity);
 
 

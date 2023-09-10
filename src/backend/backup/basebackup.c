@@ -25,6 +25,7 @@
 #include "commands/defrem.h"
 #include "common/compression.h"
 #include "common/file_perm.h"
+#include "common/file_utils.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "nodes/pg_list.h"
@@ -37,7 +38,6 @@
 #include "storage/bufpage.h"
 #include "storage/checksum.h"
 #include "storage/dsm_impl.h"
-#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/reinit.h"
 #include "utils/builtins.h"
@@ -1609,10 +1609,10 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 						 *
 						 * There's no guarantee that this will actually
 						 * happen, though: the torn write could take an
-						 * arbitrarily long time to complete. Retrying multiple
-						 * times wouldn't fix this problem, either, though
-						 * it would reduce the chances of it happening in
-						 * practice. The only real fix here seems to be to
+						 * arbitrarily long time to complete. Retrying
+						 * multiple times wouldn't fix this problem, either,
+						 * though it would reduce the chances of it happening
+						 * in practice. The only real fix here seems to be to
 						 * have some kind of interlock that allows us to wait
 						 * until we can be certain that no write to the block
 						 * is in progress. Since we don't have any such thing

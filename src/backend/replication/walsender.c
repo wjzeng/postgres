@@ -603,7 +603,7 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	dest->rStartup(dest, CMD_SELECT, tupdesc);
 
 	/* Send a DataRow message */
-	pq_beginmessage(&buf, 'D');
+	pq_beginmessage(&buf, PqMsg_DataRow);
 	pq_sendint16(&buf, 2);		/* # of columns */
 	len = strlen(histfname);
 	pq_sendint32(&buf, len);	/* col1 len */
@@ -801,7 +801,7 @@ StartReplication(StartReplicationCmd *cmd)
 		WalSndSetState(WALSNDSTATE_CATCHUP);
 
 		/* Send a CopyBothResponse message, and start streaming */
-		pq_beginmessage(&buf, 'W');
+		pq_beginmessage(&buf, PqMsg_CopyBothResponse);
 		pq_sendbyte(&buf, 0);
 		pq_sendint16(&buf, 0);
 		pq_endmessage(&buf);
@@ -1113,7 +1113,7 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 			if (!XactReadOnly)
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
-						(errmsg("%s must be called in a read only transaction",
+						(errmsg("%s must be called in a read-only transaction",
 								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'use')")));
 
 			if (FirstSnapshotSet)
@@ -1197,7 +1197,6 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	 * - second field: LSN at which we became consistent
 	 * - third field: exported snapshot's name
 	 * - fourth field: output plugin
-	 *----------
 	 */
 	tupdesc = CreateTemplateTupleDesc(4);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "slot_name",
@@ -1295,7 +1294,7 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 	WalSndSetState(WALSNDSTATE_CATCHUP);
 
 	/* Send a CopyBothResponse message, and start streaming */
-	pq_beginmessage(&buf, 'W');
+	pq_beginmessage(&buf, PqMsg_CopyBothResponse);
 	pq_sendbyte(&buf, 0);
 	pq_sendint16(&buf, 0);
 	pq_endmessage(&buf);
@@ -1655,7 +1654,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 		if (pq_is_send_pending())
 			wakeEvents |= WL_SOCKET_WRITEABLE;
 
-		WalSndWait(wakeEvents, sleeptime, WAIT_EVENT_WAL_SENDER_WAIT_WAL);
+		WalSndWait(wakeEvents, sleeptime, WAIT_EVENT_WAL_SENDER_WAIT_FOR_WAL);
 	}
 
 	/* reactivate latch so WalSndLoop knows to continue */
@@ -1924,11 +1923,11 @@ ProcessRepliesIfAny(void)
 		/* Validate message type and set packet size limit */
 		switch (firstchar)
 		{
-			case 'd':
+			case PqMsg_CopyData:
 				maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
 				break;
-			case 'c':
-			case 'X':
+			case PqMsg_CopyDone:
+			case PqMsg_Terminate:
 				maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
 				break;
 			default:
@@ -1956,7 +1955,7 @@ ProcessRepliesIfAny(void)
 				/*
 				 * 'd' means a standby reply wrapped in a CopyData packet.
 				 */
-			case 'd':
+			case PqMsg_CopyData:
 				ProcessStandbyMessage();
 				received = true;
 				break;
@@ -1965,7 +1964,7 @@ ProcessRepliesIfAny(void)
 				 * CopyDone means the standby requested to finish streaming.
 				 * Reply with CopyDone, if we had not sent that already.
 				 */
-			case 'c':
+			case PqMsg_CopyDone:
 				if (!streamingDoneSending)
 				{
 					pq_putmessage_noblock('c', NULL, 0);
@@ -1979,7 +1978,7 @@ ProcessRepliesIfAny(void)
 				/*
 				 * 'X' means that the standby is closing down the socket.
 				 */
-			case 'X':
+			case PqMsg_Terminate:
 				proc_exit(0);
 
 			default:
@@ -2692,7 +2691,7 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 	 * restored from the archive on this server, the file belonging to the old
 	 * timeline, 000000040000000000000013, might not exist. Their contents are
 	 * equal up to the switchpoint, because at a timeline switch, the used
-	 * portion of the old segment is copied to the new file.  -------
+	 * portion of the old segment is copied to the new file.
 	 */
 	*tli_p = sendTimeLine;
 	if (sendTimeLineIsHistoric)
@@ -3309,6 +3308,9 @@ WalSndShmemInit(void)
 
 			SpinLockInit(&walsnd->mutex);
 		}
+
+		ConditionVariableInit(&WalSndCtl->wal_flush_cv);
+		ConditionVariableInit(&WalSndCtl->wal_replay_cv);
 	}
 }
 
@@ -3330,31 +3332,17 @@ WalSndShmemInit(void)
 void
 WalSndWakeup(bool physical, bool logical)
 {
-	int			i;
+	/*
+	 * Wake up all the walsenders waiting on WAL being flushed or replayed
+	 * respectively.  Note that waiting walsender would have prepared to sleep
+	 * on the CV (i.e., added itself to the CV's waitlist) in WalSndWait()
+	 * before actually waiting.
+	 */
+	if (physical)
+		ConditionVariableBroadcast(&WalSndCtl->wal_flush_cv);
 
-	for (i = 0; i < max_wal_senders; i++)
-	{
-		Latch	   *latch;
-		ReplicationKind kind;
-		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
-
-		/*
-		 * Get latch pointer with spinlock held, for the unlikely case that
-		 * pointer reads aren't atomic (as they're 8 bytes). While at it, also
-		 * get kind.
-		 */
-		SpinLockAcquire(&walsnd->mutex);
-		latch = walsnd->latch;
-		kind = walsnd->kind;
-		SpinLockRelease(&walsnd->mutex);
-
-		if (latch == NULL)
-			continue;
-
-		if ((physical && kind == REPLICATION_KIND_PHYSICAL) ||
-			(logical && kind == REPLICATION_KIND_LOGICAL))
-			SetLatch(latch);
-	}
+	if (logical)
+		ConditionVariableBroadcast(&WalSndCtl->wal_replay_cv);
 }
 
 /*
@@ -3368,9 +3356,44 @@ WalSndWait(uint32 socket_events, long timeout, uint32 wait_event)
 	WaitEvent	event;
 
 	ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, socket_events, NULL);
+
+	/*
+	 * We use a condition variable to efficiently wake up walsenders in
+	 * WalSndWakeup().
+	 *
+	 * Every walsender prepares to sleep on a shared memory CV. Note that it
+	 * just prepares to sleep on the CV (i.e., adds itself to the CV's
+	 * waitlist), but does not actually wait on the CV (IOW, it never calls
+	 * ConditionVariableSleep()). It still uses WaitEventSetWait() for
+	 * waiting, because we also need to wait for socket events. The processes
+	 * (startup process, walreceiver etc.) wanting to wake up walsenders use
+	 * ConditionVariableBroadcast(), which in turn calls SetLatch(), helping
+	 * walsenders come out of WaitEventSetWait().
+	 *
+	 * This approach is simple and efficient because, one doesn't have to loop
+	 * through all the walsenders slots, with a spinlock acquisition and
+	 * release for every iteration, just to wake up only the waiting
+	 * walsenders. It makes WalSndWakeup() callers' life easy.
+	 *
+	 * XXX: A desirable future improvement would be to add support for CVs
+	 * into WaitEventSetWait().
+	 *
+	 * And, we use separate shared memory CVs for physical and logical
+	 * walsenders for selective wake ups, see WalSndWakeup() for more details.
+	 */
+	if (MyWalSnd->kind == REPLICATION_KIND_PHYSICAL)
+		ConditionVariablePrepareToSleep(&WalSndCtl->wal_flush_cv);
+	else if (MyWalSnd->kind == REPLICATION_KIND_LOGICAL)
+		ConditionVariablePrepareToSleep(&WalSndCtl->wal_replay_cv);
+
 	if (WaitEventSetWait(FeBeWaitSet, timeout, &event, 1, wait_event) == 1 &&
 		(event.events & WL_POSTMASTER_DEATH))
+	{
+		ConditionVariableCancelSleep();
 		proc_exit(1);
+	}
+
+	ConditionVariableCancelSleep();
 }
 
 /*
@@ -3517,7 +3540,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 	for (i = 0; i < max_wal_senders; i++)
 	{
 		WalSnd	   *walsnd = &WalSndCtl->walsnds[i];
-		XLogRecPtr	sentPtr;
+		XLogRecPtr	sent_ptr;
 		XLogRecPtr	write;
 		XLogRecPtr	flush;
 		XLogRecPtr	apply;
@@ -3541,7 +3564,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 			continue;
 		}
 		pid = walsnd->pid;
-		sentPtr = walsnd->sentPtr;
+		sent_ptr = walsnd->sentPtr;
 		state = walsnd->state;
 		write = walsnd->write;
 		flush = walsnd->flush;
@@ -3584,9 +3607,9 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 		{
 			values[1] = CStringGetTextDatum(WalSndGetStateString(state));
 
-			if (XLogRecPtrIsInvalid(sentPtr))
+			if (XLogRecPtrIsInvalid(sent_ptr))
 				nulls[2] = true;
-			values[2] = LSNGetDatum(sentPtr);
+			values[2] = LSNGetDatum(sent_ptr);
 
 			if (XLogRecPtrIsInvalid(write))
 				nulls[3] = true;

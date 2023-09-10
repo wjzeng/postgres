@@ -28,7 +28,7 @@ static void check_for_reg_data_type_usage(ClusterInfo *cluster);
 static void check_for_aclitem_data_type_usage(ClusterInfo *cluster);
 static void check_for_jsonb_9_4_usage(ClusterInfo *cluster);
 static void check_for_pg_role_prefix(ClusterInfo *cluster);
-static void check_for_new_tablespace_dir(ClusterInfo *new_cluster);
+static void check_for_new_tablespace_dir(void);
 static void check_for_user_defined_encoding_conversions(ClusterInfo *cluster);
 
 
@@ -105,8 +105,8 @@ check_and_dump_old_cluster(bool live_check)
 	check_for_isn_and_int8_passing_mismatch(&old_cluster);
 
 	/*
-	 * PG 16 increased the size of the 'aclitem' type, which breaks the on-disk
-	 * format for existing data.
+	 * PG 16 increased the size of the 'aclitem' type, which breaks the
+	 * on-disk format for existing data.
 	 */
 	if (GET_MAJOR_VERSION(old_cluster.major_version) <= 1500)
 		check_for_aclitem_data_type_usage(&old_cluster);
@@ -209,7 +209,7 @@ check_new_cluster(void)
 
 	check_for_prepared_transactions(&new_cluster);
 
-	check_for_new_tablespace_dir(&new_cluster);
+	check_for_new_tablespace_dir();
 }
 
 
@@ -377,7 +377,7 @@ check_new_cluster_is_empty(void)
  * during schema restore.
  */
 static void
-check_for_new_tablespace_dir(ClusterInfo *new_cluster)
+check_for_new_tablespace_dir(void)
 {
 	int			tblnum;
 	char		new_tablespace_dir[MAXPGPATH];
@@ -390,7 +390,7 @@ check_for_new_tablespace_dir(ClusterInfo *new_cluster)
 
 		snprintf(new_tablespace_dir, MAXPGPATH, "%s%s",
 				 os_info.old_tablespaces[tblnum],
-				 new_cluster->tablespace_suffix);
+				 new_cluster.tablespace_suffix);
 
 		if (stat(new_tablespace_dir, &statbuf) == 0 || errno != ENOENT)
 			pg_fatal("new cluster tablespace directory already exists: \"%s\"",
@@ -1133,7 +1133,7 @@ check_for_composite_data_type_usage(ClusterInfo *cluster)
 	if (found)
 	{
 		pg_log(PG_REPORT, "fatal");
-		pg_fatal("Your installation contains system-defined composite type(s) in user tables.\n"
+		pg_fatal("Your installation contains system-defined composite types in user tables.\n"
 				 "These type OIDs are not stable across PostgreSQL versions,\n"
 				 "so this cluster cannot currently be upgraded.  You can\n"
 				 "drop the problem columns and restart the upgrade.\n"
@@ -1215,7 +1215,7 @@ check_for_aclitem_data_type_usage(ClusterInfo *cluster)
 {
 	char		output_path[MAXPGPATH];
 
-	prep_status("Checking for incompatible aclitem data type in user tables");
+	prep_status("Checking for incompatible \"aclitem\" data type in user tables");
 
 	snprintf(output_path, sizeof(output_path), "tables_using_aclitem.txt");
 
@@ -1312,7 +1312,7 @@ check_for_pg_role_prefix(ClusterInfo *cluster)
 		fclose(script);
 		pg_log(PG_REPORT, "fatal");
 		pg_fatal("Your installation contains roles starting with \"pg_\".\n"
-				 "\"pg_\" is a reserved prefix for system roles, the cluster\n"
+				 "\"pg_\" is a reserved prefix for system roles.  The cluster\n"
 				 "cannot be upgraded until these roles are renamed.\n"
 				 "A list of roles starting with \"pg_\" is in the file:\n"
 				 "    %s", output_path);

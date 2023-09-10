@@ -604,14 +604,16 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 		PreventInTransactionBlock(isTopLevel, "CREATE SUBSCRIPTION ... WITH (create_slot = true)");
 
 	/*
-	 * We don't want to allow unprivileged users to be able to trigger attempts
-	 * to access arbitrary network destinations, so require the user to have
-	 * been specifically authorized to create subscriptions.
+	 * We don't want to allow unprivileged users to be able to trigger
+	 * attempts to access arbitrary network destinations, so require the user
+	 * to have been specifically authorized to create subscriptions.
 	 */
 	if (!has_privs_of_role(owner, ROLE_PG_CREATE_SUBSCRIPTION))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must have privileges of pg_create_subscription to create subscriptions")));
+				 errmsg("permission denied to create subscription"),
+				 errdetail("Only roles with privileges of the \"%s\" role may create subscriptions.",
+						   "pg_create_subscription")));
 
 	/*
 	 * Since a subscription is a database object, we also check for CREATE
@@ -629,10 +631,10 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 	 * exempt a subscription from this requirement.
 	 */
 	if (!opts.passwordrequired && !superuser_arg(owner))
-			ereport(ERROR,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("password_required=false is superuser-only"),
-					 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("password_required=false is superuser-only"),
+				 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
 
 	/*
 	 * If built with appropriate switch, whine when regression-testing
@@ -1111,8 +1113,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 	if (!sub->passwordrequired && !superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-						 errmsg("password_required=false is superuser-only"),
-						 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
+				 errmsg("password_required=false is superuser-only"),
+				 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
 
 	/* Lock the subscription so nobody else can do anything with it. */
 	LockSharedObject(SubscriptionRelationId, subid, 0, AccessExclusiveLock);
@@ -1645,6 +1647,12 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	replorigin_drop_by_name(originname, true, false);
 
 	/*
+	 * Tell the cumulative stats system that the subscription is getting
+	 * dropped.
+	 */
+	pgstat_drop_subscription(subid);
+
+	/*
 	 * If there is no slot associated with the subscription, we can finish
 	 * here.
 	 */
@@ -1731,12 +1739,6 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 		walrcv_disconnect(wrconn);
 	}
 	PG_END_TRY();
-
-	/*
-	 * Tell the cumulative stats system that the subscription is getting
-	 * dropped.
-	 */
-	pgstat_drop_subscription(subid);
 
 	table_close(rel, NoLock);
 }
@@ -1825,8 +1827,8 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 	if (!form->subpasswordrequired && !superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-						 errmsg("password_required=false is superuser-only"),
-						 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
+				 errmsg("password_required=false is superuser-only"),
+				 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
 
 	/* Must be able to become new owner */
 	check_can_set_role(GetUserId(), newOwnerId);
@@ -1835,8 +1837,8 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 	 * current owner must have CREATE on database
 	 *
 	 * This is consistent with how ALTER SCHEMA ... OWNER TO works, but some
-	 * other object types behave differently (e.g. you can't give a table to
-	 * a user who lacks CREATE privileges on a schema).
+	 * other object types behave differently (e.g. you can't give a table to a
+	 * user who lacks CREATE privileges on a schema).
 	 */
 	aclresult = object_aclcheck(DatabaseRelationId, MyDatabaseId,
 								GetUserId(), ACL_CREATE);
@@ -2021,8 +2023,8 @@ check_publications_origin(WalReceiverConn *wrconn, List *publications,
 				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				errmsg("subscription \"%s\" requested copy_data with origin = NONE but might copy data that had a different origin",
 					   subname),
-				errdetail_plural("Subscribed publication %s is subscribing to other publications.",
-								 "Subscribed publications %s are subscribing to other publications.",
+				errdetail_plural("The subscription being created subscribes to a publication (%s) that contains tables that are written to by other subscriptions.",
+								 "The subscription being created subscribes to publications (%s) that contain tables that are written to by other subscriptions.",
 								 list_length(publist), pubnames->data),
 				errhint("Verify that initial data copied from the publisher tables did not come from other origins."));
 	}
@@ -2183,7 +2185,8 @@ ReportSlotConnectionError(List *rstates, Oid subid, char *slotname, char *err)
 			 errmsg("could not connect to publisher when attempting to drop replication slot \"%s\": %s",
 					slotname, err),
 	/* translator: %s is an SQL ALTER command */
-			 errhint("Use %s to disassociate the subscription from the slot.",
+			 errhint("Use %s to disable the subscription, and then use %s to disassociate it from the slot.",
+					 "ALTER SUBSCRIPTION ... DISABLE",
 					 "ALTER SUBSCRIPTION ... SET (slot_name = NONE)")));
 }
 

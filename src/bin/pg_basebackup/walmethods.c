@@ -44,14 +44,14 @@ static Walfile *dir_open_for_write(WalWriteMethod *wwmethod,
 								   const char *pathname,
 								   const char *temp_suffix,
 								   size_t pad_to_size);
-static int dir_close(Walfile *f, WalCloseMethod method);
+static int	dir_close(Walfile *f, WalCloseMethod method);
 static bool dir_existsfile(WalWriteMethod *wwmethod, const char *pathname);
 static ssize_t dir_get_file_size(WalWriteMethod *wwmethod,
 								 const char *pathname);
 static char *dir_get_file_name(WalWriteMethod *wwmethod,
 							   const char *pathname, const char *temp_suffix);
 static ssize_t dir_write(Walfile *f, const void *buf, size_t count);
-static int dir_sync(Walfile *f);
+static int	dir_sync(Walfile *f);
 static bool dir_finish(WalWriteMethod *wwmethod);
 static void dir_free(WalWriteMethod *wwmethod);
 
@@ -72,7 +72,7 @@ const WalWriteMethodOps WalDirectoryMethodOps = {
  */
 typedef struct DirectoryMethodData
 {
-	WalWriteMethod	base;
+	WalWriteMethod base;
 	char	   *basedir;
 } DirectoryMethodData;
 
@@ -660,14 +660,14 @@ static Walfile *tar_open_for_write(WalWriteMethod *wwmethod,
 								   const char *pathname,
 								   const char *temp_suffix,
 								   size_t pad_to_size);
-static int tar_close(Walfile *f, WalCloseMethod method);
+static int	tar_close(Walfile *f, WalCloseMethod method);
 static bool tar_existsfile(WalWriteMethod *wwmethod, const char *pathname);
 static ssize_t tar_get_file_size(WalWriteMethod *wwmethod,
 								 const char *pathname);
 static char *tar_get_file_name(WalWriteMethod *wwmethod,
 							   const char *pathname, const char *temp_suffix);
 static ssize_t tar_write(Walfile *f, const void *buf, size_t count);
-static int tar_sync(Walfile *f);
+static int	tar_sync(Walfile *f);
 static bool tar_finish(WalWriteMethod *wwmethod);
 static void tar_free(WalWriteMethod *wwmethod);
 
@@ -693,7 +693,7 @@ typedef struct TarMethodFile
 
 typedef struct TarMethodData
 {
-	WalWriteMethod	base;
+	WalWriteMethod base;
 	char	   *tarfilename;
 	int			fd;
 	TarMethodFile *currentfile;
@@ -705,7 +705,7 @@ typedef struct TarMethodData
 
 #ifdef HAVE_LIBZ
 static bool
-tar_write_compressed_data(TarMethodData *tar_data, void *buf, size_t count,
+tar_write_compressed_data(TarMethodData *tar_data, const void *buf, size_t count,
 						  bool flush)
 {
 	tar_data->zp->next_in = buf;
@@ -782,8 +782,7 @@ tar_write(Walfile *f, const void *buf, size_t count)
 #ifdef HAVE_LIBZ
 	else if (f->wwmethod->compression_algorithm == PG_COMPRESSION_GZIP)
 	{
-		if (!tar_write_compressed_data(tar_data, unconstify(void *, buf),
-									   count, false))
+		if (!tar_write_compressed_data(tar_data, buf, count, false))
 			return -1;
 		f->currpos += count;
 		return count;
@@ -1131,7 +1130,7 @@ tar_close(Walfile *f, WalCloseMethod method)
 	 * possibly also renaming the file. We overwrite the entire current header
 	 * when done, including the checksum.
 	 */
-	print_tar_number(&(tf->header[124]), 12, filesize);
+	print_tar_number(&(tf->header[TAR_OFFSET_SIZE]), 12, filesize);
 
 	if (method == CLOSE_NORMAL)
 
@@ -1139,9 +1138,10 @@ tar_close(Walfile *f, WalCloseMethod method)
 		 * We overwrite it with what it was before if we have no tempname,
 		 * since we're going to write the buffer anyway.
 		 */
-		strlcpy(&(tf->header[0]), tf->base.pathname, 100);
+		strlcpy(&(tf->header[TAR_OFFSET_NAME]), tf->base.pathname, 100);
 
-	print_tar_number(&(tf->header[148]), 8, tarChecksum(((TarMethodFile *) f)->header));
+	print_tar_number(&(tf->header[TAR_OFFSET_CHECKSUM]), 8,
+					 tarChecksum(((TarMethodFile *) f)->header));
 	if (lseek(tar_data->fd, tf->ofs_start, SEEK_SET) != ((TarMethodFile *) f)->ofs_start)
 	{
 		f->wwmethod->lasterrno = errno;
@@ -1353,7 +1353,7 @@ CreateWalTarMethod(const char *tarbase,
 {
 	TarMethodData *wwmethod;
 	const char *suffix = (compression_algorithm == PG_COMPRESSION_GZIP) ?
-	".tar.gz" : ".tar";
+		".tar.gz" : ".tar";
 
 	wwmethod = pg_malloc0(sizeof(TarMethodData));
 	*((const WalWriteMethodOps **) &wwmethod->base.ops) =

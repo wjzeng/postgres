@@ -212,7 +212,8 @@ pg_log_standby_snapshot(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("recovery is in progress"),
-				 errhint("pg_log_standby_snapshot() cannot be executed during recovery.")));
+				 errhint("%s cannot be executed during recovery.",
+						 "pg_log_standby_snapshot()")));
 
 	if (!XLogStandbyInfoActive())
 		ereport(ERROR,
@@ -710,10 +711,10 @@ pg_promote(PG_FUNCTION_ARGS)
 	/* signal the postmaster */
 	if (kill(PostmasterPid, SIGUSR1) != 0)
 	{
-		ereport(WARNING,
-				(errmsg("failed to send signal to postmaster: %m")));
 		(void) unlink(PROMOTE_SIGNAL_FILE);
-		PG_RETURN_BOOL(false);
+		ereport(ERROR,
+				(errcode(ERRCODE_SYSTEM_ERROR),
+				 errmsg("failed to send signal to postmaster: %m")));
 	}
 
 	/* return immediately if waiting was not requested */
@@ -743,7 +744,10 @@ pg_promote(PG_FUNCTION_ARGS)
 		 * necessity for manual cleanup of all postmaster children.
 		 */
 		if (rc & WL_POSTMASTER_DEATH)
-			PG_RETURN_BOOL(false);
+			ereport(FATAL,
+					(errcode(ERRCODE_ADMIN_SHUTDOWN),
+					 errmsg("terminating connection due to unexpected postmaster exit"),
+					 errcontext("while waiting on promotion")));
 	}
 
 	ereport(WARNING,

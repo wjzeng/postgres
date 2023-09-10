@@ -376,7 +376,7 @@ typedef struct XLogwrtResult
 typedef struct
 {
 	LWLock		lock;
-	XLogRecPtr	insertingAt;
+	pg_atomic_uint64 insertingAt;
 	XLogRecPtr	lastImportantAt;
 } WALInsertLock;
 
@@ -1495,6 +1495,17 @@ WaitXLogInsertionsToFinish(XLogRecPtr upto)
 			 * calling LWLockUpdateVar.  But if it has to sleep, it will
 			 * advertise the insertion point with LWLockUpdateVar before
 			 * sleeping.
+			 *
+			 * In this loop we are only waiting for insertions that started
+			 * before WaitXLogInsertionsToFinish was called.  The lack of
+			 * memory barriers in the loop means that we might see locks as
+			 * "unused" that have since become used.  This is fine because
+			 * they only can be used for later insertions that we would not
+			 * want to wait on anyway.  Not taking a lock to acquire the
+			 * current insertingAt value means that we might see older
+			 * insertingAt values.  This is also fine, because if we read a
+			 * value too old, we will add ourselves to the wait queue, which
+			 * contains atomic operations.
 			 */
 			if (LWLockWaitForVar(&WALInsertLocks[i].l.lock,
 								 &WALInsertLocks[i].l.insertingAt,
@@ -1982,6 +1993,18 @@ assign_checkpoint_completion_target(double newval, void *extra)
 {
 	CheckPointCompletionTarget = newval;
 	CalculateCheckpointSegments();
+}
+
+bool
+check_wal_segment_size(int *newval, void **extra, GucSource source)
+{
+	if (!IsValidWalSegSize(*newval))
+	{
+		GUC_check_errdetail("The WAL segment size must be a power of two between 1 MB and 1 GB.");
+		return false;
+	}
+
+	return true;
 }
 
 /*
@@ -4134,10 +4157,11 @@ ReadControlFile(void)
 
 	if (!IsValidWalSegSize(wal_segment_size))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						errmsg_plural("WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d byte",
-									  "WAL segment size must be a power of two between 1 MB and 1 GB, but the control file specifies %d bytes",
+						errmsg_plural("invalid WAL segment size in control file (%d byte)",
+									  "invalid WAL segment size in control file (%d bytes)",
 									  wal_segment_size,
-									  wal_segment_size)));
+									  wal_segment_size),
+						errdetail("The WAL segment size must be a power of two between 1 MB and 1 GB.")));
 
 	snprintf(wal_segsz_str, sizeof(wal_segsz_str), "%d", wal_segment_size);
 	SetConfigOption("wal_segment_size", wal_segsz_str, PGC_INTERNAL,
@@ -4611,7 +4635,7 @@ XLOGShmemInit(void)
 	for (i = 0; i < NUM_XLOGINSERT_LOCKS; i++)
 	{
 		LWLockInitialize(&WALInsertLocks[i].l.lock, LWTRANCHE_WAL_INSERT);
-		WALInsertLocks[i].l.insertingAt = InvalidXLogRecPtr;
+		pg_atomic_init_u64(&WALInsertLocks[i].l.insertingAt, InvalidXLogRecPtr);
 		WALInsertLocks[i].l.lastImportantAt = InvalidXLogRecPtr;
 	}
 
@@ -5460,8 +5484,8 @@ StartupXLOG(void)
 	missingContrecPtr = endOfRecoveryInfo->missingContrecPtr;
 
 	/*
-	 * Reset ps status display, so as no information related to recovery
-	 * shows up.
+	 * Reset ps status display, so as no information related to recovery shows
+	 * up.
 	 */
 	set_ps_display("");
 
@@ -5596,9 +5620,9 @@ StartupXLOG(void)
 	if (!XLogRecPtrIsInvalid(missingContrecPtr))
 	{
 		/*
-		 * We should only have a missingContrecPtr if we're not switching to
-		 * a new timeline. When a timeline switch occurs, WAL is copied from
-		 * the old timeline to the new only up to the end of the last complete
+		 * We should only have a missingContrecPtr if we're not switching to a
+		 * new timeline. When a timeline switch occurs, WAL is copied from the
+		 * old timeline to the new only up to the end of the last complete
 		 * record, so there can't be an incomplete WAL record that we need to
 		 * disregard.
 		 */
@@ -5689,7 +5713,11 @@ StartupXLOG(void)
 	TrimCLOG();
 	TrimMultiXact();
 
-	/* Reload shared-memory state for prepared transactions */
+	/*
+	 * Reload shared-memory state for prepared transactions.  This needs to
+	 * happen before renaming the last partial segment of the old timeline as
+	 * it may be possible that we have to recovery some transactions from it.
+	 */
 	RecoverPreparedTransactions();
 
 	/* Shut down xlogreader */
@@ -8494,7 +8522,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 				 */
 				if (rllen > datadirpathlen &&
 					strncmp(linkpath, DataDir, datadirpathlen) == 0 &&
-						IS_DIR_SEP(linkpath[datadirpathlen]))
+					IS_DIR_SEP(linkpath[datadirpathlen]))
 					relpath = pstrdup(linkpath + datadirpathlen + 1);
 
 				/*

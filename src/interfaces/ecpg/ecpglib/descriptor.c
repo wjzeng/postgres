@@ -19,7 +19,6 @@
 static void descriptor_free(struct descriptor *desc);
 
 /* We manage descriptors separately for each thread. */
-#ifdef ENABLE_THREAD_SAFETY
 static pthread_key_t descriptor_key;
 static pthread_once_t descriptor_once = PTHREAD_ONCE_INIT;
 
@@ -49,12 +48,6 @@ set_descriptors(struct descriptor *value)
 {
 	pthread_setspecific(descriptor_key, value);
 }
-#else
-static struct descriptor *all_descriptors = NULL;
-
-#define get_descriptors()		(all_descriptors)
-#define set_descriptors(value)	do { all_descriptors = (value); } while(0)
-#endif
 
 /* old internal convenience function that might go away later */
 static PGresult *
@@ -210,7 +203,7 @@ get_char_item(int lineno, void *var, enum ECPGttype vartype, char *value, int va
 		case ECPGt_varchar:
 			{
 				struct ECPGgeneric_varchar *variable =
-				(struct ECPGgeneric_varchar *) var;
+					(struct ECPGgeneric_varchar *) var;
 
 				if (varcharsize == 0)
 					memcpy(variable->arr, value, strlen(value));
@@ -597,7 +590,7 @@ set_desc_attr(struct descriptor_item *desc_item, struct variable *var,
 	else
 	{
 		struct ECPGgeneric_bytea *variable =
-		(struct ECPGgeneric_bytea *) (var->value);
+			(struct ECPGgeneric_bytea *) (var->value);
 
 		desc_item->is_binary = true;
 		desc_item->data_len = variable->len;
@@ -782,8 +775,6 @@ ECPGdeallocate_desc(int line, const char *name)
 	return false;
 }
 
-#ifdef ENABLE_THREAD_SAFETY
-
 /* Deallocate all descriptors in the list */
 static void
 descriptor_deallocate_all(struct descriptor *list)
@@ -796,7 +787,6 @@ descriptor_deallocate_all(struct descriptor *list)
 		list = next;
 	}
 }
-#endif							/* ENABLE_THREAD_SAFETY */
 
 bool
 ECPGallocate_desc(int line, const char *name)

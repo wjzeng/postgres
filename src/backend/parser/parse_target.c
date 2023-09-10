@@ -1876,6 +1876,49 @@ FigureColnameInternal(Node *node, char **name)
 					return 2;
 			}
 			break;
+		case T_SQLValueFunction:
+			/* make these act like a function or variable */
+			switch (((SQLValueFunction *) node)->op)
+			{
+				case SVFOP_CURRENT_DATE:
+					*name = "current_date";
+					return 2;
+				case SVFOP_CURRENT_TIME:
+				case SVFOP_CURRENT_TIME_N:
+					*name = "current_time";
+					return 2;
+				case SVFOP_CURRENT_TIMESTAMP:
+				case SVFOP_CURRENT_TIMESTAMP_N:
+					*name = "current_timestamp";
+					return 2;
+				case SVFOP_LOCALTIME:
+				case SVFOP_LOCALTIME_N:
+					*name = "localtime";
+					return 2;
+				case SVFOP_LOCALTIMESTAMP:
+				case SVFOP_LOCALTIMESTAMP_N:
+					*name = "localtimestamp";
+					return 2;
+				case SVFOP_CURRENT_ROLE:
+					*name = "current_role";
+					return 2;
+				case SVFOP_CURRENT_USER:
+					*name = "current_user";
+					return 2;
+				case SVFOP_USER:
+					*name = "user";
+					return 2;
+				case SVFOP_SESSION_USER:
+					*name = "session_user";
+					return 2;
+				case SVFOP_CURRENT_CATALOG:
+					*name = "current_catalog";
+					return 2;
+				case SVFOP_CURRENT_SCHEMA:
+					*name = "current_schema";
+					return 2;
+			}
+			break;
 		case T_XmlExpr:
 			/* make SQL/XML functions act like a regular function */
 			switch (((XmlExpr *) node)->op)
@@ -1909,6 +1952,18 @@ FigureColnameInternal(Node *node, char **name)
 		case T_XmlSerialize:
 			/* make XMLSERIALIZE act like a regular function */
 			*name = "xmlserialize";
+			return 2;
+		case T_JsonParseExpr:
+			/* make JSON act like a regular function */
+			*name = "json";
+			return 2;
+		case T_JsonScalarExpr:
+			/* make JSON_SCALAR act like a regular function */
+			*name = "json_scalar";
+			return 2;
+		case T_JsonSerializeExpr:
+			/* make JSON_SERIALIZE act like a regular function */
+			*name = "json_serialize";
 			return 2;
 		case T_JsonObjectConstructor:
 			/* make JSON_OBJECT act like a regular function */

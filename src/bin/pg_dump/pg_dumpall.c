@@ -949,7 +949,7 @@ static void
 dumpRoleMembership(PGconn *conn)
 {
 	PQExpBuffer buf = createPQExpBuffer();
-	PQExpBuffer	optbuf = createPQExpBuffer();
+	PQExpBuffer optbuf = createPQExpBuffer();
 	PGresult   *res;
 	int			start = 0,
 				end,
@@ -996,8 +996,8 @@ dumpRoleMembership(PGconn *conn)
 
 	/*
 	 * We can't dump these GRANT commands in arbitrary order, because a role
-	 * that is named as a grantor must already have ADMIN OPTION on the
-	 * role for which it is granting permissions, except for the bootstrap
+	 * that is named as a grantor must already have ADMIN OPTION on the role
+	 * for which it is granting permissions, except for the bootstrap
 	 * superuser, who can always be named as the grantor.
 	 *
 	 * We handle this by considering these grants role by role. For each role,
@@ -1005,8 +1005,8 @@ dumpRoleMembership(PGconn *conn)
 	 * superuser. Every time we grant ADMIN OPTION on the role to some user,
 	 * that user also becomes an allowable grantor. We make repeated passes
 	 * over the grants for the role, each time dumping those whose grantors
-	 * are allowable and which we haven't done yet. Eventually this should
-	 * let us dump all the grants.
+	 * are allowable and which we haven't done yet. Eventually this should let
+	 * us dump all the grants.
 	 */
 	total = PQntuples(res);
 	while (start < total)
@@ -1021,7 +1021,7 @@ dumpRoleMembership(PGconn *conn)
 		/* All memberships for a single role should be adjacent. */
 		for (end = start; end < total; ++end)
 		{
-			char   *otherrole;
+			char	   *otherrole;
 
 			otherrole = PQgetvalue(res, end, 0);
 			if (strcmp(role, otherrole) != 0)
@@ -1105,7 +1105,7 @@ dumpRoleMembership(PGconn *conn)
 					appendPQExpBufferStr(optbuf, "ADMIN OPTION");
 				if (dump_grant_options)
 				{
-					char   *inherit_option;
+					char	   *inherit_option;
 
 					if (optbuf->data[0] != '\0')
 						appendPQExpBufferStr(optbuf, ", ");
@@ -1286,7 +1286,16 @@ dumpTablespaces(PGconn *conn)
 		appendPQExpBuffer(buf, " OWNER %s", fmtId(spcowner));
 
 		appendPQExpBufferStr(buf, " LOCATION ");
-		appendStringLiteralConn(buf, spclocation, conn);
+
+		/*
+		 * In-place tablespaces use a relative path, and need to be dumped
+		 * with an empty string as location.
+		 */
+		if (is_absolute_path(spclocation))
+			appendStringLiteralConn(buf, spclocation, conn);
+		else
+			appendStringLiteralConn(buf, "", conn);
+
 		appendPQExpBufferStr(buf, ";\n");
 
 		if (spcoptions && spcoptions[0] != '\0')
@@ -1345,7 +1354,7 @@ dropDBs(PGconn *conn)
 	res = executeQuery(conn,
 					   "SELECT datname "
 					   "FROM pg_database d "
-					   "WHERE datallowconn "
+					   "WHERE datallowconn AND datconnlimit != -2 "
 					   "ORDER BY datname");
 
 	if (PQntuples(res) > 0)
@@ -1385,10 +1394,7 @@ dumpUserConfig(PGconn *conn, const char *username)
 	PQExpBuffer buf = createPQExpBuffer();
 	PGresult   *res;
 
-	printfPQExpBuffer(buf, "SELECT unnest(setconfig)");
-	if (server_version >= 160000)
-		appendPQExpBufferStr(buf, ", unnest(setuser)");
-	appendPQExpBuffer(buf, " FROM pg_db_role_setting "
+	printfPQExpBuffer(buf, "SELECT unnest(setconfig) FROM pg_db_role_setting "
 					  "WHERE setdatabase = 0 AND setrole = "
 					  "(SELECT oid FROM %s WHERE rolname = ",
 					  role_catalog);
@@ -1402,13 +1408,8 @@ dumpUserConfig(PGconn *conn, const char *username)
 
 	for (int i = 0; i < PQntuples(res); i++)
 	{
-		char	*userset = NULL;
-
-		if (server_version >= 160000)
-			userset = PQgetvalue(res, i, 1);
-
 		resetPQExpBuffer(buf);
-		makeAlterConfigCommand(conn, PQgetvalue(res, i, 0), userset,
+		makeAlterConfigCommand(conn, PQgetvalue(res, i, 0),
 							   "ROLE", username, NULL, NULL,
 							   buf);
 		fprintf(OPF, "%s", buf->data);
@@ -1496,7 +1497,7 @@ dumpDatabases(PGconn *conn)
 	res = executeQuery(conn,
 					   "SELECT datname "
 					   "FROM pg_database d "
-					   "WHERE datallowconn "
+					   "WHERE datallowconn AND datconnlimit != -2 "
 					   "ORDER BY (datname <> 'template1'), datname");
 
 	if (PQntuples(res) > 0)
@@ -1572,11 +1573,14 @@ dumpDatabases(PGconn *conn)
 static int
 runPgDump(const char *dbname, const char *create_opts)
 {
-	PQExpBuffer connstrbuf = createPQExpBuffer();
-	PQExpBuffer cmd = createPQExpBuffer();
+	PQExpBufferData connstrbuf;
+	PQExpBufferData cmd;
 	int			ret;
 
-	appendPQExpBuffer(cmd, "\"%s\" %s %s", pg_dump_bin,
+	initPQExpBuffer(&connstrbuf);
+	initPQExpBuffer(&cmd);
+
+	printfPQExpBuffer(&cmd, "\"%s\" %s %s", pg_dump_bin,
 					  pgdumpopts->data, create_opts);
 
 	/*
@@ -1584,27 +1588,27 @@ runPgDump(const char *dbname, const char *create_opts)
 	 * format.
 	 */
 	if (filename)
-		appendPQExpBufferStr(cmd, " -Fa ");
+		appendPQExpBufferStr(&cmd, " -Fa ");
 	else
-		appendPQExpBufferStr(cmd, " -Fp ");
+		appendPQExpBufferStr(&cmd, " -Fp ");
 
 	/*
 	 * Append the database name to the already-constructed stem of connection
 	 * string.
 	 */
-	appendPQExpBuffer(connstrbuf, "%s dbname=", connstr);
-	appendConnStrVal(connstrbuf, dbname);
+	appendPQExpBuffer(&connstrbuf, "%s dbname=", connstr);
+	appendConnStrVal(&connstrbuf, dbname);
 
-	appendShellString(cmd, connstrbuf->data);
+	appendShellString(&cmd, connstrbuf.data);
 
-	pg_log_info("running \"%s\"", cmd->data);
+	pg_log_info("running \"%s\"", cmd.data);
 
 	fflush(NULL);
 
-	ret = system(cmd->data);
+	ret = system(cmd.data);
 
-	destroyPQExpBuffer(cmd);
-	destroyPQExpBuffer(connstrbuf);
+	termPQExpBuffer(&cmd);
+	termPQExpBuffer(&connstrbuf);
 
 	return ret;
 }

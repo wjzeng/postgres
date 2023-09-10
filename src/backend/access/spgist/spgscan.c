@@ -115,7 +115,7 @@ spgAllocSearchItem(SpGistScanOpaque so, bool isnull, double *distances)
 {
 	/* allocate distance array only for non-NULL items */
 	SpGistSearchItem *item =
-	palloc(SizeOfSpGistSearchItem(isnull ? 0 : so->numberOfNonNullOrderBys));
+		palloc(SizeOfSpGistSearchItem(isnull ? 0 : so->numberOfNonNullOrderBys));
 
 	item->isNull = isnull;
 
@@ -130,7 +130,7 @@ static void
 spgAddStartItem(SpGistScanOpaque so, bool isnull)
 {
 	SpGistSearchItem *startEntry =
-	spgAllocSearchItem(so, isnull, so->zeroDistances);
+		spgAllocSearchItem(so, isnull, so->zeroDistances);
 
 	ItemPointerSet(&startEntry->heapPtr,
 				   isnull ? SPGIST_NULL_BLKNO : SPGIST_ROOT_BLKNO,
@@ -768,7 +768,7 @@ spgTestLeafTuple(SpGistScanOpaque so,
 				 storeRes_func storeRes)
 {
 	SpGistLeafTuple leafTuple = (SpGistLeafTuple)
-	PageGetItem(page, PageGetItemId(page, offset));
+		PageGetItem(page, PageGetItemId(page, offset));
 
 	if (leafTuple->tupstate != SPGIST_LIVE)
 	{
@@ -815,7 +815,7 @@ spgTestLeafTuple(SpGistScanOpaque so,
  */
 static void
 spgWalk(Relation index, SpGistScanOpaque so, bool scanWholeIndex,
-		storeRes_func storeRes, Snapshot snapshot)
+		storeRes_func storeRes)
 {
 	Buffer		buffer = InvalidBuffer;
 	bool		reportedSome = false;
@@ -862,7 +862,6 @@ redirect:
 			/* else new pointer points to the same page, no work needed */
 
 			page = BufferGetPage(buffer);
-			TestForOldSnapshot(snapshot, index, page);
 
 			isnull = SpGistPageStoresNulls(page) ? true : false;
 
@@ -896,7 +895,7 @@ redirect:
 			else				/* page is inner */
 			{
 				SpGistInnerTuple innerTuple = (SpGistInnerTuple)
-				PageGetItem(page, PageGetItemId(page, offset));
+					PageGetItem(page, PageGetItemId(page, offset));
 
 				if (innerTuple->tupstate != SPGIST_LIVE)
 				{
@@ -950,7 +949,7 @@ spggetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	so->tbm = tbm;
 	so->ntids = 0;
 
-	spgWalk(scan->indexRelation, so, true, storeBitmap, scan->xs_snapshot);
+	spgWalk(scan->indexRelation, so, true, storeBitmap);
 
 	return so->ntids;
 }
@@ -974,7 +973,7 @@ storeGettuple(SpGistScanOpaque so, ItemPointer heapPtr,
 		else
 		{
 			IndexOrderByDistance *distances =
-			palloc(sizeof(distances[0]) * so->numberOfOrderBys);
+				palloc(sizeof(distances[0]) * so->numberOfOrderBys);
 			int			i;
 
 			for (i = 0; i < so->numberOfOrderBys; i++)
@@ -1071,8 +1070,7 @@ spggettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 		so->iPtr = so->nPtrs = 0;
 
-		spgWalk(scan->indexRelation, so, false, storeGettuple,
-				scan->xs_snapshot);
+		spgWalk(scan->indexRelation, so, false, storeGettuple);
 
 		if (so->nPtrs == 0)
 			break;				/* must have completed scan */

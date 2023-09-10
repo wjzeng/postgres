@@ -1883,6 +1883,7 @@ INSERT INTO tbl1 VALUES ($1, $2) \bind 'first value' 'second value' \g
         </listitem>
       </varlistentry>
 
+
       <varlistentry id="app-psql-meta-command-drds">
         <term><literal>\drds [ <link linkend="app-psql-patterns"><replaceable class="parameter">role-pattern</replaceable></link> [ <link linkend="app-psql-patterns"><replaceable class="parameter">database-pattern</replaceable></link> ] ]</literal></term>
         <listitem>
@@ -1902,15 +1903,29 @@ INSERT INTO tbl1 VALUES ($1, $2) \bind 'first value' 'second value' \g
         commands are used to define per-role and per-database configuration
         settings.
         </para>
+        </listitem>
+      </varlistentry>
 
+
+      <varlistentry id="app-psql-meta-command-drg">
+        <term><literal>\drg[S] [ <link linkend="app-psql-patterns"><replaceable class="parameter">pattern</replaceable></link> ]</literal></term>
+        <listitem>
         <para>
-        Since <productname>PostgreSQL</productname> 16, the output includes a
-        column with the values of the
-        <link linkend="sql-alterrole-user-set"><literal>USER SET</literal></link>
-        flag for each setting.
+        Lists information about each granted role membership, including
+        assigned options (<literal>ADMIN</literal>,
+        <literal>INHERIT</literal> and/or <literal>SET</literal>) and grantor.
+        See the <link linkend="sql-grant"><command>GRANT</command></link>
+        command for information about role memberships.
+        </para>
+        <para>
+        By default, only grants to user-created roles are shown; supply the
+        <literal>S</literal> modifier to include system roles.
+        If <replaceable class="parameter">pattern</replaceable> is specified,
+        only grants to those roles whose names match the pattern are listed.
         </para>
         </listitem>
       </varlistentry>
+
 
       <varlistentry id="app-psql-meta-command-drp">
         <term><literal>\dRp[+] [ <link linkend="app-psql-patterns"><replaceable class="parameter">pattern</replaceable></link> ]</literal></term>
@@ -2891,38 +2906,6 @@ lo_import 152801
           </listitem>
           </varlistentry>
 
-          <varlistentry id="app-psql-meta-command-pset-xheader-width">
-          <term><literal>xheader_width</literal></term>
-          <listitem>
-          <para>
-           Sets the maximum width of the header for expanded output to one of
-           <literal>full</literal> (the default value),
-           <literal>column</literal>, <literal>page</literal>, or an
-           <replaceable class="parameter">integer value</replaceable>.
-          </para>
-
-          <para>
-           <literal>full</literal>: the expanded header is not truncated,
-           and will be as wide as the widest output line.
-          </para>
-
-          <para>
-           <literal>column</literal>: truncate the header line to the
-           width of the first column.
-          </para>
-
-          <para>
-           <literal>page</literal>: truncate the header line to the terminal
-           width.
-          </para>
-
-          <para>
-           <replaceable class="parameter">integer value</replaceable>: specify
-           the exact maximum width of the header line.
-          </para>
-          </listitem>
-          </varlistentry>
-
           <varlistentry id="app-psql-meta-command-pset-fieldsep">
           <term><literal>fieldsep</literal></term>
           <listitem>
@@ -3120,8 +3103,21 @@ lo_import 152801
           <listitem>
           <para>
           Controls use of a pager program for query and <application>psql</application>
-          help output.  If the environment variable <envar>PSQL_PAGER</envar>
-          or <envar>PAGER</envar> is set, the output is piped to the
+          help output.
+          When the <literal>pager</literal> option is <literal>off</literal>, the pager
+          program is not used. When the <literal>pager</literal> option is
+          <literal>on</literal>, the pager is used when appropriate, i.e., when the
+          output is to a terminal and will not fit on the screen.
+          The <literal>pager</literal> option can also be set to <literal>always</literal>,
+          which causes the pager to be used for all terminal output regardless
+          of whether it fits on the screen.  <literal>\pset pager</literal>
+          without a <replaceable class="parameter">value</replaceable>
+          toggles pager use on and off.
+          </para>
+
+          <para>
+          If the environment variable <envar>PSQL_PAGER</envar>
+          or <envar>PAGER</envar> is set, output to be paged is piped to the
           specified program.  Otherwise a platform-dependent default program
           (such as <filename>more</filename>) is used.
           </para>
@@ -3134,18 +3130,6 @@ lo_import 152801
           can be used to send output to tools that understand
           <application>psql</application>'s output format (such as
           <filename>pspg --stream</filename>).
-          </para>
-
-          <para>
-          When the <literal>pager</literal> option is <literal>off</literal>, the pager
-          program is not used. When the <literal>pager</literal> option is
-          <literal>on</literal>, the pager is used when appropriate, i.e., when the
-          output is to a terminal and will not fit on the screen.
-          The <literal>pager</literal> option can also be set to <literal>always</literal>,
-          which causes the pager to be used for all terminal output regardless
-          of whether it fits on the screen.  <literal>\pset pager</literal>
-          without a <replaceable class="parameter">value</replaceable>
-          toggles pager use on and off.
           </para>
           </listitem>
           </varlistentry>
@@ -3263,6 +3247,38 @@ lo_import 152801
           Sets the header drawing style for the <literal>unicode</literal>
           line style to one of <literal>single</literal>
           or <literal>double</literal>.
+          </para>
+          </listitem>
+          </varlistentry>
+
+          <varlistentry id="app-psql-meta-command-pset-xheader-width">
+          <term><literal>xheader_width</literal></term>
+          <listitem>
+          <para>
+           Sets the maximum width of the header for expanded output to one of
+           <literal>full</literal> (the default value),
+           <literal>column</literal>, <literal>page</literal>, or an
+           <replaceable class="parameter">integer value</replaceable>.
+          </para>
+
+          <para>
+           <literal>full</literal>: the expanded header is not truncated,
+           and will be as wide as the widest output line.
+          </para>
+
+          <para>
+           <literal>column</literal>: truncate the header line to the
+           width of the first column.
+          </para>
+
+          <para>
+           <literal>page</literal>: truncate the header line to the terminal
+           width.
+          </para>
+
+          <para>
+           <replaceable class="parameter">integer value</replaceable>: specify
+           the exact maximum width of the header line.
           </para>
           </listitem>
           </varlistentry>
@@ -3550,13 +3566,14 @@ testdb=&gt; <userinput>\setenv LESS -imx4F</userinput>
 
 
       <varlistentry id="app-psql-meta-command-watch">
-        <term><literal>\watch [ i[nterval]=<replaceable class="parameter">seconds</replaceable> ] [ c[ount]=<replaceable class="parameter">times</replaceable> ] [ <replaceable class="parameter">seconds</replaceable> ]</literal></term>
+        <term><literal>\watch [ i[nterval]=<replaceable class="parameter">seconds</replaceable> ] [ c[ount]=<replaceable class="parameter">times</replaceable> ] [ m[in_rows]=<replaceable class="parameter">rows</replaceable> ] [ <replaceable class="parameter">seconds</replaceable> ]</literal></term>
         <listitem>
         <para>
         Repeatedly execute the current query buffer (as <literal>\g</literal> does)
         until interrupted, or the query fails, or the execution count limit
-        (if given) is reached.  Wait the specified number of
-        seconds (default 2) between executions.  For backwards compatibility,
+        (if given) is reached, or the query no longer returns the minimum number
+        of rows. Wait the specified number of seconds (default 2) between executions.
+        For backwards compatibility,
         <replaceable class="parameter">seconds</replaceable> can be specified
         with or without an <literal>interval=</literal> prefix.
         Each query result is
@@ -4898,7 +4915,7 @@ PSQL_EDITOR_LINENUMBER_ARG='--line '
       pager-related options of the <command>\pset</command> command.
       These variables are examined in the order listed;
       the first that is set is used.
-      If none of them is set, the default is to use <literal>more</literal> on most
+      If neither of them is set, the default is to use <literal>more</literal> on most
       platforms, but <literal>less</literal> on Cygwin.
      </para>
 

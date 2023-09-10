@@ -103,7 +103,7 @@ PostgreSQL documentation
   </para>
 
   <warning>
-   <title>Warning: Failures while Rewinding</title>
+   <title>Warning: Failures While Rewinding</title>
    <para>
     If <application>pg_rewind</application> fails while processing, then
     the data folder of the target is likely not in a state that can be
@@ -280,6 +280,28 @@ PostgreSQL documentation
         this and errors out immediately if the server is not cleanly shut
         down. Users are expected to handle the situation themselves in that
         case.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--sync-method</option></term>
+      <listitem>
+       <para>
+        When set to <literal>fsync</literal>, which is the default,
+        <command>pg_rewind</command> will recursively open and synchronize all
+        files in the data directory.  The search for files will follow symbolic
+        links for the WAL directory and each configured tablespace.
+       </para>
+       <para>
+        On Linux, <literal>syncfs</literal> may be used instead to ask the
+        operating system to synchronize the whole file systems that contain the
+        data directory, the WAL files, and each tablespace.  See
+        <xref linkend="syncfs"/> for more information about using
+        <function>syncfs()</function>.
+       </para>
+       <para>
+        This option has no effect when <option>--no-sync</option> is used.
        </para>
       </listitem>
      </varlistentry>

@@ -84,14 +84,6 @@
 /* Windows doesn't have fsync() as such, use _commit() */
 #define fsync(fd) _commit(fd)
 
-/*
- * For historical reasons, we allow setting wal_sync_method to
- * fsync_writethrough on Windows, even though it's really identical to fsync
- * (both code paths wind up at _commit()).
- */
-#define HAVE_FSYNC_WRITETHROUGH
-#define FSYNC_WRITETHROUGH_IS_FSYNC
-
 #define USES_WINSOCK
 
 /*
@@ -147,7 +139,7 @@
  *			https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
  *
  *	The comprehensive exception list is included in ntstatus.h from the
- *	Windows	Driver Kit (WDK).  A subset of the list is also included in
+ *	Windows Driver Kit (WDK).  A subset of the list is also included in
  *	winnt.h from the Windows SDK.  Defining WIN32_NO_STATUS before including
  *	windows.h helps to avoid any conflicts.
  *
@@ -455,8 +447,6 @@ extern int	_pglstat64(const char *name, struct stat *buf);
 #define strcoll_l _strcoll_l
 #define strxfrm_l _strxfrm_l
 #define wcscoll_l _wcscoll_l
-#define wcstombs_l _wcstombs_l
-#define mbstowcs_l _mbstowcs_l
 
 /*
  * Versions of libintl >= 0.18? try to replace setlocale() with a macro

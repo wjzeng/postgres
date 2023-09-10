@@ -41,7 +41,6 @@
 #include "catalog/pg_namespace.h"
 #include "commands/cluster.h"
 #include "commands/defrem.h"
-#include "commands/tablecmds.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -115,7 +114,7 @@ static void vac_truncate_clog(TransactionId frozenXID,
 							  TransactionId lastSaneFrozenXid,
 							  MultiXactId lastSaneMinMulti);
 static bool vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
-					   bool skip_privs, BufferAccessStrategy bstrategy);
+					   BufferAccessStrategy bstrategy);
 static double compute_parallel_delay(void);
 static VacOptValue get_vacoptval_from_boolean(DefElem *def);
 static bool vac_tid_reaped(ItemPointer itemptr, void *state);
@@ -620,8 +619,7 @@ vacuum(List *relations, VacuumParams *params, BufferAccessStrategy bstrategy,
 
 			if (params->options & VACOPT_VACUUM)
 			{
-				if (!vacuum_rel(vrel->oid, vrel->relation, params, false,
-								bstrategy))
+				if (!vacuum_rel(vrel->oid, vrel->relation, params, bstrategy))
 					continue;
 			}
 
@@ -699,33 +697,32 @@ vacuum(List *relations, VacuumParams *params, BufferAccessStrategy bstrategy,
 }
 
 /*
- * Check if the current user has privileges to vacuum or analyze the relation.
- * If not, issue a WARNING log message and return false to let the caller
- * decide what to do with this relation.  This routine is used to decide if a
- * relation can be processed for VACUUM or ANALYZE.
+ * Check if a given relation can be safely vacuumed or analyzed.  If the
+ * user is not the relation owner, issue a WARNING log message and return
+ * false to let the caller decide what to do with this relation.  This
+ * routine is used to decide if a relation can be processed for VACUUM or
+ * ANALYZE.
  */
 bool
-vacuum_is_permitted_for_relation(Oid relid, Form_pg_class reltuple,
-								 bits32 options)
+vacuum_is_relation_owner(Oid relid, Form_pg_class reltuple, bits32 options)
 {
 	char	   *relname;
 
 	Assert((options & (VACOPT_VACUUM | VACOPT_ANALYZE)) != 0);
 
-	/*----------
-	 * A role has privileges to vacuum or analyze the relation if any of the
-	 * following are true:
-	 *   - the role is a superuser
-	 *   - the role owns the relation
-	 *   - the role owns the current database and the relation is not shared
-	 *   - the role has been granted the MAINTAIN privilege on the relation
-	 *   - the role has privileges to vacuum/analyze any of the relation's
-	 *     partition ancestors
-	 *----------
+	/*
+	 * Check permissions.
+	 *
+	 * We allow the user to vacuum or analyze a table if he is superuser, the
+	 * table owner, or the database owner (but in the latter case, only if
+	 * it's not a shared relation).  object_ownercheck includes the superuser
+	 * case.
+	 *
+	 * Note we choose to treat permissions failure as a WARNING and keep
+	 * trying to vacuum or analyze the rest of the DB --- is this appropriate?
 	 */
-	if ((object_ownercheck(DatabaseRelationId, MyDatabaseId, GetUserId()) && !reltuple->relisshared) ||
-		pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) == ACLCHECK_OK ||
-		has_partition_ancestor_privs(relid, GetUserId(), ACL_MAINTAIN))
+	if (object_ownercheck(RelationRelationId, relid, GetUserId()) ||
+		(object_ownercheck(DatabaseRelationId, MyDatabaseId, GetUserId()) && !reltuple->relisshared))
 		return true;
 
 	relname = NameStr(reltuple->relname);
@@ -941,10 +938,10 @@ expand_vacuum_rel(VacuumRelation *vrel, MemoryContext vac_context,
 		classForm = (Form_pg_class) GETSTRUCT(tuple);
 
 		/*
-		 * Make a returnable VacuumRelation for this rel if the user has the
-		 * required privileges.
+		 * Make a returnable VacuumRelation for this rel if user is a proper
+		 * owner.
 		 */
-		if (vacuum_is_permitted_for_relation(relid, classForm, options))
+		if (vacuum_is_relation_owner(relid, classForm, options))
 		{
 			oldcontext = MemoryContextSwitchTo(vac_context);
 			vacrels = lappend(vacrels, makeVacuumRelation(vrel->relation,
@@ -1041,7 +1038,7 @@ get_all_vacuum_rels(MemoryContext vac_context, int options)
 			continue;
 
 		/* check permissions of relation */
-		if (!vacuum_is_permitted_for_relation(relid, classForm, options))
+		if (!vacuum_is_relation_owner(relid, classForm, options))
 			continue;
 
 		/*
@@ -1112,25 +1109,6 @@ vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 	 * any time, and that each vacuum is always an independent transaction.
 	 */
 	cutoffs->OldestXmin = GetOldestNonRemovableTransactionId(rel);
-
-	if (OldSnapshotThresholdActive())
-	{
-		TransactionId limit_xmin;
-		TimestampTz limit_ts;
-
-		if (TransactionIdLimitedForOldSnapshots(cutoffs->OldestXmin, rel,
-												&limit_xmin, &limit_ts))
-		{
-			/*
-			 * TODO: We should only set the threshold if we are pruning on the
-			 * basis of the increased limits.  Not as crucial here as it is
-			 * for opportunistic pruning (which often happens at a much higher
-			 * frequency), but would still be a significant improvement.
-			 */
-			SetOldSnapshotThresholdTimestamp(limit_ts, limit_xmin);
-			cutoffs->OldestXmin = limit_xmin;
-		}
-	}
 
 	Assert(TransactionIdIsNormal(cutoffs->OldestXmin));
 
@@ -1854,6 +1832,20 @@ vac_truncate_clog(TransactionId frozenXID,
 		Assert(MultiXactIdIsValid(datminmxid));
 
 		/*
+		 * If database is in the process of getting dropped, or has been
+		 * interrupted while doing so, no connections to it are possible
+		 * anymore. Therefore we don't need to take it into account here.
+		 * Which is good, because it can't be processed by autovacuum either.
+		 */
+		if (database_is_invalid_form((Form_pg_database) dbform))
+		{
+			elog(DEBUG2,
+				 "skipping invalid database \"%s\" while computing relfrozenxid",
+				 NameStr(dbform->datname));
+			continue;
+		}
+
+		/*
 		 * If things are working properly, no database should have a
 		 * datfrozenxid or datminmxid that is "in the future".  However, such
 		 * cases have been known to arise due to bugs in pg_upgrade.  If we
@@ -1896,12 +1888,16 @@ vac_truncate_clog(TransactionId frozenXID,
 		ereport(WARNING,
 				(errmsg("some databases have not been vacuumed in over 2 billion transactions"),
 				 errdetail("You might have already suffered transaction-wraparound data loss.")));
+		LWLockRelease(WrapLimitsVacuumLock);
 		return;
 	}
 
 	/* chicken out if data is bogus in any other way */
 	if (bogus)
+	{
+		LWLockRelease(WrapLimitsVacuumLock);
 		return;
+	}
 
 	/*
 	 * Advance the oldest value for commit timestamps before truncating, so
@@ -1953,7 +1949,7 @@ vac_truncate_clog(TransactionId frozenXID,
  */
 static bool
 vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
-		   bool skip_privs, BufferAccessStrategy bstrategy)
+		   BufferAccessStrategy bstrategy)
 {
 	LOCKMODE	lmode;
 	Relation	rel;
@@ -2034,16 +2030,16 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 	}
 
 	/*
-	 * Check if relation needs to be skipped based on privileges.  This check
+	 * Check if relation needs to be skipped based on ownership.  This check
 	 * happens also when building the relation list to vacuum for a manual
 	 * operation, and needs to be done additionally here as VACUUM could
-	 * happen across multiple transactions where privileges could have changed
-	 * in-between.  Make sure to only generate logs for VACUUM in this case.
+	 * happen across multiple transactions where relation ownership could have
+	 * changed in-between.  Make sure to only generate logs for VACUUM in this
+	 * case.
 	 */
-	if (!skip_privs &&
-		!vacuum_is_permitted_for_relation(RelationGetRelid(rel),
-										  rel->rd_rel,
-										  params->options & VACOPT_VACUUM))
+	if (!vacuum_is_relation_owner(RelationGetRelid(rel),
+								  rel->rd_rel,
+								  params->options & VACOPT_VACUUM))
 	{
 		relation_close(rel, lmode);
 		PopActiveSnapshot();
@@ -2233,7 +2229,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params,
 		memcpy(&toast_vacuum_params, params, sizeof(VacuumParams));
 		toast_vacuum_params.options |= VACOPT_PROCESS_MAIN;
 
-		vacuum_rel(toast_relid, NULL, &toast_vacuum_params, true, bstrategy);
+		vacuum_rel(toast_relid, NULL, &toast_vacuum_params, bstrategy);
 	}
 
 	/*

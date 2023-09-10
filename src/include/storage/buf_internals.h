@@ -388,8 +388,9 @@ extern PGDLLIMPORT CkptSortItem *CkptBufferIds;
  */
 /* bufmgr.c */
 extern void WritebackContextInit(WritebackContext *context, int *max_pending);
-extern void IssuePendingWritebacks(WritebackContext *context);
-extern void ScheduleBufferTagForWriteback(WritebackContext *context, BufferTag *tag);
+extern void IssuePendingWritebacks(WritebackContext *wb_context, IOContext io_context);
+extern void ScheduleBufferTagForWriteback(WritebackContext *wb_context,
+										  IOContext io_context, BufferTag *tag);
 
 /* freelist.c */
 extern IOContext IOContextForStrategy(BufferAccessStrategy strategy);
@@ -422,7 +423,7 @@ extern PrefetchBufferResult PrefetchLocalBuffer(SMgrRelation smgr,
 												BlockNumber blockNum);
 extern BufferDesc *LocalBufferAlloc(SMgrRelation smgr, ForkNumber forkNum,
 									BlockNumber blockNum, bool *foundPtr);
-extern BlockNumber ExtendBufferedRelLocal(ExtendBufferedWhat eb,
+extern BlockNumber ExtendBufferedRelLocal(BufferManagerRelation bmr,
 										  ForkNumber fork,
 										  uint32 flags,
 										  uint32 extend_by,

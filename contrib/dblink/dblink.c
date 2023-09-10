@@ -203,7 +203,7 @@ dblink_get_conn(char *conname_or_str,
 		dblink_connstr_check(connstr);
 
 		/* OK to make connection */
-		conn = libpqsrv_connect(connstr, PG_WAIT_EXTENSION);
+		conn = libpqsrv_connect(connstr, WAIT_EVENT_EXTENSION);
 
 		if (PQstatus(conn) == CONNECTION_BAD)
 		{
@@ -293,7 +293,7 @@ dblink_connect(PG_FUNCTION_ARGS)
 	dblink_connstr_check(connstr);
 
 	/* OK to make connection */
-	conn = libpqsrv_connect(connstr, PG_WAIT_EXTENSION);
+	conn = libpqsrv_connect(connstr, WAIT_EVENT_EXTENSION);
 
 	if (PQstatus(conn) == CONNECTION_BAD)
 	{
@@ -1287,7 +1287,7 @@ dblink_get_connections(PG_FUNCTION_ARGS)
 
 	if (astate)
 		PG_RETURN_DATUM(makeArrayResult(astate,
-											  CurrentMemoryContext));
+										CurrentMemoryContext));
 	else
 		PG_RETURN_NULL();
 }
@@ -2604,7 +2604,7 @@ dblink_security_check(PGconn *conn, remoteConn *rconn, const char *connstr)
 
 #ifdef ENABLE_GSS
 	/* If GSSAPI creds used to connect, make sure it was one delegated */
-	if (PQconnectionUsedGSSAPI(conn) && be_gssapi_get_deleg(MyProcPort))
+	if (PQconnectionUsedGSSAPI(conn) && be_gssapi_get_delegation(MyProcPort))
 		return;
 #endif
 
@@ -2671,7 +2671,7 @@ dblink_connstr_check(const char *connstr)
 		return;
 
 #ifdef ENABLE_GSS
-	if (be_gssapi_get_deleg(MyProcPort))
+	if (be_gssapi_get_delegation(MyProcPort))
 		return;
 #endif
 

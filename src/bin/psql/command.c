@@ -162,7 +162,7 @@ static bool do_connect(enum trivalue reuse_previous_specification,
 static bool do_edit(const char *filename_arg, PQExpBuffer query_buf,
 					int lineno, bool discard_on_quit, bool *edited);
 static bool do_shell(const char *command);
-static bool do_watch(PQExpBuffer query_buf, double sleep, int iter);
+static bool do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows);
 static bool lookup_object_oid(EditableObjectType obj_type, const char *desc,
 							  Oid *obj_oid);
 static bool get_create_object_cmd(EditableObjectType obj_type, Oid oid,
@@ -918,6 +918,8 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 
 					free(pattern2);
 				}
+				else if (cmd[2] == 'g')
+					success = describeRoleGrants(pattern, show_system);
 				else
 					status = PSQL_CMD_UNKNOWN;
 				break;
@@ -2773,13 +2775,15 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 	{
 		bool		have_sleep = false;
 		bool		have_iter = false;
+		bool		have_min_rows = false;
 		double		sleep = 2;
 		int			iter = 0;
+		int			min_rows = 0;
 
 		/*
 		 * Parse arguments.  We allow either an unlabeled interval or
 		 * "name=value", where name is from the set ('i', 'interval', 'c',
-		 * 'count').
+		 * 'count', 'm', 'min_rows').
 		 */
 		while (success)
 		{
@@ -2836,6 +2840,26 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 						}
 					}
 				}
+				else if (strncmp("m=", opt, strlen("m=")) == 0 ||
+						 strncmp("min_rows=", opt, strlen("min_rows=")) == 0)
+				{
+					if (have_min_rows)
+					{
+						pg_log_error("\\watch: minimum row count specified more than once");
+						success = false;
+					}
+					else
+					{
+						have_min_rows = true;
+						errno = 0;
+						min_rows = strtoint(valptr, &opt_end, 10);
+						if (min_rows <= 0 || *opt_end || errno == ERANGE)
+						{
+							pg_log_error("\\watch: incorrect minimum row count \"%s\"", valptr);
+							success = false;
+						}
+					}
+				}
 				else
 				{
 					pg_log_error("\\watch: unrecognized parameter \"%s\"", opt);
@@ -2872,7 +2896,7 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 			/* If query_buf is empty, recall and execute previous query */
 			(void) copy_previous_query(query_buf, previous_buf);
 
-			success = do_watch(query_buf, sleep, iter);
+			success = do_watch(query_buf, sleep, iter, min_rows);
 		}
 
 		/* Reset the query buffer as though for \r */
@@ -4511,7 +4535,7 @@ do_pset(const char *param, const char *value, printQueryOpt *popt, bool quiet)
 	/* header line width in expanded mode */
 	else if (strcmp(param, "xheader_width") == 0)
 	{
-		if (! value)
+		if (!value)
 			;
 		else if (pg_strcasecmp(value, "full") == 0)
 			popt->topt.expanded_header_width_type = PRINT_XHEADER_FULL;
@@ -4521,13 +4545,16 @@ do_pset(const char *param, const char *value, printQueryOpt *popt, bool quiet)
 			popt->topt.expanded_header_width_type = PRINT_XHEADER_PAGE;
 		else
 		{
-			popt->topt.expanded_header_width_type = PRINT_XHEADER_EXACT_WIDTH;
-			popt->topt.expanded_header_exact_width = atoi(value);
-			if (popt->topt.expanded_header_exact_width == 0)
+			int			intval = atoi(value);
+
+			if (intval == 0)
 			{
-				pg_log_error("\\pset: allowed xheader_width values are full (default), column, page, or a number specifying the exact width.");
+				pg_log_error("\\pset: allowed xheader_width values are \"%s\" (default), \"%s\", \"%s\", or a number specifying the exact width", "full", "column", "page");
 				return false;
 			}
+
+			popt->topt.expanded_header_width_type = PRINT_XHEADER_EXACT_WIDTH;
+			popt->topt.expanded_header_exact_width = intval;
 		}
 	}
 
@@ -4660,8 +4687,9 @@ do_pset(const char *param, const char *value, printQueryOpt *popt, bool quiet)
 	/* set minimum lines for pager use */
 	else if (strcmp(param, "pager_min_lines") == 0)
 	{
-		if (value)
-			popt->topt.pager_min_lines = atoi(value);
+		if (value &&
+			!ParseVariableNum(value, "pager_min_lines", &popt->topt.pager_min_lines))
+			return false;
 	}
 
 	/* disable "(x rows)" footer */
@@ -4727,11 +4755,11 @@ printPsetInfo(const char *param, printQueryOpt *popt)
 	else if (strcmp(param, "xheader_width") == 0)
 	{
 		if (popt->topt.expanded_header_width_type == PRINT_XHEADER_FULL)
-			printf(_("Expanded header width is 'full'.\n"));
+			printf(_("Expanded header width is \"%s\".\n"), "full");
 		else if (popt->topt.expanded_header_width_type == PRINT_XHEADER_COLUMN)
-			printf(_("Expanded header width is 'column'.\n"));
+			printf(_("Expanded header width is \"%s\".\n"), "column");
 		else if (popt->topt.expanded_header_width_type == PRINT_XHEADER_PAGE)
-			printf(_("Expanded header width is 'page'.\n"));
+			printf(_("Expanded header width is \"%s\".\n"), "page");
 		else if (popt->topt.expanded_header_width_type == PRINT_XHEADER_EXACT_WIDTH)
 			printf(_("Expanded header width is %d.\n"), popt->topt.expanded_header_exact_width);
 	}
@@ -5059,15 +5087,16 @@ pset_value_string(const char *param, printQueryOpt *popt)
 	else if (strcmp(param, "xheader_width") == 0)
 	{
 		if (popt->topt.expanded_header_width_type == PRINT_XHEADER_FULL)
-			return(pstrdup("full"));
+			return pstrdup("full");
 		else if (popt->topt.expanded_header_width_type == PRINT_XHEADER_COLUMN)
-			return(pstrdup("column"));
+			return pstrdup("column");
 		else if (popt->topt.expanded_header_width_type == PRINT_XHEADER_PAGE)
-			return(pstrdup("page"));
+			return pstrdup("page");
 		else
 		{
 			/* must be PRINT_XHEADER_EXACT_WIDTH */
-			char wbuff[32];
+			char		wbuff[32];
+
 			snprintf(wbuff, sizeof(wbuff), "%d",
 					 popt->topt.expanded_header_exact_width);
 			return pstrdup(wbuff);
@@ -5137,7 +5166,7 @@ do_shell(const char *command)
  * onto a bunch of exec_command's variables to silence stupider compilers.
  */
 static bool
-do_watch(PQExpBuffer query_buf, double sleep, int iter)
+do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
 {
 	long		sleep_ms = (long) (sleep * 1000);
 	printQueryOpt myopt = pset.popt;
@@ -5197,14 +5226,20 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter)
 
 	/*
 	 * For \watch, we ignore the size of the result and always use the pager
-	 * if PSQL_WATCH_PAGER is set.  We also ignore the regular PSQL_PAGER or
-	 * PAGER environment variables, because traditional pagers probably won't
-	 * be very useful for showing a stream of results.
+	 * as long as we're talking to a terminal and "\pset pager" is enabled.
+	 * However, we'll only use the pager identified by PSQL_WATCH_PAGER.  We
+	 * ignore the regular PSQL_PAGER or PAGER environment variables, because
+	 * traditional pagers probably won't be very useful for showing a stream
+	 * of results.
 	 */
 #ifndef WIN32
 	pagerprog = getenv("PSQL_WATCH_PAGER");
+	/* if variable is empty or all-white-space, don't use pager */
+	if (pagerprog && strspn(pagerprog, " \t\r\n") == strlen(pagerprog))
+		pagerprog = NULL;
 #endif
-	if (pagerprog && myopt.topt.pager)
+	if (pagerprog && myopt.topt.pager &&
+		isatty(fileno(stdin)) && isatty(fileno(stdout)))
 	{
 		fflush(NULL);
 		disable_sigpipe_trap();
@@ -5261,7 +5296,7 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter)
 		myopt.title = title;
 
 		/* Run the query and print out the result */
-		res = PSQLexecWatch(query_buf->data, &myopt, pagerpipe);
+		res = PSQLexecWatch(query_buf->data, &myopt, pagerpipe, min_rows);
 
 		/*
 		 * PSQLexecWatch handles the case where we can no longer repeat the
@@ -5382,16 +5417,16 @@ echo_hidden_command(const char *query)
 {
 	if (pset.echo_hidden != PSQL_ECHO_HIDDEN_OFF)
 	{
-		printf(_("********* QUERY **********\n"
+		printf(_("/******** QUERY *********/\n"
 				 "%s\n"
-				 "**************************\n\n"), query);
+				 "/************************/\n\n"), query);
 		fflush(stdout);
 		if (pset.logfile)
 		{
 			fprintf(pset.logfile,
-					_("********* QUERY **********\n"
+					_("/******** QUERY *********/\n"
 					  "%s\n"
-					  "**************************\n\n"), query);
+					  "/************************/\n\n"), query);
 			fflush(pset.logfile);
 		}
 

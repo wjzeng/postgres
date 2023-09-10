@@ -831,8 +831,6 @@ be_tls_write(Port *port, void *ptr, size_t len, int *waitfor)
  *
  * These functions are closely modelled on the standard socket BIO in OpenSSL;
  * see sock_read() and sock_write() in OpenSSL's crypto/bio/bss_sock.c.
- * XXX OpenSSL 1.0.1e considers many more errcodes than just EINTR as reasons
- * to retry; do we need to adopt their logic for that?
  */
 
 #ifndef HAVE_BIO_GET_DATA
@@ -1025,7 +1023,7 @@ load_dh_file(char *filename, bool isServerStart)
  *	Load hardcoded DH parameters.
  *
  *	If DH parameters cannot be loaded from a specified file, we can load
- *	the	hardcoded DH parameters supplied with the backend to prevent
+ *	the hardcoded DH parameters supplied with the backend to prevent
  *	problems.
  */
 static DH  *
@@ -1104,8 +1102,8 @@ prepare_cert_name(char *name)
 	if (namelen > MAXLEN)
 	{
 		/*
-		 * Keep the end of the name, not the beginning, since the most specific
-		 * field is likely to give users the most information.
+		 * Keep the end of the name, not the beginning, since the most
+		 * specific field is likely to give users the most information.
 		 */
 		truncated = name + namelen - MAXLEN;
 		truncated[0] = truncated[1] = truncated[2] = '.';
@@ -1165,8 +1163,8 @@ verify_cb(int ok, X509_STORE_CTX *ctx)
 
 		/*
 		 * Get the Subject and Issuer for logging, but don't let maliciously
-		 * huge certs flood the logs, and don't reflect non-ASCII bytes into it
-		 * either.
+		 * huge certs flood the logs, and don't reflect non-ASCII bytes into
+		 * it either.
 		 */
 		subject = X509_NAME_to_cstring(X509_get_subject_name(cert));
 		sub_prepared = prepare_cert_name(subject);
@@ -1429,7 +1427,6 @@ be_tls_get_peer_serial(Port *port, char *ptr, size_t len)
 		ptr[0] = '\0';
 }
 
-#if defined(HAVE_X509_GET_SIGNATURE_NID) || defined(HAVE_X509_GET_SIGNATURE_INFO)
 char *
 be_tls_get_certificate_hash(Port *port, size_t *len)
 {
@@ -1488,7 +1485,6 @@ be_tls_get_certificate_hash(Port *port, size_t *len)
 
 	return cert_hash;
 }
-#endif
 
 /*
  * Convert an X509 subject name to a cstring.

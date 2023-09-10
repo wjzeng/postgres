@@ -148,6 +148,7 @@ static bool verify_checksums = true;
 static bool manifest = true;
 static bool manifest_force_encode = false;
 static char *manifest_checksums = NULL;
+static DataDirSyncMethod sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
 
 static bool success = false;
 static bool made_new_pgdata = false;
@@ -341,18 +342,18 @@ tablespace_list_append(const char *arg)
 
 	/*
 	 * All tablespaces are created with absolute directories, so specifying a
-	 * non-absolute path here would just never match, possibly confusing users.
-	 * Since we don't know whether the remote side is Windows or not, and it
-	 * might be different than the local side, permit any path that could be
-	 * absolute under either set of rules.
+	 * non-absolute path here would just never match, possibly confusing
+	 * users. Since we don't know whether the remote side is Windows or not,
+	 * and it might be different than the local side, permit any path that
+	 * could be absolute under either set of rules.
 	 *
 	 * (There is little practical risk of confusion here, because someone
 	 * running entirely on Linux isn't likely to have a relative path that
 	 * begins with a backslash or something that looks like a drive
-	 * specification. If they do, and they also incorrectly believe that
-	 * a relative path is acceptable here, we'll silently fail to warn them
-	 * of their mistake, and the -T option will just not get applied, same
-	 * as if they'd specified -T for a nonexistent tablespace.)
+	 * specification. If they do, and they also incorrectly believe that a
+	 * relative path is acceptable here, we'll silently fail to warn them of
+	 * their mistake, and the -T option will just not get applied, same as if
+	 * they'd specified -T for a nonexistent tablespace.)
 	 */
 	if (!is_nonwindows_absolute_path(cell->old_dir) &&
 		!is_windows_absolute_path(cell->old_dir))
@@ -424,6 +425,8 @@ usage(void)
 	printf(_("      --no-slot          prevent creation of temporary replication slot\n"));
 	printf(_("      --no-verify-checksums\n"
 			 "                         do not verify checksums\n"));
+	printf(_("      --sync-method=METHOD\n"
+			 "                         set method for syncing files to disk\n"));
 	printf(_("  -?, --help             show this help, then exit\n"));
 	printf(_("\nConnection options:\n"));
 	printf(_("  -d, --dbname=CONNSTR   connection string\n"));
@@ -651,7 +654,8 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier,
 	 * Create replication slot if requested
 	 */
 	if (temp_replication_slot && !replication_slot)
-		replication_slot = psprintf("pg_basebackup_%d", (int) PQbackendPID(param->bgconn));
+		replication_slot = psprintf("pg_basebackup_%u",
+									(unsigned int) PQbackendPID(param->bgconn));
 	if (temp_replication_slot || create_slot)
 	{
 		if (!CreateReplicationSlot(param->bgconn, replication_slot, NULL,
@@ -2199,11 +2203,11 @@ BaseBackup(char *compression_algorithm, char *compression_detail,
 		if (format == 't')
 		{
 			if (strcmp(basedir, "-") != 0)
-				(void) fsync_dir_recurse(basedir);
+				(void) sync_dir_recurse(basedir, sync_method);
 		}
 		else
 		{
-			(void) fsync_pgdata(basedir, serverVersion);
+			(void) sync_pgdata(basedir, serverVersion, sync_method);
 		}
 	}
 
@@ -2281,6 +2285,7 @@ main(int argc, char **argv)
 		{"no-manifest", no_argument, NULL, 5},
 		{"manifest-force-encode", no_argument, NULL, 6},
 		{"manifest-checksums", required_argument, NULL, 7},
+		{"sync-method", required_argument, NULL, 8},
 		{NULL, 0, NULL, 0}
 	};
 	int			c;
@@ -2451,6 +2456,10 @@ main(int argc, char **argv)
 				break;
 			case 7:
 				manifest_checksums = pg_strdup(optarg);
+				break;
+			case 8:
+				if (!parse_sync_method(optarg, &sync_method))
+					exit(1);
 				break;
 			default:
 				/* getopt_long already emitted a complaint */

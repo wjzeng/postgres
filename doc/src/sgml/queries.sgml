@@ -392,7 +392,7 @@ FROM <replaceable>table_reference</replaceable> <optional>, <replaceable>table_r
         input tables.  As with <literal>USING</literal>, these columns appear
         only once in the output table.  If there are no common
         column names, <literal>NATURAL JOIN</literal> behaves like
-        <literal>JOIN ... ON TRUE</literal>, producing a cross-product join.
+        <literal>CROSS JOIN</literal>.
        </para>
 
        <note>
@@ -864,7 +864,7 @@ ORDER BY p;
     </para>
 
     <para>
-     A <literal>LATERAL</literal> item can appear at top level in the
+     A <literal>LATERAL</literal> item can appear at the top level in the
      <literal>FROM</literal> list, or within a <literal>JOIN</literal> tree.  In the latter
      case it can also refer to any items that are on the left-hand side of a
      <literal>JOIN</literal> that it is on the right-hand side of.
@@ -1362,7 +1362,7 @@ GROUPING SETS (
 
    <para>
     If multiple grouping items are specified in a single <literal>GROUP BY</literal>
-    clause, then the final list of grouping sets is the cross product of the
+    clause, then the final list of grouping sets is the Cartesian product of the
     individual items.  For example:
 <programlisting>
 GROUP BY a, CUBE (b, c), GROUPING SETS ((d), (e))

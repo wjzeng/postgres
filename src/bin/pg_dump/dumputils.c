@@ -463,7 +463,6 @@ do { \
 				CONVERT_PRIV('d', "DELETE");
 				CONVERT_PRIV('t', "TRIGGER");
 				CONVERT_PRIV('D', "TRUNCATE");
-				CONVERT_PRIV('m', "MAINTAIN");
 			}
 		}
 
@@ -821,7 +820,6 @@ SplitGUCList(char *rawstring, char separator,
  */
 void
 makeAlterConfigCommand(PGconn *conn, const char *configitem,
-					   const char *userset,
 					   const char *type, const char *name,
 					   const char *type2, const char *name2,
 					   PQExpBuffer buf)
@@ -879,10 +877,6 @@ makeAlterConfigCommand(PGconn *conn, const char *configitem,
 	}
 	else
 		appendStringLiteralConn(buf, pos, conn);
-
-	/* Add USER SET flag if specified in the string */
-	if (userset && !strcmp(userset, "t"))
-		appendPQExpBufferStr(buf, " USER SET");
 
 	appendPQExpBufferStr(buf, ";\n");
 

@@ -16,6 +16,7 @@ use Test::More;
 my $tempdir = PostgreSQL::Test::Utils::tempdir;
 my $xlogdir = "$tempdir/pgxlog";
 my $datadir = "$tempdir/data";
+my $supports_syncfs = check_pg_config("#define HAVE_SYNCFS 1");
 
 program_help_ok('initdb');
 program_version_ok('initdb');
@@ -82,6 +83,17 @@ command_fails([ 'pg_checksums', '-D', $datadir ],
 command_ok([ 'initdb', '-S', $datadir ], 'sync only');
 command_fails([ 'initdb', $datadir ], 'existing data directory');
 
+if ($supports_syncfs)
+{
+	command_ok([ 'initdb', '-S', $datadir, '--sync-method', 'syncfs' ],
+		'sync method syncfs');
+}
+else
+{
+	command_fails([ 'initdb', '-S', $datadir, '--sync-method', 'syncfs' ],
+		'sync method syncfs');
+}
+
 # Check group access on PGDATA
 SKIP:
 {
@@ -103,17 +115,35 @@ SKIP:
 
 if ($ENV{with_icu} eq 'yes')
 {
+	command_fails_like(
+		[ 'initdb', '--no-sync', '--locale-provider=icu', "$tempdir/data2" ],
+		qr/initdb: error: ICU locale must be specified/,
+		'locale provider ICU requires --icu-locale');
+
 	command_ok(
 		[
-			'initdb',                '--no-sync',
+			'initdb', '--no-sync',
 			'--locale-provider=icu', '--icu-locale=en',
 			"$tempdir/data3"
 		],
 		'option --icu-locale');
 
+	command_like(
+		[
+			'initdb', '--no-sync',
+			'-A', 'trust',
+			'--locale-provider=icu', '--locale=und',
+			'--lc-collate=C', '--lc-ctype=C',
+			'--lc-messages=C', '--lc-numeric=C',
+			'--lc-monetary=C', '--lc-time=C',
+			"$tempdir/data4"
+		],
+		qr/^\s+ICU locale:\s+und\n/ms,
+		'options --locale-provider=icu --locale=und --lc-*=C');
+
 	command_fails_like(
 		[
-			'initdb',                '--no-sync',
+			'initdb', '--no-sync',
 			'--locale-provider=icu', '--icu-locale=@colNumeric=lower',
 			"$tempdir/dataX"
 		],
@@ -122,7 +152,7 @@ if ($ENV{with_icu} eq 'yes')
 
 	command_fails_like(
 		[
-			'initdb',                '--no-sync',
+			'initdb', '--no-sync',
 			'--locale-provider=icu', '--encoding=SQL_ASCII',
 			'--icu-locale=en', "$tempdir/dataX"
 		],
@@ -131,18 +161,18 @@ if ($ENV{with_icu} eq 'yes')
 
 	command_fails_like(
 		[
-			'initdb',                '--no-sync',
-			'--locale-provider=icu',
-			'--icu-locale=nonsense-nowhere', "$tempdir/dataX"
+			'initdb', '--no-sync',
+			'--locale-provider=icu', '--icu-locale=nonsense-nowhere',
+			"$tempdir/dataX"
 		],
 		qr/error: locale "nonsense-nowhere" has unknown language "nonsense"/,
 		'fails for nonsense language');
 
 	command_fails_like(
 		[
-			'initdb',                '--no-sync',
-			'--locale-provider=icu',
-			'--icu-locale=@colNumeric=lower', "$tempdir/dataX"
+			'initdb', '--no-sync',
+			'--locale-provider=icu', '--icu-locale=@colNumeric=lower',
+			"$tempdir/dataX"
 		],
 		qr/could not open collator for locale "und-u-kn-lower": U_ILLEGAL_ARGUMENT_ERROR/,
 		'fails for invalid collation argument');
@@ -160,7 +190,7 @@ command_fails(
 
 command_fails(
 	[
-		'initdb',                 '--no-sync',
+		'initdb', '--no-sync',
 		'--locale-provider=libc', '--icu-locale=en',
 		"$tempdir/dataX"
 	],

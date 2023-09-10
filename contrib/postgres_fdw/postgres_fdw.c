@@ -524,7 +524,7 @@ static List *get_useful_pathkeys_for_relation(PlannerInfo *root,
 											  RelOptInfo *rel);
 static List *get_useful_ecs_for_relation(PlannerInfo *root, RelOptInfo *rel);
 static void add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel,
-											Path *epq_path);
+											Path *epq_path, List *restrictlist);
 static void add_foreign_grouping_paths(PlannerInfo *root,
 									   RelOptInfo *input_rel,
 									   RelOptInfo *grouped_rel,
@@ -1034,11 +1034,12 @@ postgresGetForeignPaths(PlannerInfo *root,
 								   NIL, /* no pathkeys */
 								   baserel->lateral_relids,
 								   NULL,	/* no extra plan */
+								   NIL, /* no fdw_restrictinfo list */
 								   NIL);	/* no fdw_private list */
 	add_path(baserel, (Path *) path);
 
 	/* Add paths with pathkeys */
-	add_paths_with_pathkeys_for_rel(root, baserel, NULL);
+	add_paths_with_pathkeys_for_rel(root, baserel, NULL, NIL);
 
 	/*
 	 * If we're not using remote estimates, stop here.  We have no way to
@@ -1206,6 +1207,7 @@ postgresGetForeignPaths(PlannerInfo *root,
 									   NIL, /* no pathkeys */
 									   param_info->ppi_req_outer,
 									   NULL,
+									   NIL, /* no fdw_restrictinfo list */
 									   NIL);	/* no fdw_private list */
 		add_path(baserel, (Path *) path);
 	}
@@ -2024,9 +2026,8 @@ postgresGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
 
 	/*
 	 * Should never get called when the insert is being performed on a table
-	 * that is also among the target relations of an UPDATE operation,
-	 * because postgresBeginForeignInsert() currently rejects such insert
-	 * attempts.
+	 * that is also among the target relations of an UPDATE operation, because
+	 * postgresBeginForeignInsert() currently rejects such insert attempts.
 	 */
 	Assert(fmstate == NULL || fmstate->aux_fmstate == NULL);
 
@@ -5167,15 +5168,15 @@ postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 	 */
 	if (method != ANALYZE_SAMPLE_OFF)
 	{
-		bool	can_tablesample;
+		bool		can_tablesample;
 
 		reltuples = postgresGetAnalyzeInfoForForeignTable(relation,
 														  &can_tablesample);
 
 		/*
-		 * Make sure we're not choosing TABLESAMPLE when the remote relation does
-		 * not support that. But only do this for "auto" - if the user explicitly
-		 * requested BERNOULLI/SYSTEM, it's better to fail.
+		 * Make sure we're not choosing TABLESAMPLE when the remote relation
+		 * does not support that. But only do this for "auto" - if the user
+		 * explicitly requested BERNOULLI/SYSTEM, it's better to fail.
 		 */
 		if (!can_tablesample && (method == ANALYZE_SAMPLE_AUTO))
 			method = ANALYZE_SAMPLE_RANDOM;
@@ -5189,35 +5190,35 @@ postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 		else
 		{
 			/*
-			 * All supported sampling methods require sampling rate,
-			 * not target rows directly, so we calculate that using
-			 * the remote reltuples value. That's imperfect, because
-			 * it might be off a good deal, but that's not something
-			 * we can (or should) address here.
+			 * All supported sampling methods require sampling rate, not
+			 * target rows directly, so we calculate that using the remote
+			 * reltuples value. That's imperfect, because it might be off a
+			 * good deal, but that's not something we can (or should) address
+			 * here.
 			 *
-			 * If reltuples is too low (i.e. when table grew), we'll
-			 * end up sampling more rows - but then we'll apply the
-			 * local sampling, so we get the expected sample size.
-			 * This is the same outcome as without remote sampling.
+			 * If reltuples is too low (i.e. when table grew), we'll end up
+			 * sampling more rows - but then we'll apply the local sampling,
+			 * so we get the expected sample size. This is the same outcome as
+			 * without remote sampling.
 			 *
-			 * If reltuples is too high (e.g. after bulk DELETE), we
-			 * will end up sampling too few rows.
+			 * If reltuples is too high (e.g. after bulk DELETE), we will end
+			 * up sampling too few rows.
 			 *
-			 * We can't really do much better here - we could try
-			 * sampling a bit more rows, but we don't know how off
-			 * the reltuples value is so how much is "a bit more"?
+			 * We can't really do much better here - we could try sampling a
+			 * bit more rows, but we don't know how off the reltuples value is
+			 * so how much is "a bit more"?
 			 *
-			 * Furthermore, the targrows value for partitions is
-			 * determined based on table size (relpages), which can
-			 * be off in different ways too. Adjusting the sampling
-			 * rate here might make the issue worse.
+			 * Furthermore, the targrows value for partitions is determined
+			 * based on table size (relpages), which can be off in different
+			 * ways too. Adjusting the sampling rate here might make the issue
+			 * worse.
 			 */
 			sample_frac = targrows / reltuples;
 
 			/*
 			 * We should never get sampling rate outside the valid range
-			 * (between 0.0 and 1.0), because those cases should be covered
-			 * by the previous branch that sets ANALYZE_SAMPLE_OFF.
+			 * (between 0.0 and 1.0), because those cases should be covered by
+			 * the previous branch that sets ANALYZE_SAMPLE_OFF.
 			 */
 			Assert(sample_frac >= 0.0 && sample_frac <= 1.0);
 		}
@@ -5992,7 +5993,7 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 
 static void
 add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel,
-								Path *epq_path)
+								Path *epq_path, List *restrictlist)
 {
 	List	   *useful_pathkeys_list = NIL; /* List of all pathkeys */
 	ListCell   *lc;
@@ -6086,6 +6087,8 @@ add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel,
 											 useful_pathkeys,
 											 rel->lateral_relids,
 											 sorted_epq_path,
+											 NIL,	/* no fdw_restrictinfo
+													 * list */
 											 NIL));
 		else
 			add_path(rel, (Path *)
@@ -6097,6 +6100,7 @@ add_paths_with_pathkeys_for_rel(PlannerInfo *root, RelOptInfo *rel,
 											  useful_pathkeys,
 											  rel->lateral_relids,
 											  sorted_epq_path,
+											  restrictlist,
 											  NIL));
 	}
 }
@@ -6349,13 +6353,15 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 										NIL,	/* no pathkeys */
 										joinrel->lateral_relids,
 										epq_path,
+										extra->restrictlist,
 										NIL);	/* no fdw_private */
 
 	/* Add generated path into joinrel by add_path(). */
 	add_path(joinrel, (Path *) joinpath);
 
 	/* Consider pathkeys for the join relation */
-	add_paths_with_pathkeys_for_rel(root, joinrel, epq_path);
+	add_paths_with_pathkeys_for_rel(root, joinrel, epq_path,
+									extra->restrictlist);
 
 	/* XXX Consider parameterized paths for the join relation */
 }
@@ -6522,8 +6528,11 @@ foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 									  expr,
 									  true,
 									  false,
+									  false,
+									  false,
 									  root->qual_security_level,
 									  grouped_rel->relids,
+									  NULL,
 									  NULL);
 			if (is_foreign_expr(root, grouped_rel, expr))
 				fpinfo->remote_conds = lappend(fpinfo->remote_conds, rinfo);
@@ -6733,6 +6742,7 @@ add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 										  total_cost,
 										  NIL,	/* no pathkeys */
 										  NULL,
+										  NIL,	/* no fdw_restrictinfo list */
 										  NIL); /* no fdw_private */
 
 	/* Add generated path into grouped_rel by add_path(). */
@@ -6866,6 +6876,8 @@ add_foreign_ordered_paths(PlannerInfo *root, RelOptInfo *input_rel,
 											 total_cost,
 											 root->sort_pathkeys,
 											 NULL,	/* no extra plan */
+											 NIL,	/* no fdw_restrictinfo
+													 * list */
 											 fdw_private);
 
 	/* and add it to the ordered_rel */
@@ -6981,7 +6993,9 @@ add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 													   path->total_cost,
 													   path->pathkeys,
 													   NULL,	/* no extra plan */
-													   NULL);	/* no fdw_private */
+													   NIL, /* no fdw_restrictinfo
+															 * list */
+													   NIL);	/* no fdw_private */
 
 				/* and add it to the final_rel */
 				add_path(final_rel, (Path *) final_path);
@@ -7101,6 +7115,7 @@ add_foreign_final_paths(PlannerInfo *root, RelOptInfo *input_rel,
 										   total_cost,
 										   pathkeys,
 										   NULL,	/* no extra plan */
+										   NIL, /* no fdw_restrictinfo list */
 										   fdw_private);
 
 	/* and add it to the final_rel */

@@ -20,7 +20,7 @@ pgport_sources = [
   'snprintf.c',
   'strerror.c',
   'tar.c',
-  'thread.c',
+  'user.c',
 ]
 
 if host_system == 'windows'
@@ -91,6 +91,9 @@ replace_funcs_pos = [
   ['pg_crc32c_armv8', 'USE_ARMV8_CRC32C_WITH_RUNTIME_CHECK', 'crc'],
   ['pg_crc32c_armv8_choose', 'USE_ARMV8_CRC32C_WITH_RUNTIME_CHECK'],
   ['pg_crc32c_sb8', 'USE_ARMV8_CRC32C_WITH_RUNTIME_CHECK'],
+
+  # loongarch
+  ['pg_crc32c_loongarch', 'USE_LOONGARCH_CRC32C'],
 
   # generic fallback
   ['pg_crc32c_sb8', 'USE_SLICING_BY_8_CRC32C'],
@@ -192,3 +195,6 @@ endforeach
 pgport_srv = pgport['_srv']
 pgport_static = pgport['']
 pgport_shlib = pgport['_shlib']
+
+# autoconf generates the file there, ensure we get a conflict
+generated_sources_ac += {'src/port': ['pg_config_paths.h']}

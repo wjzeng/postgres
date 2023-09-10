@@ -41,10 +41,15 @@
  * transactions we need Snapshots that see intermediate versions of the
  * catalog in a transaction. During normal operation this is achieved by using
  * CommandIds/cmin/cmax. The problem with that however is that for space
- * efficiency reasons only one value of that is stored
- * (cf. combocid.c). Since combo CIDs are only available in memory we log
- * additional information which allows us to get the original (cmin, cmax)
- * pair during visibility checks. Check the reorderbuffer.c's comment above
+ * efficiency reasons, the cmin and cmax are not included in WAL records. We
+ * cannot read the cmin/cmax from the tuple itself, either, because it is
+ * reset on crash recovery. Even if we could, we could not decode combocids
+ * which are only tracked in the original backend's memory. To work around
+ * that, heapam writes an extra WAL record (XLOG_HEAP2_NEW_CID) every time a
+ * catalog row is modified, which includes the cmin and cmax of the
+ * tuple. During decoding, we insert the ctid->(cmin,cmax) mappings into the
+ * reorder buffer, and use them at visibility checks instead of the cmin/cmax
+ * on the tuple itself. Check the reorderbuffer.c's comment above
  * ResolveCminCmaxDuringDecoding() for details.
  *
  * To facilitate all this we need our own visibility routine, as the normal
@@ -574,7 +579,7 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	Assert(builder->building_full_snapshot);
 
 	/* don't allow older snapshots */
-	InvalidateCatalogSnapshot(); /* about to overwrite MyProc->xmin */
+	InvalidateCatalogSnapshot();	/* about to overwrite MyProc->xmin */
 	if (HaveRegisteredOrActiveSnapshot())
 		elog(ERROR, "cannot build an initial slot snapshot when snapshots exist");
 	Assert(!HistoricSnapshotActive());
@@ -1338,8 +1343,8 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 	 */
 
 	/*
-	 * xl_running_xacts record is older than what we can use, we might not have
-	 * all necessary catalog rows anymore.
+	 * xl_running_xacts record is older than what we can use, we might not
+	 * have all necessary catalog rows anymore.
 	 */
 	if (TransactionIdIsNormal(builder->initial_xmin_horizon) &&
 		NormalTransactionIdPrecedes(running->oldestRunningXid,
@@ -1950,8 +1955,12 @@ SnapBuildRestore(SnapBuild *builder, XLogRecPtr lsn)
 	if (TransactionIdPrecedes(ondisk.builder.xmin, builder->initial_xmin_horizon))
 		goto snapshot_not_interesting;
 
-	/* consistent snapshots have no next phase */
+	/*
+	 * Consistent snapshots have no next phase. Reset next_phase_at as it is
+	 * possible that an old value may remain.
+	 */
 	Assert(ondisk.builder.next_phase_at == InvalidTransactionId);
+	builder->next_phase_at = InvalidTransactionId;
 
 	/* ok, we think the snapshot is sensible, copy over everything important */
 	builder->xmin = ondisk.builder.xmin;
@@ -2030,7 +2039,7 @@ SnapBuildRestoreContents(int fd, char *dest, Size size, const char *path)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("could not read file \"%s\": read %d of %zu",
-							path, readBytes, sizeof(SnapBuild))));
+							path, readBytes, size)));
 	}
 }
 

@@ -840,7 +840,7 @@ ResolveRecoveryConflictWithBufferPin(void)
 	 * SIGHUP signal handler, etc cannot do that because it uses the different
 	 * latch from that ProcWaitForSignal() waits on.
 	 */
-	ProcWaitForSignal(PG_WAIT_BUFFER_PIN);
+	ProcWaitForSignal(WAIT_EVENT_BUFFER_PIN);
 
 	if (got_standby_delay_timeout)
 		SendRecoveryConflictWithBufferPin(PROCSIG_RECOVERY_CONFLICT_BUFFERPIN);
@@ -1193,6 +1193,15 @@ standby_redo(XLogReaderState *record)
 		running.xids = xlrec->xids;
 
 		ProcArrayApplyRecoveryInfo(&running);
+
+		/*
+		 * The startup process currently has no convenient way to schedule
+		 * stats to be reported. XLOG_RUNNING_XACTS records issued at a
+		 * regular cadence, making this a convenient location to report stats.
+		 * While these records aren't generated with wal_level=minimal, stats
+		 * also cannot be accessed during WAL replay.
+		 */
+		pgstat_report_stat(true);
 	}
 	else if (info == XLOG_INVALIDATIONS)
 	{
