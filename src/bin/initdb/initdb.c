@@ -76,6 +76,7 @@
 #include "common/restricted_token.h"
 #include "common/string.h"
 #include "common/username.h"
+#include "fe_utils/option_utils.h"
 #include "fe_utils/string_utils.h"
 #include "getopt_long.h"
 #include "mb/pg_wchar.h"
@@ -163,8 +164,8 @@ static bool sync_only = false;
 static bool show_setting = false;
 static bool data_checksums = false;
 static char *xlog_dir = NULL;
-static char *str_wal_segment_size_mb = NULL;
-static int	wal_segment_size_mb;
+static int	wal_segment_size_mb = (DEFAULT_XLOG_SEG_SIZE) / (1024 * 1024);
+static DataDirSyncMethod sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
 
 
 /* internal vars */
@@ -2466,6 +2467,7 @@ usage(const char *progname)
 	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
 	printf(_("      --no-instructions     do not print instructions for next steps\n"));
 	printf(_("  -s, --show                show internal settings\n"));
+	printf(_("      --sync-method=METHOD  set method for syncing files to disk\n"));
 	printf(_("  -S, --sync-only           only sync database files to disk, then exit\n"));
 	printf(_("\nOther options:\n"));
 	printf(_("  -V, --version             output version information, then exit\n"));
@@ -3106,6 +3108,7 @@ main(int argc, char *argv[])
 		{"locale-provider", required_argument, NULL, 15},
 		{"icu-locale", required_argument, NULL, 16},
 		{"icu-rules", required_argument, NULL, 17},
+		{"sync-method", required_argument, NULL, 18},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3258,7 +3261,8 @@ main(int argc, char *argv[])
 				xlog_dir = pg_strdup(optarg);
 				break;
 			case 12:
-				str_wal_segment_size_mb = pg_strdup(optarg);
+				if (!option_parse_int(optarg, "--wal-segsize", 1, 1024, &wal_segment_size_mb))
+					exit(1);
 				break;
 			case 13:
 				noinstructions = true;
@@ -3284,6 +3288,10 @@ main(int argc, char *argv[])
 				break;
 			case 17:
 				icu_rules = pg_strdup(optarg);
+				break;
+			case 18:
+				if (!parse_sync_method(optarg, &sync_method))
+					exit(1);
 				break;
 			default:
 				/* getopt_long already emitted a complaint */
@@ -3321,7 +3329,7 @@ main(int argc, char *argv[])
 
 	atexit(cleanup_directories_atexit);
 
-	/* If we only need to fsync, just do it and exit */
+	/* If we only need to sync, just do it and exit */
 	if (sync_only)
 	{
 		setup_pgdata();
@@ -3332,7 +3340,7 @@ main(int argc, char *argv[])
 
 		fputs(_("syncing data to disk ... "), stdout);
 		fflush(stdout);
-		fsync_pgdata(pg_data, PG_VERSION_NUM);
+		sync_pgdata(pg_data, PG_VERSION_NUM, sync_method);
 		check_ok();
 		return 0;
 	}
@@ -3348,22 +3356,8 @@ main(int argc, char *argv[])
 
 	check_need_password(authmethodlocal, authmethodhost);
 
-	/* set wal segment size */
-	if (str_wal_segment_size_mb == NULL)
-		wal_segment_size_mb = (DEFAULT_XLOG_SEG_SIZE) / (1024 * 1024);
-	else
-	{
-		char	   *endptr;
-
-		/* check that the argument is a number */
-		wal_segment_size_mb = strtol(str_wal_segment_size_mb, &endptr, 10);
-
-		/* verify that wal segment size is valid */
-		if (endptr == str_wal_segment_size_mb || *endptr != '\0')
-			pg_fatal("argument of --wal-segsize must be a number");
-		if (!IsValidWalSegSize(wal_segment_size_mb * 1024 * 1024))
-			pg_fatal("argument of --wal-segsize must be a power of 2 between 1 and 1024");
-	}
+	if (!IsValidWalSegSize(wal_segment_size_mb * 1024 * 1024))
+		pg_fatal("argument of %s must be a power of two between 1 and 1024", "--wal-segsize");
 
 	get_restricted_token();
 
@@ -3409,7 +3403,7 @@ main(int argc, char *argv[])
 	{
 		fputs(_("syncing data to disk ... "), stdout);
 		fflush(stdout);
-		fsync_pgdata(pg_data, PG_VERSION_NUM);
+		sync_pgdata(pg_data, PG_VERSION_NUM, sync_method);
 		check_ok();
 	}
 	else

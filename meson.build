@@ -1384,14 +1384,6 @@ if not zlibopt.disabled()
       args: test_c_args, include_directories: postgres_inc,
       dependencies: [zlib_t], required: zlibopt)
     warning('zlib header not found')
-  elif not cc.has_type('z_streamp',
-      dependencies: [zlib_t], prefix: '#include <zlib.h>',
-      args: test_c_args, include_directories: postgres_inc)
-    if zlibopt.enabled()
-      error('zlib version is too old')
-    else
-      warning('zlib version is too old')
-    endif
   else
     zlib = zlib_t
   endif
@@ -2073,6 +2065,30 @@ int main(void)
     cdata.set('USE_ARMV8_CRC32C_WITH_RUNTIME_CHECK', 1)
     have_optimized_crc = true
   endif
+
+elif host_cpu == 'loongarch64'
+
+  prog = '''
+int main(void)
+{
+    unsigned int crc = 0;
+    crc = __builtin_loongarch_crcc_w_b_w(0, crc);
+    crc = __builtin_loongarch_crcc_w_h_w(0, crc);
+    crc = __builtin_loongarch_crcc_w_w_w(0, crc);
+    crc = __builtin_loongarch_crcc_w_d_w(0, crc);
+
+    /* return computed value, to prevent the above being optimized away */
+    return crc == 0;
+}
+'''
+
+  if cc.links(prog, name: '__builtin_loongarch_crcc_w_b_w, __builtin_loongarch_crcc_w_h_w, __builtin_loongarch_crcc_w_w_w, and __builtin_loongarch_crcc_w_d_w',
+      args: test_c_args)
+    # Use LoongArch CRC instruction unconditionally
+    cdata.set('USE_LOONGARCH_CRC32C', 1)
+    have_optimized_crc = true
+  endif
+
 endif
 
 if not have_optimized_crc
@@ -2364,7 +2380,6 @@ rt_dep = cc.find_library('rt', required: false)
 dl_dep = cc.find_library('dl', required: false)
 
 util_dep = cc.find_library('util', required: false)
-posix4_dep = cc.find_library('posix4', required: false)
 
 getopt_dep = cc.find_library('getopt', required: false)
 gnugetopt_dep = cc.find_library('gnugetopt', required: false)
@@ -2398,14 +2413,13 @@ endif
 func_checks = [
   ['_configthreadlocale', {'skip': host_system != 'windows'}],
   ['backtrace_symbols', {'dependencies': [execinfo_dep]}],
-  ['clock_gettime', {'dependencies': [rt_dep, posix4_dep], 'define': false}],
+  ['clock_gettime', {'dependencies': [rt_dep], 'define': false}],
   ['copyfile'],
   # gcc/clang's sanitizer helper library provides dlopen but not dlsym, thus
   # when enabling asan the dlopen check doesn't notice that -ldl is actually
   # required. Just checking for dlsym() ought to suffice.
   ['dlsym', {'dependencies': [dl_dep], 'define': false}],
   ['explicit_bzero'],
-  ['fdatasync', {'dependencies': [rt_dep, posix4_dep], 'define': false}], # Solaris
   ['getifaddrs'],
   ['getopt', {'dependencies': [getopt_dep, gnugetopt_dep], 'skip': always_replace_getopt}],
   ['getopt_long', {'dependencies': [getopt_dep, gnugetopt_dep], 'skip': always_replace_getopt_long}],
@@ -3056,8 +3070,10 @@ testport = 40000
 test_env = environment()
 
 temp_install_bindir = test_install_location / get_option('bindir')
+test_initdb_template = meson.build_root() / 'tmp_install' / 'initdb-template'
 test_env.set('PG_REGRESS', pg_regress.full_path())
 test_env.set('REGRESS_SHLIB', regress_module.full_path())
+test_env.set('INITDB_TEMPLATE', test_initdb_template)
 
 # Test suites that are not safe by default but can be run if selected
 # by the user via the whitespace-separated list in variable PG_TEST_EXTRA.
@@ -3070,6 +3086,34 @@ test_env.set('PG_TEST_EXTRA', get_option('PG_TEST_EXTRA'))
 if library_path_var != ''
   test_env.prepend(library_path_var, test_install_location / get_option('libdir'))
 endif
+
+
+# Create (and remove old) initdb template directory. Tests use that, where
+# possible, to make it cheaper to run tests.
+#
+# Use python to remove the old cached initdb, as we cannot rely on a working
+# 'rm' binary on windows.
+test('initdb_cache',
+     python,
+     args: [
+       '-c', '''
+import shutil
+import sys
+import subprocess
+
+shutil.rmtree(sys.argv[1], ignore_errors=True)
+sp = subprocess.run(sys.argv[2:] + [sys.argv[1]])
+sys.exit(sp.returncode)
+''',
+       test_initdb_template,
+       temp_install_bindir / 'initdb',
+       '-A', 'trust', '-N', '--no-instructions', '--no-locale'
+     ],
+     priority: setup_tests_priority - 1,
+     timeout: 300,
+     is_parallel: false,
+     env: test_env,
+     suite: ['setup'])
 
 
 

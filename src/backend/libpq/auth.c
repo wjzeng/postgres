@@ -645,6 +645,22 @@ ClientAuthentication(Port *port)
 #endif
 	}
 
+	if (Log_connections && status == STATUS_OK &&
+		!MyClientConnectionInfo.authn_id)
+	{
+		/*
+		 * Normally, if log_connections is set, the call to set_authn_id()
+		 * will log the connection.  However, if that function is never
+		 * called, perhaps because the trust method is in use, then we handle
+		 * the logging here instead.
+		 */
+		ereport(LOG,
+				errmsg("connection authenticated: user=\"%s\" method=%s "
+					   "(%s:%d)",
+					   port->user_name, hba_authname(port->hba->auth_method),
+					   port->hba->sourcefile, port->hba->linenumber));
+	}
+
 	if (ClientAuthentication_hook)
 		(*ClientAuthentication_hook) (port, status);
 
@@ -665,7 +681,7 @@ sendAuthRequest(Port *port, AuthRequest areq, const char *extradata, int extrale
 
 	CHECK_FOR_INTERRUPTS();
 
-	pq_beginmessage(&buf, 'R');
+	pq_beginmessage(&buf, PqMsg_AuthenticationRequest);
 	pq_sendint32(&buf, (int32) areq);
 	if (extralen > 0)
 		pq_sendbytes(&buf, extradata, extralen);
@@ -698,7 +714,7 @@ recv_password_packet(Port *port)
 
 	/* Expect 'p' message type */
 	mtype = pq_getbyte();
-	if (mtype != 'p')
+	if (mtype != PqMsg_PasswordMessage)
 	{
 		/*
 		 * If the client just disconnects without offering a password, don't
@@ -961,7 +977,7 @@ pg_GSS_recvauth(Port *port)
 		CHECK_FOR_INTERRUPTS();
 
 		mtype = pq_getbyte();
-		if (mtype != 'p')
+		if (mtype != PqMsg_GSSResponse)
 		{
 			/* Only log error if client didn't disconnect. */
 			if (mtype != EOF)
@@ -1232,7 +1248,7 @@ pg_SSPI_recvauth(Port *port)
 	{
 		pq_startmsgread();
 		mtype = pq_getbyte();
-		if (mtype != 'p')
+		if (mtype != PqMsg_GSSResponse)
 		{
 			if (sspictx != NULL)
 			{

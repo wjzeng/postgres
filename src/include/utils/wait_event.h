@@ -39,6 +39,33 @@ extern PGDLLIMPORT uint32 *my_wait_event_info;
 
 
 /* ----------
+ * Wait Events - Extension
+ *
+ * Use this category when the server process is waiting for some condition
+ * defined by an extension module.
+ *
+ * Extensions can define their own wait events in this category.  They should
+ * call WaitEventExtensionNew() with a wait event string.  If the wait event
+ * associated to a string is already allocated, it returns the wait event
+ * information to use.  If not, it gets one wait event ID allocated from
+ * a shared counter, associates the string to the ID in the shared dynamic
+ * hash and returns the wait event information.
+ *
+ * The ID retrieved can be used with pgstat_report_wait_start() or equivalent.
+ */
+typedef enum
+{
+	WAIT_EVENT_EXTENSION = PG_WAIT_EXTENSION,
+	WAIT_EVENT_EXTENSION_FIRST_USER_DEFINED
+} WaitEventExtension;
+
+extern void WaitEventExtensionShmemInit(void);
+extern Size WaitEventExtensionShmemSize(void);
+
+extern uint32 WaitEventExtensionNew(const char *wait_event_name);
+extern char **GetWaitEventExtensionNames(int *nwaitevents);
+
+/* ----------
  * pgstat_report_wait_start() -
  *
  *	Called from places where server process needs to wait.  This is called
