@@ -940,12 +940,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			cookedDefaults = lappend(cookedDefaults, cooked);
 			attr->atthasdef = true;
 		}
-
-		attr->attidentity = colDef->identity;
-		attr->attgenerated = colDef->generated;
-		attr->attcompression = GetAttributeCompression(attr->atttypid, colDef->compression);
-		if (colDef->storage_name)
-			attr->attstorage = GetAttributeStorage(attr->atttypid, colDef->storage_name);
 	}
 
 	/*
@@ -1277,6 +1271,111 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	relation_close(rel, NoLock);
 
 	return address;
+}
+
+/*
+ * BuildDescForRelation
+ *
+ * Given a list of ColumnDef nodes, build a TupleDesc.
+ *
+ * Note: tdtypeid will need to be filled in later on.
+ */
+TupleDesc
+BuildDescForRelation(const List *columns)
+{
+	int			natts;
+	AttrNumber	attnum;
+	ListCell   *l;
+	TupleDesc	desc;
+	bool		has_not_null;
+	char	   *attname;
+	Oid			atttypid;
+	int32		atttypmod;
+	Oid			attcollation;
+	int			attdim;
+
+	/*
+	 * allocate a new tuple descriptor
+	 */
+	natts = list_length(columns);
+	desc = CreateTemplateTupleDesc(natts);
+	has_not_null = false;
+
+	attnum = 0;
+
+	foreach(l, columns)
+	{
+		ColumnDef  *entry = lfirst(l);
+		AclResult	aclresult;
+		Form_pg_attribute att;
+
+		/*
+		 * for each entry in the list, get the name and type information from
+		 * the list and have TupleDescInitEntry fill in the attribute
+		 * information we need.
+		 */
+		attnum++;
+
+		attname = entry->colname;
+		typenameTypeIdAndMod(NULL, entry->typeName, &atttypid, &atttypmod);
+
+		aclresult = object_aclcheck(TypeRelationId, atttypid, GetUserId(), ACL_USAGE);
+		if (aclresult != ACLCHECK_OK)
+			aclcheck_error_type(aclresult, atttypid);
+
+		attcollation = GetColumnDefCollation(NULL, entry, atttypid);
+		attdim = list_length(entry->typeName->arrayBounds);
+		if (attdim > PG_INT16_MAX)
+			ereport(ERROR,
+					errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					errmsg("too many array dimensions"));
+
+		if (entry->typeName->setof)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("column \"%s\" cannot be declared SETOF",
+							attname)));
+
+		TupleDescInitEntry(desc, attnum, attname,
+						   atttypid, atttypmod, attdim);
+		att = TupleDescAttr(desc, attnum - 1);
+
+		/* Override TupleDescInitEntry's settings as requested */
+		TupleDescInitEntryCollation(desc, attnum, attcollation);
+
+		/* Fill in additional stuff not handled by TupleDescInitEntry */
+		att->attnotnull = entry->is_not_null;
+		has_not_null |= entry->is_not_null;
+		att->attislocal = entry->is_local;
+		att->attinhcount = entry->inhcount;
+		att->attidentity = entry->identity;
+		att->attgenerated = entry->generated;
+		att->attcompression = GetAttributeCompression(att->atttypid, entry->compression);
+		if (entry->storage)
+			att->attstorage = entry->storage;
+		else if (entry->storage_name)
+			att->attstorage = GetAttributeStorage(att->atttypid, entry->storage_name);
+	}
+
+	if (has_not_null)
+	{
+		TupleConstr *constr = (TupleConstr *) palloc0(sizeof(TupleConstr));
+
+		constr->has_not_null = true;
+		constr->has_generated_stored = false;
+		constr->defval = NULL;
+		constr->missing = NULL;
+		constr->num_defval = 0;
+		constr->check = NULL;
+		constr->num_check = 0;
+		desc->constr = constr;
+	}
+	else
+	{
+		desc->constr = NULL;
+	}
+
+	return desc;
 }
 
 /*

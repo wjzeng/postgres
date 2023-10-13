@@ -58,7 +58,7 @@ static void jsonb_put_escaped_value(StringInfo out, JsonbValue *scalarVal);
 static JsonParseErrorType jsonb_in_scalar(void *pstate, char *token, JsonTokenType tokentype);
 static void composite_to_jsonb(Datum composite, JsonbInState *result);
 static void array_dim_to_jsonb(JsonbInState *result, int dim, int ndims, int *dims,
-							   Datum *vals, bool *nulls, int *valcount,
+							   const Datum *vals, const bool *nulls, int *valcount,
 							   JsonTypeCategory tcategory, Oid outfuncoid);
 static void array_to_jsonb_internal(Datum array, JsonbInState *result);
 static void datum_to_jsonb_internal(Datum val, bool is_null, JsonbInState *result,
@@ -252,13 +252,13 @@ jsonb_typeof(PG_FUNCTION_ARGS)
 static inline Datum
 jsonb_from_cstring(char *json, int len, bool unique_keys, Node *escontext)
 {
-	JsonLexContext *lex;
+	JsonLexContext lex;
 	JsonbInState state;
 	JsonSemAction sem;
 
 	memset(&state, 0, sizeof(state));
 	memset(&sem, 0, sizeof(sem));
-	lex = makeJsonLexContextCstringLen(json, len, GetDatabaseEncoding(), true);
+	makeJsonLexContextCstringLen(&lex, json, len, GetDatabaseEncoding(), true);
 
 	state.unique_keys = unique_keys;
 	state.escontext = escontext;
@@ -271,7 +271,7 @@ jsonb_from_cstring(char *json, int len, bool unique_keys, Node *escontext)
 	sem.scalar = jsonb_in_scalar;
 	sem.object_field_start = jsonb_in_object_field_start;
 
-	if (!pg_parse_json_or_errsave(lex, &sem, escontext))
+	if (!pg_parse_json_or_errsave(&lex, &sem, escontext))
 		return (Datum) 0;
 
 	/* after parsing, the item member has the composed jsonb structure */
@@ -755,11 +755,11 @@ datum_to_jsonb_internal(Datum val, bool is_null, JsonbInState *result,
 			case JSONTYPE_JSON:
 				{
 					/* parse the json right into the existing result object */
-					JsonLexContext *lex;
+					JsonLexContext lex;
 					JsonSemAction sem;
 					text	   *json = DatumGetTextPP(val);
 
-					lex = makeJsonLexContext(json, true);
+					makeJsonLexContext(&lex, json, true);
 
 					memset(&sem, 0, sizeof(sem));
 
@@ -772,7 +772,8 @@ datum_to_jsonb_internal(Datum val, bool is_null, JsonbInState *result,
 					sem.scalar = jsonb_in_scalar;
 					sem.object_field_start = jsonb_in_object_field_start;
 
-					pg_parse_json_or_ereport(lex, &sem);
+					pg_parse_json_or_ereport(&lex, &sem);
+					freeJsonLexContext(&lex);
 				}
 				break;
 			case JSONTYPE_JSONB:
@@ -863,8 +864,8 @@ datum_to_jsonb_internal(Datum val, bool is_null, JsonbInState *result,
  * ourselves recursively to process the next dimension.
  */
 static void
-array_dim_to_jsonb(JsonbInState *result, int dim, int ndims, int *dims, Datum *vals,
-				   bool *nulls, int *valcount, JsonTypeCategory tcategory,
+array_dim_to_jsonb(JsonbInState *result, int dim, int ndims, int *dims, const Datum *vals,
+				   const bool *nulls, int *valcount, JsonTypeCategory tcategory,
 				   Oid outfuncoid)
 {
 	int			i;
@@ -1126,7 +1127,7 @@ datum_to_jsonb(Datum val, JsonTypeCategory tcategory, Oid outfuncoid)
 }
 
 Datum
-jsonb_build_object_worker(int nargs, Datum *args, bool *nulls, Oid *types,
+jsonb_build_object_worker(int nargs, const Datum *args, const bool *nulls, const Oid *types,
 						  bool absent_on_null, bool unique_keys)
 {
 	int			i;
@@ -1211,7 +1212,7 @@ jsonb_build_object_noargs(PG_FUNCTION_ARGS)
 }
 
 Datum
-jsonb_build_array_worker(int nargs, Datum *args, bool *nulls, Oid *types,
+jsonb_build_array_worker(int nargs, const Datum *args, const bool *nulls, const Oid *types,
 						 bool absent_on_null)
 {
 	int			i;
