@@ -3419,9 +3419,17 @@ copy_opt_item:
 				{
 					$$ = makeDefElem("force_not_null", (Node *) $4, @1);
 				}
+			| FORCE NOT NULL_P '*'
+				{
+					$$ = makeDefElem("force_not_null", (Node *) makeNode(A_Star), @1);
+				}
 			| FORCE NULL_P columnList
 				{
 					$$ = makeDefElem("force_null", (Node *) $3, @1);
+				}
+			| FORCE NULL_P '*'
+				{
+					$$ = makeDefElem("force_null", (Node *) makeNode(A_Star), @1);
 				}
 			| ENCODING Sconst
 				{
@@ -6403,6 +6411,33 @@ AlterEnumStmt:
 				n->newValIsAfter = false;
 				n->skipIfNewValExists = false;
 				$$ = (Node *) n;
+			}
+		 | ALTER TYPE_P any_name DROP VALUE_P Sconst
+			{
+				/*
+				 * The following problems must be solved before this can be
+				 * implemented:
+				 *
+				 * - There must be no instance of the target value in
+				 *   any table.
+				 *
+				 * - The value must not appear in any catalog metadata,
+				 *   such as stored view expressions or column defaults.
+				 *
+				 * - The value must not appear in any non-leaf page of a
+				 *   btree (and similar issues with other index types).
+				 *   This is problematic because a value could persist
+				 *   there long after it's gone from user-visible data.
+				 *
+				 * - Concurrent sessions must not be able to insert the
+				 *   value while the preceding conditions are being checked.
+				 *
+				 * - Possibly more...
+				 */
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("dropping an enum value is not implemented"),
+						 parser_errposition(@4)));
 			}
 		 ;
 
@@ -10116,6 +10151,8 @@ operator_def_elem: ColLabel '=' NONE
 						{ $$ = makeDefElem($1, NULL, @1); }
 				   | ColLabel '=' operator_def_arg
 						{ $$ = makeDefElem($1, (Node *) $3, @1); }
+				   | ColLabel
+						{ $$ = makeDefElem($1, NULL, @1); }
 		;
 
 /* must be similar enough to def_arg to avoid reduce/reduce conflicts */
@@ -14472,6 +14509,13 @@ a_expr:		c_expr									{ $$ = $1; }
 											   list_make2($5, $1),
 											   COERCE_SQL_SYNTAX,
 											   @2);
+				}
+			| a_expr AT LOCAL						%prec AT
+				{
+					$$ = (Node *) makeFuncCall(SystemFuncName("timezone"),
+											   list_make1($1),
+											   COERCE_SQL_SYNTAX,
+											   -1);
 				}
 		/*
 		 * These operators must be called out explicitly in order to make use

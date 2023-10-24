@@ -1119,8 +1119,8 @@ SELECT a.pid, a.wait_event, w.description
   FROM pg_stat_activity a JOIN
        pg_wait_events w ON (a.wait_event_type = w.type AND
                             a.wait_event = w.name)
-  WHERE wait_event is NOT NULL and a.state = 'active';
--[ RECORD 1 ]------------------------------------------------------------------
+  WHERE a.wait_event is NOT NULL and a.state = 'active';
+-[ RECORD 1 ]------------------------------------------------------&zwsp;------------
 pid         | 686674
 wait_event  | WALInitSync
 description | Waiting for a newly initialized WAL file to reach durable storage
@@ -1130,11 +1130,11 @@ description | Waiting for a newly initialized WAL file to reach durable storage
    <note>
     <para>
      Extensions can add <literal>Extension</literal> and
-     <literal>LWLock</literal> types
-     to the list shown in <xref linkend="wait-event-extension-table"/> and
+     <literal>LWLock</literal> events
+     to the lists shown in <xref linkend="wait-event-extension-table"/> and
      <xref linkend="wait-event-lwlock-table"/>. In some cases, the name
-     of <literal>LWLock</literal> assigned by an extension will not be
-     available in all server processes; It might be reported as just
+     of an <literal>LWLock</literal> assigned by an extension will not be
+     available in all server processes.  It might be reported as just
      <quote><literal>extension</literal></quote> rather than the
      extension-assigned name.
     </para>
@@ -1995,6 +1995,17 @@ description | Waiting for a newly initialized WAL file to reach durable storage
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>worker_type</structfield> <type>text</type>
+      </para>
+      <para>
+       Type of the subscription worker process.  Possible types are
+       <literal>apply</literal>, <literal>parallel apply</literal>, and
+       <literal>table synchronization</literal>.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>pid</structfield> <type>integer</type>
       </para>
       <para>
@@ -2008,7 +2019,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Process ID of the leader apply worker if this process is a parallel
-       apply worker; NULL if this process is a leader apply worker or a
+       apply worker; NULL if this process is a leader apply worker or a table
        synchronization worker
       </para></entry>
      </row>

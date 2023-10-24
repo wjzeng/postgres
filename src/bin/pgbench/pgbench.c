@@ -231,7 +231,7 @@ typedef enum
 } partition_method_t;
 
 static partition_method_t partition_method = PART_NONE;
-static const char *PARTITION_METHOD[] = {"none", "range", "hash"};
+static const char *const PARTITION_METHOD[] = {"none", "range", "hash"};
 
 /* random seed used to initialize base_random_sequence */
 int64		random_seed = -1;
@@ -709,7 +709,7 @@ typedef enum QueryMode
 } QueryMode;
 
 static QueryMode querymode = QUERY_SIMPLE;
-static const char *QUERYMODE[] = {"simple", "extended", "prepared"};
+static const char *const QUERYMODE[] = {"simple", "extended", "prepared"};
 
 /*
  * struct Command represents one command in a script.
@@ -873,7 +873,14 @@ usage(void)
 		   "\nInitialization options:\n"
 		   "  -i, --initialize         invokes initialization mode\n"
 		   "  -I, --init-steps=[" ALL_INIT_STEPS "]+ (default \"" DEFAULT_INIT_STEPS "\")\n"
-		   "                           run selected initialization steps\n"
+		   "                           run selected initialization steps, in the specified order\n"
+		   "                           d: drop any existing pgbench tables\n"
+		   "                           t: create the tables used by the standard pgbench scenario\n"
+		   "                           g: generate data, client-side\n"
+		   "                           G: generate data, server-side\n"
+		   "                           v: invoke VACUUM on the standard tables\n"
+		   "                           p: create primary key indexes on the standard tables\n"
+		   "                           f: create foreign keys between the standard tables\n"
 		   "  -F, --fillfactor=NUM     set fill factor\n"
 		   "  -n, --no-vacuum          do not run VACUUM during initialization\n"
 		   "  -q, --quiet              quiet logging (one message each 5 seconds)\n"
@@ -7830,14 +7837,23 @@ clear_socket_set(socket_set *sa)
 static void
 add_socket_to_set(socket_set *sa, int fd, int idx)
 {
+	/* See connect_slot() for background on this code. */
+#ifdef WIN32
+	if (sa->fds.fd_count + 1 >= FD_SETSIZE)
+	{
+		pg_log_error("too many concurrent database clients for this platform: %d",
+					 sa->fds.fd_count + 1);
+		exit(1);
+	}
+#else
 	if (fd < 0 || fd >= FD_SETSIZE)
 	{
-		/*
-		 * Doing a hard exit here is a bit grotty, but it doesn't seem worth
-		 * complicating the API to make it less grotty.
-		 */
-		pg_fatal("too many client connections for select()");
+		pg_log_error("socket file descriptor out of range for select(): %d",
+					 fd);
+		pg_log_error_hint("Try fewer concurrent database clients.");
+		exit(1);
 	}
+#endif
 	FD_SET(fd, &sa->fds);
 	if (fd > sa->maxfd)
 		sa->maxfd = fd;

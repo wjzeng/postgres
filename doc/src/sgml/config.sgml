@@ -656,10 +656,15 @@ include_dir 'conf.d'
          <literal>::</literal> allows listening for all IPv6 addresses.
          If the list is empty, the server does not listen on any IP interface
          at all, in which case only Unix-domain sockets can be used to connect
-         to it.
+         to it.  If the list is not empty, the server will start if it
+         can listen on at least one TCP/IP address.  A warning will be
+         emitted for any TCP/IP address which cannot be opened.
          The default value is <systemitem class="systemname">localhost</systemitem>,
          which allows only local TCP/IP <quote>loopback</quote> connections to be
-         made.  While client authentication (<xref
+         made.
+       </para>
+       <para>
+         While client authentication (<xref
          linkend="client-authentication"/>) allows fine-grained control
          over who can access the server, <varname>listen_addresses</varname>
          controls which interfaces accept connection attempts, which
@@ -1829,9 +1834,10 @@ include_dir 'conf.d'
         (such as a sort or hash table) before writing to temporary disk files.
         If this value is specified without units, it is taken as kilobytes.
         The default value is four megabytes (<literal>4MB</literal>).
-        Note that for a complex query, several sort or hash operations might be
-        running in parallel; each operation will generally be allowed
-        to use as much memory as this value specifies before it starts
+        Note that a complex query might perform several sort and hash
+        operations at the same time, with each operation generally being
+        allowed to use as much memory as this value specifies before
+        it starts
         to write data into temporary files.  Also, several running
         sessions could be doing such operations concurrently.
         Therefore, the total memory used could be many times the value
@@ -1845,7 +1851,7 @@ include_dir 'conf.d'
        <para>
         Hash-based operations are generally more sensitive to memory
         availability than equivalent sort-based operations.  The
-        memory available for hash tables is computed by multiplying
+        memory limit for a hash table is computed by multiplying
         <varname>work_mem</varname> by
         <varname>hash_mem_multiplier</varname>.  This makes it
         possible for hash-based operations to use an amount of memory
@@ -5265,13 +5271,14 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       <listitem>
        <para>
         Enables or disables the query planner's use of partitionwise grouping
-        or aggregation, which allows grouping or aggregation on a partitioned
-        tables performed separately for each partition.  If the <literal>GROUP
-        BY</literal> clause does not include the partition keys, only partial
-        aggregation can be performed on a per-partition basis, and
-        finalization must be performed later.  Because partitionwise grouping
-        or aggregation can use significantly more CPU time and memory during
-        planning, the default is <literal>off</literal>.
+        or aggregation, which allows grouping or aggregation on partitioned
+        tables to be performed separately for each partition.  If the
+        <literal>GROUP BY</literal> clause does not include the partition
+        keys, only partial aggregation can be performed on a per-partition
+        basis, and finalization must be performed later.  Because
+        partitionwise grouping or aggregation can use significantly more CPU
+        time and memory during planning, the default is
+        <literal>off</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -6887,8 +6894,9 @@ local0.*    /var/log/postgresql
         and included in CSV log entries.  It can also be included in regular
         log entries via the <xref linkend="guc-log-line-prefix"/> parameter.
         Only printable ASCII characters may be used in the
-        <varname>application_name</varname> value. Other characters will be
-        replaced with question marks (<literal>?</literal>).
+        <varname>application_name</varname> value.
+        Other characters are replaced with <link
+        linkend="sql-syntax-strings-escape">C-style hexadecimal escapes</link>.
        </para>
       </listitem>
      </varlistentry>
@@ -7884,10 +7892,12 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         The name can be any string of less
         than <symbol>NAMEDATALEN</symbol> characters (64 characters in a standard
         build). Only printable ASCII characters may be used in the
-        <varname>cluster_name</varname> value. Other characters will be
-        replaced with question marks (<literal>?</literal>).  No name is shown
-        if this parameter is set to the empty string <literal>''</literal> (which is
-        the default). This parameter can only be set at server start.
+        <varname>cluster_name</varname> value.
+        Other characters are replaced with <link
+        linkend="sql-syntax-strings-escape">C-style hexadecimal escapes</link>.
+        No name is shown if this parameter is set to the empty string
+        <literal>''</literal> (which is the default).
+        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>

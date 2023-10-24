@@ -1681,7 +1681,7 @@ build-postgresql:
        <term><option>--with-segsize-blocks=SEGSIZE_BLOCKS</option></term>
        <listitem>
         <para>
-         Specify the segment size in blocks. If both
+         Specify the relation segment size in blocks. If both
          <option>--with-segsize</option> and this option are specified, this
          option wins.
 
@@ -2743,8 +2743,8 @@ ninja install
        <para>
         The default backend Meson uses is ninja and that should suffice for
         most use cases.  However, if you'd like to fully integrate with Visual
-        Studio, you can set the <option>BACKEND</option> to
-        <command>vs</command>.
+        Studio, you can set the <replaceable>BACKEND</replaceable> to
+        <literal>vs</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -3178,7 +3178,7 @@ ninja install
        <term><option>-Dsegsize_blocks=SEGSIZE_BLOCKS</option></term>
        <listitem>
         <para>
-         Specify the segment size in blocks. If both
+         Specify the relation segment size in blocks. If both
          <option>-Dsegsize</option> and this option are specified, this option
          wins.
 

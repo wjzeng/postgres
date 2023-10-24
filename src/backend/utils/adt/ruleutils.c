@@ -316,9 +316,9 @@ typedef void (*rsv_callback) (Node *node, deparse_context *context,
  * ----------
  */
 static SPIPlanPtr plan_getrulebyoid = NULL;
-static const char *query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
+static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
 static SPIPlanPtr plan_getviewrule = NULL;
-static const char *query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
+static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
 
 /* GUC parameters */
 bool		quote_all_identifiers = false;
@@ -10347,6 +10347,16 @@ get_func_sql_syntax(FuncExpr *expr, deparse_context *context)
 			appendStringInfoChar(buf, ')');
 			return true;
 
+		case F_TIMEZONE_TIMESTAMP:
+		case F_TIMEZONE_TIMESTAMPTZ:
+		case F_TIMEZONE_TIMETZ:
+			/* AT LOCAL */
+			appendStringInfoChar(buf, '(');
+			get_rule_expr_paren((Node *) linitial(expr->args), context, false,
+								(Node *) expr);
+			appendStringInfoString(buf, " AT LOCAL)");
+			return true;
+
 		case F_OVERLAPS_TIMESTAMPTZ_INTERVAL_TIMESTAMPTZ_INTERVAL:
 		case F_OVERLAPS_TIMESTAMPTZ_INTERVAL_TIMESTAMPTZ_TIMESTAMPTZ:
 		case F_OVERLAPS_TIMESTAMPTZ_TIMESTAMPTZ_TIMESTAMPTZ_INTERVAL:
@@ -10395,7 +10405,7 @@ get_func_sql_syntax(FuncExpr *expr, deparse_context *context)
 
 		case F_IS_NORMALIZED:
 			/* IS xxx NORMALIZED */
-			appendStringInfoString(buf, "(");
+			appendStringInfoChar(buf, '(');
 			get_rule_expr_paren((Node *) linitial(expr->args), context, false,
 								(Node *) expr);
 			appendStringInfoString(buf, " IS");
@@ -10884,7 +10894,7 @@ get_json_constructor(JsonConstructorExpr *ctor, deparse_context *context,
 	}
 
 	get_json_constructor_options(ctor, buf);
-	appendStringInfo(buf, ")");
+	appendStringInfoChar(buf, ')');
 }
 
 /*

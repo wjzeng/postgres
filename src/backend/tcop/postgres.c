@@ -36,6 +36,7 @@
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "commands/async.h"
+#include "commands/event_trigger.h"
 #include "commands/prepare.h"
 #include "common/pg_prng.h"
 #include "jit/jit.h"
@@ -4206,11 +4207,12 @@ PostgresMain(const char *dbname, const char *username)
 	 * NOTE: if you are tempted to add code in this vicinity, consider putting
 	 * it inside InitPostgres() instead.  In particular, anything that
 	 * involves database access should be there, not here.
+	 *
+	 * Honor session_preload_libraries if not dealing with a WAL sender.
 	 */
 	InitPostgres(dbname, InvalidOid,	/* database to connect to */
 				 username, InvalidOid,	/* role to connect as */
-				 !am_walsender, /* honor session_preload_libraries? */
-				 false,			/* don't ignore datallowconn */
+				 (!am_walsender) ? INIT_PG_LOAD_SESSION_LIBS : 0,
 				 NULL);			/* no out_dbname */
 
 	/*
@@ -4287,6 +4289,9 @@ PostgresMain(const char *dbname, const char *username)
 	MemoryContextSwitchTo(row_description_context);
 	initStringInfo(&row_description_buf);
 	MemoryContextSwitchTo(TopMemoryContext);
+
+	/* Fire any defined login event triggers, if appropriate */
+	EventTriggerOnLogin();
 
 	/*
 	 * POSTGRES main processing loop begins here

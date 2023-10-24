@@ -3083,10 +3083,11 @@ timetz_zone(PG_FUNCTION_ARGS)
 	result = (TimeTzADT *) palloc(sizeof(TimeTzADT));
 
 	result->time = t->time + (t->zone - tz) * USECS_PER_SEC;
+	/* C99 modulo has the wrong sign convention for negative input */
 	while (result->time < INT64CONST(0))
 		result->time += USECS_PER_DAY;
-	while (result->time >= USECS_PER_DAY)
-		result->time -= USECS_PER_DAY;
+	if (result->time >= USECS_PER_DAY)
+		result->time %= USECS_PER_DAY;
 
 	result->zone = tz;
 
@@ -3116,12 +3117,28 @@ timetz_izone(PG_FUNCTION_ARGS)
 	result = (TimeTzADT *) palloc(sizeof(TimeTzADT));
 
 	result->time = time->time + (time->zone - tz) * USECS_PER_SEC;
+	/* C99 modulo has the wrong sign convention for negative input */
 	while (result->time < INT64CONST(0))
 		result->time += USECS_PER_DAY;
-	while (result->time >= USECS_PER_DAY)
-		result->time -= USECS_PER_DAY;
+	if (result->time >= USECS_PER_DAY)
+		result->time %= USECS_PER_DAY;
 
 	result->zone = tz;
 
 	PG_RETURN_TIMETZADT_P(result);
+}
+
+/* timetz_at_local()
+ *
+ * Unlike for timestamp[tz]_at_local, the type for timetz does not flip between
+ * time with/without time zone, so we cannot just call the conversion function.
+ */
+Datum
+timetz_at_local(PG_FUNCTION_ARGS)
+{
+	Datum		time = PG_GETARG_DATUM(0);
+	const char *tzn = pg_get_timezone_name(session_timezone);
+	Datum		zone = PointerGetDatum(cstring_to_text(tzn));
+
+	return DirectFunctionCall2(timetz_zone, zone, time);
 }
