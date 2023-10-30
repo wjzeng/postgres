@@ -76,7 +76,7 @@ typedef enum UpperRelationKind
 	UPPERREL_PARTIAL_DISTINCT,	/* result of partial "SELECT DISTINCT", if any */
 	UPPERREL_DISTINCT,			/* result of "SELECT DISTINCT", if any */
 	UPPERREL_ORDERED,			/* result of ORDER BY, if any */
-	UPPERREL_FINAL				/* result of any remaining top-level actions */
+	UPPERREL_FINAL,				/* result of any remaining top-level actions */
 	/* NB: UPPERREL_FINAL must be last enum entry; it's used to size arrays */
 } UpperRelationKind;
 
@@ -719,7 +719,7 @@ typedef struct PartitionSchemeData *PartitionScheme;
  * populate these fields, for base rels; but someday they might be used for
  * join rels too:
  *
- *		unique_for_rels - list of Relid sets, each one being a set of other
+ *		unique_for_rels - list of UniqueRelInfo, each one being a set of other
  *					rels for which this one has been proven unique
  *		non_unique_for_rels - list of Relid sets, each one being a set of
  *					other rels for which we have tried and failed to prove
@@ -814,7 +814,7 @@ typedef enum RelOptKind
 	RELOPT_OTHER_MEMBER_REL,
 	RELOPT_OTHER_JOINREL,
 	RELOPT_UPPER_REL,
-	RELOPT_OTHER_UPPER_REL
+	RELOPT_OTHER_UPPER_REL,
 } RelOptKind;
 
 /*
@@ -952,7 +952,7 @@ typedef struct RelOptInfo
 	/*
 	 * cache space for remembering if we have proven this relation unique
 	 */
-	/* known unique for these other relid set(s) */
+	/* known unique for these other relid set(s) given in UniqueRelInfo(s) */
 	List	   *unique_for_rels;
 	/* known not unique for these set(s) */
 	List	   *non_unique_for_rels;
@@ -1465,7 +1465,7 @@ typedef enum VolatileFunctionStatus
 {
 	VOLATILITY_UNKNOWN = 0,
 	VOLATILITY_VOLATILE,
-	VOLATILITY_NOVOLATILE
+	VOLATILITY_NOVOLATILE,
 } VolatileFunctionStatus;
 
 /*
@@ -1987,7 +1987,7 @@ typedef enum UniquePathMethod
 {
 	UNIQUE_PATH_NOOP,			/* input is known unique already */
 	UNIQUE_PATH_HASH,			/* use hashing */
-	UNIQUE_PATH_SORT			/* use sorting */
+	UNIQUE_PATH_SORT,			/* use sorting */
 } UniquePathMethod;
 
 typedef struct UniquePath
@@ -2344,7 +2344,7 @@ typedef struct ModifyTablePath
 	CmdType		operation;		/* INSERT, UPDATE, DELETE, or MERGE */
 	bool		canSetTag;		/* do we set the command tag/es_processed? */
 	Index		nominalRelation;	/* Parent RT index for use of EXPLAIN */
-	Index		rootRelation;	/* Root RT index, if target is partitioned */
+	Index		rootRelation;	/* Root RT index, if partitioned/inherited */
 	bool		partColsUpdated;	/* some part key in hierarchy updated? */
 	List	   *resultRelations;	/* integer list of RT indexes */
 	List	   *updateColnosLists;	/* per-target-table update_colnos lists */
@@ -3228,7 +3228,7 @@ typedef enum
 {
 	PARTITIONWISE_AGGREGATE_NONE,
 	PARTITIONWISE_AGGREGATE_FULL,
-	PARTITIONWISE_AGGREGATE_PARTIAL
+	PARTITIONWISE_AGGREGATE_PARTIAL,
 } PartitionwiseAggregateType;
 
 /*
@@ -3390,5 +3390,30 @@ typedef struct AggTransInfo
 	Datum		initValue pg_node_attr(read_write_ignore);
 	bool		initValueIsNull;
 } AggTransInfo;
+
+/*
+ * UniqueRelInfo caches a fact that a relation is unique when being joined
+ * to other relation(s).
+ */
+typedef struct UniqueRelInfo
+{
+	pg_node_attr(no_copy_equal, no_read, no_query_jumble)
+
+	NodeTag		type;
+
+	/*
+	 * The relation in consideration is unique when being joined with this set
+	 * of other relation(s).
+	 */
+	Relids		outerrelids;
+
+	/*
+	 * Additional clauses from a baserestrictinfo list that were used to prove
+	 * the uniqueness.   We cache it for the self-join checking procedure: a
+	 * self-join can be removed if the outer relation contains strictly the
+	 * same set of clauses.
+	 */
+	List	   *extra_clauses;
+} UniqueRelInfo;
 
 #endif							/* PATHNODES_H */

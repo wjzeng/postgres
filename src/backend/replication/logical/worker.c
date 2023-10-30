@@ -289,7 +289,7 @@ typedef enum
 	TRANS_LEADER_SERIALIZE,
 	TRANS_LEADER_SEND_TO_PARALLEL,
 	TRANS_LEADER_PARTIAL_SERIALIZE,
-	TRANS_PARALLEL_APPLY
+	TRANS_PARALLEL_APPLY,
 } TransApplyAction;
 
 /* errcontext tracker */
@@ -3582,10 +3582,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 					/* Ensure we are reading the data into our memory context. */
 					MemoryContextSwitchTo(ApplyMessageContext);
 
-					s.data = buf;
-					s.len = len;
-					s.cursor = 0;
-					s.maxlen = -1;
+					initReadOnlyStringInfo(&s, buf, len);
 
 					c = pq_getmsgbyte(&s);
 

@@ -293,10 +293,10 @@ initdb --locale=sv_SE
      <para>
       As explained above, the environment of the operating system provides the
       defaults for the locales of a newly initialized database cluster.  In
-      many cases, this is enough: If the operating system is configured for
-      the desired language/territory, then
-      <productname>PostgreSQL</productname> will by default also behave
-      according to that locale.
+      many cases, this is enough: if the operating system is configured for
+      the desired language/territory, by default
+      <productname>PostgreSQL</productname> will also behave according
+      to that locale.
      </para>
     </listitem>
 
@@ -1158,7 +1158,7 @@ SELECT 'w;x*y-z' = 'wxyz' COLLATE num_ignore_punct; -- true
     <para>
      <xref linkend="icu-collation-levels"/> shows which textual feature
      differences are considered significant when determining equality at the
-     given level. The unicode character <literal>U+2063</literal> is an
+     given level. The Unicode character <literal>U+2063</literal> is an
      invisible separator, and as seen in the table, is ignored for at all
      levels of comparison less than <literal>identic</literal>.
     </para>
