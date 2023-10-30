@@ -1182,21 +1182,21 @@ PG_STAT_GET_DBENTRY_FLOAT8_MS(idle_in_transaction_time)
 PG_STAT_GET_DBENTRY_FLOAT8_MS(session_time)
 
 Datum
-pg_stat_get_bgwriter_timed_checkpoints(PG_FUNCTION_ARGS)
+pg_stat_get_checkpointer_num_timed(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->timed_checkpoints);
+	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->num_timed);
 }
 
 Datum
-pg_stat_get_bgwriter_requested_checkpoints(PG_FUNCTION_ARGS)
+pg_stat_get_checkpointer_num_requested(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->requested_checkpoints);
+	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->num_requested);
 }
 
 Datum
-pg_stat_get_bgwriter_buf_written_checkpoints(PG_FUNCTION_ARGS)
+pg_stat_get_checkpointer_buffers_written(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->buf_written_checkpoints);
+	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->buffers_written);
 }
 
 Datum
@@ -1212,37 +1212,31 @@ pg_stat_get_bgwriter_maxwritten_clean(PG_FUNCTION_ARGS)
 }
 
 Datum
-pg_stat_get_checkpoint_write_time(PG_FUNCTION_ARGS)
+pg_stat_get_checkpointer_write_time(PG_FUNCTION_ARGS)
 {
 	/* time is already in msec, just convert to double for presentation */
 	PG_RETURN_FLOAT8((double)
-					 pgstat_fetch_stat_checkpointer()->checkpoint_write_time);
+					 pgstat_fetch_stat_checkpointer()->write_time);
 }
 
 Datum
-pg_stat_get_checkpoint_sync_time(PG_FUNCTION_ARGS)
+pg_stat_get_checkpointer_sync_time(PG_FUNCTION_ARGS)
 {
 	/* time is already in msec, just convert to double for presentation */
 	PG_RETURN_FLOAT8((double)
-					 pgstat_fetch_stat_checkpointer()->checkpoint_sync_time);
+					 pgstat_fetch_stat_checkpointer()->sync_time);
+}
+
+Datum
+pg_stat_get_checkpointer_stat_reset_time(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_TIMESTAMPTZ(pgstat_fetch_stat_checkpointer()->stat_reset_timestamp);
 }
 
 Datum
 pg_stat_get_bgwriter_stat_reset_time(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_TIMESTAMPTZ(pgstat_fetch_stat_bgwriter()->stat_reset_timestamp);
-}
-
-Datum
-pg_stat_get_buf_written_backend(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->buf_written_backend);
-}
-
-Datum
-pg_stat_get_buf_fsync_backend(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->buf_fsync_backend);
 }
 
 Datum
@@ -1600,68 +1594,14 @@ PG_STAT_GET_XACT_RELENTRY_INT64(blocks_fetched)
 /* pg_stat_get_xact_blocks_hit */
 PG_STAT_GET_XACT_RELENTRY_INT64(blocks_hit)
 
-Datum
-pg_stat_get_xact_tuples_inserted(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-	PgStat_TableXactStatus *trans;
+/* pg_stat_get_xact_tuples_inserted */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_inserted)
 
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-	{
-		result = tabentry->counts.tuples_inserted;
-		/* live subtransactions' counts aren't in tuples_inserted yet */
-		for (trans = tabentry->trans; trans != NULL; trans = trans->upper)
-			result += trans->tuples_inserted;
-	}
+/* pg_stat_get_xact_tuples_updated */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_updated)
 
-	PG_RETURN_INT64(result);
-}
-
-Datum
-pg_stat_get_xact_tuples_updated(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-	PgStat_TableXactStatus *trans;
-
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-	{
-		result = tabentry->counts.tuples_updated;
-		/* live subtransactions' counts aren't in tuples_updated yet */
-		for (trans = tabentry->trans; trans != NULL; trans = trans->upper)
-			result += trans->tuples_updated;
-	}
-
-	PG_RETURN_INT64(result);
-}
-
-Datum
-pg_stat_get_xact_tuples_deleted(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	int64		result;
-	PgStat_TableStatus *tabentry;
-	PgStat_TableXactStatus *trans;
-
-	if ((tabentry = find_tabstat_entry(relid)) == NULL)
-		result = 0;
-	else
-	{
-		result = tabentry->counts.tuples_deleted;
-		/* live subtransactions' counts aren't in tuples_deleted yet */
-		for (trans = tabentry->trans; trans != NULL; trans = trans->upper)
-			result += trans->tuples_deleted;
-	}
-
-	PG_RETURN_INT64(result);
-}
+/* pg_stat_get_xact_tuples_deleted */
+PG_STAT_GET_XACT_RELENTRY_INT64(tuples_deleted)
 
 Datum
 pg_stat_get_xact_function_calls(PG_FUNCTION_ARGS)
@@ -1750,14 +1690,9 @@ pg_stat_reset_shared(PG_FUNCTION_ARGS)
 	if (strcmp(target, "archiver") == 0)
 		pgstat_reset_of_kind(PGSTAT_KIND_ARCHIVER);
 	else if (strcmp(target, "bgwriter") == 0)
-	{
-		/*
-		 * Historically checkpointer was part of bgwriter, continue to reset
-		 * both for now.
-		 */
 		pgstat_reset_of_kind(PGSTAT_KIND_BGWRITER);
+	else if (strcmp(target, "checkpointer") == 0)
 		pgstat_reset_of_kind(PGSTAT_KIND_CHECKPOINTER);
-	}
 	else if (strcmp(target, "io") == 0)
 		pgstat_reset_of_kind(PGSTAT_KIND_IO);
 	else if (strcmp(target, "recovery_prefetch") == 0)
@@ -1768,7 +1703,7 @@ pg_stat_reset_shared(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("unrecognized reset target: \"%s\"", target),
-				 errhint("Target must be \"archiver\", \"bgwriter\", \"io\", \"recovery_prefetch\", or \"wal\".")));
+				 errhint("Target must be \"archiver\", \"bgwriter\", \"checkpointer\", \"io\", \"recovery_prefetch\", or \"wal\".")));
 
 	PG_RETURN_VOID();
 }

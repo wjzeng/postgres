@@ -38,14 +38,14 @@ typedef enum
 {
 	SMART_MODE,
 	FAST_MODE,
-	IMMEDIATE_MODE
+	IMMEDIATE_MODE,
 } ShutdownMode;
 
 typedef enum
 {
 	POSTMASTER_READY,
 	POSTMASTER_STILL_STARTING,
-	POSTMASTER_FAILED
+	POSTMASTER_FAILED,
 } WaitPMResult;
 
 typedef enum
@@ -62,7 +62,7 @@ typedef enum
 	KILL_COMMAND,
 	REGISTER_COMMAND,
 	UNREGISTER_COMMAND,
-	RUN_AS_SERVICE_COMMAND
+	RUN_AS_SERVICE_COMMAND,
 } CtlCommand;
 
 #define DEFAULT_WAIT	60
@@ -96,7 +96,6 @@ static time_t start_time;
 static char postopts_file[MAXPGPATH];
 static char version_file[MAXPGPATH];
 static char pid_file[MAXPGPATH];
-static char backup_file[MAXPGPATH];
 static char promote_file[MAXPGPATH];
 static char logrotate_file[MAXPGPATH];
 
@@ -2447,7 +2446,6 @@ main(int argc, char **argv)
 		snprintf(postopts_file, MAXPGPATH, "%s/postmaster.opts", pg_data);
 		snprintf(version_file, MAXPGPATH, "%s/PG_VERSION", pg_data);
 		snprintf(pid_file, MAXPGPATH, "%s/postmaster.pid", pg_data);
-		snprintf(backup_file, MAXPGPATH, "%s/backup_label", pg_data);
 
 		/*
 		 * Set mask based on PGDATA permissions,

@@ -5306,6 +5306,22 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-enable_self_join_removal" xreflabel="enable_self_join_removal">
+      <term><varname>enable_self_join_removal</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_self_join_removal</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's optimization which analyses
+        the query tree and replaces self joins with semantically equivalent
+        single scans.  Takes into consideration only plain tables.
+        The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-enable-seqscan" xreflabel="enable_seqscan">
       <term><varname>enable_seqscan</varname> (<type>boolean</type>)
       <indexterm>
@@ -9025,7 +9041,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         The timeout is measured from the time a command arrives at the
         server until it is completed by the server.  If multiple SQL
-        statements appear in a single simple-Query message, the timeout
+        statements appear in a single simple-query message, the timeout
         is applied to each statement separately.
         (<productname>PostgreSQL</productname> versions before 13 usually
         treated the timeout as applying to the whole query string.)
@@ -10538,7 +10554,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
        </para>
        <para>
         On Linux, <literal>syncfs</literal> may be used instead, to ask the
-        operating system to synchronize the whole file systems that contain the
+        operating system to synchronize the file systems that contain the
         data directory, the WAL files and each tablespace (but not any other
         file systems that may be reachable through symbolic links).  See
         <xref linkend="syncfs"/> for more information about using
@@ -11686,7 +11702,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
         On the publisher side, <varname>debug_logical_replication_streaming</varname>
         allows streaming or serializing changes immediately in logical decoding.
         When set to <literal>immediate</literal>, stream each change if the
-        <link linkend="sql-createsubscription-with-streaming"><literal>streaming</literal></link>
+        <link linkend="sql-createsubscription-params-with-streaming"><literal>streaming</literal></link>
         option of
         <link linkend="sql-createsubscription"><command>CREATE SUBSCRIPTION</command></link>
         is enabled, otherwise, serialize each change.  When set to

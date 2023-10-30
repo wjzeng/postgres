@@ -1608,7 +1608,7 @@
 
   <para>
    Apply transaction locks are used in parallel mode to apply the transaction
-   in logical replication. The remote transaction id is displayed in the
+   in logical replication. The remote transaction ID is displayed in the
    <structfield>transactionid</structfield> column. The <structfield>objsubid</structfield>
    displays the lock subtype which is 0 for the lock used to synchronize the
    set of changes, and 1 for the lock used to wait for the transaction to
@@ -2151,8 +2151,8 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
    tables they contain.  Unlike the underlying catalog
    <link linkend="catalog-pg-publication-rel"><structname>pg_publication_rel</structname></link>,
    this view expands publications defined as
-   <link linkend="sql-createpublication-for-all-tables"><literal>FOR ALL TABLES</literal></link>
-   and <link linkend="sql-createpublication-for-tables-in-schema"><literal>FOR TABLES IN SCHEMA</literal></link>,
+   <link linkend="sql-createpublication-params-for-all-tables"><literal>FOR ALL TABLES</literal></link>
+   and <link linkend="sql-createpublication-params-for-tables-in-schema"><literal>FOR TABLES IN SCHEMA</literal></link>,
    so for such publications there will be a row for each eligible table.
   </para>
 

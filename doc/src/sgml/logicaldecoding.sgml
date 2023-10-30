@@ -144,7 +144,7 @@ postgres=# SELECT pg_drop_replication_slot('regression_slot');
 </programlisting>
 
    <para>
-    The following examples shows how logical decoding is controlled over the
+    The following examples show how logical decoding is controlled over the
     streaming replication protocol, using the
     program <xref linkend="app-pgrecvlogical"/> included in the PostgreSQL
     distribution.  This requires that client authentication is set up to allow
@@ -1197,9 +1197,8 @@ OutputPluginWrite(ctx, true);
       </listitem>
      </itemizedlist>
 
-     Note that these commands that can cause deadlock apply to not only explicitly
-     indicated system catalog tables above but also to any other [user] catalog
-     table.
+     Note that these commands can cause deadlocks not only for the system
+     catalog tables listed above but for other catalog tables.
     </para>
    </sect2>
   </sect1>

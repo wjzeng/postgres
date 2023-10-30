@@ -216,11 +216,12 @@ typedef struct ProjectSet
  *		Apply rows produced by outer plan to result table(s),
  *		by inserting, updating, or deleting.
  *
- * If the originally named target table is a partitioned table, both
- * nominalRelation and rootRelation contain the RT index of the partition
- * root, which is not otherwise mentioned in the plan.  Otherwise rootRelation
- * is zero.  However, nominalRelation will always be set, as it's the rel that
- * EXPLAIN should claim is the INSERT/UPDATE/DELETE/MERGE target.
+ * If the originally named target table is a partitioned table or inheritance
+ * tree, both nominalRelation and rootRelation contain the RT index of the
+ * partition root or appendrel RTE, which is not otherwise mentioned in the
+ * plan.  Otherwise rootRelation is zero.  However, nominalRelation will
+ * always be set, as it's the rel that EXPLAIN should claim is the
+ * INSERT/UPDATE/DELETE/MERGE target.
  *
  * Note that rowMarks and epqParam are presumed to be valid for all the
  * table(s); they can't contain any info that varies across tables.
@@ -232,7 +233,7 @@ typedef struct ModifyTable
 	CmdType		operation;		/* INSERT, UPDATE, DELETE, or MERGE */
 	bool		canSetTag;		/* do we set the command tag/es_processed? */
 	Index		nominalRelation;	/* Parent RT index for use of EXPLAIN */
-	Index		rootRelation;	/* Root RT index, if target is partitioned */
+	Index		rootRelation;	/* Root RT index, if partitioned/inherited */
 	bool		partColsUpdated;	/* some part key in hierarchy updated? */
 	List	   *resultRelations;	/* integer list of RT indexes */
 	List	   *updateColnosLists;	/* per-target-table update_colnos lists */
@@ -590,7 +591,7 @@ typedef enum SubqueryScanStatus
 {
 	SUBQUERY_SCAN_UNKNOWN,
 	SUBQUERY_SCAN_TRIVIAL,
-	SUBQUERY_SCAN_NONTRIVIAL
+	SUBQUERY_SCAN_NONTRIVIAL,
 } SubqueryScanStatus;
 
 typedef struct SubqueryScan
@@ -1329,7 +1330,7 @@ typedef enum RowMarkType
 	ROW_MARK_SHARE,				/* obtain shared tuple lock */
 	ROW_MARK_KEYSHARE,			/* obtain keyshare tuple lock */
 	ROW_MARK_REFERENCE,			/* just fetch the TID, don't lock it */
-	ROW_MARK_COPY				/* physically copy the row value */
+	ROW_MARK_COPY,				/* physically copy the row value */
 } RowMarkType;
 
 #define RowMarkRequiresRowShareLock(marktype)  ((marktype) <= ROW_MARK_KEYSHARE)
@@ -1541,7 +1542,7 @@ typedef struct PartitionPruneStepOp
 typedef enum PartitionPruneCombineOp
 {
 	PARTPRUNE_COMBINE_UNION,
-	PARTPRUNE_COMBINE_INTERSECT
+	PARTPRUNE_COMBINE_INTERSECT,
 } PartitionPruneCombineOp;
 
 typedef struct PartitionPruneStepCombine
@@ -1585,7 +1586,7 @@ typedef enum MonotonicFunction
 	MONOTONICFUNC_NONE = 0,
 	MONOTONICFUNC_INCREASING = (1 << 0),
 	MONOTONICFUNC_DECREASING = (1 << 1),
-	MONOTONICFUNC_BOTH = MONOTONICFUNC_INCREASING | MONOTONICFUNC_DECREASING
+	MONOTONICFUNC_BOTH = MONOTONICFUNC_INCREASING | MONOTONICFUNC_DECREASING,
 } MonotonicFunction;
 
 #endif							/* PLANNODES_H */
