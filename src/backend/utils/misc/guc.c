@@ -1473,7 +1473,9 @@ check_GUC_init(struct config_generic *gconf)
 			{
 				struct config_string *conf = (struct config_string *) gconf;
 
-				if (*conf->variable != NULL && strcmp(*conf->variable, conf->boot_val) != 0)
+				if (*conf->variable != NULL &&
+					(conf->boot_val == NULL ||
+					 strcmp(*conf->variable, conf->boot_val) != 0))
 				{
 					elog(LOG, "GUC (PGC_STRING) %s, boot_val=%s, C-var=%s",
 						 conf->gen.name, conf->boot_val ? conf->boot_val : "<null>", *conf->variable);
@@ -4213,8 +4215,7 @@ SetConfigOption(const char *name, const char *value,
 /*
  * Fetch the current value of the option `name', as a string.
  *
- * If the option doesn't exist, return NULL if missing_ok is true (NOTE that
- * this cannot be distinguished from a string variable with a NULL value!),
+ * If the option doesn't exist, return NULL if missing_ok is true,
  * otherwise throw an ereport and don't return.
  *
  * If restrict_privileged is true, we also enforce that only superusers and
@@ -4257,7 +4258,8 @@ GetConfigOption(const char *name, bool missing_ok, bool restrict_privileged)
 			return buffer;
 
 		case PGC_STRING:
-			return *((struct config_string *) record)->variable;
+			return *((struct config_string *) record)->variable ?
+				*((struct config_string *) record)->variable : "";
 
 		case PGC_ENUM:
 			return config_enum_lookup_by_value((struct config_enum *) record,
@@ -4304,7 +4306,8 @@ GetConfigOptionResetString(const char *name)
 			return buffer;
 
 		case PGC_STRING:
-			return ((struct config_string *) record)->reset_val;
+			return ((struct config_string *) record)->reset_val ?
+				((struct config_string *) record)->reset_val : "";
 
 		case PGC_ENUM:
 			return config_enum_lookup_by_value((struct config_enum *) record,
@@ -5255,7 +5258,14 @@ get_explain_guc_options(int *num)
 				{
 					struct config_string *lconf = (struct config_string *) conf;
 
-					modified = (strcmp(lconf->boot_val, *(lconf->variable)) != 0);
+					if (lconf->boot_val == NULL &&
+						*lconf->variable == NULL)
+						modified = false;
+					else if (lconf->boot_val == NULL ||
+							 *lconf->variable == NULL)
+						modified = true;
+					else
+						modified = (strcmp(lconf->boot_val, *(lconf->variable)) != 0);
 				}
 				break;
 
@@ -5482,7 +5492,8 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 			{
 				struct config_string *conf = (struct config_string *) gconf;
 
-				fprintf(fp, "%s", *conf->variable);
+				if (*conf->variable)
+					fprintf(fp, "%s", *conf->variable);
 			}
 			break;
 

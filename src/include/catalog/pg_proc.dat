@@ -8793,6 +8793,9 @@
 { oid => '2922', descr => 'serialize an XML value to a character string',
   proname => 'text', prorettype => 'text', proargtypes => 'xml',
   prosrc => 'xmltotext' },
+{ oid => '3813', descr => 'generate XML text node',
+  proname => 'xmltext', proisstrict => 't', prorettype => 'xml',
+  proargtypes => 'text', prosrc => 'xmltext' },
 
 { oid => '2923', descr => 'map table contents to XML',
   proname => 'table_to_xml', procost => '100', provolatile => 's',
@@ -12018,6 +12021,18 @@
 { oid => '3424', descr => 'get top-most partition root parent',
   proname => 'pg_partition_root', prorettype => 'regclass',
   proargtypes => 'regclass', prosrc => 'pg_partition_root' },
+
+{ oid => '4549', descr => 'Unicode version used by Postgres',
+  proname => 'unicode_version', prorettype => 'text', proargtypes => '',
+  prosrc => 'unicode_version' },
+
+{ oid => '6099', descr => 'Unicode version used by ICU, if enabled',
+  proname => 'icu_unicode_version', prorettype => 'text', proargtypes => '',
+  prosrc => 'icu_unicode_version' },
+
+{ oid => '6105', descr => 'check valid Unicode',
+  proname => 'unicode_assigned', prorettype => 'bool', proargtypes => 'text',
+  prosrc => 'unicode_assigned' },
 
 { oid => '4350', descr => 'Unicode normalization',
   proname => 'normalize', prorettype => 'text', proargtypes => 'text text',

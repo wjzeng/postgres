@@ -72,7 +72,7 @@ configure. Alternatively use a separate check out for meson based builds.
 @0@
 ****'''
 if fs.exists(meson.current_source_dir() / 'src' / 'include' / 'pg_config.h')
-  errmsg_cleanup = 'To clean up, run make maintainer-clean in the source tree.'
+  errmsg_cleanup = 'To clean up, run make distclean in the source tree.'
   error(errmsg_nonclean_base.format(errmsg_cleanup))
 endif
 
@@ -511,7 +511,10 @@ endif
 dir_man = get_option('mandir')
 
 # FIXME: These used to be separately configurable - worth adding?
-dir_doc = get_option('datadir') / 'doc' / 'postgresql'
+dir_doc = get_option('datadir') / 'doc'
+if not (dir_prefix_contains_pg or dir_doc.contains('pgsql') or dir_doc.contains('postgres'))
+  dir_doc = dir_doc / pkg
+endif
 dir_doc_html = dir_doc / 'html'
 
 dir_locale = get_option('localedir')
@@ -523,6 +526,7 @@ dir_include_internal = dir_include_pkg / 'internal'
 dir_include_server = dir_include_pkg / 'server'
 dir_include_extension = dir_include_server / 'extension'
 dir_data_extension = dir_data / 'extension'
+dir_doc_extension = dir_doc / 'extension'
 
 
 

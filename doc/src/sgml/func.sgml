@@ -2862,6 +2862,22 @@ repeat('Pg', 4) <returnvalue>PgPgPgPg</returnvalue>
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>unicode_assigned</primary>
+        </indexterm>
+        <function>unicode_assigned</function> ( <type>text</type> )
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Returns <literal>true</literal> if all characters in the string are
+        assigned Unicode codepoints; <literal>false</literal> otherwise. This
+        function can only be used when the server encoding is
+        <literal>UTF8</literal>.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>upper</primary>
         </indexterm>
         <function>upper</function> ( <type>text</type> )
@@ -14164,6 +14180,36 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
     documents for processing in client applications.
    </para>
 
+  <sect3 id="functions-producing-xml-xmltext">
+    <title><literal>xmltext</literal></title>
+
+    <indexterm>
+     <primary>xmltext</primary>
+    </indexterm>
+
+<synopsis>
+<function>xmltext</function> ( <type>text</type> ) <returnvalue>xml</returnvalue>
+</synopsis>
+
+    <para>
+     The function <function>xmltext</function> returns an XML value with a single
+     text node containing the input argument as its content. Predefined entities
+     like ampersand (<literal><![CDATA[&]]></literal>), left and right angle brackets
+     (<literal><![CDATA[< >]]></literal>), and quotation marks (<literal><![CDATA[""]]></literal>)
+     are escaped.
+    </para>
+
+    <para>
+     Example:
+<screen><![CDATA[
+SELECT xmltext('< foo & bar >');
+         xmltext
+-------------------------
+ &lt; foo &amp; bar &gt;
+]]></screen>
+    </para>
+   </sect3>
+
    <sect3 id="functions-producing-xml-xmlcomment">
     <title><literal>xmlcomment</literal></title>
 
@@ -20272,6 +20318,13 @@ SELECT NULLIF(value, '(none)') ...
    aggregation.
   </para>
 
+  <para>
+   While all aggregates below accept an optional
+   <literal>ORDER BY</literal> clause (as outlined in <xref
+   linkend="syntax-aggregates"/>), the clause has only been added to
+   aggregates whose output is affected by ordering.
+  </para>
+
    <table id="functions-aggregate-table">
     <title>General-Purpose Aggregate Functions</title>
     <tgroup cols="2">
@@ -20309,7 +20362,7 @@ SELECT NULLIF(value, '(none)') ...
         <indexterm>
          <primary>array_agg</primary>
         </indexterm>
-        <function>array_agg</function> ( <type>anynonarray</type> )
+        <function>array_agg</function> ( <type>anynonarray</type> <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>anyarray</returnvalue>
        </para>
        <para>
@@ -20320,7 +20373,7 @@ SELECT NULLIF(value, '(none)') ...
 
       <row>
        <entry role="func_table_entry"><para role="func_signature">
-        <function>array_agg</function> ( <type>anyarray</type> )
+        <function>array_agg</function> ( <type>anyarray</type> <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>anyarray</returnvalue>
        </para>
        <para>
@@ -20525,14 +20578,14 @@ SELECT NULLIF(value, '(none)') ...
         <indexterm>
          <primary>json_agg</primary>
         </indexterm>
-        <function>json_agg</function> ( <type>anyelement</type> )
+        <function>json_agg</function> ( <type>anyelement</type> <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>json</returnvalue>
        </para>
        <para role="func_signature">
         <indexterm>
          <primary>jsonb_agg</primary>
         </indexterm>
-        <function>jsonb_agg</function> ( <type>anyelement</type> )
+        <function>jsonb_agg</function> ( <type>anyelement</type> <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>jsonb</returnvalue>
        </para>
        <para>
@@ -20572,7 +20625,8 @@ SELECT NULLIF(value, '(none)') ...
         </indexterm>
         <function>json_object_agg</function> ( <parameter>key</parameter>
          <type>"any"</type>, <parameter>value</parameter>
-         <type>"any"</type> )
+         <type>"any"</type>
+         <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>json</returnvalue>
        </para>
        <para role="func_signature">
@@ -20581,7 +20635,8 @@ SELECT NULLIF(value, '(none)') ...
         </indexterm>
         <function>jsonb_object_agg</function> ( <parameter>key</parameter>
          <type>"any"</type>, <parameter>value</parameter>
-         <type>"any"</type> )
+         <type>"any"</type>
+         <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>jsonb</returnvalue>
        </para>
        <para>
@@ -20818,7 +20873,8 @@ SELECT NULLIF(value, '(none)') ...
        </para>
        <para role="func_signature">
         <function>string_agg</function> ( <parameter>value</parameter>
-         <type>bytea</type>, <parameter>delimiter</parameter> <type>bytea</type> )
+         <type>bytea</type>, <parameter>delimiter</parameter> <type>bytea</type>
+         <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>bytea</returnvalue>
        </para>
        <para>
@@ -20876,7 +20932,7 @@ SELECT NULLIF(value, '(none)') ...
         <indexterm>
          <primary>xmlagg</primary>
         </indexterm>
-        <function>xmlagg</function> ( <type>xml</type> )
+        <function>xmlagg</function> ( <type>xml</type> <literal>ORDER BY</literal> <literal>input_sort_columns</literal> )
         <returnvalue>xml</returnvalue>
        </para>
        <para>
@@ -23425,25 +23481,6 @@ SELECT * FROM pg_ls_dir('.') WITH ORDINALITY AS t(ls,n);
        </para>
        <para>
         This is equivalent to <function>current_user</function>.
-       </para></entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>version</primary>
-        </indexterm>
-        <function>version</function> ()
-        <returnvalue>text</returnvalue>
-       </para>
-       <para>
-        Returns a string describing the <productname>PostgreSQL</productname>
-        server's version.  You can also get this information from
-        <xref linkend="guc-server-version"/>, or for a machine-readable
-        version use <xref linkend="guc-server-version-num"/>.  Software
-        developers should use <varname>server_version_num</varname> (available
-        since 8.2) or <xref linkend="libpq-PQserverVersion"/> instead of
-        parsing the text version.
        </para></entry>
       </row>
      </tbody>
@@ -26326,6 +26363,80 @@ SELECT collation for ('foo' COLLATE "de_DE");
        <entry><type>boolean</type></entry>
       </row>
 
+     </tbody>
+    </tgroup>
+   </table>
+
+  </sect2>
+
+  <sect2 id="functions-info-version">
+   <title>Version Information Functions</title>
+
+   <para>
+    The functions shown in <xref linkend="functions-version"/>
+    print version information.
+   </para>
+
+   <table id="functions-version">
+    <title>Version Information Functions</title>
+    <tgroup cols="1">
+     <thead>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        Function
+       </para>
+       <para>
+        Description
+       </para></entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>version</primary>
+        </indexterm>
+        <function>version</function> ()
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Returns a string describing the <productname>PostgreSQL</productname>
+        server's version.  You can also get this information from
+        <xref linkend="guc-server-version"/>, or for a machine-readable
+        version use <xref linkend="guc-server-version-num"/>.  Software
+        developers should use <varname>server_version_num</varname> (available
+        since 8.2) or <xref linkend="libpq-PQserverVersion"/> instead of
+        parsing the text version.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>unicode_version</primary>
+        </indexterm>
+        <function>unicode_version</function> ()
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Returns a string representing the version of Unicode used by
+        <productname>PostgreSQL</productname>.
+       </para></entry>
+      </row>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>icu_unicode_version</primary>
+        </indexterm>
+        <function>icu_unicode_version</function> ()
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Returns a string representing the version of Unicode used by ICU, if
+        the server was built with ICU support; otherwise returns
+        <literal>NULL</literal> </para></entry>
+      </row>
      </tbody>
     </tgroup>
    </table>

@@ -1381,6 +1381,18 @@ select * from mki4(42);
 drop function mki8(bigint, bigint);
 drop function mki4(int);
 
+-- test const-folding of a whole-row Var into a per-field Var
+-- (need to inline a function to reach this case, else parser does it)
+create function f_field_select(t onek) returns int4 as
+$$ select t.unique2; $$ language sql immutable;
+
+explain (verbose, costs off)
+select (t2.*).unique1, f_field_select(t2) from tenk1 t1
+    left join onek t2 on t1.unique1 = t2.unique1
+    left join int8_tbl t3 on true;
+
+drop function f_field_select(t onek);
+
 --
 -- test extraction of restriction OR clauses from join OR clause
 -- (we used to only do this for indexable clauses)
@@ -2572,6 +2584,27 @@ WHERE c1.id=c3.id AND c1.id*c3.id=c2.id*c2.id;
 explain (costs off)
 SELECT count(*) FROM emp1 c1, emp1 c2, emp1 c3
 WHERE c3.id=c2.id AND c3.id*c2.id=c1.id*c1.id;
+
+-- Check the usage of a parse tree by the set operations (bug #18170)
+explain (costs off)
+SELECT c1.code FROM emp1 c1 LEFT JOIN emp1 c2 ON c1.id = c2.id
+WHERE c2.id IS NOT NULL
+EXCEPT ALL
+SELECT c3.code FROM emp1 c3;
+
+-- Check that SJE removes references from PHVs correctly
+explain (costs off)
+select * from emp1 t1 left join
+    (select coalesce(t3.code, 1) from emp1 t2
+        left join (emp1 t3 join emp1 t4 on t3.id = t4.id)
+        on true)
+on true;
+
+-- Check that SJE does not remove self joins if a PHV references the removed
+-- rel laterally.
+explain (costs off)
+select * from emp1 t1 join emp1 t2 on t1.id = t2.id left join
+    lateral (select t1.id as t1id, * from generate_series(1,1) t3) s on true;
 
 -- We can remove the join even if we find the join can't duplicate rows and
 -- the base quals of each side are different.  In the following case we end up
