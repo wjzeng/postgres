@@ -7,8 +7,7 @@
 #----------------------------------------------------------------------------
 
 # This makefile is for building and installing the documentation.
-# When a release tarball is created, the documentation files are
-# prepared using the distprep target.  In Git-based trees these files
+# In Git-based trees these files
 # don't exist, unless explicitly built, so we skip the installation in
 # that case.
 
@@ -16,6 +15,8 @@
 # Make "html" the default target, since that is what most people tend
 # to want to use.
 html:
+# Note that all is *not* the default target in this directory
+all: html man
 
 # We don't need the tree-wide headers or install support here.
 NO_GENERATED_HEADERS=yes
@@ -25,10 +26,6 @@ subdir = doc/src/sgml
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-
-all: html man
-
-distprep: html distprep-man
 
 
 ifndef DBTOEPUB
@@ -58,7 +55,7 @@ override XSLTPROCFLAGS += --stringparam pg.version '$(VERSION)'
 
 GENERATED_SGML = version.sgml \
 	features-supported.sgml features-unsupported.sgml errcodes-table.sgml \
-	keywords-table.sgml wait_event_types.sgml
+	keywords-table.sgml targets-meson.sgml wait_event_types.sgml
 
 ALLSGML := $(wildcard $(srcdir)/*.sgml $(srcdir)/ref/*.sgml) $(GENERATED_SGML)
 
@@ -77,7 +74,7 @@ postgres-full.xml: postgres.sgml $(ALLSGML)
 ## Man pages
 ##
 
-man distprep-man: man-stamp
+man: man-stamp
 
 man-stamp: stylesheet-man.xsl postgres-full.xml
 	$(XSLTPROC) $(XMLINCLUDE) $(XSLTPROCFLAGS) $(XSLTPROC_MAN_FLAGS) $^
@@ -89,10 +86,9 @@ man-stamp: stylesheet-man.xsl postgres-full.xml
 ##
 
 # Technically, this should depend on Makefile.global, but then
-# version.sgml would need to be rebuilt after every configure run,
-# even in distribution tarballs.  So this is cheating a bit, but it
-# will achieve the goal of updating the version number when it
-# changes.
+# version.sgml would need to be rebuilt after every configure run.  So
+# this is cheating a bit, but it will achieve the goal of updating the
+# version number when it changes.
 version.sgml: $(top_srcdir)/configure
 	{ \
 	  echo "<!ENTITY version \"$(VERSION)\">"; \
@@ -113,6 +109,9 @@ keywords-table.sgml: $(top_srcdir)/src/include/parser/kwlist.h $(wildcard $(srcd
 
 wait_event_types.sgml: $(top_srcdir)/src/backend/utils/activity/wait_event_names.txt $(top_srcdir)/src/backend/utils/activity/generate-wait_event_types.pl
 	$(PERL) $(top_srcdir)/src/backend/utils/activity/generate-wait_event_types.pl --docs $<
+
+targets-meson.sgml: targets-meson.txt $(srcdir)/generate-targets-meson.pl
+	$(PERL) $(srcdir)/generate-targets-meson.pl $^ > $@
 
 ##
 ## Generation of some text files.
@@ -305,8 +304,6 @@ clean:
 	rm -f *.texixml *.texi *.info db2texi.refs
 
 distclean: clean
-
-maintainer-clean: distclean
 # HTML
 	rm -fr html/ html-stamp
 # man

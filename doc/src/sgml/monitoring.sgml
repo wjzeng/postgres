@@ -4712,24 +4712,62 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <indexterm>
          <primary>pg_stat_reset_shared</primary>
         </indexterm>
-        <function>pg_stat_reset_shared</function> ( <type>text</type> )
+        <function>pg_stat_reset_shared</function> ( [ <parameter>target</parameter> <type>text</type> <literal>DEFAULT</literal> <literal>NULL</literal> ] )
         <returnvalue>void</returnvalue>
        </para>
        <para>
         Resets some cluster-wide statistics counters to zero, depending on the
-        argument.  The argument can be <literal>bgwriter</literal> to reset
-        all the counters shown in
-        the <structname>pg_stat_bgwriter</structname> view,
-        <literal>checkpointer</literal> to reset all the counters shown in
-        the <structname>pg_stat_checkpointer</structname> view,
-        <literal>archiver</literal> to reset all the counters shown in
-        the <structname>pg_stat_archiver</structname> view,
-        <literal>io</literal> to reset all the counters shown in the
-        <structname>pg_stat_io</structname> view,
-        <literal>wal</literal> to reset all the counters shown in the
-        <structname>pg_stat_wal</structname> view or
-        <literal>recovery_prefetch</literal> to reset all the counters shown
-        in the <structname>pg_stat_recovery_prefetch</structname> view.
+        argument. <parameter>target</parameter> can be:
+       <itemizedlist>
+        <listitem>
+         <para>
+          <literal>archiver</literal>: Reset all the counters shown in the
+          <structname>pg_stat_archiver</structname> view.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+           <literal>bgwriter</literal>: Reset all the counters shown in the
+           <structname>pg_stat_bgwriter</structname> view.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>checkpointer</literal>: Reset all the counters shown in the
+          <structname>pg_stat_checkpointer</structname> view.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>io</literal>: Reset all the counters shown in the
+          <structname>pg_stat_io</structname> view.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>recovery_prefetch</literal>: Reset all the counters shown in
+          the <structname>pg_stat_recovery_prefetch</structname> view.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>slru</literal>: Reset all the counters shown in the
+          <structname>pg_stat_slru</structname> view.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>wal</literal>: Reset all the counters shown in the
+          <structname>pg_stat_wal</structname> view.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>NULL</literal> or not specified: All the counters from the
+          views listed above are reset.
+         </para>
+        </listitem>
+       </itemizedlist>
        </para>
        <para>
         This function is restricted to superusers by default, but other users
@@ -4778,14 +4816,15 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <indexterm>
          <primary>pg_stat_reset_slru</primary>
         </indexterm>
-        <function>pg_stat_reset_slru</function> ( <type>text</type> )
+        <function>pg_stat_reset_slru</function> ( [ <parameter>target</parameter> <type>text</type> <literal>DEFAULT</literal> <literal>NULL</literal> ] )
         <returnvalue>void</returnvalue>
        </para>
        <para>
         Resets statistics to zero for a single SLRU cache, or for all SLRUs in
-        the cluster.  If the argument is NULL, all counters shown in
+        the cluster. If <parameter>target</parameter> is
+        <literal>NULL</literal> or is not specified, all the counters shown in
         the <structname>pg_stat_slru</structname> view for all SLRU caches are
-        reset.  The argument can be one of
+        reset. The argument can be one of
         <literal>CommitTs</literal>,
         <literal>MultiXactMember</literal>,
         <literal>MultiXactOffset</literal>,

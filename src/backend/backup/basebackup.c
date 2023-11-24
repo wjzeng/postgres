@@ -82,7 +82,8 @@ static int64 sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeo
 					 backup_manifest_info *manifest, Oid spcoid);
 static bool sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 					 struct stat *statbuf, bool missing_ok,
-					 Oid dboid, Oid spcoid,
+					 Oid dboid, Oid spcoid, RelFileNumber relfilenumber,
+					 unsigned segno,
 					 backup_manifest_info *manifest);
 static off_t read_file_data_into_buffer(bbsink *sink,
 										const char *readfilename, int fd,
@@ -94,7 +95,7 @@ static bool verify_page_checksum(Page page, XLogRecPtr start_lsn,
 								 BlockNumber blkno,
 								 uint16 *expected_checksum);
 static void sendFileWithContent(bbsink *sink, const char *filename,
-								const char *content,
+								const char *content, int len,
 								backup_manifest_info *manifest);
 static int64 _tarWriteHeader(bbsink *sink, const char *filename,
 							 const char *linktarget, struct stat *statbuf,
@@ -104,7 +105,6 @@ static void convert_link_to_directory(const char *pathbuf, struct stat *statbuf)
 static void perform_base_backup(basebackup_options *opt, bbsink *sink);
 static void parse_basebackup_options(List *options, basebackup_options *opt);
 static int	compareWalFileNames(const ListCell *a, const ListCell *b);
-static bool is_checksummed_file(const char *fullpath, const char *filename);
 static int	basebackup_read_file(int fd, char *buf, size_t nbytes, off_t offset,
 								 const char *filename, bool partial_read_ok);
 
@@ -214,23 +214,6 @@ static const struct exclude_list_item excludeFiles[] =
 };
 
 /*
- * List of files excluded from checksum validation.
- *
- * Note: this list should be kept in sync with what pg_checksums.c
- * includes.
- */
-static const struct exclude_list_item noChecksumFiles[] = {
-	{"pg_control", false},
-	{"pg_filenode.map", false},
-	{"pg_internal.init", true},
-	{"PG_VERSION", false},
-#ifdef EXEC_BACKEND
-	{"config_exec_params", true},
-#endif
-	{NULL, false}
-};
-
-/*
  * Actually do a base backup for the specified tablespaces.
  *
  * This is split out mainly to avoid complaints about "variable might be
@@ -334,14 +317,14 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 				/* In the main tar, include the backup_label first... */
 				backup_label = build_backup_content(backup_state, false);
 				sendFileWithContent(sink, BACKUP_LABEL_FILE,
-									backup_label, &manifest);
+									backup_label, -1, &manifest);
 				pfree(backup_label);
 
 				/* Then the tablespace_map file, if required... */
 				if (opt->sendtblspcmapfile)
 				{
 					sendFileWithContent(sink, TABLESPACE_MAP,
-										tablespace_map->data, &manifest);
+										tablespace_map->data, -1, &manifest);
 					sendtblspclinks = false;
 				}
 
@@ -356,7 +339,8 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 							 errmsg("could not stat file \"%s\": %m",
 									XLOG_CONTROL_FILE)));
 				sendFile(sink, XLOG_CONTROL_FILE, XLOG_CONTROL_FILE, &statbuf,
-						 false, InvalidOid, InvalidOid, &manifest);
+						 false, InvalidOid, InvalidOid,
+						 InvalidRelFileNumber, 0, &manifest);
 			}
 			else
 			{
@@ -601,7 +585,7 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 			 * complete segment.
 			 */
 			StatusFilePath(pathbuf, walFileName, ".done");
-			sendFileWithContent(sink, pathbuf, "", &manifest);
+			sendFileWithContent(sink, pathbuf, "", -1, &manifest);
 		}
 
 		/*
@@ -625,11 +609,12 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 						 errmsg("could not stat file \"%s\": %m", pathbuf)));
 
 			sendFile(sink, pathbuf, pathbuf, &statbuf, false,
-					 InvalidOid, InvalidOid, &manifest);
+					 InvalidOid, InvalidOid, InvalidRelFileNumber, 0,
+					 &manifest);
 
 			/* unconditionally mark file as archived */
 			StatusFilePath(pathbuf, fname, ".done");
-			sendFileWithContent(sink, pathbuf, "", &manifest);
+			sendFileWithContent(sink, pathbuf, "", -1, &manifest);
 		}
 
 		/* Properly terminate the tar file. */
@@ -1037,26 +1022,29 @@ SendBaseBackup(BaseBackupCmd *cmd)
 
 /*
  * Inject a file with given name and content in the output tar stream.
+ *
+ * "len" can optionally be set to an arbitrary length of data sent.  If set
+ * to -1, the content sent is treated as a string with strlen() as length.
  */
 static void
 sendFileWithContent(bbsink *sink, const char *filename, const char *content,
-					backup_manifest_info *manifest)
+					int len, backup_manifest_info *manifest)
 {
 	struct stat statbuf;
-	int			bytes_done = 0,
-				len;
+	int			bytes_done = 0;
 	pg_checksum_context checksum_ctx;
 
 	if (pg_checksum_init(&checksum_ctx, manifest->checksum_type) < 0)
 		elog(ERROR, "could not initialize checksum of file \"%s\"",
 			 filename);
 
-	len = strlen(content);
+	if (len < 0)
+		len = strlen(content);
 
 	/*
-	 * Construct a stat struct for the backup_label file we're injecting in
-	 * the tar.
+	 * Construct a stat struct for the file we're injecting in the tar.
 	 */
+
 	/* Windows doesn't have the concept of uid and gid */
 #ifdef WIN32
 	statbuf.st_uid = 0;
@@ -1163,7 +1151,8 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 	struct stat statbuf;
 	int64		size = 0;
 	const char *lastDir;		/* Split last dir from parent path. */
-	bool		isDbDir = false;	/* Does this directory contain relations? */
+	bool		isRelationDir = false;	/* Does directory contain relations? */
+	Oid			dboid = InvalidOid;
 
 	/*
 	 * Determine if the current path is a database directory that can contain
@@ -1190,17 +1179,23 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 			 strncmp(lastDir - (sizeof(TABLESPACE_VERSION_DIRECTORY) - 1),
 					 TABLESPACE_VERSION_DIRECTORY,
 					 sizeof(TABLESPACE_VERSION_DIRECTORY) - 1) == 0))
-			isDbDir = true;
+		{
+			isRelationDir = true;
+			dboid = atooid(lastDir + 1);
+		}
 	}
+	else if (strcmp(path, "./global") == 0)
+		isRelationDir = true;
 
 	dir = AllocateDir(path);
 	while ((de = ReadDir(dir, path)) != NULL)
 	{
 		int			excludeIdx;
 		bool		excludeFound;
-		RelFileNumber relNumber;
-		ForkNumber	relForkNum;
-		unsigned	segno;
+		RelFileNumber relfilenumber = InvalidRelFileNumber;
+		ForkNumber	relForkNum = InvalidForkNumber;
+		unsigned	segno = 0;
+		bool		isRelationFile = false;
 
 		/* Skip special stuff */
 		if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
@@ -1248,37 +1243,40 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		if (excludeFound)
 			continue;
 
+		/*
+		 * If there could be non-temporary relation files in this directory,
+		 * try to parse the filename.
+		 */
+		if (isRelationDir)
+			isRelationFile =
+				parse_filename_for_nontemp_relation(de->d_name,
+													&relfilenumber,
+													&relForkNum, &segno);
+
 		/* Exclude all forks for unlogged tables except the init fork */
-		if (isDbDir &&
-			parse_filename_for_nontemp_relation(de->d_name, &relNumber,
-												&relForkNum, &segno))
+		if (isRelationFile && relForkNum != INIT_FORKNUM)
 		{
-			/* Never exclude init forks */
-			if (relForkNum != INIT_FORKNUM)
+			char		initForkFile[MAXPGPATH];
+
+			/*
+			 * If any other type of fork, check if there is an init fork with
+			 * the same RelFileNumber. If so, the file can be excluded.
+			 */
+			snprintf(initForkFile, sizeof(initForkFile), "%s/%u_init",
+					 path, relfilenumber);
+
+			if (lstat(initForkFile, &statbuf) == 0)
 			{
-				char		initForkFile[MAXPGPATH];
+				elog(DEBUG2,
+					 "unlogged relation file \"%s\" excluded from backup",
+					 de->d_name);
 
-				/*
-				 * If any other type of fork, check if there is an init fork
-				 * with the same RelFileNumber. If so, the file can be
-				 * excluded.
-				 */
-				snprintf(initForkFile, sizeof(initForkFile), "%s/%u_init",
-						 path, relNumber);
-
-				if (lstat(initForkFile, &statbuf) == 0)
-				{
-					elog(DEBUG2,
-						 "unlogged relation file \"%s\" excluded from backup",
-						 de->d_name);
-
-					continue;
-				}
+				continue;
 			}
 		}
 
 		/* Exclude temporary relations */
-		if (isDbDir && looks_like_temp_rel_name(de->d_name))
+		if (OidIsValid(dboid) && looks_like_temp_rel_name(de->d_name))
 		{
 			elog(DEBUG2,
 				 "temporary relation file \"%s\" excluded from backup",
@@ -1417,8 +1415,8 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 
 			if (!sizeonly)
 				sent = sendFile(sink, pathbuf, pathbuf + basepathlen + 1, &statbuf,
-								true, isDbDir ? atooid(lastDir + 1) : InvalidOid, spcoid,
-								manifest);
+								true, dboid, spcoid,
+								relfilenumber, segno, manifest);
 
 			if (sent || sizeonly)
 			{
@@ -1441,40 +1439,6 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 }
 
 /*
- * Check if a file should have its checksum validated.
- * We validate checksums on files in regular tablespaces
- * (including global and default) only, and in those there
- * are some files that are explicitly excluded.
- */
-static bool
-is_checksummed_file(const char *fullpath, const char *filename)
-{
-	/* Check that the file is in a tablespace */
-	if (strncmp(fullpath, "./global/", 9) == 0 ||
-		strncmp(fullpath, "./base/", 7) == 0 ||
-		strncmp(fullpath, "/", 1) == 0)
-	{
-		int			excludeIdx;
-
-		/* Compare file against noChecksumFiles skip list */
-		for (excludeIdx = 0; noChecksumFiles[excludeIdx].name != NULL; excludeIdx++)
-		{
-			int			cmplen = strlen(noChecksumFiles[excludeIdx].name);
-
-			if (!noChecksumFiles[excludeIdx].match_prefix)
-				cmplen++;
-			if (strncmp(filename, noChecksumFiles[excludeIdx].name,
-						cmplen) == 0)
-				return false;
-		}
-
-		return true;
-	}
-	else
-		return false;
-}
-
-/*
  * Given the member, write the TAR header & send the file.
  *
  * If 'missing_ok' is true, will not throw an error if the file is not found.
@@ -1488,6 +1452,7 @@ is_checksummed_file(const char *fullpath, const char *filename)
 static bool
 sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 		 struct stat *statbuf, bool missing_ok, Oid dboid, Oid spcoid,
+		 RelFileNumber relfilenumber, unsigned segno,
 		 backup_manifest_info *manifest)
 {
 	int			fd;
@@ -1495,8 +1460,6 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 	int			checksum_failures = 0;
 	off_t		cnt;
 	pgoff_t		bytes_done = 0;
-	int			segmentno = 0;
-	char	   *segmentpath;
 	bool		verify_checksum = false;
 	pg_checksum_context checksum_ctx;
 
@@ -1522,36 +1485,14 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 	 */
 	Assert((sink->bbs_buffer_length % BLCKSZ) == 0);
 
-	if (!noverify_checksums && DataChecksumsEnabled())
-	{
-		char	   *filename;
-
-		/*
-		 * Get the filename (excluding path).  As last_dir_separator()
-		 * includes the last directory separator, we chop that off by
-		 * incrementing the pointer.
-		 */
-		filename = last_dir_separator(readfilename) + 1;
-
-		if (is_checksummed_file(readfilename, filename))
-		{
-			verify_checksum = true;
-
-			/*
-			 * Cut off at the segment boundary (".") to get the segment number
-			 * in order to mix it into the checksum.
-			 */
-			segmentpath = strstr(filename, ".");
-			if (segmentpath != NULL)
-			{
-				segmentno = atoi(segmentpath + 1);
-				if (segmentno == 0)
-					ereport(ERROR,
-							(errmsg("invalid segment number %d in file \"%s\"",
-									segmentno, filename)));
-			}
-		}
-	}
+	/*
+	 * If we weren't told not to verify checksums, and if checksums are
+	 * enabled for this cluster, and if this is a relation file, then verify
+	 * the checksum.
+	 */
+	if (!noverify_checksums && DataChecksumsEnabled() &&
+		RelFileNumberIsValid(relfilenumber))
+		verify_checksum = true;
 
 	/*
 	 * Loop until we read the amount of data the caller told us to expect. The
@@ -1566,7 +1507,7 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 		/* Try to read some more data. */
 		cnt = read_file_data_into_buffer(sink, readfilename, fd, bytes_done,
 										 remaining,
-										 blkno + segmentno * RELSEG_SIZE,
+										 blkno + segno * RELSEG_SIZE,
 										 verify_checksum,
 										 &checksum_failures);
 

@@ -1563,8 +1563,8 @@ getInstallationPaths(const char *argv0)
 	FreeDir(pdir);
 
 	/*
-	 * It's not worth checking the share/ directory.  If the lib/ directory
-	 * is there, then share/ probably is too.
+	 * It's not worth checking the share/ directory.  If the lib/ directory is
+	 * there, then share/ probably is too.
 	 */
 }
 
@@ -1695,7 +1695,7 @@ ConfigurePostmasterWaitSet(bool accept_connections)
 		FreeWaitEventSet(pm_wait_set);
 	pm_wait_set = NULL;
 
-	pm_wait_set = CreateWaitEventSet(CurrentMemoryContext,
+	pm_wait_set = CreateWaitEventSet(NULL,
 									 accept_connections ? (1 + NumListenSockets) : 1);
 	AddWaitEventToSet(pm_wait_set, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch,
 					  NULL);

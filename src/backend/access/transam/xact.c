@@ -1933,7 +1933,7 @@ AtCleanup_Memory(void)
 	 * Clear the special abort context for next time.
 	 */
 	if (TransactionAbortContext != NULL)
-		MemoryContextResetAndDeleteChildren(TransactionAbortContext);
+		MemoryContextReset(TransactionAbortContext);
 
 	/*
 	 * Release all transaction-local memory.
@@ -1969,7 +1969,7 @@ AtSubCleanup_Memory(void)
 	 * Clear the special abort context for next time.
 	 */
 	if (TransactionAbortContext != NULL)
-		MemoryContextResetAndDeleteChildren(TransactionAbortContext);
+		MemoryContextReset(TransactionAbortContext);
 
 	/*
 	 * Delete the subxact local memory contexts. Its CurTransactionContext can
@@ -2309,6 +2309,7 @@ CommitTransaction(void)
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_COMMIT
 					  : XACT_EVENT_COMMIT);
 
+	CurrentResourceOwner = NULL;
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
 						 true, true);
@@ -2374,7 +2375,6 @@ CommitTransaction(void)
 	AtEOXact_LogicalRepWorkers(true);
 	pgstat_report_xact_timestamp(0);
 
-	CurrentResourceOwner = NULL;
 	ResourceOwnerDelete(TopTransactionResourceOwner);
 	s->curTransactionOwner = NULL;
 	CurTransactionResourceOwner = NULL;
@@ -5172,9 +5172,23 @@ AbortSubTransaction(void)
 		ResourceOwnerRelease(s->curTransactionOwner,
 							 RESOURCE_RELEASE_BEFORE_LOCKS,
 							 false, false);
+
 		AtEOSubXact_RelationCache(false, s->subTransactionId,
 								  s->parent->subTransactionId);
+
+
+		/*
+		 * AtEOSubXact_Inval sometimes needs to temporarily bump the refcount
+		 * on the relcache entries that it processes.  We cannot use the
+		 * subtransaction's resource owner anymore, because we've already
+		 * started releasing it.  But we can use the parent resource owner.
+		 */
+		CurrentResourceOwner = s->parent->curTransactionOwner;
+
 		AtEOSubXact_Inval(false);
+
+		CurrentResourceOwner = s->curTransactionOwner;
+
 		ResourceOwnerRelease(s->curTransactionOwner,
 							 RESOURCE_RELEASE_LOCKS,
 							 false, false);

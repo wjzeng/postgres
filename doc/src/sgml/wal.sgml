@@ -86,7 +86,7 @@
     <listitem>
       <para>
         On <productname>FreeBSD</productname>, IDE drives can be queried using
-        <command>atacontrol</command> and write caching turned off using
+        <command>camcontrol identify</command> and write caching turned off using
         <literal>hw.ata.wc=0</literal> in <filename>/boot/loader.conf</filename>;
         SCSI drives can be queried using <command>camcontrol identify</command>,
         and the write cache both queried and changed using
@@ -602,7 +602,7 @@
 
   <para>
    On Linux and POSIX platforms <xref linkend="guc-checkpoint-flush-after"/>
-   allows to force the OS that pages written by the checkpoint should be
+   allows you to force OS pages written by the checkpoint to be
    flushed to disk after a configurable number of bytes.  Otherwise, these
    pages may be kept in the OS's page cache, inducing a stall when
    <literal>fsync</literal> is issued at the end of a checkpoint.  This setting will

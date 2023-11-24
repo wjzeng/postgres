@@ -17,6 +17,7 @@ SUBDIRS = \
 		  test_copy_callbacks \
 		  test_custom_rmgrs \
 		  test_ddl_deparse \
+		  test_dsa \
 		  test_extensions \
 		  test_ginpostinglist \
 		  test_integerset \
@@ -28,6 +29,7 @@ SUBDIRS = \
 		  test_predtest \
 		  test_rbtree \
 		  test_regex \
+		  test_resowner \
 		  test_rls_hooks \
 		  test_shm_mq \
 		  test_slru \

@@ -537,6 +537,16 @@ retry:
 	 */
 	if (SlotIsLogical(s))
 		pgstat_acquire_replslot(s);
+
+	if (am_walsender)
+	{
+		ereport(log_replication_commands ? LOG : DEBUG1,
+				SlotIsLogical(s)
+				? errmsg("acquired logical replication slot \"%s\"",
+						 NameStr(s->data.name))
+				: errmsg("acquired physical replication slot \"%s\"",
+						 NameStr(s->data.name)));
+	}
 }
 
 /*
@@ -549,8 +559,16 @@ void
 ReplicationSlotRelease(void)
 {
 	ReplicationSlot *slot = MyReplicationSlot;
+	char	   *slotname = NULL;	/* keep compiler quiet */
+	bool		is_logical = false; /* keep compiler quiet */
 
 	Assert(slot != NULL && slot->active_pid != 0);
+
+	if (am_walsender)
+	{
+		slotname = pstrdup(NameStr(slot->data.name));
+		is_logical = SlotIsLogical(slot);
+	}
 
 	if (slot->data.persistency == RS_EPHEMERAL)
 	{
@@ -596,6 +614,18 @@ ReplicationSlotRelease(void)
 	MyProc->statusFlags &= ~PROC_IN_LOGICAL_DECODING;
 	ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
 	LWLockRelease(ProcArrayLock);
+
+	if (am_walsender)
+	{
+		ereport(log_replication_commands ? LOG : DEBUG1,
+				is_logical
+				? errmsg("released logical replication slot \"%s\"",
+						 slotname)
+				: errmsg("released physical replication slot \"%s\"",
+						 slotname));
+
+		pfree(slotname);
+	}
 }
 
 /*
@@ -1424,18 +1454,12 @@ InvalidatePossiblyObsoleteSlot(ReplicationSlotInvalidationCause cause,
 		SpinLockRelease(&s->mutex);
 
 		/*
-		 * The logical replication slots shouldn't be invalidated as
-		 * max_slot_wal_keep_size GUC is set to -1 during the upgrade.
-		 *
-		 * The following is just a sanity check.
+		 * The logical replication slots shouldn't be invalidated as GUC
+		 * max_slot_wal_keep_size is set to -1 during the binary upgrade. See
+		 * check_old_cluster_for_valid_slots() where we ensure that no
+		 * invalidated before the upgrade.
 		 */
-		if (*invalidated && SlotIsLogical(s) && IsBinaryUpgrade)
-		{
-			ereport(ERROR,
-					errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					errmsg("replication slots must not be invalidated during the upgrade"),
-					errhint("\"max_slot_wal_keep_size\" must be set to -1 during the upgrade"));
-		}
+		Assert(!(*invalidated && SlotIsLogical(s) && IsBinaryUpgrade));
 
 		if (active_pid != 0)
 		{

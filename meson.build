@@ -72,7 +72,7 @@ configure. Alternatively use a separate check out for meson based builds.
 @0@
 ****'''
 if fs.exists(meson.current_source_dir() / 'src' / 'include' / 'pg_config.h')
-  errmsg_cleanup = 'To clean up, run make maintainer-clean in the source tree.'
+  errmsg_cleanup = 'To clean up, run make distclean in the source tree.'
   error(errmsg_nonclean_base.format(errmsg_cleanup))
 endif
 
@@ -511,7 +511,10 @@ endif
 dir_man = get_option('mandir')
 
 # FIXME: These used to be separately configurable - worth adding?
-dir_doc = get_option('datadir') / 'doc' / 'postgresql'
+dir_doc = get_option('datadir') / 'doc'
+if not (dir_prefix_contains_pg or dir_doc.contains('pgsql') or dir_doc.contains('postgres'))
+  dir_doc = dir_doc / pkg
+endif
 dir_doc_html = dir_doc / 'html'
 
 dir_locale = get_option('localedir')
@@ -523,6 +526,7 @@ dir_include_internal = dir_include_pkg / 'internal'
 dir_include_server = dir_include_pkg / 'server'
 dir_include_extension = dir_include_server / 'extension'
 dir_data_extension = dir_data / 'extension'
+dir_doc_extension = dir_doc / 'extension'
 
 
 
@@ -3248,8 +3252,9 @@ foreach test_dir : tests
 
       testport += 1
     elif kind == 'tap'
+      testwrap_tap = testwrap_base
       if not tap_tests_enabled
-        continue
+        testwrap_tap += ['--skip', 'TAP tests not enabled']
       endif
 
       test_command = [
@@ -3289,7 +3294,7 @@ foreach test_dir : tests
         test(test_dir['name'] / onetap_p,
           python,
           kwargs: test_kwargs,
-          args: testwrap_base + [
+          args: testwrap_tap + [
             '--testgroup', test_dir['name'],
             '--testname', onetap_p,
             '--', test_command,
@@ -3326,7 +3331,16 @@ alias_target('bin', bin_targets + [libpq_st])
 alias_target('pl', pl_targets)
 alias_target('contrib', contrib_targets)
 alias_target('testprep', testprep_targets)
+
+alias_target('world', all_built, docs)
 alias_target('install-world', install_quiet, installdocs)
+
+run_target('help',
+  command: [
+    perl, '-ne', 'next if /^#/; print',
+    files('doc/src/sgml/targets-meson.txt'),
+  ]
+)
 
 
 

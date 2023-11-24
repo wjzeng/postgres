@@ -148,8 +148,8 @@ ArrayIOData
 ArrayIterator
 ArrayMapState
 ArrayMetaState
-ArrayParseState
 ArraySubWorkspace
+ArrayToken
 ArrayType
 AsyncQueueControl
 AsyncQueueEntry
@@ -1205,6 +1205,7 @@ IntegerSet
 InternalDefaultACL
 InternalGrant
 Interval
+IntervalAggState
 IntoClause
 InvalMessageArray
 InvalidationMsgsGroup
@@ -1527,6 +1528,8 @@ MVDependencies
 MVDependency
 MVNDistinct
 MVNDistinctItem
+ManyTestResource
+ManyTestResourceKind
 Material
 MaterialPath
 MaterialState
@@ -2359,8 +2362,10 @@ ReplicationStateOnDisk
 ResTarget
 ReservoirState
 ReservoirStateData
-ResourceArray
+ResourceElem
 ResourceOwner
+ResourceOwnerData
+ResourceOwnerDesc
 ResourceReleaseCallback
 ResourceReleaseCallbackItem
 ResourceReleasePhase
