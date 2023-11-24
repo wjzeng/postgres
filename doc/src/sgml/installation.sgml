@@ -1198,6 +1198,16 @@ build-postgresql:
        </listitem>
       </varlistentry>
 
+      <varlistentry id="configure-option-with-sepgsql">
+       <term><option>--with-selinux</option></term>
+       <listitem>
+        <para>
+         Build with SElinux support, enabling the <xref linkend="sepgsql"/>
+         extension.
+        </para>
+       </listitem>
+      </varlistentry>
+
      </variablelist>
 
    </sect3>
@@ -2629,6 +2639,17 @@ ninja install
        </para>
       </listitem>
      </varlistentry>
+
+     <varlistentry id="configure-with-sepgsql-meson">
+      <term><option>-Dselinux={ auto | enabled | disabled }</option></term>
+      <listitem>
+       <para>
+        Build with SElinux support, enabling the <xref linkend="sepgsql"/>
+        extension.  Defaults to auto.
+       </para>
+      </listitem>
+     </varlistentry>
+
     </variablelist>
    </sect3>
 
@@ -3179,6 +3200,21 @@ ninja install
     </variablelist>
    </sect3>
   </sect2>
+
+  <sect2 id="targets-meson">
+   <title><literal>meson</literal> Build Targets</title>
+
+   <para>
+    Individual build targets can be built using <command>ninja</command> <replaceable>target</replaceable>.
+
+    When no target is specified, everything except documentation is
+    built. Individual build products can be built using the path/filename as
+    <replaceable>target</replaceable>.
+   </para>
+
+   &targets-meson;
+  </sect2>
+
  </sect1>
 
  <sect1 id="install-post">

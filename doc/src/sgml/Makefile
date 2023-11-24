@@ -15,6 +15,8 @@
 # Make "html" the default target, since that is what most people tend
 # to want to use.
 html:
+# Note that all is *not* the default target in this directory
+all: html man
 
 # We don't need the tree-wide headers or install support here.
 NO_GENERATED_HEADERS=yes
@@ -24,8 +26,6 @@ subdir = doc/src/sgml
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-
-all: html man
 
 
 ifndef DBTOEPUB
@@ -55,7 +55,7 @@ override XSLTPROCFLAGS += --stringparam pg.version '$(VERSION)'
 
 GENERATED_SGML = version.sgml \
 	features-supported.sgml features-unsupported.sgml errcodes-table.sgml \
-	keywords-table.sgml wait_event_types.sgml
+	keywords-table.sgml targets-meson.sgml wait_event_types.sgml
 
 ALLSGML := $(wildcard $(srcdir)/*.sgml $(srcdir)/ref/*.sgml) $(GENERATED_SGML)
 
@@ -109,6 +109,9 @@ keywords-table.sgml: $(top_srcdir)/src/include/parser/kwlist.h $(wildcard $(srcd
 
 wait_event_types.sgml: $(top_srcdir)/src/backend/utils/activity/wait_event_names.txt $(top_srcdir)/src/backend/utils/activity/generate-wait_event_types.pl
 	$(PERL) $(top_srcdir)/src/backend/utils/activity/generate-wait_event_types.pl --docs $<
+
+targets-meson.sgml: targets-meson.txt $(srcdir)/generate-targets-meson.pl
+	$(PERL) $(srcdir)/generate-targets-meson.pl $^ > $@
 
 ##
 ## Generation of some text files.

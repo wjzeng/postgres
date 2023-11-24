@@ -148,8 +148,8 @@ ArrayIOData
 ArrayIterator
 ArrayMapState
 ArrayMetaState
-ArrayParseState
 ArraySubWorkspace
+ArrayToken
 ArrayType
 AsyncQueueControl
 AsyncQueueEntry
@@ -1205,6 +1205,7 @@ IntegerSet
 InternalDefaultACL
 InternalGrant
 Interval
+IntervalAggState
 IntoClause
 InvalMessageArray
 InvalidationMsgsGroup

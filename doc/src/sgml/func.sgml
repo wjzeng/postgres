@@ -718,7 +718,19 @@ repeat('Pg', 4) <returnvalue>PgPgPgPg</returnvalue>
     <literal>IS NULL</literal> and <literal>IS NOT NULL</literal> do not always return
     inverse results for row-valued expressions; in particular, a row-valued
     expression that contains both null and non-null fields will return false
-    for both tests.  In some cases, it may be preferable to
+    for both tests.  For example:
+
+<programlisting>
+SELECT ROW(1,2.5,'this is a test') = ROW(1, 3, 'not the same');
+
+SELECT ROW(table.*) IS NULL FROM table;  -- detect all-null rows
+
+SELECT ROW(table.*) IS NOT NULL FROM table;  -- detect all-non-null rows
+
+SELECT NOT(ROW(table.*) IS NOT NULL) FROM TABLE; -- detect at least one null in rows
+</programlisting>
+
+    In some cases, it may be preferable to
     write <replaceable>row</replaceable> <literal>IS DISTINCT FROM NULL</literal>
     or <replaceable>row</replaceable> <literal>IS NOT DISTINCT FROM NULL</literal>,
     which will simply check whether the overall row value is null without any
@@ -9553,7 +9565,7 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
          <returnvalue>boolean</returnvalue>
         </para>
         <para>
-         Test for finite interval (currently always true)
+         Test for finite interval (not +/-infinity)
         </para>
         <para>
          <literal>isfinite(interval '4 hours')</literal>
@@ -10450,7 +10462,11 @@ SELECT EXTRACT(YEAR FROM TIMESTAMP '2001-02-16 20:38:40');
      When the input value is +/-Infinity, <function>extract</function> returns
      +/-Infinity for monotonically-increasing fields (<literal>epoch</literal>,
      <literal>julian</literal>, <literal>year</literal>, <literal>isoyear</literal>,
-     <literal>decade</literal>, <literal>century</literal>, and <literal>millennium</literal>).
+     <literal>decade</literal>, <literal>century</literal>, and <literal>millennium</literal>
+     for <type>timestamp</type> inputs; <literal>epoch</literal>, <literal>hour</literal>,
+     <literal>day</literal>, <literal>year</literal>, <literal>decade</literal>,
+     <literal>century</literal>, and <literal>millennium</literal> for
+     <type>interval</type> inputs).
      For other fields, NULL is returned.  <productname>PostgreSQL</productname>
      versions before 9.6 returned zero for all cases of infinite input.
     </para>
@@ -19951,7 +19967,7 @@ SELECT NULLIF(value, '(none)') ...
        </para>
        <para>
         Extracts the lower bound of the range (<literal>NULL</literal> if the
-        range is empty or the lower bound is infinite).
+        range is empty or has no lower bound).
        </para>
        <para>
         <literal>lower(numrange(1.1,2.2))</literal>
@@ -19969,7 +19985,7 @@ SELECT NULLIF(value, '(none)') ...
        </para>
        <para>
         Extracts the upper bound of the range (<literal>NULL</literal> if the
-        range is empty or the upper bound is infinite).
+        range is empty or has no upper bound).
        </para>
        <para>
         <literal>upper(numrange(1.1,2.2))</literal>
@@ -20037,7 +20053,8 @@ SELECT NULLIF(value, '(none)') ...
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
-        Is the range's lower bound infinite?
+        Does the range have no lower bound?  (A lower bound of
+        <literal>-Infinity</literal> returns false.)
        </para>
        <para>
         <literal>lower_inf('(,)'::daterange)</literal>
@@ -20054,7 +20071,8 @@ SELECT NULLIF(value, '(none)') ...
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
-        Is the range's upper bound infinite?
+        Does the range have no upper bound?  (An upper bound of
+        <literal>Infinity</literal> returns false.)
        </para>
        <para>
         <literal>upper_inf('(,)'::daterange)</literal>
@@ -20109,7 +20127,7 @@ SELECT NULLIF(value, '(none)') ...
        </para>
        <para>
         Extracts the lower bound of the multirange (<literal>NULL</literal> if the
-        multirange is empty or the lower bound is infinite).
+        multirange is empty has no lower bound).
        </para>
        <para>
         <literal>lower('{[1.1,2.2)}'::nummultirange)</literal>
@@ -20127,7 +20145,7 @@ SELECT NULLIF(value, '(none)') ...
        </para>
        <para>
         Extracts the upper bound of the multirange (<literal>NULL</literal> if the
-        multirange is empty or the upper bound is infinite).
+        multirange is empty or has no upper bound).
        </para>
        <para>
         <literal>upper('{[1.1,2.2)}'::nummultirange)</literal>
@@ -20195,7 +20213,8 @@ SELECT NULLIF(value, '(none)') ...
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
-        Is the multirange's lower bound infinite?
+        Does the multirange have no lower bound?  (A lower bound of
+        <literal>-Infinity</literal> returns false.)
        </para>
        <para>
         <literal>lower_inf('{(,)}'::datemultirange)</literal>
@@ -20212,7 +20231,8 @@ SELECT NULLIF(value, '(none)') ...
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
-        Is the multirange's upper bound infinite?
+        Does the multirange have no upper bound?  (An upper bound of
+        <literal>Infinity</literal> returns false.)
        </para>
        <para>
         <literal>upper_inf('{(,)}'::datemultirange)</literal>
