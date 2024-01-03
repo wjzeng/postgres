@@ -97,7 +97,7 @@ The IPC::Run module is required.
 package PostgreSQL::Test::Cluster;
 
 use strict;
-use warnings;
+use warnings FATAL => 'all';
 
 use Carp;
 use Config;
@@ -779,6 +779,10 @@ a tar-format backup, pass the name of the tar program to use in the
 keyword parameter tar_program.  Note that tablespace tar files aren't
 handled here.
 
+To restore from an incremental backup, pass the parameter combine_with_prior
+as a reference to an array of prior backup names with which this backup
+is to be combined using pg_combinebackup.
+
 Streaming replication can be enabled on this node by passing the keyword
 parameter has_streaming => 1. This is disabled by default.
 
@@ -816,7 +820,22 @@ sub init_from_backup
 	mkdir $self->archive_dir;
 
 	my $data_path = $self->data_dir;
-	if (defined $params{tar_program})
+	if (defined $params{combine_with_prior})
+	{
+		my @prior_backups = @{$params{combine_with_prior}};
+		my @prior_backup_path;
+
+		for my $prior_backup_name (@prior_backups)
+		{
+			push @prior_backup_path,
+				$root_node->backup_dir . '/' . $prior_backup_name;
+		}
+
+		local %ENV = $self->_get_env();
+		PostgreSQL::Test::Utils::system_or_bail('pg_combinebackup', '-d',
+			@prior_backup_path, $backup_path, '-o', $data_path);
+	}
+	elsif (defined $params{tar_program})
 	{
 		mkdir($data_path);
 		PostgreSQL::Test::Utils::system_or_bail($params{tar_program}, 'xf',
@@ -2028,9 +2047,6 @@ sub psql
 
 Invoke B<psql> on B<$dbname> and return a BackgroundPsql object.
 
-A default timeout of $PostgreSQL::Test::Utils::timeout_default is set up,
-which can be modified later.
-
 psql is invoked in tuples-only unaligned mode with reading of B<.psqlrc>
 disabled.  That may be overridden by passing extra psql parameters.
 
@@ -2047,6 +2063,11 @@ Be sure to "quit" the returned object when done with it.
 By default, the B<psql> method invokes the B<psql> program with ON_ERROR_STOP=1
 set, so SQL execution is stopped at the first error and exit code 3 is
 returned.  Set B<on_error_stop> to 0 to ignore errors instead.
+
+=item timeout => 'interval'
+
+Set a timeout for a background psql session. By default, timeout of
+$PostgreSQL::Test::Utils::timeout_default is set up.
 
 =item replication => B<value>
 
@@ -2069,6 +2090,7 @@ sub background_psql
 	local %ENV = $self->_get_env();
 
 	my $replication = $params{replication};
+	my $timeout = undef;
 
 	my @psql_params = (
 		$self->installed_command('psql'),
@@ -2080,12 +2102,13 @@ sub background_psql
 		'-');
 
 	$params{on_error_stop} = 1 unless defined $params{on_error_stop};
+	$timeout = $params{timeout} if defined $params{timeout};
 
 	push @psql_params, '-v', 'ON_ERROR_STOP=1' if $params{on_error_stop};
 	push @psql_params, @{ $params{extra_params} }
 	  if defined $params{extra_params};
 
-	return PostgreSQL::Test::BackgroundPsql->new(0, \@psql_params);
+	return PostgreSQL::Test::BackgroundPsql->new(0, \@psql_params, $timeout);
 }
 
 =pod
@@ -2095,8 +2118,7 @@ sub background_psql
 Invoke B<psql> on B<$dbname> and return a BackgroundPsql object, which the
 caller may use to send interactive input to B<psql>.
 
-A default timeout of $PostgreSQL::Test::Utils::timeout_default is set up,
-which can be modified later.
+A timeout of $PostgreSQL::Test::Utils::timeout_default is set up.
 
 psql is invoked in tuples-only unaligned mode with reading of B<.psqlrc>
 disabled.  That may be overridden by passing extra psql parameters.
@@ -2106,13 +2128,16 @@ Errors occurring later are the caller's problem.
 
 Be sure to "quit" the returned object when done with it.
 
-The only extra parameter currently accepted is
-
 =over
 
 =item extra_params => ['--single-transaction']
 
 If given, it must be an array reference containing additional parameters to B<psql>.
+
+=item history_file => B<path>
+
+Cause the interactive B<psql> session to write its command history to B<path>.
+If not given, the history is sent to B</dev/null>.
 
 =back
 
@@ -2125,6 +2150,27 @@ sub interactive_psql
 	my ($self, $dbname, %params) = @_;
 
 	local %ENV = $self->_get_env();
+
+	# Since the invoked psql will believe it's interactive, it will use
+	# readline/libedit if available.  We need to adjust some environment
+	# settings to prevent unwanted side-effects.
+
+	# Developers would not appreciate tests adding a bunch of junk to
+	# their ~/.psql_history, so redirect readline history somewhere else.
+	# If the calling script doesn't specify anything, just bit-bucket it.
+	$ENV{PSQL_HISTORY} = $params{history_file} || '/dev/null';
+
+	# Another pitfall for developers is that they might have a ~/.inputrc
+	# file that changes readline's behavior enough to affect the test.
+	# So ignore any such file.
+	$ENV{INPUTRC} = '/dev/null';
+
+	# Unset TERM so that readline/libedit won't use any terminal-dependent
+	# escape sequences; that leads to way too many cross-version variations
+	# in the output.
+	delete $ENV{TERM};
+	# Some versions of readline inspect LS_COLORS, so for luck unset that too.
+	delete $ENV{LS_COLORS};
 
 	my @psql_params = (
 		$self->installed_command('psql'),
@@ -3171,6 +3217,31 @@ sub create_logical_slot_on_standby
 	is($self->slot($slot_name)->{'slot_type'},
 		'logical', $slot_name . ' on standby created')
 	  or die "could not create slot" . $slot_name;
+}
+
+=pod
+
+=item $node->advance_wal(num)
+
+Advance WAL of node by given number of segments.
+
+=cut
+
+sub advance_wal
+{
+	my ($self, $num) = @_;
+
+	# Advance by $n segments (= (wal_segment_size * $num) bytes).
+	# pg_switch_wal() forces a WAL flush, making pg_logical_emit_message()
+	# safe to use in non-transactional mode.
+	for (my $i = 0; $i < $num; $i++)
+	{
+		$self->safe_psql(
+			'postgres', qq{
+			SELECT pg_logical_emit_message(false, '', 'foo');
+			SELECT pg_switch_wal();
+			});
+	}
 }
 
 =pod

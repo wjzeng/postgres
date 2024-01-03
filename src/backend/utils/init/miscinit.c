@@ -107,9 +107,8 @@ InitPostmasterChild(void)
 
 	/*
 	 * Set reference point for stack-depth checking.  This might seem
-	 * redundant in !EXEC_BACKEND builds; but it's not because the postmaster
-	 * launches its children from signal handlers, so we might be running on
-	 * an alternative stack.
+	 * redundant in !EXEC_BACKEND builds, but it's better to keep the depth
+	 * logic the same with and without that build option.
 	 */
 	(void) set_stack_base();
 
@@ -305,6 +304,9 @@ GetBackendTypeDesc(BackendType backendType)
 			break;
 		case B_WAL_SENDER:
 			backendDesc = "walsender";
+			break;
+		case B_WAL_SUMMARIZER:
+			backendDesc = "walsummarizer";
 			break;
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";

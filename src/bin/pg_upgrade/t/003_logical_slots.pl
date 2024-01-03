@@ -3,7 +3,7 @@
 # Tests for upgrading logical replication slots
 
 use strict;
-use warnings;
+use warnings FATAL => 'all';
 
 use File::Find qw(find);
 
@@ -17,6 +17,7 @@ my $mode = $ENV{PG_TEST_PG_UPGRADE_MODE} || '--copy';
 # Initialize old cluster
 my $oldpub = PostgreSQL::Test::Cluster->new('oldpub');
 $oldpub->init(allows_streaming => 'logical');
+$oldpub->append_conf('postgresql.conf', 'autovacuum = off');
 
 # Initialize new cluster
 my $newpub = PostgreSQL::Test::Cluster->new('newpub');
@@ -161,6 +162,12 @@ $sub->safe_psql(
 	CREATE SUBSCRIPTION regress_sub CONNECTION '$old_connstr' PUBLICATION regress_pub WITH (two_phase = 'true')
 ]);
 $sub->wait_for_subscription_sync($oldpub, 'regress_sub');
+
+# Also wait for two-phase to be enabled
+my $twophase_query =
+  "SELECT count(1) = 0 FROM pg_subscription WHERE subtwophasestate NOT IN ('e');";
+$sub->poll_query_until('postgres', $twophase_query)
+  or die "Timed out while waiting for subscriber to enable twophase";
 
 # 2. Temporarily disable the subscription
 $sub->safe_psql('postgres', "ALTER SUBSCRIPTION regress_sub DISABLE");

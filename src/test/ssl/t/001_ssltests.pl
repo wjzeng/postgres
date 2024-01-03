@@ -2,7 +2,7 @@
 # Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 use strict;
-use warnings;
+use warnings FATAL => 'all';
 use Config qw ( %Config );
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
@@ -17,7 +17,7 @@ if ($ENV{with_ssl} ne 'openssl')
 {
 	plan skip_all => 'OpenSSL not supported by this build';
 }
-elsif ($ENV{PG_TEST_EXTRA} !~ /\bssl\b/)
+elsif (!$ENV{PG_TEST_EXTRA} || $ENV{PG_TEST_EXTRA} !~ /\bssl\b/)
 {
 	plan skip_all =>
 	  'Potentially unsafe test SSL not enabled in PG_TEST_EXTRA';
@@ -708,6 +708,8 @@ if ($? == 0)
 	# integer like how we do when grabbing the serial fails.
 	if ($Config{ivsize} == 8)
 	{
+		no warnings qw(portable);
+
 		$serialno =~ s/^serial=//;
 		$serialno =~ s/\s+//g;
 		$serialno = hex($serialno);
@@ -776,7 +778,7 @@ $node->connect_fails(
 	"$common_connstr user=ssltestuser sslcert=ssl/client-revoked.crt "
 	  . sslkey('client-revoked.key'),
 	"certificate authorization fails with revoked client cert",
-	expected_stderr => qr/SSL error: sslv3 alert certificate revoked/,
+	expected_stderr => qr|SSL error: ssl[a-z0-9/]* alert certificate revoked|,
 	# temporarily(?) skip this check due to timing issue
 	#	log_like => [
 	#		qr{Client certificate verification failed at depth 0: certificate revoked},
@@ -881,7 +883,7 @@ $node->connect_fails(
 	"$common_connstr user=ssltestuser sslcert=ssl/client-revoked.crt "
 	  . sslkey('client-revoked.key'),
 	"certificate authorization fails with revoked client cert with server-side CRL directory",
-	expected_stderr => qr/SSL error: sslv3 alert certificate revoked/,
+	expected_stderr => qr|SSL error: ssl[a-z0-9/]* alert certificate revoked|,
 	# temporarily(?) skip this check due to timing issue
 	#	log_like => [
 	#		qr{Client certificate verification failed at depth 0: certificate revoked},
@@ -894,7 +896,7 @@ $node->connect_fails(
 	"$common_connstr user=ssltestuser sslcert=ssl/client-revoked-utf8.crt "
 	  . sslkey('client-revoked-utf8.key'),
 	"certificate authorization fails with revoked UTF-8 client cert with server-side CRL directory",
-	expected_stderr => qr/SSL error: sslv3 alert certificate revoked/,
+	expected_stderr => qr|SSL error: ssl[a-z0-9/]* alert certificate revoked|,
 	# temporarily(?) skip this check due to timing issue
 	#	log_like => [
 	#		qr{Client certificate verification failed at depth 0: certificate revoked},

@@ -63,6 +63,7 @@
 #include "postmaster/postmaster.h"
 #include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
 #include "replication/logicallauncher.h"
 #include "replication/slot.h"
@@ -525,8 +526,8 @@ int			log_parameter_max_length_on_error = 0;
 int			log_temp_files = -1;
 double		log_statement_sample_rate = 1.0;
 double		log_xact_sample_rate = 0;
-int			trace_recovery_messages = LOG;
 char	   *backtrace_functions;
+bool		backtrace_on_internal_error = false;
 
 int			temp_file_limit = -1;
 
@@ -704,6 +705,8 @@ const char *const config_group_names[] =
 	gettext_noop("Write-Ahead Log / Archive Recovery"),
 	/* WAL_RECOVERY_TARGET */
 	gettext_noop("Write-Ahead Log / Recovery Target"),
+	/* WAL_SUMMARIZATION */
+	gettext_noop("Write-Ahead Log / Summarization"),
 	/* REPLICATION_SENDING */
 	gettext_noop("Replication / Sending Servers"),
 	/* REPLICATION_PRIMARY */
@@ -810,6 +813,16 @@ StaticAssertDecl(lengthof(config_type_names) == (PGC_ENUM + 1),
 
 struct config_bool ConfigureNamesBool[] =
 {
+	{
+		{"backtrace_on_internal_error", PGC_SUSET, DEVELOPER_OPTIONS,
+			gettext_noop("Log backtrace for any error with error code XX000 (internal error)."),
+			NULL,
+			GUC_NOT_IN_SAMPLE
+		},
+		&backtrace_on_internal_error,
+		false,
+		NULL, NULL, NULL
+	},
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of sequential-scan plans."),
@@ -1788,6 +1801,16 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"summarize_wal", PGC_SIGHUP, WAL_SUMMARIZATION,
+			gettext_noop("Starts the WAL summarizer process to enable incremental backup."),
+			NULL
+		},
+		&summarize_wal,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"hot_standby", PGC_POSTMASTER, REPLICATION_STANDBY,
 			gettext_noop("Allows connections and queries during recovery."),
 			NULL
@@ -2688,6 +2711,16 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"max_notify_queue_pages", PGC_POSTMASTER, RESOURCES_DISK,
+			gettext_noop("Sets the maximum number of allocated pages for NOTIFY / LISTEN queue."),
+			NULL,
+		},
+		&max_notify_queue_pages,
+		1048576, 64, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"wal_decode_buffer_size", PGC_POSTMASTER, WAL_RECOVERY,
 			gettext_noop("Buffer size for reading ahead in the WAL during recovery."),
 			gettext_noop("Maximum distance to read ahead in the WAL to prefetch referenced data blocks."),
@@ -3189,6 +3222,19 @@ struct config_int ConfigureNamesInt[] =
 		WalSegMinSize,
 		WalSegMaxSize,
 		check_wal_segment_size, NULL, NULL
+	},
+
+	{
+		{"wal_summary_keep_time", PGC_SIGHUP, WAL_SUMMARIZATION,
+			gettext_noop("Time for which WAL summary files should be kept."),
+			NULL,
+			GUC_UNIT_MIN,
+		},
+		&wal_summary_keep_time,
+		10 * 24 * 60,			/* 10 days */
+		0,
+		INT_MAX,
+		NULL, NULL, NULL
 	},
 
 	{
@@ -3811,7 +3857,7 @@ struct config_string ConfigureNamesString[] =
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the shell command that will be called to archive a WAL file."),
-			gettext_noop("This is used only if \"archive_library\" is not set.")
+			gettext_noop("This is used only if archive_library is not set.")
 		},
 		&XLogArchiveCommand,
 		"",
@@ -3821,7 +3867,7 @@ struct config_string ConfigureNamesString[] =
 	{
 		{"archive_library", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the library that will be called to archive a WAL file."),
-			gettext_noop("An empty string indicates that \"archive_command\" should be used.")
+			gettext_noop("An empty string indicates that archive_command should be used.")
 		},
 		&XLogArchiveLibrary,
 		"",
@@ -4767,23 +4813,6 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&recoveryTargetAction,
 		RECOVERY_TARGET_ACTION_PAUSE, recovery_target_action_options,
-		NULL, NULL, NULL
-	},
-
-	{
-		{"trace_recovery_messages", PGC_SIGHUP, DEVELOPER_OPTIONS,
-			gettext_noop("Enables logging of recovery-related debugging information."),
-			gettext_noop("Each level includes all the levels that follow it. The later"
-						 " the level, the fewer messages are sent."),
-			GUC_NOT_IN_SAMPLE,
-		},
-		&trace_recovery_messages,
-
-		/*
-		 * client_message_level_options allows too many values, really, but
-		 * it's not worth having a separate options array for this.
-		 */
-		LOG, client_message_level_options,
 		NULL, NULL, NULL
 	},
 

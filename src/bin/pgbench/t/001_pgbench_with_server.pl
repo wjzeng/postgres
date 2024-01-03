@@ -2,7 +2,7 @@
 # Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 use strict;
-use warnings;
+use warnings FATAL => 'all';
 
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
@@ -878,7 +878,7 @@ select 1 \gset f
 
 # Working \startpipeline in prepared query mode with serializable
 $node->pgbench(
-	'-c4 -j2 -t 10 -n -M prepared',
+	'-c4 -t 10 -n -M prepared',
 	0,
 	[
 		qr{type: .*/001_pgbench_pipeline_serializable},

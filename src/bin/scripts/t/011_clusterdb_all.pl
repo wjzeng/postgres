@@ -2,7 +2,7 @@
 # Copyright (c) 2021-2023, PostgreSQL Global Development Group
 
 use strict;
-use warnings;
+use warnings FATAL => 'all';
 
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
@@ -12,10 +12,8 @@ my $node = PostgreSQL::Test::Cluster->new('main');
 $node->init;
 $node->start;
 
-# clusterdb -a is not compatible with -d, hence enforce environment variable
-# correctly.
-$ENV{PGDATABASE} = 'postgres';
-
+# clusterdb -a is not compatible with -d.  This relies on PGDATABASE to be
+# set, something PostgreSQL::Test::Cluster does.
 $node->issues_sql_like(
 	[ 'clusterdb', '-a' ],
 	qr/statement: CLUSTER.*statement: CLUSTER/s,

@@ -453,7 +453,7 @@ remove_rel_from_query(PlannerInfo *root, RelOptInfo *rel,
 	{
 		PlaceHolderInfo *phinfo = (PlaceHolderInfo *) lfirst(l);
 
-		Assert(!bms_is_member(relid, phinfo->ph_lateral));
+		Assert(sjinfo == NULL || !bms_is_member(relid, phinfo->ph_lateral));
 		if (bms_is_subset(phinfo->ph_needed, joinrelids) &&
 			bms_is_member(relid, phinfo->ph_eval_at) &&
 			!bms_is_member(ojrelid, phinfo->ph_eval_at))
@@ -472,6 +472,8 @@ remove_rel_from_query(PlannerInfo *root, RelOptInfo *rel,
 			phinfo->ph_needed = replace_relid(phinfo->ph_needed, relid, subst);
 			phinfo->ph_needed = replace_relid(phinfo->ph_needed, ojrelid, subst);
 			/* ph_needed might or might not become empty */
+			phinfo->ph_lateral = replace_relid(phinfo->ph_lateral, relid, subst);
+			/* ph_lateral might or might not be empty */
 			phv->phrels = replace_relid(phv->phrels, relid, subst);
 			phv->phrels = replace_relid(phv->phrels, ojrelid, subst);
 			Assert(!bms_is_empty(phv->phrels));
@@ -1456,7 +1458,16 @@ replace_varno_walker(Node *node, ReplaceVarnoContext *ctx)
 		}
 		return false;
 	}
-	if (IsA(node, RestrictInfo))
+	else if (IsA(node, PlaceHolderVar))
+	{
+		PlaceHolderVar *phv = (PlaceHolderVar *) node;
+
+		phv->phrels = replace_relid(phv->phrels, ctx->from, ctx->to);
+		phv->phnullingrels = replace_relid(phv->phnullingrels, ctx->from, ctx->to);
+
+		/* fall through to recurse into the placeholder's expression */
+	}
+	else if (IsA(node, RestrictInfo))
 	{
 		RestrictInfo *rinfo = (RestrictInfo *) node;
 		int			relid = -1;
@@ -1511,6 +1522,10 @@ replace_varno_walker(Node *node, ReplaceVarnoContext *ctx)
 
 /*
  * Substitute newId by oldId in relids.
+ *
+ * We must make a copy of the original Bitmapset before making any
+ * modifications, because the same pointer to it might be shared among
+ * different places.
  */
 static Bitmapset *
 replace_relid(Relids relids, int oldId, int newId)
@@ -1518,12 +1533,13 @@ replace_relid(Relids relids, int oldId, int newId)
 	if (oldId < 0)
 		return relids;
 
+	/* Delete relid without substitution. */
 	if (newId < 0)
-		/* Delete relid without substitution. */
-		return bms_del_member(relids, oldId);
+		return bms_del_member(bms_copy(relids), oldId);
 
+	/* Substitute newId for oldId. */
 	if (bms_is_member(oldId, relids))
-		return bms_add_member(bms_del_member(relids, oldId), newId);
+		return bms_add_member(bms_del_member(bms_copy(relids), oldId), newId);
 
 	return relids;
 }
@@ -1639,26 +1655,6 @@ update_eclasses(EquivalenceClass *ec, int from, int to)
 	list_free(ec->ec_sources);
 	ec->ec_sources = new_sources;
 	ec->ec_relids = replace_relid(ec->ec_relids, from, to);
-}
-
-static bool
-sje_walker(Node *node, ReplaceVarnoContext *ctx)
-{
-	if (node == NULL)
-		return false;
-
-	if (IsA(node, Var))
-	{
-		Var		   *var = (Var *) node;
-
-		if (var->varno == ctx->from)
-		{
-			var->varno = ctx->to;
-			var->varnosyn = ctx->to;
-		}
-		return false;
-	}
-	return expression_tree_walker(node, sje_walker, (void *) ctx);
 }
 
 /*
@@ -1868,7 +1864,10 @@ remove_self_join_rel(PlannerInfo *root, PlanRowMark *kmark, PlanRowMark *rmark,
 	}
 
 	/* Replace varno in all the query structures */
-	query_tree_walker(root->parse, sje_walker, &ctx, QTW_EXAMINE_SORTGROUP);
+	query_tree_walker(root->parse, replace_varno_walker, &ctx,
+					  QTW_EXAMINE_SORTGROUP);
+	if (root->parse->resultRelation == toRemove->relid)
+		root->parse->resultRelation = toKeep->relid;
 
 	/* Replace links in the planner info */
 	remove_rel_from_query(root, toRemove, toKeep->relid, NULL, NULL);
@@ -1878,6 +1877,9 @@ remove_self_join_rel(PlannerInfo *root, PlanRowMark *kmark, PlanRowMark *rmark,
 				  toRemove->relid, toKeep->relid);
 	replace_varno((Node *) root->processed_groupClause,
 				  toRemove->relid, toKeep->relid);
+	replace_relid(root->all_result_relids, toRemove->relid, toKeep->relid);
+	replace_relid(root->leaf_result_relids, toRemove->relid, toKeep->relid);
+
 
 	/*
 	 * There may be references to the rel in root->fkey_list, but if so,
@@ -2125,20 +2127,8 @@ remove_self_joins_one_group(PlannerInfo *root, Relids relids)
 			joinrelids = bms_add_member(joinrelids, k);
 
 			/*
-			 * Be safe to do not remove tables participated in complicated PH
+			 * PHVs should not impose any constraints on removing self joins.
 			 */
-			foreach(lc, root->placeholder_list)
-			{
-				PlaceHolderInfo *phinfo = (PlaceHolderInfo *) lfirst(lc);
-
-				/* there isn't any other place to eval PHV */
-				if (bms_is_subset(phinfo->ph_eval_at, joinrelids) ||
-					bms_is_subset(phinfo->ph_needed, joinrelids) ||
-					bms_is_member(r, phinfo->ph_lateral))
-					break;
-			}
-			if (lc)
-				continue;
 
 			/*
 			 * At this stage, joininfo lists of inner and outer can contain
@@ -2206,7 +2196,7 @@ remove_self_joins_one_group(PlannerInfo *root, Relids relids)
 
 /*
  * Gather indexes of base relations from the joinlist and try to eliminate self
- * joins. To avoid complexity, limit the max power of this set by a GUC.
+ * joins.
  */
 static Relids
 remove_self_joins_recurse(PlannerInfo *root, List *joinlist, Relids toRemove)

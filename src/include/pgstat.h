@@ -262,6 +262,9 @@ typedef struct PgStat_CheckpointerStats
 {
 	PgStat_Counter num_timed;
 	PgStat_Counter num_requested;
+	PgStat_Counter restartpoints_timed;
+	PgStat_Counter restartpoints_requested;
+	PgStat_Counter restartpoints_performed;
 	PgStat_Counter write_time;	/* times in milliseconds */
 	PgStat_Counter sync_time;
 	PgStat_Counter buffers_written;
@@ -519,7 +522,7 @@ extern bool pgstat_bktype_io_stats_valid(PgStat_BktypeIO *backend_io,
 										 BackendType bktype);
 extern void pgstat_count_io_op(IOObject io_object, IOContext io_context, IOOp io_op);
 extern void pgstat_count_io_op_n(IOObject io_object, IOContext io_context, IOOp io_op, uint32 cnt);
-extern instr_time pgstat_prepare_io_time(void);
+extern instr_time pgstat_prepare_io_time(bool track_io_guc);
 extern void pgstat_count_io_op_time(IOObject io_object, IOContext io_context,
 									IOOp io_op, instr_time start_time, uint32 cnt);
 

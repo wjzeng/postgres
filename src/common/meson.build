@@ -4,6 +4,7 @@ common_sources = files(
   'archive.c',
   'base64.c',
   'binaryheap.c',
+  'blkreftable.c',
   'checksum_helper.c',
   'compression.c',
   'controldata_utils.c',
@@ -18,6 +19,7 @@ common_sources = files(
   'kwlookup.c',
   'link-canary.c',
   'md5_common.c',
+  'parse_manifest.c',
   'percentrepl.c',
   'pg_get_line.c',
   'pg_lzcompress.c',
@@ -95,11 +97,10 @@ common_sources_cflags = {
 }
 
 
-# A few files are currently only built for frontend, not server
-# (Mkvcbuild.pm has a copy of this list, too).  logging.c is excluded
-# from OBJS_FRONTEND_SHLIB (shared library) as a matter of policy,
-# because it is not appropriate for general purpose libraries such
-# as libpq to report errors directly.
+# A few files are currently only built for frontend, not server.
+# logging.c is excluded from OBJS_FRONTEND_SHLIB (shared library) as
+# a matter of policy, because it is not appropriate for general purpose
+# libraries such as libpq to report errors directly.
 
 common_sources_frontend_shlib = common_sources
 common_sources_frontend_shlib += files(

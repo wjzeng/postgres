@@ -153,7 +153,7 @@ typedef struct JsonValueListIterator
 } JsonValueListIterator;
 
 /* strict/lax flags is decomposed into four [un]wrap/error flags */
-#define jspStrictAbsenseOfErrors(cxt)	(!(cxt)->laxMode)
+#define jspStrictAbsenceOfErrors(cxt)	(!(cxt)->laxMode)
 #define jspAutoUnwrap(cxt)				((cxt)->laxMode)
 #define jspAutoWrap(cxt)				((cxt)->laxMode)
 #define jspIgnoreStructuralErrors(cxt)	((cxt)->ignoreStructuralErrors)
@@ -570,7 +570,7 @@ executeJsonPath(JsonPath *path, Jsonb *vars, Jsonb *json, bool throwErrors,
 	cxt.throwErrors = throwErrors;
 	cxt.useTz = useTz;
 
-	if (jspStrictAbsenseOfErrors(&cxt) && !result)
+	if (jspStrictAbsenceOfErrors(&cxt) && !result)
 	{
 		/*
 		 * In strict mode we must get a complete list of values to check that
@@ -874,33 +874,6 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 			}
 			break;
 
-		case jpiAdd:
-			return executeBinaryArithmExpr(cxt, jsp, jb,
-										   numeric_add_opt_error, found);
-
-		case jpiSub:
-			return executeBinaryArithmExpr(cxt, jsp, jb,
-										   numeric_sub_opt_error, found);
-
-		case jpiMul:
-			return executeBinaryArithmExpr(cxt, jsp, jb,
-										   numeric_mul_opt_error, found);
-
-		case jpiDiv:
-			return executeBinaryArithmExpr(cxt, jsp, jb,
-										   numeric_div_opt_error, found);
-
-		case jpiMod:
-			return executeBinaryArithmExpr(cxt, jsp, jb,
-										   numeric_mod_opt_error, found);
-
-		case jpiPlus:
-			return executeUnaryArithmExpr(cxt, jsp, jb, NULL, found);
-
-		case jpiMinus:
-			return executeUnaryArithmExpr(cxt, jsp, jb, numeric_uminus,
-										  found);
-
 		case jpiFilter:
 			{
 				JsonPathBool st;
@@ -980,6 +953,33 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 			}
 			break;
 
+		case jpiAdd:
+			return executeBinaryArithmExpr(cxt, jsp, jb,
+										   numeric_add_opt_error, found);
+
+		case jpiPlus:
+			return executeUnaryArithmExpr(cxt, jsp, jb, NULL, found);
+
+		case jpiSub:
+			return executeBinaryArithmExpr(cxt, jsp, jb,
+										   numeric_sub_opt_error, found);
+
+		case jpiMinus:
+			return executeUnaryArithmExpr(cxt, jsp, jb, numeric_uminus,
+										  found);
+
+		case jpiMul:
+			return executeBinaryArithmExpr(cxt, jsp, jb,
+										   numeric_mul_opt_error, found);
+
+		case jpiDiv:
+			return executeBinaryArithmExpr(cxt, jsp, jb,
+										   numeric_div_opt_error, found);
+
+		case jpiMod:
+			return executeBinaryArithmExpr(cxt, jsp, jb,
+										   numeric_mod_opt_error, found);
+
 		case jpiType:
 			{
 				JsonbValue *jbv = palloc(sizeof(*jbv));
@@ -1020,18 +1020,6 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				res = executeNextItem(cxt, jsp, NULL, jb, found, false);
 			}
 			break;
-
-		case jpiAbs:
-			return executeNumericItemMethod(cxt, jsp, jb, unwrap, numeric_abs,
-											found);
-
-		case jpiFloor:
-			return executeNumericItemMethod(cxt, jsp, jb, unwrap, numeric_floor,
-											found);
-
-		case jpiCeiling:
-			return executeNumericItemMethod(cxt, jsp, jb, unwrap, numeric_ceil,
-											found);
 
 		case jpiDouble:
 			{
@@ -1097,6 +1085,18 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				res = executeNextItem(cxt, jsp, NULL, jb, found, true);
 			}
 			break;
+
+		case jpiAbs:
+			return executeNumericItemMethod(cxt, jsp, jb, unwrap, numeric_abs,
+											found);
+
+		case jpiCeiling:
+			return executeNumericItemMethod(cxt, jsp, jb, unwrap, numeric_ceil,
+											found);
+
+		case jpiFloor:
+			return executeNumericItemMethod(cxt, jsp, jb, unwrap, numeric_floor,
+											found);
 
 		case jpiDatetime:
 			if (unwrap && JsonbType(jb) == jbvArray)
@@ -1318,7 +1318,7 @@ executeBoolItem(JsonPathExecContext *cxt, JsonPathItem *jsp,
 		case jpiExists:
 			jspGetArg(jsp, &larg);
 
-			if (jspStrictAbsenseOfErrors(cxt))
+			if (jspStrictAbsenceOfErrors(cxt))
 			{
 				/*
 				 * In strict mode we must get a complete list of values to
@@ -1516,14 +1516,14 @@ executePredicate(JsonPathExecContext *cxt, JsonPathItem *pred,
 
 			if (res == jpbUnknown)
 			{
-				if (jspStrictAbsenseOfErrors(cxt))
+				if (jspStrictAbsenceOfErrors(cxt))
 					return jpbUnknown;
 
 				error = true;
 			}
 			else if (res == jpbTrue)
 			{
-				if (!jspStrictAbsenseOfErrors(cxt))
+				if (!jspStrictAbsenceOfErrors(cxt))
 					return jpbTrue;
 
 				found = true;

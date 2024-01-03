@@ -18,7 +18,6 @@
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "postmaster/bgworker_internals.h"
-#include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
@@ -350,7 +349,7 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 		 */
 		rw = MemoryContextAllocExtended(PostmasterContext,
 										sizeof(RegisteredBgWorker),
-										MCXT_ALLOC_NO_OOM);
+										MCXT_ALLOC_NO_OOM | MCXT_ALLOC_ZERO);
 		if (rw == NULL)
 		{
 			ereport(LOG,
@@ -631,27 +630,6 @@ ResetBackgroundWorkerCrashTimes(void)
 	}
 }
 
-#ifdef EXEC_BACKEND
-/*
- * In EXEC_BACKEND mode, workers use this to retrieve their details from
- * shared memory.
- */
-BackgroundWorker *
-BackgroundWorkerEntry(int slotno)
-{
-	static BackgroundWorker myEntry;
-	BackgroundWorkerSlot *slot;
-
-	Assert(slotno < BackgroundWorkerData->total_slots);
-	slot = &BackgroundWorkerData->slot[slotno];
-	Assert(slot->in_use);
-
-	/* must copy this in case we don't intend to retain shmem access */
-	memcpy(&myEntry, &slot->worker, sizeof myEntry);
-	return &myEntry;
-}
-#endif
-
 /*
  * Complain about the BackgroundWorker definition using error level elevel.
  * Return true if it looks ok, false if not (unless elevel >= ERROR, in
@@ -831,14 +809,10 @@ BackgroundWorkerMain(void)
 	PG_exception_stack = &local_sigjmp_buf;
 
 	/*
-	 * Create a per-backend PGPROC struct in shared memory, except in the
-	 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must do
-	 * this before we can use LWLocks (and in the EXEC_BACKEND case we already
-	 * had to do some stuff with LWLocks).
+	 * Create a per-backend PGPROC struct in shared memory.  We must do this
+	 * before we can use LWLocks or access any shared memory.
 	 */
-#ifndef EXEC_BACKEND
 	InitProcess();
-#endif
 
 	/*
 	 * Early initialization.
@@ -944,7 +918,7 @@ RegisterBackgroundWorker(BackgroundWorker *worker)
 								  "Up to %d background workers can be registered with the current settings.",
 								  max_worker_processes,
 								  max_worker_processes),
-				 errhint("Consider increasing the configuration parameter \"max_worker_processes\".")));
+				 errhint("Consider increasing the configuration parameter max_worker_processes.")));
 		return;
 	}
 

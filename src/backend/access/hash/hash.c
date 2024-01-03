@@ -73,6 +73,7 @@ hashhandler(PG_FUNCTION_ARGS)
 	amroutine->amclusterable = false;
 	amroutine->ampredlocks = true;
 	amroutine->amcanparallel = false;
+	amroutine->amcanbuildparallel = false;
 	amroutine->amcaninclude = false;
 	amroutine->amusemaintenanceworkmem = false;
 	amroutine->amsummarizing = false;
@@ -83,6 +84,7 @@ hashhandler(PG_FUNCTION_ARGS)
 	amroutine->ambuild = hashbuild;
 	amroutine->ambuildempty = hashbuildempty;
 	amroutine->aminsert = hashinsert;
+	amroutine->aminsertcleanup = NULL;
 	amroutine->ambulkdelete = hashbulkdelete;
 	amroutine->amvacuumcleanup = hashvacuumcleanup;
 	amroutine->amcanreturn = NULL;

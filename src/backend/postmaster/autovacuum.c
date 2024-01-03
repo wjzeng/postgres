@@ -386,15 +386,6 @@ avlauncher_forkexec(void)
 
 	return postmaster_forkexec(ac, av);
 }
-
-/*
- * We need this set from the outside, before InitProcess is called
- */
-void
-AutovacuumLauncherIAm(void)
-{
-	am_autovacuum_launcher = true;
-}
 #endif
 
 /*
@@ -476,14 +467,10 @@ AutoVacLauncherMain(int argc, char *argv[])
 	pqsignal(SIGCHLD, SIG_DFL);
 
 	/*
-	 * Create a per-backend PGPROC struct in shared memory, except in the
-	 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must do
-	 * this before we can use LWLocks (and in the EXEC_BACKEND case we already
-	 * had to do some stuff with LWLocks).
+	 * Create a per-backend PGPROC struct in shared memory.  We must do this
+	 * before we can use LWLocks or access any shared memory.
 	 */
-#ifndef EXEC_BACKEND
 	InitProcess();
-#endif
 
 	/* Early initialization */
 	BaseInit();
@@ -1457,15 +1444,6 @@ avworker_forkexec(void)
 
 	return postmaster_forkexec(ac, av);
 }
-
-/*
- * We need this set from the outside, before InitProcess is called
- */
-void
-AutovacuumWorkerIAm(void)
-{
-	am_autovacuum_worker = true;
-}
 #endif
 
 /*
@@ -1548,14 +1526,10 @@ AutoVacWorkerMain(int argc, char *argv[])
 	pqsignal(SIGCHLD, SIG_DFL);
 
 	/*
-	 * Create a per-backend PGPROC struct in shared memory, except in the
-	 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must do
-	 * this before we can use LWLocks (and in the EXEC_BACKEND case we already
-	 * had to do some stuff with LWLocks).
+	 * Create a per-backend PGPROC struct in shared memory.  We must do this
+	 * before we can use LWLocks or access any shared memory.
 	 */
-#ifndef EXEC_BACKEND
 	InitProcess();
-#endif
 
 	/* Early initialization */
 	BaseInit();
@@ -2666,8 +2640,8 @@ deleted:
 	 *
 	 * Even if we didn't vacuum anything, it may still be important to do
 	 * this, because one indirect effect of vac_update_datfrozenxid() is to
-	 * update ShmemVariableCache->xidVacLimit.  That might need to be done
-	 * even if we haven't vacuumed anything, because relations with older
+	 * update TransamVariables->xidVacLimit.  That might need to be done even
+	 * if we haven't vacuumed anything, because relations with older
 	 * relfrozenxid values or other databases with older datfrozenxid values
 	 * might have been dropped, allowing xidVacLimit to advance.
 	 *

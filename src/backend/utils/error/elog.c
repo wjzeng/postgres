@@ -115,8 +115,8 @@ char	   *Log_destination_string = NULL;
 bool		syslog_sequence_numbers = true;
 bool		syslog_split_messages = true;
 
-/* Processed form of backtrace_symbols GUC */
-static char *backtrace_symbol_list;
+/* Processed form of backtrace_functions GUC */
+static char *backtrace_function_list;
 
 #ifdef HAVE_SYSLOG
 
@@ -498,9 +498,11 @@ errfinish(const char *filename, int lineno, const char *funcname)
 
 	/* Collect backtrace, if enabled and we didn't already */
 	if (!edata->backtrace &&
-		edata->funcname &&
-		backtrace_functions &&
-		matches_backtrace_functions(edata->funcname))
+		((edata->funcname &&
+		  backtrace_functions &&
+		  matches_backtrace_functions(edata->funcname)) ||
+		 (edata->sqlerrcode == ERRCODE_INTERNAL_ERROR &&
+		  backtrace_on_internal_error)))
 		set_backtrace(edata, 2);
 
 	/*
@@ -831,13 +833,13 @@ matches_backtrace_functions(const char *funcname)
 {
 	const char *p;
 
-	if (!backtrace_symbol_list || funcname == NULL || funcname[0] == '\0')
+	if (!backtrace_function_list || funcname == NULL || funcname[0] == '\0')
 		return false;
 
-	p = backtrace_symbol_list;
+	p = backtrace_function_list;
 	for (;;)
 	{
-		if (*p == '\0')			/* end of backtrace_symbol_list */
+		if (*p == '\0')			/* end of backtrace_function_list */
 			break;
 
 		if (strcmp(funcname, p) == 0)
@@ -2180,7 +2182,7 @@ check_backtrace_functions(char **newval, void **extra, GucSource source)
 void
 assign_backtrace_functions(const char *newval, void *extra)
 {
-	backtrace_symbol_list = (char *) extra;
+	backtrace_function_list = (char *) extra;
 }
 
 /*
@@ -3758,30 +3760,4 @@ write_stderr_signal_safe(const char *str)
 
 		nwritten += rc;
 	}
-}
-
-
-/*
- * Adjust the level of a recovery-related message per trace_recovery_messages.
- *
- * The argument is the default log level of the message, eg, DEBUG2.  (This
- * should only be applied to DEBUGn log messages, otherwise it's a no-op.)
- * If the level is >= trace_recovery_messages, we return LOG, causing the
- * message to be logged unconditionally (for most settings of
- * log_min_messages).  Otherwise, we return the argument unchanged.
- * The message will then be shown based on the setting of log_min_messages.
- *
- * Intention is to keep this for at least the whole of the 9.0 production
- * release, so we can more easily diagnose production problems in the field.
- * It should go away eventually, though, because it's an ugly and
- * hard-to-explain kluge.
- */
-int
-trace_recovery(int trace_level)
-{
-	if (trace_level < LOG &&
-		trace_level >= trace_recovery_messages)
-		return LOG;
-
-	return trace_level;
 }

@@ -166,6 +166,9 @@
 #temp_file_limit = -1			# limits per-process temp file space
 					# in kilobytes, or -1 for no limit
 
+#max_notify_queue_pages = 1048576	# limits the number of SLRU pages allocated
+									# for NOTIFY / LISTEN queue
+
 # - Kernel Resources -
 
 #max_files_per_process = 1000		# min 64
@@ -298,6 +301,11 @@
 					# (change requires restart)
 #recovery_target_action = 'pause'	# 'pause', 'promote', 'shutdown'
 					# (change requires restart)
+
+# - WAL Summarization -
+
+#summarize_wal = off			 # run WAL summarizer process?
+#wal_summary_keep_time = '10d' # when to remove old summary files, 0 = never
 
 
 #------------------------------------------------------------------------------

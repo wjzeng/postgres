@@ -645,7 +645,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>		hash_partbound
 %type <defelt>		hash_partbound_elem
 
-%type <node>	json_format_clause_opt
+%type <node>	json_format_clause
+				json_format_clause_opt
 				json_value_expr
 				json_returning_clause_opt
 				json_name_and_value
@@ -653,8 +654,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <list>	json_name_and_value_list
 				json_value_expr_list
 				json_array_aggregate_order_by_clause_opt
-%type <ival>	json_encoding_clause_opt
-				json_predicate_type_constraint
+%type <ival>	json_predicate_type_constraint
 %type <boolean>	json_key_uniqueness_constraint_opt
 				json_object_constructor_null_clause_opt
 				json_array_constructor_null_clause_opt
@@ -810,7 +810,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 
 /* Precedence: lowest to highest */
-%nonassoc	SET				/* see relation_expr_opt_alias */
 %left		UNION EXCEPT
 %left		INTERSECT
 %left		OR
@@ -821,18 +820,23 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %nonassoc	BETWEEN IN_P LIKE ILIKE SIMILAR NOT_LA
 %nonassoc	ESCAPE			/* ESCAPE must be just above LIKE/ILIKE/SIMILAR */
 
-/* SQL/JSON related keywords */
-%nonassoc	UNIQUE JSON
-%nonassoc	KEYS OBJECT_P SCALAR VALUE_P
-%nonassoc	WITH WITHOUT
-
 /*
- * To support target_el without AS, it used to be necessary to assign IDENT an
- * explicit precedence just less than Op.  While that's not really necessary
- * since we removed postfix operators, it's still helpful to do so because
- * there are some other unreserved keywords that need precedence assignments.
- * If those keywords have the same precedence as IDENT then they clearly act
- * the same as non-keywords, reducing the risk of unwanted precedence effects.
+ * Sometimes it is necessary to assign precedence to keywords that are not
+ * really part of the operator hierarchy, in order to resolve grammar
+ * ambiguities.  It's best to avoid doing so whenever possible, because such
+ * assignments have global effect and may hide ambiguities besides the one
+ * you intended to solve.  (Attaching a precedence to a single rule with
+ * %prec is far safer and should be preferred.)  If you must give precedence
+ * to a new keyword, try very hard to give it the same precedence as IDENT.
+ * If the keyword has IDENT's precedence then it clearly acts the same as
+ * non-keywords and other similar keywords, thus reducing the risk of
+ * unexpected precedence effects.
+ *
+ * We used to need to assign IDENT an explicit precedence just less than Op,
+ * to support target_el without AS.  While that's not really necessary since
+ * we removed postfix operators, we continue to do so because it provides a
+ * reference point for a precedence level that we can assign to other
+ * keywords that lack a natural precedence level.
  *
  * We need to do this for PARTITION, RANGE, ROWS, and GROUPS to support
  * opt_existing_window_name (see comment there).
@@ -850,15 +854,24 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * an explicit priority lower than '(', so that a rule with CUBE '(' will shift
  * rather than reducing a conflicting rule that takes CUBE as a function name.
  * Using the same precedence as IDENT seems right for the reasons given above.
+ *
+ * SET is likewise assigned the same precedence as IDENT, to support the
+ * relation_expr_opt_alias production (see comment there).
+ *
+ * KEYS, OBJECT_P, SCALAR, VALUE_P, WITH, and WITHOUT are similarly assigned
+ * the same precedence as IDENT.  This allows resolving conflicts in the
+ * json_predicate_type_constraint and json_key_uniqueness_constraint_opt
+ * productions (see comments there).
  */
 %nonassoc	UNBOUNDED		/* ideally would have same precedence as IDENT */
 %nonassoc	IDENT PARTITION RANGE ROWS GROUPS PRECEDING FOLLOWING CUBE ROLLUP
+			SET KEYS OBJECT_P SCALAR VALUE_P WITH WITHOUT
 %left		Op OPERATOR		/* multi-character ops and user-defined operators */
 %left		'+' '-'
 %left		'*' '/' '%'
 %left		'^'
 /* Unary Operators */
-%left		AT				/* sets precedence for AT TIME ZONE */
+%left		AT				/* sets precedence for AT TIME ZONE, AT LOCAL */
 %left		COLLATE
 %right		UMINUS
 %left		'[' ']'
@@ -14949,12 +14962,11 @@ a_expr:		c_expr									{ $$ = $1; }
 			/*
 			 * Required by SQL/JSON, but there are conflicts
 			| a_expr
-				FORMAT_LA JSON json_encoding_clause_opt
+				json_format_clause
 				IS  json_predicate_type_constraint
 					json_key_uniqueness_constraint_opt		%prec IS
 				{
-					$3.location = @2;
-					$$ = makeJsonIsPredicate($1, $3, $5, $6, @1);
+					$$ = makeJsonIsPredicate($1, $2, $4, $5, @1);
 				}
 			*/
 			| a_expr IS NOT
@@ -14968,13 +14980,12 @@ a_expr:		c_expr									{ $$ = $1; }
 			/*
 			 * Required by SQL/JSON, but there are conflicts
 			| a_expr
-				FORMAT_LA JSON json_encoding_clause_opt
+				json_format_clause
 				IS NOT
 					json_predicate_type_constraint
 					json_key_uniqueness_constraint_opt		%prec IS
 				{
-					$3.location = @2;
-					$$ = makeNotExpr(makeJsonIsPredicate($1, $3, $6, $7, @1), @1);
+					$$ = makeNotExpr(makeJsonIsPredicate($1, $2, $5, $6, @1), @1);
 				}
 			*/
 			| DEFAULT
@@ -16490,20 +16501,39 @@ json_value_expr:
 			}
 		;
 
-json_format_clause_opt:
-			FORMAT_LA JSON json_encoding_clause_opt
+json_format_clause:
+			FORMAT_LA JSON ENCODING name
 				{
-					$$ = (Node *) makeJsonFormat(JS_FORMAT_JSON, $3, @1);
+					int		encoding;
+
+					if (!pg_strcasecmp($4, "utf8"))
+						encoding = JS_ENC_UTF8;
+					else if (!pg_strcasecmp($4, "utf16"))
+						encoding = JS_ENC_UTF16;
+					else if (!pg_strcasecmp($4, "utf32"))
+						encoding = JS_ENC_UTF32;
+					else
+						ereport(ERROR,
+								errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								errmsg("unrecognized JSON encoding: %s", $4));
+
+					$$ = (Node *) makeJsonFormat(JS_FORMAT_JSON, encoding, @1);
+				}
+			| FORMAT_LA JSON
+				{
+					$$ = (Node *) makeJsonFormat(JS_FORMAT_JSON, JS_ENC_DEFAULT, @1);
+				}
+		;
+
+json_format_clause_opt:
+			json_format_clause
+				{
+					$$ = $1;
 				}
 			| /* EMPTY */
 				{
 					$$ = (Node *) makeJsonFormat(JS_FORMAT_DEFAULT, JS_ENC_DEFAULT, -1);
 				}
-		;
-
-json_encoding_clause_opt:
-			ENCODING name					{ $$ = makeJsonEncoding($2); }
-			| /* EMPTY */					{ $$ = JS_ENC_DEFAULT; }
 		;
 
 json_returning_clause_opt:
@@ -16519,21 +16549,35 @@ json_returning_clause_opt:
 			| /* EMPTY */							{ $$ = NULL; }
 		;
 
+/*
+ * We must assign the only-JSON production a precedence less than IDENT in
+ * order to favor shifting over reduction when JSON is followed by VALUE_P,
+ * OBJECT_P, or SCALAR.  (ARRAY doesn't need that treatment, because it's a
+ * fully reserved word.)  Because json_predicate_type_constraint is always
+ * followed by json_key_uniqueness_constraint_opt, we also need the only-JSON
+ * production to have precedence less than WITH and WITHOUT.  UNBOUNDED isn't
+ * really related to this syntax, but it's a convenient choice because it
+ * already has a precedence less than IDENT for other reasons.
+ */
 json_predicate_type_constraint:
-			JSON									{ $$ = JS_TYPE_ANY; }
+			JSON					%prec UNBOUNDED	{ $$ = JS_TYPE_ANY; }
 			| JSON VALUE_P							{ $$ = JS_TYPE_ANY; }
 			| JSON ARRAY							{ $$ = JS_TYPE_ARRAY; }
 			| JSON OBJECT_P							{ $$ = JS_TYPE_OBJECT; }
 			| JSON SCALAR							{ $$ = JS_TYPE_SCALAR; }
 		;
 
-/* KEYS is a noise word here */
+/*
+ * KEYS is a noise word here.  To avoid shift/reduce conflicts, assign the
+ * KEYS-less productions a precedence less than IDENT (i.e., less than KEYS).
+ * This prevents reducing them when the next token is KEYS.
+ */
 json_key_uniqueness_constraint_opt:
 			WITH UNIQUE KEYS							{ $$ = true; }
-			| WITH UNIQUE								{ $$ = true; }
+			| WITH UNIQUE				%prec UNBOUNDED	{ $$ = true; }
 			| WITHOUT UNIQUE KEYS						{ $$ = false; }
-			| WITHOUT UNIQUE							{ $$ = false; }
-			| /* EMPTY */ 				%prec KEYS		{ $$ = false; }
+			| WITHOUT UNIQUE			%prec UNBOUNDED	{ $$ = false; }
+			| /* EMPTY */ 				%prec UNBOUNDED	{ $$ = false; }
 		;
 
 json_name_and_value_list:
@@ -18417,7 +18461,7 @@ insertSelectOptions(SelectStmt *stmt,
 					 parser_errposition(exprLocation(limitClause->limitCount))));
 		stmt->limitCount = limitClause->limitCount;
 	}
-	if (limitClause && limitClause->limitOption != LIMIT_OPTION_DEFAULT)
+	if (limitClause)
 	{
 		if (stmt->limitOption)
 			ereport(ERROR,

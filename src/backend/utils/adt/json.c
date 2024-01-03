@@ -188,7 +188,7 @@ datum_to_json_internal(Datum val, bool is_null, StringInfo result,
 
 	if (is_null)
 	{
-		appendStringInfoString(result, "null");
+		appendBinaryStringInfo(result, "null", strlen("null"));
 		return;
 	}
 
@@ -210,23 +210,35 @@ datum_to_json_internal(Datum val, bool is_null, StringInfo result,
 			composite_to_json(val, result, false);
 			break;
 		case JSONTYPE_BOOL:
-			outputstr = DatumGetBool(val) ? "true" : "false";
 			if (key_scalar)
-				escape_json(result, outputstr);
+				appendStringInfoChar(result, '"');
+			if (DatumGetBool(val))
+				appendBinaryStringInfo(result, "true", strlen("true"));
 			else
-				appendStringInfoString(result, outputstr);
+				appendBinaryStringInfo(result, "false", strlen("false"));
+			if (key_scalar)
+				appendStringInfoChar(result, '"');
 			break;
 		case JSONTYPE_NUMERIC:
 			outputstr = OidOutputFunctionCall(outfuncoid, val);
 
 			/*
-			 * Don't call escape_json for a non-key if it's a valid JSON
-			 * number.
+			 * Don't quote a non-key if it's a valid JSON number (i.e., not
+			 * "Infinity", "-Infinity", or "NaN").  Since we know this is a
+			 * numeric data type's output, we simplify and open-code the
+			 * validation for better performance.
 			 */
-			if (!key_scalar && IsValidJsonNumber(outputstr, strlen(outputstr)))
+			if (!key_scalar &&
+				((*outputstr >= '0' && *outputstr <= '9') ||
+				 (*outputstr == '-' &&
+				  (outputstr[1] >= '0' && outputstr[1] <= '9'))))
 				appendStringInfoString(result, outputstr);
 			else
-				escape_json(result, outputstr);
+			{
+				appendStringInfoChar(result, '"');
+				appendStringInfoString(result, outputstr);
+				appendStringInfoChar(result, '"');
+			}
 			pfree(outputstr);
 			break;
 		case JSONTYPE_DATE:
@@ -234,7 +246,9 @@ datum_to_json_internal(Datum val, bool is_null, StringInfo result,
 				char		buf[MAXDATELEN + 1];
 
 				JsonEncodeDateTime(buf, val, DATEOID, NULL);
-				appendStringInfo(result, "\"%s\"", buf);
+				appendStringInfoChar(result, '"');
+				appendStringInfoString(result, buf);
+				appendStringInfoChar(result, '"');
 			}
 			break;
 		case JSONTYPE_TIMESTAMP:
@@ -242,7 +256,9 @@ datum_to_json_internal(Datum val, bool is_null, StringInfo result,
 				char		buf[MAXDATELEN + 1];
 
 				JsonEncodeDateTime(buf, val, TIMESTAMPOID, NULL);
-				appendStringInfo(result, "\"%s\"", buf);
+				appendStringInfoChar(result, '"');
+				appendStringInfoString(result, buf);
+				appendStringInfoChar(result, '"');
 			}
 			break;
 		case JSONTYPE_TIMESTAMPTZ:
@@ -250,7 +266,9 @@ datum_to_json_internal(Datum val, bool is_null, StringInfo result,
 				char		buf[MAXDATELEN + 1];
 
 				JsonEncodeDateTime(buf, val, TIMESTAMPTZOID, NULL);
-				appendStringInfo(result, "\"%s\"", buf);
+				appendStringInfoChar(result, '"');
+				appendStringInfoString(result, buf);
+				appendStringInfoChar(result, '"');
 			}
 			break;
 		case JSONTYPE_JSON:
@@ -262,9 +280,8 @@ datum_to_json_internal(Datum val, bool is_null, StringInfo result,
 		case JSONTYPE_CAST:
 			/* outfuncoid refers to a cast function, not an output function */
 			jsontext = DatumGetTextPP(OidFunctionCall1(outfuncoid, val));
-			outputstr = text_to_cstring(jsontext);
-			appendStringInfoString(result, outputstr);
-			pfree(outputstr);
+			appendBinaryStringInfo(result, VARDATA_ANY(jsontext),
+								   VARSIZE_ANY_EXHDR(jsontext));
 			pfree(jsontext);
 			break;
 		default:
@@ -503,8 +520,14 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 	int			i;
 	bool		needsep = false;
 	const char *sep;
+	int			seplen;
 
+	/*
+	 * We can avoid expensive strlen() calls by precalculating the separator
+	 * length.
+	 */
 	sep = use_line_feeds ? ",\n " : ",";
+	seplen = use_line_feeds ? strlen(",\n ") : strlen(",");
 
 	td = DatumGetHeapTupleHeader(composite);
 
@@ -533,7 +556,7 @@ composite_to_json(Datum composite, StringInfo result, bool use_line_feeds)
 			continue;
 
 		if (needsep)
-			appendStringInfoString(result, sep);
+			appendBinaryStringInfo(result, sep, seplen);
 		needsep = true;
 
 		attname = NameStr(att->attname);

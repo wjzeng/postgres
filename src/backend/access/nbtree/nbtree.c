@@ -112,6 +112,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->amclusterable = true;
 	amroutine->ampredlocks = true;
 	amroutine->amcanparallel = true;
+	amroutine->amcanbuildparallel = true;
 	amroutine->amcaninclude = true;
 	amroutine->amusemaintenanceworkmem = false;
 	amroutine->amsummarizing = false;
@@ -122,6 +123,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->ambuild = btbuild;
 	amroutine->ambuildempty = btbuildempty;
 	amroutine->aminsert = btinsert;
+	amroutine->aminsertcleanup = NULL;
 	amroutine->ambulkdelete = btbulkdelete;
 	amroutine->amvacuumcleanup = btvacuumcleanup;
 	amroutine->amcanreturn = btcanreturn;
@@ -156,7 +158,7 @@ btbuildempty(Relation index)
 	Page		metapage;
 
 	/*
-	 * Initalize the metapage.
+	 * Initialize the metapage.
 	 *
 	 * Regular index build bypasses the buffer manager and uses smgr functions
 	 * directly, with an smgrimmedsync() call at the end.  That makes sense
@@ -407,7 +409,6 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	so->markItemIndex = -1;
 	so->arrayKeyCount = 0;
-	so->firstPage = false;
 	BTScanPosUnpinIfPinned(so->markPos);
 	BTScanPosInvalidate(so->markPos);
 

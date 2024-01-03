@@ -43,12 +43,11 @@ override CPPFLAGS += -DVAL_LIBS="\"$(LIBS)\""
 override CPPFLAGS := -DFRONTEND -I. -I$(top_srcdir)/src/common $(CPPFLAGS)
 LIBS += $(PTHREAD_LIBS)
 
-# If you add objects here, see also src/tools/msvc/Mkvcbuild.pm
-
 OBJS_COMMON = \
 	archive.o \
 	base64.o \
 	binaryheap.o \
+	blkreftable.o \
 	checksum_helper.o \
 	compression.o \
 	config_info.o \
@@ -66,6 +65,7 @@ OBJS_COMMON = \
 	kwlookup.o \
 	link-canary.o \
 	md5_common.o \
+	parse_manifest.o \
 	percentrepl.o \
 	pg_get_line.o \
 	pg_lzcompress.o \
@@ -98,11 +98,10 @@ OBJS_COMMON += \
 	sha2.o
 endif
 
-# A few files are currently only built for frontend, not server
-# (Mkvcbuild.pm has a copy of this list, too).  logging.c is excluded
-# from OBJS_FRONTEND_SHLIB (shared library) as a matter of policy,
-# because it is not appropriate for general purpose libraries such
-# as libpq to report errors directly.
+# A few files are currently only built for frontend, not server.
+# logging.c is excluded from OBJS_FRONTEND_SHLIB (shared library) as
+# a matter of policy, because it is not appropriate for general purpose
+# libraries such as libpq to report errors directly.
 OBJS_FRONTEND_SHLIB = \
 	$(OBJS_COMMON) \
 	fe_memutils.o \

@@ -60,6 +60,7 @@
 #include "dumputils.h"
 #include "fe_utils/option_utils.h"
 #include "fe_utils/string_utils.h"
+#include "filter.h"
 #include "getopt_long.h"
 #include "libpq/libpq-fs.h"
 #include "parallel.h"
@@ -296,6 +297,7 @@ static void dumpPolicy(Archive *fout, const PolicyInfo *polinfo);
 static void dumpPublication(Archive *fout, const PublicationInfo *pubinfo);
 static void dumpPublicationTable(Archive *fout, const PublicationRelInfo *pubrinfo);
 static void dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo);
+static void dumpSubscriptionTable(Archive *fout, const SubRelInfo *subrinfo);
 static void dumpDatabase(Archive *fout);
 static void dumpDatabaseConfig(Archive *AH, PQExpBuffer outbuf,
 							   const char *dbname, Oid dboid);
@@ -327,6 +329,7 @@ static char *get_synchronized_snapshot(Archive *fout);
 static void setupDumpWorker(Archive *AH);
 static TableInfo *getRootTableInfo(const TableInfo *tbinfo);
 static bool forcePartitionRootLoad(const TableInfo *tbinfo);
+static void read_dump_filters(const char *filename, DumpOptions *dopt);
 
 
 int
@@ -433,6 +436,7 @@ main(int argc, char **argv)
 		{"exclude-table-and-children", required_argument, NULL, 13},
 		{"exclude-table-data-and-children", required_argument, NULL, 14},
 		{"sync-method", required_argument, NULL, 15},
+		{"filter", required_argument, NULL, 16},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -662,6 +666,10 @@ main(int argc, char **argv)
 			case 15:
 				if (!parse_sync_method(optarg, &sync_method))
 					exit_nicely(1);
+				break;
+
+			case 16:			/* read object filters from file */
+				read_dump_filters(optarg, &dopt);
 				break;
 
 			default:
@@ -1111,6 +1119,8 @@ help(const char *progname)
 			 "                               do NOT dump data for the specified table(s),\n"
 			 "                               including child and partition tables\n"));
 	printf(_("  --extra-float-digits=NUM     override default setting for extra_float_digits\n"));
+	printf(_("  --filter=FILENAME            include or exclude objects and data from dump\n"
+			 "                               based on expressions in FILENAME\n"));
 	printf(_("  --if-exists                  use IF EXISTS when dropping objects\n"));
 	printf(_("  --include-foreign-data=PATTERN\n"
 			 "                               include data of foreign tables on foreign\n"
@@ -2035,6 +2045,26 @@ selectDumpablePublicationObject(DumpableObject *dobj, Archive *fout)
 
 	dobj->dump = fout->dopt->include_everything ?
 		DUMP_COMPONENT_ALL : DUMP_COMPONENT_NONE;
+}
+
+/*
+ * selectDumpableStatisticsObject: policy-setting subroutine
+ *		Mark an extended statistics object as to be dumped or not
+ *
+ * We dump an extended statistics object if the schema it's in and the table
+ * it's for are being dumped.  (This'll need more thought if statistics
+ * objects ever support cross-table stats.)
+ */
+static void
+selectDumpableStatisticsObject(StatsExtInfo *sobj, Archive *fout)
+{
+	if (checkExtensionMembership(&sobj->dobj, fout))
+		return;					/* extension membership overrides all else */
+
+	sobj->dobj.dump = sobj->dobj.namespace->dobj.dump_contains;
+	if (sobj->stattable == NULL ||
+		!(sobj->stattable->dobj.dump & DUMP_COMPONENT_DEFINITION))
+		sobj->dobj.dump = DUMP_COMPONENT_NONE;
 }
 
 /*
@@ -4609,6 +4639,8 @@ getSubscriptions(Archive *fout)
 	int			i_subsynccommit;
 	int			i_subpublications;
 	int			i_suborigin;
+	int			i_suboriginremotelsn;
+	int			i_subenabled;
 	int			i,
 				ntups;
 
@@ -4664,16 +4696,30 @@ getSubscriptions(Archive *fout)
 		appendPQExpBufferStr(query,
 							 " s.subpasswordrequired,\n"
 							 " s.subrunasowner,\n"
-							 " s.suborigin\n");
+							 " s.suborigin,\n");
 	else
 		appendPQExpBuffer(query,
 						  " 't' AS subpasswordrequired,\n"
 						  " 't' AS subrunasowner,\n"
-						  " '%s' AS suborigin\n",
+						  " '%s' AS suborigin,\n",
 						  LOGICALREP_ORIGIN_ANY);
 
+	if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
+		appendPQExpBufferStr(query, " o.remote_lsn AS suboriginremotelsn,\n"
+							 " s.subenabled\n");
+	else
+		appendPQExpBufferStr(query, " NULL AS suboriginremotelsn,\n"
+							 " false AS subenabled\n");
+
 	appendPQExpBufferStr(query,
-						 "FROM pg_subscription s\n"
+						 "FROM pg_subscription s\n");
+
+	if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
+		appendPQExpBufferStr(query,
+							 "LEFT JOIN pg_catalog.pg_replication_origin_status o \n"
+							 "    ON o.external_id = 'pg_' || s.oid::text \n");
+
+	appendPQExpBufferStr(query,
 						 "WHERE s.subdbid = (SELECT oid FROM pg_database\n"
 						 "                   WHERE datname = current_database())");
 
@@ -4700,6 +4746,8 @@ getSubscriptions(Archive *fout)
 	i_subsynccommit = PQfnumber(res, "subsynccommit");
 	i_subpublications = PQfnumber(res, "subpublications");
 	i_suborigin = PQfnumber(res, "suborigin");
+	i_suboriginremotelsn = PQfnumber(res, "suboriginremotelsn");
+	i_subenabled = PQfnumber(res, "subenabled");
 
 	subinfo = pg_malloc(ntups * sizeof(SubscriptionInfo));
 
@@ -4737,12 +4785,175 @@ getSubscriptions(Archive *fout)
 		subinfo[i].subpublications =
 			pg_strdup(PQgetvalue(res, i, i_subpublications));
 		subinfo[i].suborigin = pg_strdup(PQgetvalue(res, i, i_suborigin));
+		if (PQgetisnull(res, i, i_suboriginremotelsn))
+			subinfo[i].suboriginremotelsn = NULL;
+		else
+			subinfo[i].suboriginremotelsn =
+				pg_strdup(PQgetvalue(res, i, i_suboriginremotelsn));
+		subinfo[i].subenabled =
+			pg_strdup(PQgetvalue(res, i, i_subenabled));
 
 		/* Decide whether we want to dump it */
 		selectDumpableObject(&(subinfo[i].dobj), fout);
 	}
 	PQclear(res);
 
+	destroyPQExpBuffer(query);
+}
+
+/*
+ * getSubscriptionTables
+ *	  Get information about subscription membership for dumpable tables. This
+ *    will be used only in binary-upgrade mode for PG17 or later versions.
+ */
+void
+getSubscriptionTables(Archive *fout)
+{
+	DumpOptions *dopt = fout->dopt;
+	SubscriptionInfo *subinfo = NULL;
+	SubRelInfo *subrinfo;
+	PGresult   *res;
+	int			i_srsubid;
+	int			i_srrelid;
+	int			i_srsubstate;
+	int			i_srsublsn;
+	int			ntups;
+	Oid			last_srsubid = InvalidOid;
+
+	if (dopt->no_subscriptions || !dopt->binary_upgrade ||
+		fout->remoteVersion < 170000)
+		return;
+
+	res = ExecuteSqlQuery(fout,
+						  "SELECT srsubid, srrelid, srsubstate, srsublsn "
+						  "FROM pg_catalog.pg_subscription_rel "
+						  "ORDER BY srsubid",
+						  PGRES_TUPLES_OK);
+	ntups = PQntuples(res);
+	if (ntups == 0)
+		goto cleanup;
+
+	/* Get pg_subscription_rel attributes */
+	i_srsubid = PQfnumber(res, "srsubid");
+	i_srrelid = PQfnumber(res, "srrelid");
+	i_srsubstate = PQfnumber(res, "srsubstate");
+	i_srsublsn = PQfnumber(res, "srsublsn");
+
+	subrinfo = pg_malloc(ntups * sizeof(SubRelInfo));
+	for (int i = 0; i < ntups; i++)
+	{
+		Oid			cur_srsubid = atooid(PQgetvalue(res, i, i_srsubid));
+		Oid			relid = atooid(PQgetvalue(res, i, i_srrelid));
+		TableInfo  *tblinfo;
+
+		/*
+		 * If we switched to a new subscription, check if the subscription
+		 * exists.
+		 */
+		if (cur_srsubid != last_srsubid)
+		{
+			subinfo = findSubscriptionByOid(cur_srsubid);
+			if (subinfo == NULL)
+				pg_fatal("subscription with OID %u does not exist", cur_srsubid);
+
+			last_srsubid = cur_srsubid;
+		}
+
+		tblinfo = findTableByOid(relid);
+		if (tblinfo == NULL)
+			pg_fatal("failed sanity check, table with OID %u not found",
+					 relid);
+
+		/* OK, make a DumpableObject for this relationship */
+		subrinfo[i].dobj.objType = DO_SUBSCRIPTION_REL;
+		subrinfo[i].dobj.catId.tableoid = relid;
+		subrinfo[i].dobj.catId.oid = cur_srsubid;
+		AssignDumpId(&subrinfo[i].dobj);
+		subrinfo[i].dobj.name = pg_strdup(subinfo->dobj.name);
+		subrinfo[i].tblinfo = tblinfo;
+		subrinfo[i].srsubstate = PQgetvalue(res, i, i_srsubstate)[0];
+		if (PQgetisnull(res, i, i_srsublsn))
+			subrinfo[i].srsublsn = NULL;
+		else
+			subrinfo[i].srsublsn = pg_strdup(PQgetvalue(res, i, i_srsublsn));
+
+		subrinfo[i].subinfo = subinfo;
+
+		/* Decide whether we want to dump it */
+		selectDumpableObject(&(subrinfo[i].dobj), fout);
+	}
+
+cleanup:
+	PQclear(res);
+}
+
+/*
+ * dumpSubscriptionTable
+ *	  Dump the definition of the given subscription table mapping. This will be
+ *    used only in binary-upgrade mode for PG17 or later versions.
+ */
+static void
+dumpSubscriptionTable(Archive *fout, const SubRelInfo *subrinfo)
+{
+	DumpOptions *dopt = fout->dopt;
+	SubscriptionInfo *subinfo = subrinfo->subinfo;
+	PQExpBuffer query;
+	char	   *tag;
+
+	/* Do nothing in data-only dump */
+	if (dopt->dataOnly)
+		return;
+
+	Assert(fout->dopt->binary_upgrade && fout->remoteVersion >= 170000);
+
+	tag = psprintf("%s %s", subinfo->dobj.name, subrinfo->dobj.name);
+
+	query = createPQExpBuffer();
+
+	if (subinfo->dobj.dump & DUMP_COMPONENT_DEFINITION)
+	{
+		/*
+		 * binary_upgrade_add_sub_rel_state will add the subscription relation
+		 * to pg_subscription_rel table. This will be used only in
+		 * binary-upgrade mode.
+		 */
+		appendPQExpBufferStr(query,
+							 "\n-- For binary upgrade, must preserve the subscriber table.\n");
+		appendPQExpBufferStr(query,
+							 "SELECT pg_catalog.binary_upgrade_add_sub_rel_state(");
+		appendStringLiteralAH(query, subrinfo->dobj.name, fout);
+		appendPQExpBuffer(query,
+						  ", %u, '%c'",
+						  subrinfo->tblinfo->dobj.catId.oid,
+						  subrinfo->srsubstate);
+
+		if (subrinfo->srsublsn && subrinfo->srsublsn[0] != '\0')
+			appendPQExpBuffer(query, ", '%s'", subrinfo->srsublsn);
+		else
+			appendPQExpBuffer(query, ", NULL");
+
+		appendPQExpBufferStr(query, ");\n");
+	}
+
+	/*
+	 * There is no point in creating a drop query as the drop is done by table
+	 * drop.  (If you think to change this, see also _printTocEntry().)
+	 * Although this object doesn't really have ownership as such, set the
+	 * owner field anyway to ensure that the command is run by the correct
+	 * role at restore time.
+	 */
+	if (subrinfo->dobj.dump & DUMP_COMPONENT_DEFINITION)
+		ArchiveEntry(fout, subrinfo->dobj.catId, subrinfo->dobj.dumpId,
+					 ARCHIVE_OPTS(.tag = tag,
+								  .namespace = subrinfo->tblinfo->dobj.namespace->dobj.name,
+								  .owner = subinfo->rolname,
+								  .description = "SUBSCRIPTION TABLE",
+								  .section = SECTION_POST_DATA,
+								  .createStmt = query->data));
+
+	/* These objects can't currently have comments or seclabels */
+
+	free(tag);
 	destroyPQExpBuffer(query);
 }
 
@@ -4825,6 +5036,43 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 		appendPQExpBuffer(query, ", origin = %s", subinfo->suborigin);
 
 	appendPQExpBufferStr(query, ");\n");
+
+	/*
+	 * In binary-upgrade mode, we allow the replication to continue after the
+	 * upgrade.
+	 */
+	if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
+	{
+		if (subinfo->suboriginremotelsn)
+		{
+			/*
+			 * Preserve the remote_lsn for the subscriber's replication
+			 * origin. This value is required to start the replication from
+			 * the position before the upgrade. This value will be stale if
+			 * the publisher gets upgraded before the subscriber node.
+			 * However, this shouldn't be a problem as the upgrade of the
+			 * publisher ensures that all the transactions were replicated
+			 * before upgrading it.
+			 */
+			appendPQExpBufferStr(query,
+								 "\n-- For binary upgrade, must preserve the remote_lsn for the subscriber's replication origin.\n");
+			appendPQExpBufferStr(query,
+								 "SELECT pg_catalog.binary_upgrade_replorigin_advance(");
+			appendStringLiteralAH(query, subinfo->dobj.name, fout);
+			appendPQExpBuffer(query, ", '%s');\n", subinfo->suboriginremotelsn);
+		}
+
+		if (strcmp(subinfo->subenabled, "t") == 0)
+		{
+			/*
+			 * Enable the subscription to allow the replication to continue
+			 * after the upgrade.
+			 */
+			appendPQExpBufferStr(query,
+								 "\n-- For binary upgrade, must preserve the subscriber's running state.\n");
+			appendPQExpBuffer(query, "ALTER SUBSCRIPTION %s ENABLE;\n", qsubname);
+		}
+	}
 
 	if (subinfo->dobj.dump & DUMP_COMPONENT_DEFINITION)
 		ArchiveEntry(fout, subinfo->dobj.catId, subinfo->dobj.dumpId,
@@ -7282,6 +7530,7 @@ getExtendedStatistics(Archive *fout)
 	int			i_stxname;
 	int			i_stxnamespace;
 	int			i_stxowner;
+	int			i_stxrelid;
 	int			i_stattarget;
 	int			i;
 
@@ -7293,11 +7542,11 @@ getExtendedStatistics(Archive *fout)
 
 	if (fout->remoteVersion < 130000)
 		appendPQExpBufferStr(query, "SELECT tableoid, oid, stxname, "
-							 "stxnamespace, stxowner, (-1) AS stxstattarget "
+							 "stxnamespace, stxowner, stxrelid, (-1) AS stxstattarget "
 							 "FROM pg_catalog.pg_statistic_ext");
 	else
 		appendPQExpBufferStr(query, "SELECT tableoid, oid, stxname, "
-							 "stxnamespace, stxowner, stxstattarget "
+							 "stxnamespace, stxowner, stxrelid, stxstattarget "
 							 "FROM pg_catalog.pg_statistic_ext");
 
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
@@ -7309,6 +7558,7 @@ getExtendedStatistics(Archive *fout)
 	i_stxname = PQfnumber(res, "stxname");
 	i_stxnamespace = PQfnumber(res, "stxnamespace");
 	i_stxowner = PQfnumber(res, "stxowner");
+	i_stxrelid = PQfnumber(res, "stxrelid");
 	i_stattarget = PQfnumber(res, "stxstattarget");
 
 	statsextinfo = (StatsExtInfo *) pg_malloc(ntups * sizeof(StatsExtInfo));
@@ -7323,10 +7573,12 @@ getExtendedStatistics(Archive *fout)
 		statsextinfo[i].dobj.namespace =
 			findNamespace(atooid(PQgetvalue(res, i, i_stxnamespace)));
 		statsextinfo[i].rolname = getRoleName(PQgetvalue(res, i, i_stxowner));
+		statsextinfo[i].stattable =
+			findTableByOid(atooid(PQgetvalue(res, i, i_stxrelid)));
 		statsextinfo[i].stattarget = atoi(PQgetvalue(res, i, i_stattarget));
 
 		/* Decide whether we want to dump it */
-		selectDumpableObject(&(statsextinfo[i].dobj), fout);
+		selectDumpableStatisticsObject(&(statsextinfo[i]), fout);
 	}
 
 	PQclear(res);
@@ -10443,6 +10695,9 @@ dumpDumpableObject(Archive *fout, DumpableObject *dobj)
 			break;
 		case DO_SUBSCRIPTION:
 			dumpSubscription(fout, (const SubscriptionInfo *) dobj);
+			break;
+		case DO_SUBSCRIPTION_REL:
+			dumpSubscriptionTable(fout, (const SubRelInfo *) dobj);
 			break;
 		case DO_PRE_DATA_BOUNDARY:
 		case DO_POST_DATA_BOUNDARY:
@@ -14928,7 +15183,7 @@ dumpDefaultACL(Archive *fout, const DefaultACLInfo *daclinfo)
  *		(Currently we assume that subname is only provided for table columns.)
  * 'nspname' is the namespace the object is in (NULL if none).
  * 'owner' is the owner, NULL if there is no owner (for languages).
- * 'dacl' is the DumpableAcl struct fpr the object.
+ * 'dacl' is the DumpableAcl struct for the object.
  *
  * Returns the dump ID assigned to the ACL TocEntry, or InvalidDumpId if
  * no ACL entry was created.
@@ -18510,6 +18765,7 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 			case DO_PUBLICATION_REL:
 			case DO_PUBLICATION_TABLE_IN_SCHEMA:
 			case DO_SUBSCRIPTION:
+			case DO_SUBSCRIPTION_REL:
 				/* Post-data objects: must come after the post-data boundary */
 				addObjectDependency(dobj, postDataBound->dumpId);
 				break;
@@ -18770,4 +19026,113 @@ appendReloptionsArrayAH(PQExpBuffer buffer, const char *reloptions,
 								fout->std_strings);
 	if (!res)
 		pg_log_warning("could not parse %s array", "reloptions");
+}
+
+/*
+ * read_dump_filters - retrieve object identifier patterns from file
+ *
+ * Parse the specified filter file for include and exclude patterns, and add
+ * them to the relevant lists.  If the filename is "-" then filters will be
+ * read from STDIN rather than a file.
+ */
+static void
+read_dump_filters(const char *filename, DumpOptions *dopt)
+{
+	FilterStateData fstate;
+	char	   *objname;
+	FilterCommandType comtype;
+	FilterObjectType objtype;
+
+	filter_init(&fstate, filename, exit_nicely);
+
+	while (filter_read_item(&fstate, &objname, &comtype, &objtype))
+	{
+		if (comtype == FILTER_COMMAND_TYPE_INCLUDE)
+		{
+			switch (objtype)
+			{
+				case FILTER_OBJECT_TYPE_NONE:
+					break;
+				case FILTER_OBJECT_TYPE_DATABASE:
+				case FILTER_OBJECT_TYPE_FUNCTION:
+				case FILTER_OBJECT_TYPE_INDEX:
+				case FILTER_OBJECT_TYPE_TABLE_DATA:
+				case FILTER_OBJECT_TYPE_TABLE_DATA_AND_CHILDREN:
+				case FILTER_OBJECT_TYPE_TRIGGER:
+					pg_log_filter_error(&fstate, _("%s filter for \"%s\" is not allowed"),
+										"include",
+										filter_object_type_name(objtype));
+					exit_nicely(1);
+					break;		/* unreachable */
+
+				case FILTER_OBJECT_TYPE_EXTENSION:
+					simple_string_list_append(&extension_include_patterns, objname);
+					break;
+				case FILTER_OBJECT_TYPE_FOREIGN_DATA:
+					simple_string_list_append(&foreign_servers_include_patterns, objname);
+					break;
+				case FILTER_OBJECT_TYPE_SCHEMA:
+					simple_string_list_append(&schema_include_patterns, objname);
+					dopt->include_everything = false;
+					break;
+				case FILTER_OBJECT_TYPE_TABLE:
+					simple_string_list_append(&table_include_patterns, objname);
+					dopt->include_everything = false;
+					break;
+				case FILTER_OBJECT_TYPE_TABLE_AND_CHILDREN:
+					simple_string_list_append(&table_include_patterns_and_children,
+											  objname);
+					dopt->include_everything = false;
+					break;
+			}
+		}
+		else if (comtype == FILTER_COMMAND_TYPE_EXCLUDE)
+		{
+			switch (objtype)
+			{
+				case FILTER_OBJECT_TYPE_NONE:
+					break;
+				case FILTER_OBJECT_TYPE_DATABASE:
+				case FILTER_OBJECT_TYPE_FUNCTION:
+				case FILTER_OBJECT_TYPE_INDEX:
+				case FILTER_OBJECT_TYPE_TRIGGER:
+				case FILTER_OBJECT_TYPE_EXTENSION:
+				case FILTER_OBJECT_TYPE_FOREIGN_DATA:
+					pg_log_filter_error(&fstate, _("%s filter for \"%s\" is not allowed"),
+										"exclude",
+										filter_object_type_name(objtype));
+					exit_nicely(1);
+					break;
+
+				case FILTER_OBJECT_TYPE_TABLE_DATA:
+					simple_string_list_append(&tabledata_exclude_patterns,
+											  objname);
+					break;
+				case FILTER_OBJECT_TYPE_TABLE_DATA_AND_CHILDREN:
+					simple_string_list_append(&tabledata_exclude_patterns_and_children,
+											  objname);
+					break;
+				case FILTER_OBJECT_TYPE_SCHEMA:
+					simple_string_list_append(&schema_exclude_patterns, objname);
+					break;
+				case FILTER_OBJECT_TYPE_TABLE:
+					simple_string_list_append(&table_exclude_patterns, objname);
+					break;
+				case FILTER_OBJECT_TYPE_TABLE_AND_CHILDREN:
+					simple_string_list_append(&table_exclude_patterns_and_children,
+											  objname);
+					break;
+			}
+		}
+		else
+		{
+			Assert(comtype == FILTER_COMMAND_TYPE_NONE);
+			Assert(objtype == FILTER_OBJECT_TYPE_NONE);
+		}
+
+		if (objname)
+			free(objname);
+	}
+
+	filter_free(&fstate);
 }
