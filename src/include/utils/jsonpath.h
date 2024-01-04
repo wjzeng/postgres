@@ -3,7 +3,7 @@
  * jsonpath.h
  *	Definitions for jsonpath datatype
  *
- * Copyright (c) 2019-2023, PostgreSQL Global Development Group
+ * Copyright (c) 2019-2024, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/include/utils/jsonpath.h
@@ -49,6 +49,13 @@ DatumGetJsonPathPCopy(Datum d)
 
 /*
  * All node's type of jsonpath expression
+ *
+ * These become part of the on-disk representation of the jsonpath type.
+ * Therefore, to preserve pg_upgradability, the order must not be changed, and
+ * new values must be added at the end.
+ *
+ * It is recommended that switch cases etc. in other parts of the code also
+ * use this order, to maintain some consistency.
  */
 typedef enum JsonPathItemType
 {
@@ -66,6 +73,13 @@ typedef enum JsonPathItemType
 	jpiGreater,					/* expr > expr */
 	jpiLessOrEqual,				/* expr <= expr */
 	jpiGreaterOrEqual,			/* expr >= expr */
+	jpiAdd,						/* expr + expr */
+	jpiSub,						/* expr - expr */
+	jpiMul,						/* expr * expr */
+	jpiDiv,						/* expr / expr */
+	jpiMod,						/* expr % expr */
+	jpiPlus,					/* + expr */
+	jpiMinus,					/* - expr */
 	jpiAnyArray,				/* [*] */
 	jpiAnyKey,					/* .* */
 	jpiIndexArray,				/* [subscript, ...] */
@@ -76,28 +90,14 @@ typedef enum JsonPathItemType
 	jpiVariable,				/* $variable */
 	jpiFilter,					/* ? (predicate) */
 	jpiExists,					/* EXISTS (expr) predicate */
-
-	/*
-	 * For better maintainability or readability, keep the order of the below
-	 * jsonpath Operators and Methods at the other places, like in the
-	 * documentation, switch() cases, keywords list, etc., too.
-	 */
-	jpiAdd,						/* expr + expr */
-	jpiPlus,					/* + expr */
-	jpiSub,						/* expr - expr */
-	jpiMinus,					/* - expr */
-	jpiMul,						/* expr * expr */
-	jpiDiv,						/* expr / expr */
-	jpiMod,						/* expr % expr */
 	jpiType,					/* .type() item method */
 	jpiSize,					/* .size() item method */
-	jpiDouble,					/* .double() item method */
 	jpiAbs,						/* .abs() item method */
-	jpiCeiling,					/* .ceiling() item method */
 	jpiFloor,					/* .floor() item method */
+	jpiCeiling,					/* .ceiling() item method */
+	jpiDouble,					/* .double() item method */
 	jpiDatetime,				/* .datetime() item method */
 	jpiKeyValue,				/* .keyvalue() item method */
-
 	jpiSubscript,				/* array subscript: 'expr' or 'expr TO expr' */
 	jpiLast,					/* LAST array subscript */
 	jpiStartsWith,				/* STARTS WITH predicate */
