@@ -1247,8 +1247,10 @@ innerrel_is_unique(PlannerInfo *root,
 
 /*
  * innerrel_is_unique_ext
- *	  Do the same as innerrel_is_unique(), but also return additional clauses
- *	  from a baserestrictinfo list that were used to prove uniqueness.
+ *	  Do the same as innerrel_is_unique(), but also set to '*extra_clauses'
+ *	  additional clauses from a baserestrictinfo list that were used to prove
+ *	  uniqueness.  A non NULL 'extra_clauses' indicates that we're checking
+ *	  for self-join and correspondingly dealing with filtered clauses.
  */
 bool
 innerrel_is_unique_ext(PlannerInfo *root,
@@ -1264,6 +1266,7 @@ innerrel_is_unique_ext(PlannerInfo *root,
 	ListCell   *lc;
 	UniqueRelInfo *uniqueRelInfo;
 	List	   *outer_exprs = NIL;
+	bool		self_join = (extra_clauses != NULL);
 
 	/* Certainly can't prove uniqueness when there are no joinclauses */
 	if (restrictlist == NIL)
@@ -1278,16 +1281,23 @@ innerrel_is_unique_ext(PlannerInfo *root,
 
 	/*
 	 * Query the cache to see if we've managed to prove that innerrel is
-	 * unique for any subset of this outerrel.  We don't need an exact match,
-	 * as extra outerrels can't make the innerrel any less unique (or more
-	 * formally, the restrictlist for a join to a superset outerrel must be a
-	 * superset of the conditions we successfully used before).
+	 * unique for any subset of this outerrel.  For non self-join search, we
+	 * don't need an exact match, as extra outerrels can't make the innerrel
+	 * any less unique (or more formally, the restrictlist for a join to a
+	 * superset outerrel must be a superset of the conditions we successfully
+	 * used before). For self-join search, we require an exact match of
+	 * outerrels, because we need extra clauses to be valid for our case.
+	 * Also, for self-join checking we've filtered the clauses list.  Thus,
+	 * for a self-join search, we can match only the result cached for another
+	 * self-join check.
 	 */
 	foreach(lc, innerrel->unique_for_rels)
 	{
 		uniqueRelInfo = (UniqueRelInfo *) lfirst(lc);
 
-		if (bms_is_subset(uniqueRelInfo->outerrelids, outerrelids))
+		if ((!self_join && bms_is_subset(uniqueRelInfo->outerrelids, outerrelids)) ||
+			(self_join && bms_equal(uniqueRelInfo->outerrelids, outerrelids) &&
+			 uniqueRelInfo->self_join))
 		{
 			if (extra_clauses)
 				*extra_clauses = uniqueRelInfo->extra_clauses;
@@ -1309,7 +1319,8 @@ innerrel_is_unique_ext(PlannerInfo *root,
 
 	/* No cached information, so try to make the proof. */
 	if (is_innerrel_unique_for(root, joinrelids, outerrelids, innerrel,
-							   jointype, restrictlist, &outer_exprs))
+							   jointype, restrictlist,
+							   self_join ? &outer_exprs : NULL))
 	{
 		/*
 		 * Cache the positive result for future probes, being sure to keep it
@@ -1323,8 +1334,9 @@ innerrel_is_unique_ext(PlannerInfo *root,
 		 */
 		old_context = MemoryContextSwitchTo(root->planner_cxt);
 		uniqueRelInfo = makeNode(UniqueRelInfo);
-		uniqueRelInfo->extra_clauses = outer_exprs;
 		uniqueRelInfo->outerrelids = bms_copy(outerrelids);
+		uniqueRelInfo->self_join = self_join;
+		uniqueRelInfo->extra_clauses = outer_exprs;
 		innerrel->unique_for_rels = lappend(innerrel->unique_for_rels,
 											uniqueRelInfo);
 		MemoryContextSwitchTo(old_context);
@@ -1658,6 +1670,28 @@ update_eclasses(EquivalenceClass *ec, int from, int to)
 }
 
 /*
+ * "Logically" compares two RestrictInfo's ignoring the 'rinfo_serial' field,
+ * which makes almost every RestrictInfo unique.  This type of comparison is
+ * useful when removing duplicates while moving RestrictInfo's from removed
+ * relation to remaining relation during self-join elimination.
+ *
+ * XXX: In the future, we might remove the 'rinfo_serial' field completely and
+ * get rid of this function.
+ */
+static bool
+restrict_infos_logically_equal(RestrictInfo *a, RestrictInfo *b)
+{
+	int			saved_rinfo_serial = a->rinfo_serial;
+	bool		result;
+
+	a->rinfo_serial = b->rinfo_serial;
+	result = equal(a, b);
+	a->rinfo_serial = saved_rinfo_serial;
+
+	return result;
+}
+
+/*
  * Remove a relation after we have proven that it participates only in an
  * unneeded unique self join.
  *
@@ -1760,7 +1794,7 @@ remove_self_join_rel(PlannerInfo *root, PlanRowMark *kmark, PlanRowMark *rmark,
 			if (src == rinfo ||
 				(rinfo->parent_ec != NULL
 				 && src->parent_ec == rinfo->parent_ec)
-				|| equal(rinfo->clause, src->clause))
+				|| restrict_infos_logically_equal(rinfo, src))
 			{
 				is_redundant = true;
 				break;
@@ -1788,7 +1822,7 @@ remove_self_join_rel(PlannerInfo *root, PlanRowMark *kmark, PlanRowMark *rmark,
 			if (src == rinfo ||
 				(rinfo->parent_ec != NULL
 				 && src->parent_ec == rinfo->parent_ec)
-				|| equal(rinfo->clause, src->clause))
+				|| restrict_infos_logically_equal(rinfo, src))
 			{
 				is_redundant = true;
 				break;
