@@ -1900,8 +1900,10 @@ remove_self_join_rel(PlannerInfo *root, PlanRowMark *kmark, PlanRowMark *rmark,
 	/* Replace varno in all the query structures */
 	query_tree_walker(root->parse, replace_varno_walker, &ctx,
 					  QTW_EXAMINE_SORTGROUP);
-	if (root->parse->resultRelation == toRemove->relid)
-		root->parse->resultRelation = toKeep->relid;
+
+	/* See remove_self_joins_one_group() */
+	Assert(root->parse->resultRelation != toRemove->relid);
+	Assert(root->parse->resultRelation != toKeep->relid);
 
 	/* Replace links in the planner info */
 	remove_rel_from_query(root, toRemove, toKeep->relid, NULL, NULL);
@@ -2086,6 +2088,14 @@ remove_self_joins_one_group(PlannerInfo *root, Relids relids)
 	{
 		RelOptInfo *inner = root->simple_rel_array[r];
 
+		/*
+		 * We don't accept result relation as either source or target relation
+		 * of SJE, because result relation has different behavior in
+		 * EvalPlanQual() and RETURNING clause.
+		 */
+		if (root->parse->resultRelation == r)
+			continue;
+
 		k = r;
 
 		while ((k = bms_next_member(relids, k)) > 0)
@@ -2100,6 +2110,9 @@ remove_self_joins_one_group(PlannerInfo *root, Relids relids)
 			PlanRowMark *omark = NULL;
 			PlanRowMark *imark = NULL;
 			List	   *uclauses = NIL;
+
+			if (root->parse->resultRelation == k)
+				continue;
 
 			/* A sanity check: the relations have the same Oid. */
 			Assert(root->simple_rte_array[k]->relid ==
