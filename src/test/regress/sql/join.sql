@@ -2600,6 +2600,14 @@ select * from emp1 t1 left join
         on true)
 on true;
 
+-- Check that SJE removes the whole PHVs correctly
+explain (verbose, costs off)
+select 1 from emp1 t1 left join
+    ((select 1 as x, * from emp1 t2) s1 inner join
+        (select * from emp1 t3) s2 on s1.id = s2.id)
+    on true
+where s1.x = 1;
+
 -- Check that PHVs do not impose any constraints on removing self joins
 explain (verbose, costs off)
 select * from emp1 t1 join emp1 t2 on t1.id = t2.id left join
@@ -2949,6 +2957,18 @@ select * from
     lateral (select q1, coalesce(ss1.x,q2) as y from int8_tbl d) ss2
   ) on c.q2 = ss2.q1,
   lateral (select ss2.y offset 0) ss3;
+
+-- another case requiring nested PlaceHolderVars
+explain (verbose, costs off)
+select * from
+  (select 0 as val0) as ss0
+  left join (select 1 as val) as ss1 on true
+  left join lateral (select ss1.val as val_filtered where false) as ss2 on true;
+
+select * from
+  (select 0 as val0) as ss0
+  left join (select 1 as val) as ss1 on true
+  left join lateral (select ss1.val as val_filtered where false) as ss2 on true;
 
 -- case that breaks the old ph_may_need optimization
 explain (verbose, costs off)

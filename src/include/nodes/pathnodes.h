@@ -913,6 +913,8 @@ typedef struct RelOptInfo
 	Relids	   *attr_needed pg_node_attr(read_write_ignore);
 	/* array indexed [min_attr .. max_attr] */
 	int32	   *attr_widths pg_node_attr(read_write_ignore);
+	/* zero-based set containing attnums of NOT NULL columns */
+	Bitmapset  *notnullattnums;
 	/* relids of outer joins that can null this baserel */
 	Relids		nulling_relids;
 	/* LATERAL Vars and PHVs referenced by rel */
@@ -1455,6 +1457,16 @@ typedef struct PathKey
 	int			pk_strategy;	/* sort direction (ASC or DESC) */
 	bool		pk_nulls_first; /* do NULLs come before normal values? */
 } PathKey;
+
+/*
+ * Combines the information about pathkeys and the associated clauses.
+ */
+typedef struct PathKeyInfo
+{
+	NodeTag		type;
+	List	   *pathkeys;
+	List	   *clauses;
+} PathKeyInfo;
 
 /*
  * VolatileFunctionStatus -- allows nodes to cache their
@@ -2588,7 +2600,10 @@ typedef struct RestrictInfo
 	 * 2. If we manufacture a commuted version of a qual to use as an index
 	 * condition, it copies the original's rinfo_serial, since it is in
 	 * practice the same condition.
-	 * 3. RestrictInfos made for a child relation copy their parent's
+	 * 3. If we reduce a qual to constant-FALSE, the new constant-FALSE qual
+	 * copies the original's rinfo_serial, since it is in practice the same
+	 * condition.
+	 * 4. RestrictInfos made for a child relation copy their parent's
 	 * rinfo_serial.  Likewise, when an EquivalenceClass makes a derived
 	 * equality clause for a child relation, it copies the rinfo_serial of
 	 * the matching equality clause for the parent.  This allows detection

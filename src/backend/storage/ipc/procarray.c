@@ -1053,6 +1053,7 @@ void
 ProcArrayApplyRecoveryInfo(RunningTransactions running)
 {
 	TransactionId *xids;
+	TransactionId advanceNextXid;
 	int			nxids;
 	int			i;
 
@@ -1065,6 +1066,16 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	 * Remove stale transactions, if any.
 	 */
 	ExpireOldKnownAssignedTransactionIds(running->oldestRunningXid);
+
+	/*
+	 * Adjust TransamVariables->nextXid before StandbyReleaseOldLocks(),
+	 * because we will need it up to date for accessing two-phase transactions
+	 * in StandbyReleaseOldLocks().
+	 */
+	advanceNextXid = running->nextXid;
+	TransactionIdRetreat(advanceNextXid);
+	AdvanceNextFullTransactionIdPastXid(advanceNextXid);
+	Assert(FullTransactionIdIsValid(TransamVariables->nextXid));
 
 	/*
 	 * Remove stale locks, if any.
@@ -1274,11 +1285,6 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	 */
 
 	LWLockRelease(ProcArrayLock);
-
-	/* TransamVariables->nextXid must be beyond any observed xid. */
-	AdvanceNextFullTransactionIdPastXid(latestObservedXid);
-
-	Assert(FullTransactionIdIsValid(TransamVariables->nextXid));
 
 	KnownAssignedXidsDisplay(DEBUG3);
 	if (standbyState == STANDBY_SNAPSHOT_READY)

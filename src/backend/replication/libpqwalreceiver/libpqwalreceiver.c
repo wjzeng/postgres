@@ -24,7 +24,6 @@
 #include "common/connect.h"
 #include "funcapi.h"
 #include "libpq-fe.h"
-#include "libpq/libpq-be-fe-helpers.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -133,9 +132,19 @@ libpqrcv_connect(const char *conninfo, bool logical, bool must_use_password,
 				 const char *appname, char **err)
 {
 	WalReceiverConn *conn;
+	PostgresPollingStatusType status;
 	const char *keys[6];
 	const char *vals[6];
 	int			i = 0;
+
+	/*
+	 * Re-validate connection string. The validation already happened at DDL
+	 * time, but the subscription owner may have changed. If we don't recheck
+	 * with the correct must_use_password, it's possible that the connection
+	 * will obtain the password from a different source, such as PGPASSFILE or
+	 * PGPASSWORD.
+	 */
+	libpqrcv_check_conninfo(conninfo, must_use_password);
 
 	/*
 	 * We use the expand_dbname parameter to process the connection string (or
@@ -179,17 +188,56 @@ libpqrcv_connect(const char *conninfo, bool logical, bool must_use_password,
 	Assert(i < sizeof(keys));
 
 	conn = palloc0(sizeof(WalReceiverConn));
-	conn->streamConn =
-		libpqsrv_connect_params(keys, vals,
-								 /* expand_dbname = */ true,
-								WAIT_EVENT_LIBPQWALRECEIVER_CONNECT);
+	conn->streamConn = PQconnectStartParams(keys, vals,
+											 /* expand_dbname = */ true);
+	if (PQstatus(conn->streamConn) == CONNECTION_BAD)
+		goto bad_connection_errmsg;
+
+	/*
+	 * Poll connection until we have OK or FAILED status.
+	 *
+	 * Per spec for PQconnectPoll, first wait till socket is write-ready.
+	 */
+	status = PGRES_POLLING_WRITING;
+	do
+	{
+		int			io_flag;
+		int			rc;
+
+		if (status == PGRES_POLLING_READING)
+			io_flag = WL_SOCKET_READABLE;
+#ifdef WIN32
+		/* Windows needs a different test while waiting for connection-made */
+		else if (PQstatus(conn->streamConn) == CONNECTION_STARTED)
+			io_flag = WL_SOCKET_CONNECTED;
+#endif
+		else
+			io_flag = WL_SOCKET_WRITEABLE;
+
+		rc = WaitLatchOrSocket(MyLatch,
+							   WL_EXIT_ON_PM_DEATH | WL_LATCH_SET | io_flag,
+							   PQsocket(conn->streamConn),
+							   0,
+							   WAIT_EVENT_LIBPQWALRECEIVER_CONNECT);
+
+		/* Interrupted? */
+		if (rc & WL_LATCH_SET)
+		{
+			ResetLatch(MyLatch);
+			ProcessWalRcvInterrupts();
+		}
+
+		/* If socket is ready, advance the libpq state machine */
+		if (rc & io_flag)
+			status = PQconnectPoll(conn->streamConn);
+	} while (status != PGRES_POLLING_OK && status != PGRES_POLLING_FAILED);
 
 	if (PQstatus(conn->streamConn) != CONNECTION_OK)
 		goto bad_connection_errmsg;
 
 	if (must_use_password && !PQconnectionUsedPassword(conn->streamConn))
 	{
-		libpqsrv_disconnect(conn->streamConn);
+		PQfinish(conn->streamConn);
 		pfree(conn);
 
 		ereport(ERROR,
@@ -225,7 +273,7 @@ bad_connection_errmsg:
 
 	/* error path, error already set */
 bad_connection:
-	libpqsrv_disconnect(conn->streamConn);
+	PQfinish(conn->streamConn);
 	pfree(conn);
 	return NULL;
 }
@@ -275,10 +323,15 @@ libpqrcv_check_conninfo(const char *conninfo, bool must_use_password)
 		}
 
 		if (!uses_password)
+		{
+			/* malloc'd, so we must free it explicitly */
+			PQconninfoFree(opts);
+
 			ereport(ERROR,
 					(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
 					 errmsg("password is required"),
 					 errdetail("Non-superusers must provide a password in the connection string.")));
+		}
 	}
 
 	PQconninfoFree(opts);
@@ -756,7 +809,7 @@ libpqrcv_PQgetResult(PGconn *streamConn)
 static void
 libpqrcv_disconnect(WalReceiverConn *conn)
 {
-	libpqsrv_disconnect(conn->streamConn);
+	PQfinish(conn->streamConn);
 	PQfreemem(conn->recvBuf);
 	pfree(conn);
 }
