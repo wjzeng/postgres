@@ -616,7 +616,11 @@ CreateFakeRelcacheEntry(RelFileLocator rlocator)
 	rel->rd_lockInfo.lockRelId.dbId = rlocator.dbOid;
 	rel->rd_lockInfo.lockRelId.relId = rlocator.relNumber;
 
-	rel->rd_smgr = NULL;
+	/*
+	 * Set up a non-pinned SMgrRelation reference, so that we don't need to
+	 * worry about unpinning it on error.
+	 */
+	rel->rd_smgr = smgropen(rlocator, InvalidBackendId);
 
 	return rel;
 }
@@ -627,9 +631,6 @@ CreateFakeRelcacheEntry(RelFileLocator rlocator)
 void
 FreeFakeRelcacheEntry(Relation fakerel)
 {
-	/* make sure the fakerel is not referenced by the SmgrRelation anymore */
-	if (fakerel->rd_smgr != NULL)
-		smgrclearowner(&fakerel->rd_smgr, fakerel->rd_smgr);
 	pfree(fakerel);
 }
 
@@ -656,10 +657,10 @@ XLogDropDatabase(Oid dbid)
 	/*
 	 * This is unnecessarily heavy-handed, as it will close SMgrRelation
 	 * objects for other databases as well. DROP DATABASE occurs seldom enough
-	 * that it's not worth introducing a variant of smgrclose for just this
-	 * purpose. XXX: Or should we rather leave the smgr entries dangling?
+	 * that it's not worth introducing a variant of smgrdestroy for just this
+	 * purpose.
 	 */
-	smgrcloseall();
+	smgrdestroyall();
 
 	forget_invalid_pages_db(dbid);
 }
@@ -1006,12 +1007,7 @@ read_local_xlog_page_guts(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		count = read_upto - targetPagePtr;
 	}
 
-	/*
-	 * Even though we just determined how much of the page can be validly read
-	 * as 'count', read the whole page anyway. It's guaranteed to be
-	 * zero-padded up to the page boundary if it's incomplete.
-	 */
-	if (!WALRead(state, cur_page, targetPagePtr, XLOG_BLCKSZ, tli,
+	if (!WALRead(state, cur_page, targetPagePtr, count, tli,
 				 &errinfo))
 		WALReadRaiseError(&errinfo);
 
