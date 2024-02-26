@@ -1,20 +1,17 @@
 #-------------------------------------------------------------------------
 #
-# Makefile--
-#    Makefile for storage/smgr
+# Makefile
+#    Makefile for access/sequence
 #
 # IDENTIFICATION
-#    src/backend/storage/smgr/Makefile
+#    src/backend/access/sequence/Makefile
 #
 #-------------------------------------------------------------------------
 
-subdir = src/backend/storage/smgr
+subdir = src/backend/access/sequence
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = \
-	bulk_write.o \
-	md.o \
-	smgr.o
+OBJS = sequence.o
 
 include $(top_srcdir)/src/backend/common.mk
