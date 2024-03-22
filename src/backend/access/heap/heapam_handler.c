@@ -237,7 +237,7 @@ heapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
  * ----------------------------------------------------------------------------
  */
 
-static void
+static TupleTableSlot *
 heapam_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 					int options, BulkInsertState bistate)
 {
@@ -254,6 +254,8 @@ heapam_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
 
 	if (shouldFree)
 		pfree(tuple);
+
+	return slot;
 }
 
 static void
@@ -2582,6 +2584,7 @@ static const TableAmRoutine heapam_methods = {
 	.index_build_range_scan = heapam_index_build_range_scan,
 	.index_validate_scan = heapam_index_validate_scan,
 
+	.free_rd_amcache = NULL,
 	.relation_size = table_block_relation_size,
 	.relation_needs_toast_table = heapam_relation_needs_toast_table,
 	.relation_toast_am = heapam_relation_toast_am,

@@ -19,18 +19,15 @@
 #include <math.h>
 
 #include "access/genam.h"
-#include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/sysattr.h"
 #include "access/table.h"
-#include "access/xact.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
-#include "executor/nodeAgg.h"
 #include "foreign/fdwapi.h"
 #include "jit/jit.h"
 #include "lib/bipartite_match.h"
@@ -45,7 +42,6 @@
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
-#include "optimizer/inherit.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/paramassign.h"
 #include "optimizer/pathnode.h"
@@ -61,12 +57,9 @@
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "partitioning/partdesc.h"
-#include "rewrite/rewriteManip.h"
-#include "storage/dsm_impl.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
-#include "utils/syscache.h"
 
 /* GUC parameters */
 double		cursor_tuple_fraction = DEFAULT_CURSOR_TUPLE_FRACTION;
@@ -1425,7 +1418,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		else if (parse->groupClause)
 		{
 			/* Preprocess regular GROUP BY clause, if any */
-			root->processed_groupClause = list_copy(parse->groupClause);;
+			root->processed_groupClause = list_copy(parse->groupClause);
 			/* Remove any redundant GROUP BY columns */
 			remove_useless_groupby_columns(root);
 		}
@@ -7327,6 +7320,17 @@ gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 {
 	ListCell   *lc;
 	Path	   *cheapest_partial_path;
+	List	   *groupby_pathkeys;
+
+	/*
+	 * This occurs after any partial aggregation has taken place, so trim off
+	 * any pathkeys added for ORDER BY / DISTINCT aggregates.
+	 */
+	if (list_length(root->group_pathkeys) > root->num_groupby_pathkeys)
+		groupby_pathkeys = list_copy_head(root->group_pathkeys,
+										  root->num_groupby_pathkeys);
+	else
+		groupby_pathkeys = root->group_pathkeys;
 
 	/* Try Gather for unordered paths and Gather Merge for ordered ones. */
 	generate_useful_gather_paths(root, rel, true);
@@ -7341,7 +7345,7 @@ gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 		int			presorted_keys;
 		double		total_groups;
 
-		is_sorted = pathkeys_count_contained_in(root->group_pathkeys,
+		is_sorted = pathkeys_count_contained_in(groupby_pathkeys,
 												path->pathkeys,
 												&presorted_keys);
 
@@ -7367,13 +7371,13 @@ gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 		 */
 		if (presorted_keys == 0 || !enable_incremental_sort)
 			path = (Path *) create_sort_path(root, rel, path,
-											 root->group_pathkeys,
+											 groupby_pathkeys,
 											 -1.0);
 		else
 			path = (Path *) create_incremental_sort_path(root,
 														 rel,
 														 path,
-														 root->group_pathkeys,
+														 groupby_pathkeys,
 														 presorted_keys,
 														 -1.0);
 
@@ -7382,7 +7386,7 @@ gather_grouping_paths(PlannerInfo *root, RelOptInfo *rel)
 									 rel,
 									 path,
 									 rel->reltarget,
-									 root->group_pathkeys,
+									 groupby_pathkeys,
 									 NULL,
 									 &total_groups);
 

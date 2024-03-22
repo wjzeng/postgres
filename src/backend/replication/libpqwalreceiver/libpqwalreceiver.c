@@ -22,8 +22,6 @@
 #include <unistd.h>
 #include <sys/time.h>
 
-#include "access/xlog.h"
-#include "catalog/pg_type.h"
 #include "common/connect.h"
 #include "funcapi.h"
 #include "libpq-fe.h"
@@ -271,7 +269,11 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
 				 errhint("Target server's authentication method must be changed, or set password_required=false in the subscription parameters.")));
 	}
 
-	if (logical)
+	/*
+	 * Set always-secure search path for the cases where the connection is
+	 * used to run SQL queries, so malicious users can't get control.
+	 */
+	if (!replication || logical)
 	{
 		PGresult   *res;
 
