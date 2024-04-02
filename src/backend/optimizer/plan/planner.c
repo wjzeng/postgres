@@ -54,6 +54,7 @@
 #include "optimizer/tlist.h"
 #include "parser/analyze.h"
 #include "parser/parse_agg.h"
+#include "parser/parse_clause.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "partitioning/partdesc.h"
@@ -119,12 +120,15 @@ typedef struct
 {
 	List	   *activeWindows;	/* active windows, if any */
 	grouping_sets_data *gset_data;	/* grouping sets data, if any */
+	SetOperationStmt *setop;	/* parent set operation or NULL if not a
+								 * subquery belonging to a set operation */
 } standard_qp_extra;
 
 /* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
-static void grouping_planner(PlannerInfo *root, double tuple_fraction);
+static void grouping_planner(PlannerInfo *root, double tuple_fraction,
+							 SetOperationStmt *setops);
 static grouping_sets_data *preprocess_grouping_sets(PlannerInfo *root);
 static List *remap_to_groupclause_idx(List *groupClause, List *gsets,
 									  int *tleref_to_colnum_map);
@@ -249,6 +253,8 @@ static bool group_by_has_partkey(RelOptInfo *input_rel,
 								 List *targetList,
 								 List *groupClause);
 static int	common_prefix_cmp(const void *a, const void *b);
+static List *generate_setop_child_grouplist(SetOperationStmt *op,
+											List *targetlist);
 
 
 /*****************************************************************************
@@ -301,6 +307,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 
 	glob->boundParams = boundParams;
 	glob->subplans = NIL;
+	glob->subpaths = NIL;
 	glob->subroots = NIL;
 	glob->rewindPlanIDs = NULL;
 	glob->finalrtable = NIL;
@@ -405,8 +412,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	}
 
 	/* primary planning entry point (may recurse for subqueries) */
-	root = subquery_planner(glob, parse, NULL,
-							false, tuple_fraction);
+	root = subquery_planner(glob, parse, NULL, false, tuple_fraction, NULL);
 
 	/* Select best Path and turn it into a Plan */
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
@@ -597,6 +603,10 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
  * hasRecursion is true if this is a recursive WITH query.
  * tuple_fraction is the fraction of tuples we expect will be retrieved.
  * tuple_fraction is interpreted as explained for grouping_planner, below.
+ * setops is used for set operation subqueries to provide the subquery with
+ * the context in which it's being used so that Paths correctly sorted for the
+ * set operation can be generated.  NULL when not planning a set operation
+ * child.
  *
  * Basically, this routine does the stuff that should only be done once
  * per Query object.  It then calls grouping_planner.  At one time,
@@ -615,9 +625,9 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
  *--------------------
  */
 PlannerInfo *
-subquery_planner(PlannerGlobal *glob, Query *parse,
-				 PlannerInfo *parent_root,
-				 bool hasRecursion, double tuple_fraction)
+subquery_planner(PlannerGlobal *glob, Query *parse, PlannerInfo *parent_root,
+				 bool hasRecursion, double tuple_fraction,
+				 SetOperationStmt *setops)
 {
 	PlannerInfo *root;
 	List	   *newWithCheckOptions;
@@ -905,6 +915,9 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 								  EXPRKIND_QUAL);
 	}
 
+	parse->mergeJoinCondition =
+		preprocess_expression(root, parse->mergeJoinCondition, EXPRKIND_QUAL);
+
 	root->append_rel_list = (List *)
 		preprocess_expression(root, (Node *) root->append_rel_list,
 							  EXPRKIND_APPINFO);
@@ -1076,7 +1089,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 	/*
 	 * Do the main planning.
 	 */
-	grouping_planner(root, tuple_fraction);
+	grouping_planner(root, tuple_fraction, setops);
 
 	/*
 	 * Capture the set of outer-level param IDs we have access to, for use in
@@ -1274,7 +1287,11 @@ preprocess_phv_expression(PlannerInfo *root, Expr *expr)
  *	  0 < tuple_fraction < 1: expect the given fraction of tuples available
  *		from the plan to be retrieved
  *	  tuple_fraction >= 1: tuple_fraction is the absolute number of tuples
- *		expected to be retrieved (ie, a LIMIT specification)
+ *		expected to be retrieved (ie, a LIMIT specification).
+ * setops is used for set operation subqueries to provide the subquery with
+ * the context in which it's being used so that Paths correctly sorted for the
+ * set operation can be generated.  NULL when not planning a set operation
+ * child.
  *
  * Returns nothing; the useful output is in the Paths we attach to the
  * (UPPERREL_FINAL, NULL) upperrel in *root.  In addition,
@@ -1285,7 +1302,8 @@ preprocess_phv_expression(PlannerInfo *root, Expr *expr)
  *--------------------
  */
 static void
-grouping_planner(PlannerInfo *root, double tuple_fraction)
+grouping_planner(PlannerInfo *root, double tuple_fraction,
+				 SetOperationStmt *setops)
 {
 	Query	   *parse = root->parse;
 	int64		offset_est = 0;
@@ -1499,6 +1517,12 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		/* Set up data needed by standard_qp_callback */
 		qp_extra.activeWindows = activeWindows;
 		qp_extra.gset_data = gset_data;
+
+		/*
+		 * If we're a subquery for a set operation, store the SetOperationStmt
+		 * in qp_extra.
+		 */
+		qp_extra.setop = setops;
 
 		/*
 		 * Generate the best unsorted and presorted paths for the scan/join
@@ -1787,6 +1811,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			List	   *withCheckOptionLists = NIL;
 			List	   *returningLists = NIL;
 			List	   *mergeActionLists = NIL;
+			List	   *mergeJoinConditions = NIL;
 			List	   *rowMarks;
 
 			if (bms_membership(root->all_result_relids) == BMS_MULTIPLE)
@@ -1893,6 +1918,19 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 						mergeActionLists = lappend(mergeActionLists,
 												   mergeActionList);
 					}
+					if (parse->commandType == CMD_MERGE)
+					{
+						Node	   *mergeJoinCondition = parse->mergeJoinCondition;
+
+						if (this_result_rel != top_result_rel)
+							mergeJoinCondition =
+								adjust_appendrel_attrs_multilevel(root,
+																  mergeJoinCondition,
+																  this_result_rel,
+																  top_result_rel);
+						mergeJoinConditions = lappend(mergeJoinConditions,
+													  mergeJoinCondition);
+					}
 				}
 
 				if (resultRelations == NIL)
@@ -1917,6 +1955,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 						returningLists = list_make1(parse->returningList);
 					if (parse->mergeActionList)
 						mergeActionLists = list_make1(parse->mergeActionList);
+					if (parse->commandType == CMD_MERGE)
+						mergeJoinConditions = list_make1(parse->mergeJoinCondition);
 				}
 			}
 			else
@@ -1932,6 +1972,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 					returningLists = list_make1(parse->returningList);
 				if (parse->mergeActionList)
 					mergeActionLists = list_make1(parse->mergeActionList);
+				if (parse->commandType == CMD_MERGE)
+					mergeJoinConditions = list_make1(parse->mergeJoinCondition);
 			}
 
 			/*
@@ -1959,6 +2001,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 										rowMarks,
 										parse->onConflict,
 										mergeActionLists,
+										mergeJoinConditions,
 										assign_special_exec_param(root));
 		}
 
@@ -3433,6 +3476,27 @@ standard_qp_callback(PlannerInfo *root, void *extra)
 									  parse->sortClause,
 									  tlist);
 
+	/* setting setop_pathkeys might be useful to the union planner */
+	if (qp_extra->setop != NULL &&
+		set_operation_ordered_results_useful(qp_extra->setop))
+	{
+		List	   *groupClauses;
+		bool		sortable;
+
+		groupClauses = generate_setop_child_grouplist(qp_extra->setop, tlist);
+
+		root->setop_pathkeys =
+			make_pathkeys_for_sortclauses_extended(root,
+												   &groupClauses,
+												   tlist,
+												   false,
+												   &sortable);
+		if (!sortable)
+			root->setop_pathkeys = NIL;
+	}
+	else
+		root->setop_pathkeys = NIL;
+
 	/*
 	 * Figure out whether we want a sorted result from query_planner.
 	 *
@@ -3442,7 +3506,9 @@ standard_qp_callback(PlannerInfo *root, void *extra)
 	 * sortable DISTINCT clause that's more rigorous than the ORDER BY clause,
 	 * we try to produce output that's sufficiently well sorted for the
 	 * DISTINCT.  Otherwise, if there is an ORDER BY clause, we want to sort
-	 * by the ORDER BY clause.
+	 * by the ORDER BY clause.  Otherwise, if we're a subquery being planned
+	 * for a set operation which can benefit from presorted results and have a
+	 * sortable targetlist, we want to sort by the target list.
 	 *
 	 * Note: if we have both ORDER BY and GROUP BY, and ORDER BY is a superset
 	 * of GROUP BY, it would be tempting to request sort by ORDER BY --- but
@@ -3460,6 +3526,8 @@ standard_qp_callback(PlannerInfo *root, void *extra)
 		root->query_pathkeys = root->distinct_pathkeys;
 	else if (root->sort_pathkeys)
 		root->query_pathkeys = root->sort_pathkeys;
+	else if (root->setop_pathkeys != NIL)
+		root->query_pathkeys = root->setop_pathkeys;
 	else
 		root->query_pathkeys = NIL;
 }
@@ -7865,4 +7933,45 @@ group_by_has_partkey(RelOptInfo *input_rel,
 	}
 
 	return true;
+}
+
+/*
+ * generate_setop_child_grouplist
+ *		Build a SortGroupClause list defining the sort/grouping properties
+ *		of the child of a set operation.
+ *
+ * This is similar to generate_setop_grouplist() but differs as the setop
+ * child query's targetlist entries may already have a tleSortGroupRef
+ * assigned for other purposes, such as GROUP BYs.  Here we keep the
+ * SortGroupClause list in the same order as 'op' groupClauses and just adjust
+ * the tleSortGroupRef to reference the TargetEntry's 'ressortgroupref'.
+ */
+static List *
+generate_setop_child_grouplist(SetOperationStmt *op, List *targetlist)
+{
+	List	   *grouplist = copyObject(op->groupClauses);
+	ListCell   *lg;
+	ListCell   *lt;
+
+	lg = list_head(grouplist);
+	foreach(lt, targetlist)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lt);
+		SortGroupClause *sgc;
+
+		/* resjunk columns could have sortgrouprefs.  Leave these alone */
+		if (tle->resjunk)
+			continue;
+
+		/* we expect every non-resjunk target to have a SortGroupClause */
+		Assert(lg != NULL);
+		sgc = (SortGroupClause *) lfirst(lg);
+		lg = lnext(grouplist, lg);
+
+		/* assign a tleSortGroupRef, or reuse the existing one */
+		sgc->tleSortGroupRef = assignSortGroupRef(tle, targetlist);
+		tle->ressortgroupref = sgc->tleSortGroupRef;
+	}
+	Assert(lg == NULL);
+	return grouplist;
 }

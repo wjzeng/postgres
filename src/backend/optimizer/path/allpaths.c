@@ -2180,9 +2180,9 @@ set_dummy_rel_pathlist(RelOptInfo *rel)
 
 	/*
 	 * We set the cheapest-path fields immediately, just in case they were
-	 * pointing at some discarded path.  This is redundant when we're called
-	 * from set_rel_size(), but not when called from elsewhere, and doing it
-	 * twice is harmless anyway.
+	 * pointing at some discarded path.  This is redundant in current usage
+	 * because set_rel_pathlist will do it later, but it's cheap so we keep it
+	 * for safety and consistency with mark_dummy_rel.
 	 */
 	set_cheapest(rel);
 }
@@ -2645,9 +2645,8 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	Assert(root->plan_params == NIL);
 
 	/* Generate a subroot and Paths for the subquery */
-	rel->subroot = subquery_planner(root->glob, subquery,
-									root,
-									false, tuple_fraction);
+	rel->subroot = subquery_planner(root->glob, subquery, root, false,
+									tuple_fraction, NULL);
 
 	/* Isolate the params needed by this specific subplan */
 	rel->subplan_params = root->plan_params;
@@ -2872,16 +2871,19 @@ set_tablefunc_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 static void
 set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
+	Path	   *ctepath;
 	Plan	   *cteplan;
 	PlannerInfo *cteroot;
 	Index		levelsup;
+	List	   *pathkeys;
 	int			ndx;
 	ListCell   *lc;
 	int			plan_id;
 	Relids		required_outer;
 
 	/*
-	 * Find the referenced CTE, and locate the plan previously made for it.
+	 * Find the referenced CTE, and locate the path and plan previously made
+	 * for it.
 	 */
 	levelsup = rte->ctelevelsup;
 	cteroot = root;
@@ -2913,10 +2915,19 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	plan_id = list_nth_int(cteroot->cte_plan_ids, ndx);
 	if (plan_id <= 0)
 		elog(ERROR, "no plan was made for CTE \"%s\"", rte->ctename);
+
+	Assert(list_length(root->glob->subpaths) == list_length(root->glob->subplans));
+	ctepath = (Path *) list_nth(root->glob->subpaths, plan_id - 1);
 	cteplan = (Plan *) list_nth(root->glob->subplans, plan_id - 1);
 
 	/* Mark rel with estimated output rows, width, etc */
 	set_cte_size_estimates(root, rel, cteplan->plan_rows);
+
+	/* Convert the ctepath's pathkeys to outer query's representation */
+	pathkeys = convert_subquery_pathkeys(root,
+										 rel,
+										 ctepath->pathkeys,
+										 cteplan->targetlist);
 
 	/*
 	 * We don't support pushing join clauses into the quals of a CTE scan, but
@@ -2926,7 +2937,7 @@ set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	required_outer = rel->lateral_relids;
 
 	/* Generate appropriate path */
-	add_path(rel, create_ctescan_path(root, rel, required_outer));
+	add_path(rel, create_ctescan_path(root, rel, pathkeys, required_outer));
 }
 
 /*
@@ -2954,9 +2965,6 @@ set_namedtuplestore_pathlist(PlannerInfo *root, RelOptInfo *rel,
 
 	/* Generate appropriate path */
 	add_path(rel, create_namedtuplestorescan_path(root, rel, required_outer));
-
-	/* Select cheapest path (pretty easy in this case...) */
-	set_cheapest(rel);
 }
 
 /*
@@ -2984,9 +2992,6 @@ set_result_pathlist(PlannerInfo *root, RelOptInfo *rel,
 
 	/* Generate appropriate path */
 	add_path(rel, create_resultscan_path(root, rel, required_outer));
-
-	/* Select cheapest path (pretty easy in this case...) */
-	set_cheapest(rel);
 }
 
 /*

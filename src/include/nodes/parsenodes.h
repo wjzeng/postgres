@@ -176,8 +176,6 @@ typedef struct Query
 								 * also USING clause for MERGE */
 
 	List	   *mergeActionList;	/* list of actions for MERGE (only) */
-	/* whether to use outer join */
-	bool		mergeUseOuterJoin pg_node_attr(query_jumble_ignore);
 
 	/*
 	 * rtable index of target relation for MERGE to pull data. Initially, this
@@ -186,6 +184,9 @@ typedef struct Query
 	 * view subquery, whereas resultRelation is the index of the target view.
 	 */
 	int			mergeTargetRelation pg_node_attr(query_jumble_ignore);
+
+	/* join condition between source and target for MERGE */
+	Node	   *mergeJoinCondition;
 
 	List	   *targetList;		/* target list (of TargetEntry) */
 
@@ -1705,7 +1706,7 @@ typedef struct CommonTableExpr
 typedef struct MergeWhenClause
 {
 	NodeTag		type;
-	bool		matched;		/* true=MATCHED, false=NOT MATCHED */
+	MergeMatchKind matchKind;	/* MATCHED/NOT MATCHED BY SOURCE/TARGET */
 	CmdType		commandType;	/* INSERT/UPDATE/DELETE/DO NOTHING */
 	OverridingKind override;	/* OVERRIDING clause */
 	Node	   *condition;		/* WHEN conditions (raw parser) */
@@ -2684,6 +2685,8 @@ typedef struct Constraint
 	RangeVar   *pktable;		/* Primary key table */
 	List	   *fk_attrs;		/* Attributes of foreign key */
 	List	   *pk_attrs;		/* Corresponding attrs in PK table */
+	bool		fk_with_period; /* Last attribute of FK uses PERIOD */
+	bool		pk_with_period; /* Last attribute of PK uses PERIOD */
 	char		fk_matchtype;	/* FULL, PARTIAL, SIMPLE */
 	char		fk_upd_action;	/* ON UPDATE action */
 	char		fk_del_action;	/* ON DELETE action */

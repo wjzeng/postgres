@@ -1707,8 +1707,9 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	pathnode->subpath = subpath;
 
 	/*
-	 * Under GEQO, the sjinfo might be short-lived, so we'd better make copies
-	 * of data structures we extract from it.
+	 * Under GEQO and when planning child joins, the sjinfo might be
+	 * short-lived, so we'd better make copies of data structures we extract
+	 * from it.
 	 */
 	pathnode->in_operators = copyObject(sjinfo->semi_operators);
 	pathnode->uniq_exprs = copyObject(sjinfo->semi_rhs_exprs);
@@ -2120,7 +2121,8 @@ create_valuesscan_path(PlannerInfo *root, RelOptInfo *rel,
  *	  returning the pathnode.
  */
 Path *
-create_ctescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer)
+create_ctescan_path(PlannerInfo *root, RelOptInfo *rel,
+					List *pathkeys, Relids required_outer)
 {
 	Path	   *pathnode = makeNode(Path);
 
@@ -2132,7 +2134,7 @@ create_ctescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer)
 	pathnode->parallel_aware = false;
 	pathnode->parallel_safe = rel->consider_parallel;
 	pathnode->parallel_workers = 0;
-	pathnode->pathkeys = NIL;	/* XXX for now, result is always unordered */
+	pathnode->pathkeys = pathkeys;
 
 	cost_ctescan(pathnode, root, rel, pathnode->param_info);
 
@@ -3714,6 +3716,7 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
  * 'onconflict' is the ON CONFLICT clause, or NULL
  * 'epqParam' is the ID of Param for EvalPlanQual re-eval
  * 'mergeActionLists' is a list of lists of MERGE actions (one per rel)
+ * 'mergeJoinConditions' is a list of join conditions for MERGE (one per rel)
  */
 ModifyTablePath *
 create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
@@ -3725,7 +3728,8 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 						List *updateColnosLists,
 						List *withCheckOptionLists, List *returningLists,
 						List *rowMarks, OnConflictExpr *onconflict,
-						List *mergeActionLists, int epqParam)
+						List *mergeActionLists, List *mergeJoinConditions,
+						int epqParam)
 {
 	ModifyTablePath *pathnode = makeNode(ModifyTablePath);
 
@@ -3793,6 +3797,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->onconflict = onconflict;
 	pathnode->epqParam = epqParam;
 	pathnode->mergeActionLists = mergeActionLists;
+	pathnode->mergeJoinConditions = mergeJoinConditions;
 
 	return pathnode;
 }

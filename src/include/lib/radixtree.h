@@ -1615,10 +1615,11 @@ RT_EXTEND_DOWN(RT_RADIX_TREE * tree, RT_PTR_ALLOC * parent_slot, uint64 key, int
 		node = child;
 		shift -= RT_SPAN;
 	}
+	Assert(shift == 0);
 
 	/* Reserve slot for the value. */
 	n4 = (RT_NODE_4 *) node.local;
-	n4->chunks[0] = RT_GET_KEY_CHUNK(key, shift);
+	n4->chunks[0] = RT_GET_KEY_CHUNK(key, 0);
 	n4->base.count = 1;
 
 	return &n4->children[0];
@@ -2498,7 +2499,7 @@ RT_REMOVE_CHILD_4(RT_RADIX_TREE * tree, RT_PTR_ALLOC * parent_slot, RT_CHILD_PTR
 	}
 	else
 	{
-		int			deletepos = slot - n4->children;;
+		int			deletepos = slot - n4->children;
 
 		Assert(deletepos >= 0);
 		Assert(n4->chunks[deletepos] == chunk);

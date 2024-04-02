@@ -2507,7 +2507,8 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER TABLE ALTER [COLUMN] <foo> SET */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ALTER", "COLUMN", MatchAny, "SET") ||
 			 Matches("ALTER", "TABLE", MatchAny, "ALTER", MatchAny, "SET"))
-		COMPLETE_WITH("(", "COMPRESSION", "DEFAULT", "EXPRESSION", "GENERATED", "NOT NULL", "STATISTICS", "STORAGE",
+		COMPLETE_WITH("(", "COMPRESSION", "DATA TYPE", "DEFAULT", "EXPRESSION", "GENERATED", "NOT NULL",
+					  "STATISTICS", "STORAGE",
 		/* a subset of ALTER SEQUENCE options */
 					  "INCREMENT", "MINVALUE", "MAXVALUE", "START", "NO", "CACHE", "CYCLE");
 	/* ALTER TABLE ALTER [COLUMN] <foo> SET ( */
@@ -2903,7 +2904,7 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("FORMAT", "FREEZE", "DELIMITER", "NULL",
 					  "HEADER", "QUOTE", "ESCAPE", "FORCE_QUOTE",
 					  "FORCE_NOT_NULL", "FORCE_NULL", "ENCODING", "DEFAULT",
-					  "ON_ERROR");
+					  "ON_ERROR", "LOG_VERBOSITY");
 
 	/* Complete COPY <sth> FROM|TO filename WITH (FORMAT */
 	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "WITH", "(", "FORMAT"))
@@ -2912,6 +2913,10 @@ psql_completion(const char *text, int start, int end)
 	/* Complete COPY <sth> FROM filename WITH (ON_ERROR */
 	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "WITH", "(", "ON_ERROR"))
 		COMPLETE_WITH("stop", "ignore");
+
+	/* Complete COPY <sth> FROM filename WITH (LOG_VERBOSITY */
+	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "WITH", "(", "LOG_VERBOSITY"))
+		COMPLETE_WITH("default", "verbose");
 
 	/* Complete COPY <sth> FROM <sth> WITH (<options>) */
 	else if (Matches("COPY|\\copy", MatchAny, "FROM", MatchAny, "WITH", MatchAny))
@@ -4335,17 +4340,35 @@ psql_completion(const char *text, int start, int end)
 			 TailMatches("USING", MatchAny, MatchAny, "ON", MatchAny, MatchAny, MatchAny, "WHEN"))
 		COMPLETE_WITH("MATCHED", "NOT MATCHED");
 
-	/* Complete ... WHEN [NOT] MATCHED with THEN/AND */
+	/*
+	 * Complete ... WHEN MATCHED and WHEN NOT MATCHED BY SOURCE|TARGET with
+	 * THEN/AND
+	 */
 	else if (TailMatches("WHEN", "MATCHED") ||
-			 TailMatches("WHEN", "NOT", "MATCHED"))
+			 TailMatches("WHEN", "NOT", "MATCHED", "BY", "SOURCE|TARGET"))
 		COMPLETE_WITH("THEN", "AND");
 
-	/* Complete ... WHEN MATCHED THEN with UPDATE SET/DELETE/DO NOTHING */
-	else if (TailMatches("WHEN", "MATCHED", "THEN"))
+	/* Complete ... WHEN NOT MATCHED with BY/THEN/AND */
+	else if (TailMatches("WHEN", "NOT", "MATCHED"))
+		COMPLETE_WITH("BY", "THEN", "AND");
+
+	/* Complete ... WHEN NOT MATCHED BY with SOURCE/TARGET */
+	else if (TailMatches("WHEN", "NOT", "MATCHED", "BY"))
+		COMPLETE_WITH("SOURCE", "TARGET");
+
+	/*
+	 * Complete ... WHEN MATCHED THEN and WHEN NOT MATCHED BY SOURCE THEN with
+	 * UPDATE SET/DELETE/DO NOTHING
+	 */
+	else if (TailMatches("WHEN", "MATCHED", "THEN") ||
+			 TailMatches("WHEN", "NOT", "MATCHED", "BY", "SOURCE", "THEN"))
 		COMPLETE_WITH("UPDATE SET", "DELETE", "DO NOTHING");
 
-	/* Complete ... WHEN NOT MATCHED THEN with INSERT/DO NOTHING */
-	else if (TailMatches("WHEN", "NOT", "MATCHED", "THEN"))
+	/*
+	 * Complete ... WHEN NOT MATCHED [BY TARGET] THEN with INSERT/DO NOTHING
+	 */
+	else if (TailMatches("WHEN", "NOT", "MATCHED", "THEN") ||
+			 TailMatches("WHEN", "NOT", "MATCHED", "BY", "TARGET", "THEN"))
 		COMPLETE_WITH("INSERT", "DO NOTHING");
 
 /* NOTIFY --- can be inside EXPLAIN, RULE, etc */

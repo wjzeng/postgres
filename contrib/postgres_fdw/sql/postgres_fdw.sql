@@ -737,6 +737,14 @@ SELECT t1.c1, t2.c2 FROM v4 t1 LEFT JOIN ft5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c
 SELECT t1.c1, t2.c2 FROM v4 t1 LEFT JOIN ft5 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c1, t2.c1 OFFSET 10 LIMIT 10;
 ALTER VIEW v4 OWNER TO regress_view_owner;
 
+-- Make sure this big CROSS JOIN query is pushed down
+EXPLAIN (VERBOSE, COSTS OFF) SELECT count(*) FROM ft1 CROSS JOIN ft2 CROSS JOIN ft4 CROSS JOIN ft5;
+-- Make sure query cancellation works
+BEGIN;
+SET LOCAL statement_timeout = '10ms';
+select count(*) from ft1 CROSS JOIN ft2 CROSS JOIN ft4 CROSS JOIN ft5; -- this takes very long
+COMMIT;
+
 -- ====================================================================
 -- Check that userid to use when querying the remote table is correctly
 -- propagated into foreign rels present in subqueries under an UNION ALL
@@ -3877,6 +3885,11 @@ DROP INDEX base_tbl2_idx;
 DROP INDEX async_p3_idx;
 
 -- UNION queries
+SET enable_sort TO off;
+SET enable_incremental_sort TO off;
+-- Adjust fdw_startup_cost so that we get an unordered path in the Append.
+ALTER SERVER loopback2 OPTIONS (ADD fdw_startup_cost '0.00');
+
 EXPLAIN (VERBOSE, COSTS OFF)
 INSERT INTO result_tbl
 (SELECT a, b, 'AAA' || c FROM async_p1 ORDER BY a LIMIT 10)
@@ -3902,6 +3915,10 @@ UNION ALL
 
 SELECT * FROM result_tbl ORDER BY a;
 DELETE FROM result_tbl;
+
+RESET enable_incremental_sort;
+RESET enable_sort;
+ALTER SERVER loopback2 OPTIONS (DROP fdw_startup_cost);
 
 -- Disable async execution if we use gating Result nodes for pseudoconstant
 -- quals

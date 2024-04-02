@@ -338,7 +338,7 @@ static char *pg_get_viewdef_worker(Oid viewoid,
 								   int prettyFlags, int wrapColumn);
 static char *pg_get_triggerdef_worker(Oid trigid, bool pretty);
 static int	decompile_column_index_array(Datum column_index_array, Oid relId,
-										 StringInfo buf);
+										 bool withPeriod, StringInfo buf);
 static char *pg_get_ruledef_worker(Oid ruleoid, int prettyFlags);
 static char *pg_get_indexdef_worker(Oid indexrelid, int colno,
 									const Oid *excludeOps,
@@ -2253,7 +2253,8 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				val = SysCacheGetAttrNotNull(CONSTROID, tup,
 											 Anum_pg_constraint_conkey);
 
-				decompile_column_index_array(val, conForm->conrelid, &buf);
+				/* If it is a temporal foreign key then it uses PERIOD. */
+				decompile_column_index_array(val, conForm->conrelid, conForm->conperiod, &buf);
 
 				/* add foreign relation name */
 				appendStringInfo(&buf, ") REFERENCES %s(",
@@ -2264,7 +2265,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				val = SysCacheGetAttrNotNull(CONSTROID, tup,
 											 Anum_pg_constraint_confkey);
 
-				decompile_column_index_array(val, conForm->confrelid, &buf);
+				decompile_column_index_array(val, conForm->confrelid, conForm->conperiod, &buf);
 
 				appendStringInfoChar(&buf, ')');
 
@@ -2350,7 +2351,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				if (!isnull)
 				{
 					appendStringInfoString(&buf, " (");
-					decompile_column_index_array(val, conForm->conrelid, &buf);
+					decompile_column_index_array(val, conForm->conrelid, false, &buf);
 					appendStringInfoChar(&buf, ')');
 				}
 
@@ -2385,7 +2386,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				val = SysCacheGetAttrNotNull(CONSTROID, tup,
 											 Anum_pg_constraint_conkey);
 
-				keyatts = decompile_column_index_array(val, conForm->conrelid, &buf);
+				keyatts = decompile_column_index_array(val, conForm->conrelid, false, &buf);
 				if (conForm->conperiod)
 					appendStringInfoString(&buf, " WITHOUT OVERLAPS");
 
@@ -2591,7 +2592,7 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
  */
 static int
 decompile_column_index_array(Datum column_index_array, Oid relId,
-							 StringInfo buf)
+							 bool withPeriod, StringInfo buf)
 {
 	Datum	   *keys;
 	int			nKeys;
@@ -2610,7 +2611,9 @@ decompile_column_index_array(Datum column_index_array, Oid relId,
 		if (j == 0)
 			appendStringInfoString(buf, quote_identifier(colName));
 		else
-			appendStringInfo(buf, ", %s", quote_identifier(colName));
+			appendStringInfo(buf, ", %s%s",
+							 (withPeriod && j == nKeys - 1) ? "PERIOD " : "",
+							 quote_identifier(colName));
 	}
 
 	return nKeys;
@@ -7109,6 +7112,7 @@ get_merge_query_def(Query *query, deparse_context *context,
 	StringInfo	buf = context->buf;
 	RangeTblEntry *rte;
 	ListCell   *lc;
+	bool		haveNotMatchedBySource;
 
 	/* Insert the WITH clause if given */
 	get_with_clause(query, context);
@@ -7134,7 +7138,26 @@ get_merge_query_def(Query *query, deparse_context *context,
 	get_from_clause(query, " USING ", context);
 	appendContextKeyword(context, " ON ",
 						 -PRETTYINDENT_STD, PRETTYINDENT_STD, 2);
-	get_rule_expr(query->jointree->quals, context, false);
+	get_rule_expr(query->mergeJoinCondition, context, false);
+
+	/*
+	 * Test for any NOT MATCHED BY SOURCE actions.  If there are none, then
+	 * any NOT MATCHED BY TARGET actions are output as "WHEN NOT MATCHED", per
+	 * SQL standard.  Otherwise, we have a non-SQL-standard query, so output
+	 * "BY SOURCE" / "BY TARGET" qualifiers for all NOT MATCHED actions, to be
+	 * more explicit.
+	 */
+	haveNotMatchedBySource = false;
+	foreach(lc, query->mergeActionList)
+	{
+		MergeAction *action = lfirst_node(MergeAction, lc);
+
+		if (action->matchKind == MERGE_WHEN_NOT_MATCHED_BY_SOURCE)
+		{
+			haveNotMatchedBySource = true;
+			break;
+		}
+	}
 
 	/* Print each merge action */
 	foreach(lc, query->mergeActionList)
@@ -7143,7 +7166,24 @@ get_merge_query_def(Query *query, deparse_context *context,
 
 		appendContextKeyword(context, " WHEN ",
 							 -PRETTYINDENT_STD, PRETTYINDENT_STD, 2);
-		appendStringInfo(buf, "%sMATCHED", action->matched ? "" : "NOT ");
+		switch (action->matchKind)
+		{
+			case MERGE_WHEN_MATCHED:
+				appendStringInfo(buf, "MATCHED");
+				break;
+			case MERGE_WHEN_NOT_MATCHED_BY_SOURCE:
+				appendStringInfo(buf, "NOT MATCHED BY SOURCE");
+				break;
+			case MERGE_WHEN_NOT_MATCHED_BY_TARGET:
+				if (haveNotMatchedBySource)
+					appendStringInfo(buf, "NOT MATCHED BY TARGET");
+				else
+					appendStringInfo(buf, "NOT MATCHED");
+				break;
+			default:
+				elog(ERROR, "unrecognized matchKind: %d",
+					 (int) action->matchKind);
+		}
 
 		if (action->qual)
 		{

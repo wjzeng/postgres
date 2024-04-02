@@ -199,7 +199,8 @@ shared_buffers = 128MB
     <para>
      External tools may also
      modify <filename>postgresql.auto.conf</filename>.  It is not
-     recommended to do this while the server is running, since a
+     recommended to do this while the server is running unless <xref
+     linkend="guc-allow-alter-system"/> is set to <literal>off</literal>, since a
      concurrent <command>ALTER SYSTEM</command> command could overwrite
      such changes.  Such tools might simply append new settings to the end,
      or they might choose to remove duplicate settings and/or comments
@@ -1918,11 +1919,6 @@ include_dir 'conf.d'
         too high.  It may be useful to control for this by separately
         setting <xref linkend="guc-autovacuum-work-mem"/>.
        </para>
-       <para>
-        Note that for the collection of dead tuple identifiers,
-        <command>VACUUM</command> is only able to utilize up to a maximum of
-        <literal>1GB</literal> of memory.
-       </para>
       </listitem>
      </varlistentry>
 
@@ -1944,13 +1940,6 @@ include_dir 'conf.d'
         This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command
         line.
-       </para>
-       <para>
-        For the collection of dead tuple identifiers, autovacuum is only able
-        to utilize up to a maximum of <literal>1GB</literal> of memory, so
-        setting <varname>autovacuum_work_mem</varname> to a value higher than
-        that has no effect on the number of dead tuples that autovacuum can
-        collect while scanning a table.
        </para>
       </listitem>
      </varlistentry>
@@ -10767,6 +10756,54 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-allow-alter-system" xreflabel="allow_alter_system">
+      <term><varname>allow_alter_system</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>allow_alter_system</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When <literal>allow_alter_system</literal> is set to
+        <literal>off</literal>, an error is returned if the <command>ALTER
+        SYSTEM</command> command is executed. This parameter can only be set in
+        the <filename>postgresql.conf</filename> file or on the server command
+        line. The default value is <literal>on</literal>.
+       </para>
+
+       <para>
+        Note that this setting must not be regarded as a security feature. It
+        only disables the <literal>ALTER SYSTEM</literal> command. It does not
+        prevent a superuser from changing the configuration using other SQL
+        commands. A superuser has many ways of executing shell commands at
+        the operating system level, and can therefore modify
+        <literal>postgresql.auto.conf</literal> regardless of the value of
+        this setting.
+       </para>
+
+       <para>
+        Turning this setting off is intended for environments where the
+        configuration of <productname>PostgreSQL</productname> is managed by
+        some external tool.
+        In such environments, a well intentioned superuser might
+        <emphasis>mistakenly</emphasis> use <command>ALTER SYSTEM</command>
+        to change the configuration instead of using the external tool.
+        This might result in unintended behavior, such as the external tool
+        overwriting the change at some later point in time when it updates the
+        configuration.
+        Setting this parameter to <literal>off</literal> can
+        help avoid such mistakes.
+       </para>
+
+       <para>
+        This parameter only controls the use of <command>ALTER SYSTEM</command>.
+        The settings stored in <filename>postgresql.auto.conf</filename>
+        take effect even if <literal>allow_alter_system</literal> is set to
+        <literal>off</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
     </sect2>
    </sect1>
@@ -10870,9 +10907,15 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         On Linux, <literal>syncfs</literal> may be used instead, to ask the
         operating system to synchronize the file systems that contain the
         data directory, the WAL files and each tablespace (but not any other
-        file systems that may be reachable through symbolic links).  See
-        <xref linkend="syncfs"/> for more information about using
-        <function>syncfs()</function>.
+        file systems that may be reachable through symbolic links).  This may
+        be a lot faster than the <literal>fsync</literal> setting, because it
+        doesn't need to open each file one by one.  On the other hand, it may
+        be slower if a file system is shared by other applications that
+        modify a lot of files, since those files will also be written to disk.
+        Furthermore, on versions of Linux before 5.8, I/O errors encountered
+        while writing data to disk may not be reported to
+        <productname>PostgreSQL</productname>, and relevant error messages may
+        appear only in kernel logs.
        </para>
        <para>
         This parameter can only be set in the

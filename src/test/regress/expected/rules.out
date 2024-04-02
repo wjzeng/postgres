@@ -1473,11 +1473,12 @@ pg_replication_slots| SELECT l.slot_name,
     l.wal_status,
     l.safe_wal_size,
     l.two_phase,
+    l.inactive_since,
     l.conflicting,
     l.invalidation_reason,
     l.failover,
     l.synced
-   FROM (pg_get_replication_slots() l(slot_name, plugin, slot_type, datoid, temporary, active, active_pid, xmin, catalog_xmin, restart_lsn, confirmed_flush_lsn, wal_status, safe_wal_size, two_phase, conflicting, invalidation_reason, failover, synced)
+   FROM (pg_get_replication_slots() l(slot_name, plugin, slot_type, datoid, temporary, active, active_pid, xmin, catalog_xmin, restart_lsn, confirmed_flush_lsn, wal_status, safe_wal_size, two_phase, inactive_since, conflicting, invalidation_reason, failover, synced)
      LEFT JOIN pg_database d ON ((l.datoid = d.oid)));
 pg_roles| SELECT pg_authid.rolname,
     pg_authid.rolsuper,
@@ -2049,8 +2050,8 @@ pg_stat_progress_vacuum| SELECT s.pid,
     s.param3 AS heap_blks_scanned,
     s.param4 AS heap_blks_vacuumed,
     s.param5 AS index_vacuum_count,
-    s.param6 AS max_dead_tuples,
-    s.param7 AS num_dead_tuples,
+    s.param6 AS max_dead_tuple_bytes,
+    s.param7 AS dead_tuple_bytes,
     s.param8 AS indexes_total,
     s.param9 AS indexes_processed
    FROM (pg_stat_get_progress_info('VACUUM'::text) s(pid, datid, relid, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12, param13, param14, param15, param16, param17, param18, param19, param20)
@@ -3727,7 +3728,39 @@ BEGIN ATOMIC
      t.data,
      t.filling;
 END
+CREATE FUNCTION merge_sf_test2()
+ RETURNS void
+ LANGUAGE sql
+BEGIN ATOMIC
+ MERGE INTO sf_target t
+   USING rule_merge1 s
+   ON (s.a = t.id)
+WHEN NOT MATCHED
+   THEN INSERT (data, id)
+   VALUES (s.a, s.a)
+WHEN MATCHED
+   THEN UPDATE SET data = s.b
+WHEN NOT MATCHED BY SOURCE
+   THEN DELETE;
+END;
+\sf merge_sf_test2
+CREATE OR REPLACE FUNCTION public.merge_sf_test2()
+ RETURNS void
+ LANGUAGE sql
+BEGIN ATOMIC
+ MERGE INTO sf_target t
+    USING rule_merge1 s
+    ON (s.a = t.id)
+    WHEN NOT MATCHED BY TARGET
+     THEN INSERT (data, id)
+      VALUES (s.a, s.a)
+    WHEN MATCHED
+     THEN UPDATE SET data = s.b
+    WHEN NOT MATCHED BY SOURCE
+     THEN DELETE;
+END
 DROP FUNCTION merge_sf_test;
+DROP FUNCTION merge_sf_test2;
 DROP TABLE sf_target;
 --
 -- Test enabling/disabling

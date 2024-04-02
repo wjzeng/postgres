@@ -275,6 +275,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	struct SelectLimit *selectlimit;
 	SetQuantifier setquantifier;
 	struct GroupClause *groupclause;
+	MergeMatchKind mergematch;
 	MergeWhenClause *mergewhen;
 	struct KeyActions *keyactions;
 	struct KeyAction *keyaction;
@@ -516,6 +517,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <onconflict> opt_on_conflict
 %type <mergewhen>	merge_insert merge_update merge_delete
 
+%type <mergematch> merge_when_tgt_matched merge_when_tgt_not_matched
 %type <node>	merge_when_clause opt_merge_when_condition
 %type <list>	merge_when_list
 
@@ -523,12 +525,13 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				 SetResetClause FunctionSetResetClause
 
 %type <node>	TableElement TypedTableElement ConstraintElem TableFuncElement
-%type <node>	columnDef columnOptions
+%type <node>	columnDef columnOptions optionalPeriodName
 %type <defelt>	def_elem reloption_elem old_aggr_elem operator_def_elem
 %type <node>	def_arg columnElem where_clause where_or_current_clause
 				a_expr b_expr c_expr AexprConst indirection_el opt_slice_bound
 				columnref in_expr having_clause func_table xmltable array_expr
 				OptWhereClause operator_def_arg
+%type <list>	opt_column_and_period_list
 %type <list>	rowsfrom_item rowsfrom_list opt_col_def_list
 %type <boolean> opt_ordinality opt_without_overlaps
 %type <list>	ExclusionConstraintList ExclusionConstraintElem
@@ -755,7 +758,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	OVER OVERLAPS OVERLAY OVERRIDING OWNED OWNER
 
 	PARALLEL PARAMETER PARSER PARTIAL PARTITION PASSING PASSWORD
-	PLACING PLANS POLICY
+	PERIOD PLACING PLANS POLICY
 	POSITION PRECEDING PRECISION PRESERVE PREPARE PREPARED PRIMARY
 	PRIOR PRIVILEGES PROCEDURAL PROCEDURE PROCEDURES PROGRAM PUBLICATION
 
@@ -769,11 +772,11 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT
 	SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
-	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SQL_P STABLE STANDALONE_P
+	SIMILAR SIMPLE SKIP SMALLINT SNAPSHOT SOME SOURCE SQL_P STABLE STANDALONE_P
 	START STATEMENT STATISTICS STDIN STDOUT STORAGE STORED STRICT_P STRING_P STRIP_P
 	SUBSCRIPTION SUBSTRING SUPPORT SYMMETRIC SYSID SYSTEM_P SYSTEM_USER
 
-	TABLE TABLES TABLESAMPLE TABLESPACE TEMP TEMPLATE TEMPORARY TEXT_P THEN
+	TABLE TABLES TABLESAMPLE TABLESPACE TARGET TEMP TEMPLATE TEMPORARY TEXT_P THEN
 	TIES TIME TIMESTAMP TO TRAILING TRANSACTION TRANSFORM
 	TREAT TRIGGER TRIM TRUE_P
 	TRUNCATE TRUSTED TYPE_P TYPES_P
@@ -3527,6 +3530,7 @@ copy_generic_opt_arg:
 			opt_boolean_or_string			{ $$ = (Node *) makeString($1); }
 			| NumericOnly					{ $$ = (Node *) $1; }
 			| '*'							{ $$ = (Node *) makeNode(A_Star); }
+			| DEFAULT                       { $$ = (Node *) makeString("default"); }
 			| '(' copy_generic_opt_arg_list ')'		{ $$ = (Node *) $2; }
 			| /* EMPTY */					{ $$ = NULL; }
 		;
@@ -4237,21 +4241,31 @@ ConstraintElem:
 								   NULL, yyscanner);
 					$$ = (Node *) n;
 				}
-			| FOREIGN KEY '(' columnList ')' REFERENCES qualified_name
-				opt_column_list key_match key_actions ConstraintAttributeSpec
+			| FOREIGN KEY '(' columnList optionalPeriodName ')' REFERENCES qualified_name
+				opt_column_and_period_list key_match key_actions ConstraintAttributeSpec
 				{
 					Constraint *n = makeNode(Constraint);
 
 					n->contype = CONSTR_FOREIGN;
 					n->location = @1;
-					n->pktable = $7;
+					n->pktable = $8;
 					n->fk_attrs = $4;
-					n->pk_attrs = $8;
-					n->fk_matchtype = $9;
-					n->fk_upd_action = ($10)->updateAction->action;
-					n->fk_del_action = ($10)->deleteAction->action;
-					n->fk_del_set_cols = ($10)->deleteAction->cols;
-					processCASbits($11, @11, "FOREIGN KEY",
+					if ($5)
+					{
+						n->fk_attrs = lappend(n->fk_attrs, $5);
+						n->fk_with_period = true;
+					}
+					n->pk_attrs = linitial($9);
+					if (lsecond($9))
+					{
+						n->pk_attrs = lappend(n->pk_attrs, lsecond($9));
+						n->pk_with_period = true;
+					}
+					n->fk_matchtype = $10;
+					n->fk_upd_action = ($11)->updateAction->action;
+					n->fk_del_action = ($11)->deleteAction->action;
+					n->fk_del_set_cols = ($11)->deleteAction->cols;
+					processCASbits($12, @12, "FOREIGN KEY",
 								   &n->deferrable, &n->initdeferred,
 								   &n->skip_validation, NULL,
 								   yyscanner);
@@ -4277,6 +4291,16 @@ opt_column_list:
 columnList:
 			columnElem								{ $$ = list_make1($1); }
 			| columnList ',' columnElem				{ $$ = lappend($1, $3); }
+		;
+
+optionalPeriodName:
+			',' PERIOD columnElem { $$ = $3; }
+			| /*EMPTY*/               { $$ = NULL; }
+	;
+
+opt_column_and_period_list:
+			'(' columnList optionalPeriodName ')'			{ $$ = list_make2($2, $3); }
+			| /*EMPTY*/								{ $$ = list_make2(NIL, NULL); }
 		;
 
 columnElem: ColId
@@ -12403,48 +12427,64 @@ merge_when_list:
 			| merge_when_list merge_when_clause		{ $$ = lappend($1,$2); }
 		;
 
+/*
+ * A WHEN clause may be WHEN MATCHED, WHEN NOT MATCHED BY SOURCE, or WHEN NOT
+ * MATCHED [BY TARGET]. The first two cases match target tuples, and support
+ * UPDATE/DELETE/DO NOTHING actions. The third case does not match target
+ * tuples, and only supports INSERT/DO NOTHING actions.
+ */
 merge_when_clause:
-			WHEN MATCHED opt_merge_when_condition THEN merge_update
+			merge_when_tgt_matched opt_merge_when_condition THEN merge_update
 				{
-					$5->matched = true;
-					$5->condition = $3;
+					$4->matchKind = $1;
+					$4->condition = $2;
 
-					$$ = (Node *) $5;
+					$$ = (Node *) $4;
 				}
-			| WHEN MATCHED opt_merge_when_condition THEN merge_delete
+			| merge_when_tgt_matched opt_merge_when_condition THEN merge_delete
 				{
-					$5->matched = true;
-					$5->condition = $3;
+					$4->matchKind = $1;
+					$4->condition = $2;
 
-					$$ = (Node *) $5;
+					$$ = (Node *) $4;
 				}
-			| WHEN NOT MATCHED opt_merge_when_condition THEN merge_insert
+			| merge_when_tgt_not_matched opt_merge_when_condition THEN merge_insert
 				{
-					$6->matched = false;
-					$6->condition = $4;
+					$4->matchKind = $1;
+					$4->condition = $2;
 
-					$$ = (Node *) $6;
+					$$ = (Node *) $4;
 				}
-			| WHEN MATCHED opt_merge_when_condition THEN DO NOTHING
-				{
-					MergeWhenClause *m = makeNode(MergeWhenClause);
-
-					m->matched = true;
-					m->commandType = CMD_NOTHING;
-					m->condition = $3;
-
-					$$ = (Node *) m;
-				}
-			| WHEN NOT MATCHED opt_merge_when_condition THEN DO NOTHING
+			| merge_when_tgt_matched opt_merge_when_condition THEN DO NOTHING
 				{
 					MergeWhenClause *m = makeNode(MergeWhenClause);
 
-					m->matched = false;
+					m->matchKind = $1;
 					m->commandType = CMD_NOTHING;
-					m->condition = $4;
+					m->condition = $2;
 
 					$$ = (Node *) m;
 				}
+			| merge_when_tgt_not_matched opt_merge_when_condition THEN DO NOTHING
+				{
+					MergeWhenClause *m = makeNode(MergeWhenClause);
+
+					m->matchKind = $1;
+					m->commandType = CMD_NOTHING;
+					m->condition = $2;
+
+					$$ = (Node *) m;
+				}
+		;
+
+merge_when_tgt_matched:
+			WHEN MATCHED					{ $$ = MERGE_WHEN_MATCHED; }
+			| WHEN NOT MATCHED BY SOURCE	{ $$ = MERGE_WHEN_NOT_MATCHED_BY_SOURCE; }
+		;
+
+merge_when_tgt_not_matched:
+			WHEN NOT MATCHED				{ $$ = MERGE_WHEN_NOT_MATCHED_BY_TARGET; }
+			| WHEN NOT MATCHED BY TARGET	{ $$ = MERGE_WHEN_NOT_MATCHED_BY_TARGET; }
 		;
 
 opt_merge_when_condition:
@@ -17491,6 +17531,7 @@ unreserved_keyword:
 			| PARTITION
 			| PASSING
 			| PASSWORD
+			| PERIOD
 			| PLANS
 			| POLICY
 			| PRECEDING
@@ -17554,6 +17595,7 @@ unreserved_keyword:
 			| SIMPLE
 			| SKIP
 			| SNAPSHOT
+			| SOURCE
 			| SQL_P
 			| STABLE
 			| STANDALONE_P
@@ -17573,6 +17615,7 @@ unreserved_keyword:
 			| SYSTEM_P
 			| TABLES
 			| TABLESPACE
+			| TARGET
 			| TEMP
 			| TEMPLATE
 			| TEMPORARY
@@ -18108,6 +18151,7 @@ bare_label_keyword:
 			| PARTITION
 			| PASSING
 			| PASSWORD
+			| PERIOD
 			| PLACING
 			| PLANS
 			| POLICY
@@ -18183,6 +18227,7 @@ bare_label_keyword:
 			| SMALLINT
 			| SNAPSHOT
 			| SOME
+			| SOURCE
 			| SQL_P
 			| STABLE
 			| STANDALONE_P
@@ -18207,6 +18252,7 @@ bare_label_keyword:
 			| TABLES
 			| TABLESAMPLE
 			| TABLESPACE
+			| TARGET
 			| TEMP
 			| TEMPLATE
 			| TEMPORARY

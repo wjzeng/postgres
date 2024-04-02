@@ -101,8 +101,6 @@ typedef struct CopyMultiInsertInfo
 
 
 /* non-export function prototypes */
-static char *limit_printout_length(const char *str);
-
 static void ClosePipeFromProgram(CopyFromState cstate);
 
 /*
@@ -141,7 +139,7 @@ CopyFromErrorCallback(void *arg)
 			/* error is relevant to a particular column */
 			char	   *attval;
 
-			attval = limit_printout_length(cstate->cur_attval);
+			attval = CopyLimitPrintoutLength(cstate->cur_attval);
 			errcontext("COPY %s, line %llu, column %s: \"%s\"",
 					   cstate->cur_relname,
 					   (unsigned long long) cstate->cur_lineno,
@@ -168,7 +166,7 @@ CopyFromErrorCallback(void *arg)
 			{
 				char	   *lineval;
 
-				lineval = limit_printout_length(cstate->line_buf.data);
+				lineval = CopyLimitPrintoutLength(cstate->line_buf.data);
 				errcontext("COPY %s, line %llu: \"%s\"",
 						   cstate->cur_relname,
 						   (unsigned long long) cstate->cur_lineno, lineval);
@@ -189,8 +187,8 @@ CopyFromErrorCallback(void *arg)
  *
  * Returns a pstrdup'd copy of the input.
  */
-static char *
-limit_printout_length(const char *str)
+char *
+CopyLimitPrintoutLength(const char *str)
 {
 #define MAX_COPY_DATA_DISPLAY 100
 
@@ -397,6 +395,7 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 		bool		line_buf_valid = cstate->line_buf_valid;
 		uint64		save_cur_lineno = cstate->cur_lineno;
 		MemoryContext oldcontext;
+		bool		insertIndexes;
 
 		Assert(buffer->bistate != NULL);
 
@@ -416,7 +415,8 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 						   nused,
 						   mycid,
 						   ti_options,
-						   buffer->bistate);
+						   buffer->bistate,
+						   &insertIndexes);
 		MemoryContextSwitchTo(oldcontext);
 
 		for (i = 0; i < nused; i++)
@@ -425,7 +425,7 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 			 * If there are any indexes, update them for all the inserted
 			 * tuples, and run AFTER ROW INSERT triggers.
 			 */
-			if (resultRelInfo->ri_NumIndices > 0)
+			if (insertIndexes && resultRelInfo->ri_NumIndices > 0)
 			{
 				List	   *recheckIndexes;
 
@@ -1265,11 +1265,14 @@ CopyFrom(CopyFromState cstate)
 					}
 					else
 					{
+						bool		insertIndexes;
+
 						/* OK, store the tuple and create index entries for it */
 						table_tuple_insert(resultRelInfo->ri_RelationDesc,
-										   myslot, mycid, ti_options, bistate);
+										   myslot, mycid, ti_options, bistate,
+										   &insertIndexes);
 
-						if (resultRelInfo->ri_NumIndices > 0)
+						if (insertIndexes && resultRelInfo->ri_NumIndices > 0)
 							recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
 																   myslot,
 																   estate,

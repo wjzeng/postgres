@@ -409,6 +409,7 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	slot->candidate_restart_valid = InvalidXLogRecPtr;
 	slot->candidate_restart_lsn = InvalidXLogRecPtr;
 	slot->last_saved_confirmed_flush = InvalidXLogRecPtr;
+	slot->inactive_since = 0;
 
 	/*
 	 * Create the slot on disk.  We haven't actually marked the slot allocated
@@ -622,6 +623,14 @@ retry:
 	if (SlotIsLogical(s))
 		pgstat_acquire_replslot(s);
 
+	/*
+	 * Reset the time since the slot has become inactive as the slot is active
+	 * now.
+	 */
+	SpinLockAcquire(&s->mutex);
+	s->inactive_since = 0;
+	SpinLockRelease(&s->mutex);
+
 	if (am_walsender)
 	{
 		ereport(log_replication_commands ? LOG : DEBUG1,
@@ -645,6 +654,7 @@ ReplicationSlotRelease(void)
 	ReplicationSlot *slot = MyReplicationSlot;
 	char	   *slotname = NULL;	/* keep compiler quiet */
 	bool		is_logical = false; /* keep compiler quiet */
+	TimestampTz now = 0;
 
 	Assert(slot != NULL && slot->active_pid != 0);
 
@@ -679,6 +689,15 @@ ReplicationSlotRelease(void)
 		ReplicationSlotsComputeRequiredXmin(false);
 	}
 
+	/*
+	 * Set the last inactive time after marking the slot inactive. We don't
+	 * set it for the slots currently being synced from the primary to the
+	 * standby because such slots are typically inactive as decoding is not
+	 * allowed on those.
+	 */
+	if (!(RecoveryInProgress() && slot->data.synced))
+		now = GetCurrentTimestamp();
+
 	if (slot->data.persistency == RS_PERSISTENT)
 	{
 		/*
@@ -687,8 +706,15 @@ ReplicationSlotRelease(void)
 		 */
 		SpinLockAcquire(&slot->mutex);
 		slot->active_pid = 0;
+		slot->inactive_since = now;
 		SpinLockRelease(&slot->mutex);
 		ConditionVariableBroadcast(&slot->active_cv);
+	}
+	else
+	{
+		SpinLockAcquire(&slot->mutex);
+		slot->inactive_since = now;
+		SpinLockRelease(&slot->mutex);
 	}
 
 	MyReplicationSlot = NULL;
@@ -2341,6 +2367,18 @@ RestoreSlotFromDisk(const char *name)
 
 		slot->in_use = true;
 		slot->active_pid = 0;
+
+		/*
+		 * We set the last inactive time after loading the slot from the disk
+		 * into memory. Whoever acquires the slot i.e. makes the slot active
+		 * will reset it. We don't set it for the slots currently being synced
+		 * from the primary to the standby because such slots are typically
+		 * inactive as decoding is not allowed on those.
+		 */
+		if (!(RecoveryInProgress() && slot->data.synced))
+			slot->inactive_since = GetCurrentTimestamp();
+		else
+			slot->inactive_since = 0;
 
 		restored = true;
 		break;
