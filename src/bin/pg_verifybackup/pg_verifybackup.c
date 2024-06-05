@@ -19,7 +19,7 @@
 #include <time.h>
 
 #include "common/controldata_utils.h"
-#include "common/hashfn.h"
+#include "common/hashfn_unstable.h"
 #include "common/logging.h"
 #include "common/parse_manifest.h"
 #include "fe_utils/simple_list.h"
@@ -43,7 +43,7 @@
 /*
  * How many bytes should we try to read from a file at once?
  */
-#define READ_CHUNK_SIZE				4096
+#define READ_CHUNK_SIZE				(128 * 1024)
 
 /*
  * Each file described by the manifest file is parsed to produce an object
@@ -68,12 +68,11 @@ typedef struct manifest_file
  * Define a hash table which we can use to store information about the files
  * mentioned in the backup manifest.
  */
-static uint32 hash_string_pointer(char *s);
 #define SH_PREFIX		manifest_files
 #define SH_ELEMENT_TYPE	manifest_file
 #define SH_KEY_TYPE		char *
 #define	SH_KEY			pathname
-#define SH_HASH_KEY(tb, key)	hash_string_pointer(key)
+#define SH_HASH_KEY(tb, key)	hash_string(key)
 #define SH_EQUAL(tb, a, b)		(strcmp(a, b) == 0)
 #define	SH_SCOPE		static inline
 #define SH_RAW_ALLOCATOR	pg_malloc0
@@ -145,7 +144,8 @@ static void verify_control_file(const char *controlpath,
 static void report_extra_backup_files(verifier_context *context);
 static void verify_backup_checksums(verifier_context *context);
 static void verify_file_checksum(verifier_context *context,
-								 manifest_file *m, char *fullpath);
+								 manifest_file *m, char *fullpath,
+								 uint8 *buffer);
 static void parse_required_wal(verifier_context *context,
 							   char *pg_waldump_path,
 							   char *wal_directory);
@@ -399,6 +399,8 @@ parse_manifest_file(char *manifest_path)
 	JsonManifestParseContext context;
 	manifest_data *result;
 
+	int			chunk_size = READ_CHUNK_SIZE;
+
 	/* Open the manifest file. */
 	if ((fd = open(manifest_path, O_RDONLY | PG_BINARY, 0)) < 0)
 		report_fatal_error("could not open file \"%s\": %m", manifest_path);
@@ -414,28 +416,6 @@ parse_manifest_file(char *manifest_path)
 	/* Create the hash table. */
 	ht = manifest_files_create(initial_size, NULL);
 
-	/*
-	 * Slurp in the whole file.
-	 *
-	 * This is not ideal, but there's currently no easy way to get
-	 * pg_parse_json() to perform incremental parsing.
-	 */
-	buffer = pg_malloc(statbuf.st_size);
-	rc = read(fd, buffer, statbuf.st_size);
-	if (rc != statbuf.st_size)
-	{
-		if (rc < 0)
-			report_fatal_error("could not read file \"%s\": %m",
-							   manifest_path);
-		else
-			report_fatal_error("could not read file \"%s\": read %d of %lld",
-							   manifest_path, rc, (long long int) statbuf.st_size);
-	}
-
-	/* Close the manifest file. */
-	close(fd);
-
-	/* Parse the manifest. */
 	result = pg_malloc0(sizeof(manifest_data));
 	result->files = ht;
 	context.private_data = result;
@@ -444,7 +424,72 @@ parse_manifest_file(char *manifest_path)
 	context.per_file_cb = verifybackup_per_file_cb;
 	context.per_wal_range_cb = verifybackup_per_wal_range_cb;
 	context.error_cb = report_manifest_error;
-	json_parse_manifest(&context, buffer, statbuf.st_size);
+
+	/*
+	 * Parse the file, in chunks if necessary.
+	 */
+	if (statbuf.st_size <= chunk_size)
+	{
+		buffer = pg_malloc(statbuf.st_size);
+		rc = read(fd, buffer, statbuf.st_size);
+		if (rc != statbuf.st_size)
+		{
+			if (rc < 0)
+				pg_fatal("could not read file \"%s\": %m", manifest_path);
+			else
+				pg_fatal("could not read file \"%s\": read %d of %lld",
+						 manifest_path, rc, (long long int) statbuf.st_size);
+		}
+
+		/* Close the manifest file. */
+		close(fd);
+
+		/* Parse the manifest. */
+		json_parse_manifest(&context, buffer, statbuf.st_size);
+	}
+	else
+	{
+		int			bytes_left = statbuf.st_size;
+		JsonManifestParseIncrementalState *inc_state;
+
+		inc_state = json_parse_manifest_incremental_init(&context);
+
+		buffer = pg_malloc(chunk_size + 1);
+
+		while (bytes_left > 0)
+		{
+			int			bytes_to_read = chunk_size;
+
+			/*
+			 * Make sure that the last chunk is sufficiently large. (i.e. at
+			 * least half the chunk size) so that it will contain fully the
+			 * piece at the end with the checksum.
+			 */
+			if (bytes_left < chunk_size)
+				bytes_to_read = bytes_left;
+			else if (bytes_left < 2 * chunk_size)
+				bytes_to_read = bytes_left / 2;
+			rc = read(fd, buffer, bytes_to_read);
+			if (rc != bytes_to_read)
+			{
+				if (rc < 0)
+					pg_fatal("could not read file \"%s\": %m", manifest_path);
+				else
+					pg_fatal("could not read file \"%s\": read %lld of %lld",
+							 manifest_path,
+							 (long long int) (statbuf.st_size + rc - bytes_left),
+							 (long long int) statbuf.st_size);
+			}
+			bytes_left -= rc;
+			json_parse_manifest_incremental_chunk(inc_state, buffer, rc,
+												  bytes_left == 0);
+		}
+
+		/* Release the incremental state memory */
+		json_parse_manifest_incremental_shutdown(inc_state);
+
+		close(fd);
+	}
 
 	/* Done with the buffer. */
 	pfree(buffer);
@@ -768,8 +813,11 @@ verify_backup_checksums(verifier_context *context)
 	manifest_data *manifest = context->manifest;
 	manifest_files_iterator it;
 	manifest_file *m;
+	uint8	   *buffer;
 
 	progress_report(false);
+
+	buffer = pg_malloc(READ_CHUNK_SIZE * sizeof(uint8));
 
 	manifest_files_start_iterate(manifest->files, &it);
 	while ((m = manifest_files_iterate(manifest->files, &it)) != NULL)
@@ -784,12 +832,14 @@ verify_backup_checksums(verifier_context *context)
 								m->pathname);
 
 			/* Do the actual checksum verification. */
-			verify_file_checksum(context, m, fullpath);
+			verify_file_checksum(context, m, fullpath, buffer);
 
 			/* Avoid leaking memory. */
 			pfree(fullpath);
 		}
 	}
+
+	pfree(buffer);
 
 	progress_report(true);
 }
@@ -799,14 +849,13 @@ verify_backup_checksums(verifier_context *context)
  */
 static void
 verify_file_checksum(verifier_context *context, manifest_file *m,
-					 char *fullpath)
+					 char *fullpath, uint8 *buffer)
 {
 	pg_checksum_context checksum_ctx;
 	char	   *relpath = m->pathname;
 	int			fd;
 	int			rc;
 	size_t		bytes_read = 0;
-	uint8		buffer[READ_CHUNK_SIZE];
 	uint8		checksumbuf[PG_CHECKSUM_MAX_LENGTH];
 	int			checksumlen;
 
@@ -984,17 +1033,6 @@ should_ignore_relpath(verifier_context *context, char *relpath)
 	}
 
 	return false;
-}
-
-/*
- * Helper function for manifest_files hash table.
- */
-static uint32
-hash_string_pointer(char *s)
-{
-	unsigned char *ss = (unsigned char *) s;
-
-	return hash_bytes(ss, strlen(s));
 }
 
 /*

@@ -1115,7 +1115,6 @@ help(const char *progname)
 	printf(_("  -c, --clean                  clean (drop) database objects before recreating\n"));
 	printf(_("  -C, --create                 include commands to create database in dump\n"));
 	printf(_("  -e, --extension=PATTERN      dump the specified extension(s) only\n"));
-	printf(_("  --exclude-extension=PATTERN  do NOT dump the specified extension(s)\n"));
 	printf(_("  -E, --encoding=ENCODING      dump the data in encoding ENCODING\n"));
 	printf(_("  -n, --schema=PATTERN         dump the specified schema(s) only\n"));
 	printf(_("  -N, --exclude-schema=PATTERN do NOT dump the specified schema(s)\n"));
@@ -1132,6 +1131,7 @@ help(const char *progname)
 	printf(_("  --disable-triggers           disable triggers during data-only restore\n"));
 	printf(_("  --enable-row-security        enable row security (dump only content user has\n"
 			 "                               access to)\n"));
+	printf(_("  --exclude-extension=PATTERN  do NOT dump the specified extension(s)\n"));
 	printf(_("  --exclude-table-and-children=PATTERN\n"
 			 "                               do NOT dump the specified table(s), including\n"
 			 "                               child and partition tables\n"));
@@ -3534,7 +3534,7 @@ dumpStdStrings(Archive *AH)
 	const char *stdstrings = AH->std_strings ? "on" : "off";
 	PQExpBuffer qry = createPQExpBuffer();
 
-	pg_log_info("saving standard_conforming_strings = %s",
+	pg_log_info("saving \"standard_conforming_strings = %s\"",
 				stdstrings);
 
 	appendPQExpBuffer(qry, "SET standard_conforming_strings = '%s';\n",
@@ -3592,7 +3592,7 @@ dumpSearchPath(Archive *AH)
 	appendStringLiteralAH(qry, path->data, AH);
 	appendPQExpBufferStr(qry, ", false);\n");
 
-	pg_log_info("saving search_path = %s", path->data);
+	pg_log_info("saving \"search_path = %s\"", path->data);
 
 	ArchiveEntry(AH, nilCatalogId, createDumpId(),
 				 ARCHIVE_OPTS(.tag = "SEARCHPATH",
@@ -4804,12 +4804,17 @@ getSubscriptions(Archive *fout)
 
 	if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
 		appendPQExpBufferStr(query, " o.remote_lsn AS suboriginremotelsn,\n"
-							 " s.subenabled,\n"
-							 " s.subfailover\n");
+							 " s.subenabled,\n");
 	else
 		appendPQExpBufferStr(query, " NULL AS suboriginremotelsn,\n"
-							 " false AS subenabled,\n"
-							 " false AS subfailover\n");
+							 " false AS subenabled,\n");
+
+	if (fout->remoteVersion >= 170000)
+		appendPQExpBufferStr(query,
+							 " s.subfailover\n");
+	else
+		appendPQExpBuffer(query,
+						  " false AS subfailover\n");
 
 	appendPQExpBufferStr(query,
 						 "FROM pg_subscription s\n");
@@ -5132,6 +5137,9 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 	if (strcmp(subinfo->subrunasowner, "t") == 0)
 		appendPQExpBufferStr(query, ", run_as_owner = true");
 
+	if (strcmp(subinfo->subfailover, "t") == 0)
+		appendPQExpBufferStr(query, ", failover = true");
+
 	if (strcmp(subinfo->subsynccommit, "off") != 0)
 		appendPQExpBuffer(query, ", synchronous_commit = %s", fmtId(subinfo->subsynccommit));
 
@@ -5163,17 +5171,6 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 								 "SELECT pg_catalog.binary_upgrade_replorigin_advance(");
 			appendStringLiteralAH(query, subinfo->dobj.name, fout);
 			appendPQExpBuffer(query, ", '%s');\n", subinfo->suboriginremotelsn);
-		}
-
-		if (strcmp(subinfo->subfailover, "t") == 0)
-		{
-			/*
-			 * Enable the failover to allow the subscription's slot to be
-			 * synced to the standbys after the upgrade.
-			 */
-			appendPQExpBufferStr(query,
-								 "\n-- For binary upgrade, must preserve the subscriber's failover option.\n");
-			appendPQExpBuffer(query, "ALTER SUBSCRIPTION %s SET(failover = true);\n", qsubname);
 		}
 
 		if (strcmp(subinfo->subenabled, "t") == 0)
@@ -5482,8 +5479,6 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 							  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
 							  toast_index_relfilenumber);
 		}
-
-		PQclear(upgrade_res);
 	}
 	else
 	{
@@ -5495,6 +5490,8 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 						  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
 						  relfilenumber);
 	}
+
+	PQclear(upgrade_res);
 
 	appendPQExpBufferChar(upgrade_buffer, '\n');
 
@@ -7347,7 +7344,6 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_conname,
 				i_condeferrable,
 				i_condeferred,
-				i_conperiod,
 				i_contableoid,
 				i_conoid,
 				i_condef,
@@ -7429,17 +7425,10 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 
 	if (fout->remoteVersion >= 150000)
 		appendPQExpBufferStr(query,
-							 "i.indnullsnotdistinct, ");
+							 "i.indnullsnotdistinct ");
 	else
 		appendPQExpBufferStr(query,
-							 "false AS indnullsnotdistinct, ");
-
-	if (fout->remoteVersion >= 170000)
-		appendPQExpBufferStr(query,
-							 "c.conperiod ");
-	else
-		appendPQExpBufferStr(query,
-							 "NULL AS conperiod ");
+							 "false AS indnullsnotdistinct ");
 
 	/*
 	 * The point of the messy-looking outer join is to find a constraint that
@@ -7507,7 +7496,6 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_conname = PQfnumber(res, "conname");
 	i_condeferrable = PQfnumber(res, "condeferrable");
 	i_condeferred = PQfnumber(res, "condeferred");
-	i_conperiod = PQfnumber(res, "conperiod");
 	i_contableoid = PQfnumber(res, "contableoid");
 	i_conoid = PQfnumber(res, "conoid");
 	i_condef = PQfnumber(res, "condef");
@@ -7615,7 +7603,6 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				constrinfo->conindex = indxinfo[j].dobj.dumpId;
 				constrinfo->condeferrable = *(PQgetvalue(res, j, i_condeferrable)) == 't';
 				constrinfo->condeferred = *(PQgetvalue(res, j, i_condeferred)) == 't';
-				constrinfo->conperiod = *(PQgetvalue(res, j, i_conperiod)) == 't';
 				constrinfo->conislocal = true;
 				constrinfo->separate = true;
 
@@ -8705,10 +8692,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	int			i_attlen;
 	int			i_attalign;
 	int			i_attislocal;
-	int			i_notnull_name;
-	int			i_notnull_noinherit;
-	int			i_notnull_is_pk;
-	int			i_notnull_inh;
+	int			i_attnotnull;
 	int			i_attoptions;
 	int			i_attcollation;
 	int			i_attcompression;
@@ -8718,13 +8702,13 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 
 	/*
 	 * We want to perform just one query against pg_attribute, and then just
-	 * one against pg_attrdef (for DEFAULTs) and two against pg_constraint
-	 * (for CHECK constraints and for NOT NULL constraints).  However, we
-	 * mustn't try to select every row of those catalogs and then sort it out
-	 * on the client side, because some of the server-side functions we need
-	 * would be unsafe to apply to tables we don't have lock on.  Hence, we
-	 * build an array of the OIDs of tables we care about (and now have lock
-	 * on!), and use a WHERE clause to constrain which rows are selected.
+	 * one against pg_attrdef (for DEFAULTs) and one against pg_constraint
+	 * (for CHECK constraints).  However, we mustn't try to select every row
+	 * of those catalogs and then sort it out on the client side, because some
+	 * of the server-side functions we need would be unsafe to apply to tables
+	 * we don't have lock on.  Hence, we build an array of the OIDs of tables
+	 * we care about (and now have lock on!), and use a WHERE clause to
+	 * constrain which rows are selected.
 	 */
 	appendPQExpBufferChar(tbloids, '{');
 	appendPQExpBufferChar(checkoids, '{');
@@ -8771,6 +8755,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 "a.attstattarget,\n"
 						 "a.attstorage,\n"
 						 "t.typstorage,\n"
+						 "a.attnotnull,\n"
 						 "a.atthasdef,\n"
 						 "a.attisdropped,\n"
 						 "a.attlen,\n"
@@ -8786,34 +8771,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 "FROM pg_catalog.pg_options_to_table(attfdwoptions) "
 						 "ORDER BY option_name"
 						 "), E',\n    ') AS attfdwoptions,\n");
-
-	/*
-	 * Find out any NOT NULL markings for each column.  In 17 and up we have
-	 * to read pg_constraint, and keep track whether it's NO INHERIT; in older
-	 * versions we rely on pg_attribute.attnotnull.
-	 *
-	 * We also track whether the constraint was defined directly in this table
-	 * or via an ancestor, for binary upgrade.
-	 *
-	 * Lastly, we need to know if the PK for the table involves each column;
-	 * for columns that are there we need a NOT NULL marking even if there's
-	 * no explicit constraint, to avoid the table having to be scanned for
-	 * NULLs after the data is loaded when the PK is created, later in the
-	 * dump; for this case we add throwaway constraints that are dropped once
-	 * the PK is created.
-	 */
-	if (fout->remoteVersion >= 170000)
-		appendPQExpBufferStr(q,
-							 "co.conname AS notnull_name,\n"
-							 "co.connoinherit AS notnull_noinherit,\n"
-							 "copk.conname IS NOT NULL as notnull_is_pk,\n"
-							 "coalesce(NOT co.conislocal, true) AS notnull_inh,\n");
-	else
-		appendPQExpBufferStr(q,
-							 "CASE WHEN a.attnotnull THEN '' ELSE NULL END AS notnull_name,\n"
-							 "false AS notnull_noinherit,\n"
-							 "copk.conname IS NOT NULL AS notnull_is_pk,\n"
-							 "NOT a.attislocal AS notnull_inh,\n");
 
 	if (fout->remoteVersion >= 140000)
 		appendPQExpBufferStr(q,
@@ -8849,28 +8806,10 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 					  "FROM unnest('%s'::pg_catalog.oid[]) AS src(tbloid)\n"
 					  "JOIN pg_catalog.pg_attribute a ON (src.tbloid = a.attrelid) "
 					  "LEFT JOIN pg_catalog.pg_type t "
-					  "ON (a.atttypid = t.oid)\n",
+					  "ON (a.atttypid = t.oid)\n"
+					  "WHERE a.attnum > 0::pg_catalog.int2\n"
+					  "ORDER BY a.attrelid, a.attnum",
 					  tbloids->data);
-
-	/*
-	 * In versions 16 and up, we need pg_constraint for explicit NOT NULL
-	 * entries.  Also, we need to know if the NOT NULL for each column is
-	 * backing a primary key.
-	 */
-	if (fout->remoteVersion >= 170000)
-		appendPQExpBufferStr(q,
-							 " LEFT JOIN pg_catalog.pg_constraint co ON "
-							 "(a.attrelid = co.conrelid\n"
-							 "   AND co.contype = 'n' AND "
-							 "co.conkey = array[a.attnum])\n");
-
-	appendPQExpBufferStr(q,
-						 "LEFT JOIN pg_catalog.pg_constraint copk ON "
-						 "(copk.conrelid = src.tbloid\n"
-						 "   AND copk.contype = 'p' AND "
-						 "copk.conkey @> array[a.attnum])\n"
-						 "WHERE a.attnum > 0::pg_catalog.int2\n"
-						 "ORDER BY a.attrelid, a.attnum");
 
 	res = ExecuteSqlQuery(fout, q->data, PGRES_TUPLES_OK);
 
@@ -8889,10 +8828,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	i_attlen = PQfnumber(res, "attlen");
 	i_attalign = PQfnumber(res, "attalign");
 	i_attislocal = PQfnumber(res, "attislocal");
-	i_notnull_name = PQfnumber(res, "notnull_name");
-	i_notnull_noinherit = PQfnumber(res, "notnull_noinherit");
-	i_notnull_is_pk = PQfnumber(res, "notnull_is_pk");
-	i_notnull_inh = PQfnumber(res, "notnull_inh");
+	i_attnotnull = PQfnumber(res, "attnotnull");
 	i_attoptions = PQfnumber(res, "attoptions");
 	i_attcollation = PQfnumber(res, "attcollation");
 	i_attcompression = PQfnumber(res, "attcompression");
@@ -8915,7 +8851,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 		TableInfo  *tbinfo = NULL;
 		int			numatts;
 		bool		hasdefaults;
-		int			notnullcount;
 
 		/* Count rows for this table */
 		for (numatts = 1; numatts < ntups - r; numatts++)
@@ -8940,8 +8875,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			pg_fatal("unexpected column data for table \"%s\"",
 					 tbinfo->dobj.name);
 
-		notnullcount = 0;
-
 		/* Save data for this table */
 		tbinfo->numatts = numatts;
 		tbinfo->attnames = (char **) pg_malloc(numatts * sizeof(char *));
@@ -8960,19 +8893,13 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 		tbinfo->attcompression = (char *) pg_malloc(numatts * sizeof(char));
 		tbinfo->attfdwoptions = (char **) pg_malloc(numatts * sizeof(char *));
 		tbinfo->attmissingval = (char **) pg_malloc(numatts * sizeof(char *));
-		tbinfo->notnull_constrs = (char **) pg_malloc(numatts * sizeof(char *));
-		tbinfo->notnull_noinh = (bool *) pg_malloc(numatts * sizeof(bool));
-		tbinfo->notnull_throwaway = (bool *) pg_malloc(numatts * sizeof(bool));
-		tbinfo->notnull_inh = (bool *) pg_malloc(numatts * sizeof(bool));
+		tbinfo->notnull = (bool *) pg_malloc(numatts * sizeof(bool));
+		tbinfo->inhNotNull = (bool *) pg_malloc(numatts * sizeof(bool));
 		tbinfo->attrdefs = (AttrDefInfo **) pg_malloc(numatts * sizeof(AttrDefInfo *));
 		hasdefaults = false;
 
 		for (int j = 0; j < numatts; j++, r++)
 		{
-			bool		use_named_notnull = false;
-			bool		use_unnamed_notnull = false;
-			bool		use_throwaway_notnull = false;
-
 			if (j + 1 != atoi(PQgetvalue(res, r, i_attnum)))
 				pg_fatal("invalid column numbering in table \"%s\"",
 						 tbinfo->dobj.name);
@@ -8991,129 +8918,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			tbinfo->attlen[j] = atoi(PQgetvalue(res, r, i_attlen));
 			tbinfo->attalign[j] = *(PQgetvalue(res, r, i_attalign));
 			tbinfo->attislocal[j] = (PQgetvalue(res, r, i_attislocal)[0] == 't');
-
-			/*
-			 * Not-null constraints require a jumping through a few hoops.
-			 * First, if the user has specified a constraint name that's not
-			 * the system-assigned default name, then we need to preserve
-			 * that. But if they haven't, then we don't want to use the
-			 * verbose syntax in the dump output. (Also, in versions prior to
-			 * 17, there was no constraint name at all.)
-			 *
-			 * (XXX Comparing the name this way to a supposed default name is
-			 * a bit of a hack, but it beats having to store a boolean flag in
-			 * pg_constraint just for this, or having to compute the knowledge
-			 * at pg_dump time from the server.)
-			 *
-			 * We also need to know if a column is part of the primary key. In
-			 * that case, we want to mark the column as not-null at table
-			 * creation time, so that the table doesn't have to be scanned to
-			 * check for nulls when the PK is created afterwards; this is
-			 * especially critical during pg_upgrade (where the data would not
-			 * be scanned at all otherwise.)  If the column is part of the PK
-			 * and does not have any other not-null constraint, then we
-			 * fabricate a throwaway constraint name that we later use to
-			 * remove the constraint after the PK has been created.
-			 *
-			 * For inheritance child tables, we don't want to print not-null
-			 * when the constraint was defined at the parent level instead of
-			 * locally.
-			 */
-
-			/*
-			 * We use notnull_inh to suppress unwanted not-null constraints in
-			 * inheritance children, when said constraints come from the
-			 * parent(s).
-			 */
-			tbinfo->notnull_inh[j] = PQgetvalue(res, r, i_notnull_inh)[0] == 't';
-
-			if (fout->remoteVersion < 170000)
-			{
-				if (!PQgetisnull(res, r, i_notnull_name) &&
-					dopt->binary_upgrade &&
-					!tbinfo->ispartition &&
-					tbinfo->notnull_inh[j])
-				{
-					use_named_notnull = true;
-					/* XXX should match ChooseConstraintName better */
-					tbinfo->notnull_constrs[j] =
-						psprintf("%s_%s_not_null", tbinfo->dobj.name,
-								 tbinfo->attnames[j]);
-				}
-				else if (PQgetvalue(res, r, i_notnull_is_pk)[0] == 't')
-					use_throwaway_notnull = true;
-				else if (!PQgetisnull(res, r, i_notnull_name))
-					use_unnamed_notnull = true;
-			}
-			else
-			{
-				if (!PQgetisnull(res, r, i_notnull_name))
-				{
-					/*
-					 * In binary upgrade of inheritance child tables, must
-					 * have a constraint name that we can UPDATE later.
-					 */
-					if (dopt->binary_upgrade &&
-						!tbinfo->ispartition &&
-						tbinfo->notnull_inh[j])
-					{
-						use_named_notnull = true;
-						tbinfo->notnull_constrs[j] =
-							pstrdup(PQgetvalue(res, r, i_notnull_name));
-
-					}
-					else
-					{
-						char	   *default_name;
-
-						/* XXX should match ChooseConstraintName better */
-						default_name = psprintf("%s_%s_not_null", tbinfo->dobj.name,
-												tbinfo->attnames[j]);
-						if (strcmp(default_name,
-								   PQgetvalue(res, r, i_notnull_name)) == 0)
-							use_unnamed_notnull = true;
-						else
-						{
-							use_named_notnull = true;
-							tbinfo->notnull_constrs[j] =
-								pstrdup(PQgetvalue(res, r, i_notnull_name));
-						}
-					}
-				}
-				else if (PQgetvalue(res, r, i_notnull_is_pk)[0] == 't')
-					use_throwaway_notnull = true;
-			}
-
-			if (use_unnamed_notnull)
-			{
-				tbinfo->notnull_constrs[j] = "";
-				tbinfo->notnull_throwaway[j] = false;
-			}
-			else if (use_named_notnull)
-			{
-				/* The name itself has already been determined */
-				tbinfo->notnull_throwaway[j] = false;
-			}
-			else if (use_throwaway_notnull)
-			{
-				tbinfo->notnull_constrs[j] =
-					psprintf("pgdump_throwaway_notnull_%d", notnullcount++);
-				tbinfo->notnull_throwaway[j] = true;
-				tbinfo->notnull_inh[j] = false;
-			}
-			else
-			{
-				tbinfo->notnull_constrs[j] = NULL;
-				tbinfo->notnull_throwaway[j] = false;
-			}
-
-			/*
-			 * Throwaway constraints must always be NO INHERIT; otherwise do
-			 * what the catalog says.
-			 */
-			tbinfo->notnull_noinh[j] = use_throwaway_notnull ||
-				PQgetvalue(res, r, i_notnull_noinherit)[0] == 't';
-
+			tbinfo->notnull[j] = (PQgetvalue(res, r, i_attnotnull)[0] == 't');
 			tbinfo->attoptions[j] = pg_strdup(PQgetvalue(res, r, i_attoptions));
 			tbinfo->attcollation[j] = atooid(PQgetvalue(res, r, i_attcollation));
 			tbinfo->attcompression[j] = *(PQgetvalue(res, r, i_attcompression));
@@ -9122,6 +8927,8 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			tbinfo->attrdefs[j] = NULL; /* fix below */
 			if (PQgetvalue(res, r, i_atthasdef)[0] == 't')
 				hasdefaults = true;
+			/* these flags will be set in flagInhAttrs() */
+			tbinfo->inhNotNull[j] = false;
 		}
 
 		if (hasdefaults)
@@ -16140,14 +15947,13 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 									 !tbinfo->attrdefs[j]->separate);
 
 					/*
-					 * Not Null constraint --- suppress unless it is locally
-					 * defined, except if partition, or in binary-upgrade case
-					 * where that won't work.
+					 * Not Null constraint --- suppress if inherited, except
+					 * if partition, or in binary-upgrade case where that
+					 * won't work.
 					 */
-					print_notnull =
-						(tbinfo->notnull_constrs[j] != NULL &&
-						 (!tbinfo->notnull_inh[j] || tbinfo->ispartition ||
-						  dopt->binary_upgrade));
+					print_notnull = (tbinfo->notnull[j] &&
+									 (!tbinfo->inhNotNull[j] ||
+									  tbinfo->ispartition || dopt->binary_upgrade));
 
 					/*
 					 * Skip column if fully defined by reloftype, except in
@@ -16205,16 +16011,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 
 
 					if (print_notnull)
-					{
-						if (tbinfo->notnull_constrs[j][0] == '\0')
-							appendPQExpBufferStr(q, " NOT NULL");
-						else
-							appendPQExpBuffer(q, " CONSTRAINT %s NOT NULL",
-											  fmtId(tbinfo->notnull_constrs[j]));
-
-						if (tbinfo->notnull_noinh[j])
-							appendPQExpBufferStr(q, " NO INHERIT");
-					}
+						appendPQExpBufferStr(q, " NOT NULL");
 
 					/* Add collation if not default for the type */
 					if (OidIsValid(tbinfo->attcollation[j]))
@@ -16427,25 +16224,6 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 					appendPQExpBufferStr(q, "\n  AND attrelid = ");
 					appendStringLiteralAH(q, qualrelname, fout);
 					appendPQExpBufferStr(q, "::pg_catalog.regclass;\n");
-
-					/*
-					 * If a not-null constraint comes from inheritance, reset
-					 * conislocal.  The inhcount is fixed later.
-					 */
-					if (tbinfo->notnull_constrs[j] != NULL &&
-						!tbinfo->notnull_throwaway[j] &&
-						tbinfo->notnull_inh[j] &&
-						!tbinfo->ispartition)
-					{
-						appendPQExpBufferStr(q, "UPDATE pg_catalog.pg_constraint\n"
-											 "SET conislocal = false\n"
-											 "WHERE contype = 'n' AND conrelid = ");
-						appendStringLiteralAH(q, qualrelname, fout);
-						appendPQExpBufferStr(q, "::pg_catalog.regclass AND\n"
-											 "conname = ");
-						appendStringLiteralAH(q, tbinfo->notnull_constrs[j], fout);
-						appendPQExpBufferStr(q, ";\n");
-					}
 				}
 			}
 
@@ -16567,22 +16345,11 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			 * we have to mark it separately.
 			 */
 			if (!shouldPrintColumn(dopt, tbinfo, j) &&
-				tbinfo->notnull_constrs[j] != NULL &&
-				(!tbinfo->notnull_inh[j] && !tbinfo->ispartition && !dopt->binary_upgrade))
-			{
-				/* No constraint name desired? */
-				if (tbinfo->notnull_constrs[j][0] == '\0')
-					appendPQExpBuffer(q,
-									  "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET NOT NULL;\n",
-									  foreign, qualrelname,
-									  fmtId(tbinfo->attnames[j]));
-				else
-					appendPQExpBuffer(q,
-									  "ALTER %sTABLE ONLY %s ADD CONSTRAINT %s NOT NULL %s;\n",
-									  foreign, qualrelname,
-									  tbinfo->notnull_constrs[j],
-									  fmtId(tbinfo->attnames[j]));
-			}
+				tbinfo->notnull[j] && !tbinfo->inhNotNull[j])
+				appendPQExpBuffer(q,
+								  "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET NOT NULL;\n",
+								  foreign, qualrelname,
+								  fmtId(tbinfo->attnames[j]));
 
 			/*
 			 * Dump per-column statistics information. We only issue an ALTER
@@ -16741,6 +16508,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 								  .namespace = tbinfo->dobj.namespace->dobj.name,
 								  .tablespace = tablespace,
 								  .tableam = tableam,
+								  .relkind = tbinfo->relkind,
 								  .owner = tbinfo->rolname,
 								  .description = reltypename,
 								  .section = tbinfo->postponed_def ?
@@ -17280,8 +17048,6 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 								  (k == 0) ? "" : ", ",
 								  fmtId(attname));
 			}
-			if (coninfo->conperiod)
-				appendPQExpBufferStr(q, " WITHOUT OVERLAPS");
 
 			if (indxinfo->indnkeyattrs < indxinfo->indnattrs)
 				appendPQExpBufferStr(q, ") INCLUDE (");
@@ -17324,14 +17090,6 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 		 * only have ALTER TABLE syntax for.  Keep this in sync with the
 		 * similar code in dumpIndex!
 		 */
-
-		/* Drop any not-null constraints that were added to support the PK */
-		if (coninfo->contype == 'p')
-			for (int i = 0; i < tbinfo->numatts; i++)
-				if (tbinfo->notnull_throwaway[i])
-					appendPQExpBuffer(q, "\nALTER TABLE ONLY %s DROP CONSTRAINT %s;",
-									  fmtQualifiedDumpable(tbinfo),
-									  tbinfo->notnull_constrs[i]);
 
 		/* If the index is clustered, we need to record that. */
 		if (indxinfo->indisclustered)

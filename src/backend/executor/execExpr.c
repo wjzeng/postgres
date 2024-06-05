@@ -2436,7 +2436,16 @@ ExecInitExprRec(Expr *node, ExprState *state,
 			{
 				JsonExpr   *jsexpr = castNode(JsonExpr, node);
 
-				ExecInitJsonExpr(jsexpr, state, resv, resnull, &scratch);
+				/*
+				 * No need to initialize a full JsonExprState For
+				 * JSON_TABLE(), because the upstream caller tfuncFetchRows()
+				 * is only interested in the value of formatted_expr.
+				 */
+				if (jsexpr->op == JSON_TABLE_OP)
+					ExecInitExprRec((Expr *) jsexpr->formatted_expr, state,
+									resv, resnull);
+				else
+					ExecInitJsonExpr(jsexpr, state, resv, resnull, &scratch);
 				break;
 			}
 
@@ -4384,14 +4393,13 @@ ExecInitJsonExpr(JsonExpr *jsexpr, ExprState *state,
 		fcinfo->args[2].isnull = false;
 		fcinfo->context = (Node *) escontext;
 
-		jsestate->input_finfo = finfo;
 		jsestate->input_fcinfo = fcinfo;
 	}
 
 	/*
 	 * Add a special step, if needed, to check if the coercion evaluation ran
 	 * into an error but was not thrown because the ON ERROR behavior is not
-	 * ERROR.  It will set jsesestate->error if an error did occur.
+	 * ERROR.  It will set jsestate->error if an error did occur.
 	 */
 	if (jsestate->jump_eval_coercion >= 0 && escontext != NULL)
 	{

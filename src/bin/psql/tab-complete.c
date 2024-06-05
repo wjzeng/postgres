@@ -2147,7 +2147,7 @@ psql_completion(const char *text, int start, int end)
 
 	/* ALTER DEFAULT PRIVILEGES */
 	else if (Matches("ALTER", "DEFAULT", "PRIVILEGES"))
-		COMPLETE_WITH("FOR ROLE", "IN SCHEMA");
+		COMPLETE_WITH("FOR", "GRANT", "IN SCHEMA", "REVOKE");
 	/* ALTER DEFAULT PRIVILEGES FOR */
 	else if (Matches("ALTER", "DEFAULT", "PRIVILEGES", "FOR"))
 		COMPLETE_WITH("ROLE");
@@ -2353,6 +2353,7 @@ psql_completion(const char *text, int start, int end)
 					  "OWNER TO", "SET", "VALIDATE CONSTRAINT",
 					  "REPLICA IDENTITY", "ATTACH PARTITION",
 					  "DETACH PARTITION", "FORCE ROW LEVEL SECURITY",
+					  "SPLIT PARTITION", "MERGE PARTITIONS (",
 					  "OF", "NOT OF");
 	/* ALTER TABLE xxx ADD */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ADD"))
@@ -2609,16 +2610,29 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("FROM (", "IN (", "WITH (");
 
 	/*
-	 * If we have ALTER TABLE <foo> DETACH PARTITION, provide a list of
+	 * If we have ALTER TABLE <foo> DETACH|SPLIT PARTITION, provide a list of
 	 * partitions of <foo>.
 	 */
-	else if (Matches("ALTER", "TABLE", MatchAny, "DETACH", "PARTITION"))
+	else if (Matches("ALTER", "TABLE", MatchAny, "DETACH|SPLIT", "PARTITION"))
 	{
 		set_completion_reference(prev3_wd);
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_partition_of_table);
 	}
 	else if (Matches("ALTER", "TABLE", MatchAny, "DETACH", "PARTITION", MatchAny))
 		COMPLETE_WITH("CONCURRENTLY", "FINALIZE");
+
+	/* ALTER TABLE <name> SPLIT PARTITION <name> */
+	else if (Matches("ALTER", "TABLE", MatchAny, "SPLIT", "PARTITION", MatchAny))
+		COMPLETE_WITH("INTO ( PARTITION");
+
+	/* ALTER TABLE <name> MERGE PARTITIONS ( */
+	else if (Matches("ALTER", "TABLE", MatchAny, "MERGE", "PARTITIONS", "("))
+	{
+		set_completion_reference(prev4_wd);
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_partition_of_table);
+	}
+	else if (Matches("ALTER", "TABLE", MatchAny, "MERGE", "PARTITIONS", "(*)"))
+		COMPLETE_WITH("INTO");
 
 	/* ALTER TABLE <name> OF */
 	else if (Matches("ALTER", "TABLE", MatchAny, "OF"))
@@ -3856,9 +3870,12 @@ psql_completion(const char *text, int start, int end)
 		 */
 		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
 			COMPLETE_WITH("ANALYZE", "VERBOSE", "COSTS", "SETTINGS", "GENERIC_PLAN",
-						  "BUFFERS", "WAL", "TIMING", "SUMMARY", "FORMAT");
-		else if (TailMatches("ANALYZE|VERBOSE|COSTS|SETTINGS|GENERIC_PLAN|BUFFERS|WAL|TIMING|SUMMARY"))
+						  "BUFFERS", "SERIALIZE", "WAL", "TIMING", "SUMMARY",
+						  "MEMORY", "FORMAT");
+		else if (TailMatches("ANALYZE|VERBOSE|COSTS|SETTINGS|GENERIC_PLAN|BUFFERS|WAL|TIMING|SUMMARY|MEMORY"))
 			COMPLETE_WITH("ON", "OFF");
+		else if (TailMatches("SERIALIZE"))
+			COMPLETE_WITH("TEXT", "NONE", "BINARY");
 		else if (TailMatches("FORMAT"))
 			COMPLETE_WITH("TEXT", "XML", "JSON", "YAML");
 	}
@@ -3949,9 +3966,18 @@ psql_completion(const char *text, int start, int end)
 		 * privileges (can't grant roles)
 		 */
 		if (HeadMatches("ALTER", "DEFAULT", "PRIVILEGES"))
-			COMPLETE_WITH("SELECT", "INSERT", "UPDATE",
-						  "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER",
-						  "CREATE", "EXECUTE", "USAGE", "MAINTAIN", "ALL");
+		{
+			if (TailMatches("GRANT") ||
+				TailMatches("REVOKE", "GRANT", "OPTION", "FOR"))
+				COMPLETE_WITH("SELECT", "INSERT", "UPDATE",
+							  "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER",
+							  "CREATE", "EXECUTE", "USAGE", "MAINTAIN", "ALL");
+			else if (TailMatches("REVOKE"))
+				COMPLETE_WITH("SELECT", "INSERT", "UPDATE",
+							  "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER",
+							  "CREATE", "EXECUTE", "USAGE", "MAINTAIN", "ALL",
+							  "GRANT OPTION FOR");
+		}
 		else if (TailMatches("GRANT"))
 			COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_roles,
 									 Privilege_options_of_grant_and_revoke);
@@ -4133,6 +4159,9 @@ psql_completion(const char *text, int start, int end)
 	else if (HeadMatches("ALTER", "DEFAULT", "PRIVILEGES") && TailMatches("TO|FROM"))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_roles,
 								 Keywords_for_list_of_grant_roles);
+	/* Offer WITH GRANT OPTION after that */
+	else if (HeadMatches("ALTER", "DEFAULT", "PRIVILEGES") && TailMatches("TO", MatchAny))
+		COMPLETE_WITH("WITH GRANT OPTION");
 	/* Complete "GRANT/REVOKE ... ON * *" with TO/FROM */
 	else if (HeadMatches("GRANT") && TailMatches("ON", MatchAny, MatchAny))
 		COMPLETE_WITH("TO");

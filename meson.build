@@ -8,7 +8,7 @@
 
 project('postgresql',
   ['c'],
-  version: '17devel',
+  version: '17beta1',
   license: 'PostgreSQL',
 
   # We want < 0.56 for python 3.5 compatibility on old platforms. EPEL for
@@ -1353,7 +1353,10 @@ if uuidopt != 'none'
     error('unknown uuid build option value: @0@'.format(uuidopt))
   endif
 
-  if not cc.has_header_symbol(uuidheader, uuidfunc, args: test_c_args, dependencies: uuid)
+  if not cc.has_header_symbol(uuidheader, uuidfunc,
+                              args: test_c_args,
+                              include_directories: postgres_inc,
+                              dependencies: uuid)
     error('uuid library @0@ missing required function @1@'.format(uuidopt, uuidfunc))
   endif
   cdata.set('HAVE_@0@'.format(uuidheader.underscorify().to_upper()), 1)
@@ -1783,6 +1786,30 @@ elif cc.links('''
 endif
 
 
+# Check for __get_cpuid_count() and __cpuidex() in a similar fashion.
+if cc.links('''
+    #include <cpuid.h>
+    int main(int arg, char **argv)
+    {
+        unsigned int exx[4] = {0, 0, 0, 0};
+        __get_cpuid_count(7, 0, &exx[0], &exx[1], &exx[2], &exx[3]);
+    }
+    ''', name: '__get_cpuid_count',
+    args: test_c_args)
+  cdata.set('HAVE__GET_CPUID_COUNT', 1)
+elif cc.links('''
+    #include <intrin.h>
+    int main(int arg, char **argv)
+    {
+        unsigned int exx[4] = {0, 0, 0, 0};
+        __cpuidex(exx, 7, 0);
+    }
+    ''', name: '__cpuidex',
+    args: test_c_args)
+  cdata.set('HAVE__CPUIDEX', 1)
+endif
+
+
 # Defend against clang being used on x86-32 without SSE2 enabled.  As current
 # versions of clang do not understand -fexcess-precision=standard, the use of
 # x87 floating point operations leads to problems like isinf possibly returning
@@ -1995,6 +2022,69 @@ int main(void)
 
 endif
 
+
+###############################################################
+# Check for the availability of XSAVE intrinsics.
+###############################################################
+
+cflags_xsave = []
+if host_cpu == 'x86' or host_cpu == 'x86_64'
+
+  prog = '''
+#include <immintrin.h>
+
+int main(void)
+{
+    return _xgetbv(0) & 0xe0;
+}
+'''
+
+  if cc.links(prog, name: 'XSAVE intrinsics without -mxsave',
+        args: test_c_args)
+    cdata.set('HAVE_XSAVE_INTRINSICS', 1)
+  elif cc.links(prog, name: 'XSAVE intrinsics with -mxsave',
+        args: test_c_args + ['-mxsave'])
+    cdata.set('HAVE_XSAVE_INTRINSICS', 1)
+    cflags_xsave += '-mxsave'
+  endif
+
+endif
+
+
+###############################################################
+# Check for the availability of AVX-512 popcount intrinsics.
+###############################################################
+
+cflags_popcnt = []
+if host_cpu == 'x86_64'
+
+  prog = '''
+#include <immintrin.h>
+
+int main(void)
+{
+    const char buf[sizeof(__m512i)];
+    INT64 popcnt = 0;
+    __m512i accum = _mm512_setzero_si512();
+    const __m512i val = _mm512_maskz_loadu_epi8((__mmask64) 0xf0f0f0f0f0f0f0f0, (const __m512i *) buf);
+    const __m512i cnt = _mm512_popcnt_epi64(val);
+    accum = _mm512_add_epi64(accum, cnt);
+    popcnt = _mm512_reduce_add_epi64(accum);
+    /* return computed value, to prevent the above being optimized away */
+    return popcnt == 0;
+}
+'''
+
+  if cc.links(prog, name: 'AVX-512 popcount without -mavx512vpopcntdq -mavx512bw',
+        args: test_c_args + ['-DINT64=@0@'.format(cdata.get('PG_INT64_TYPE'))])
+    cdata.set('USE_AVX512_POPCNT_WITH_RUNTIME_CHECK', 1)
+  elif cc.links(prog, name: 'AVX-512 popcount with -mavx512vpopcntdq -mavx512bw',
+        args: test_c_args + ['-DINT64=@0@'.format(cdata.get('PG_INT64_TYPE'))] + ['-mavx512vpopcntdq'] + ['-mavx512bw'])
+    cdata.set('USE_AVX512_POPCNT_WITH_RUNTIME_CHECK', 1)
+    cflags_popcnt += ['-mavx512vpopcntdq'] + ['-mavx512bw']
+  endif
+
+endif
 
 
 ###############################################################
@@ -2213,6 +2303,14 @@ decl_checks += [
   ['preadv', 'sys/uio.h'],
   ['pwritev', 'sys/uio.h'],
 ]
+
+# Check presence of some optional LLVM functions.
+if llvm.found()
+  decl_checks += [
+    ['LLVMCreateGDBRegistrationListener', 'llvm-c/ExecutionEngine.h'],
+    ['LLVMCreatePerfJITEventListener', 'llvm-c/ExecutionEngine.h'],
+  ]
+endif
 
 foreach c : decl_checks
   func = c.get(0)
@@ -2450,7 +2548,6 @@ func_checks = [
   ['posix_fadvise'],
   ['posix_fallocate'],
   ['ppoll'],
-  ['pstat'],
   ['pthread_barrier_wait', {'dependencies': [thread_dep]}],
   ['pthread_is_threaded_np', {'dependencies': [thread_dep]}],
   ['sem_init', {'dependencies': [rt_dep, thread_dep], 'skip': sema_kind != 'unnamed_posix', 'define': false}],
@@ -3375,6 +3472,8 @@ bzip2 = find_program('bzip2', required: false, native: true)
 
 distdir = meson.project_name() + '-' + meson.project_version()
 
+pg_git_revision = get_option('PG_GIT_REVISION')
+
 # Note: core.autocrlf=false is needed to avoid line-ending conversion
 # in case the environment has a different setting.  Without this, a
 # tarball created on Windows might be different than on, and unusable
@@ -3389,7 +3488,7 @@ tar_gz = custom_target('tar.gz',
             '-9',
             '--prefix', distdir + '/',
             '-o', join_paths(meson.build_root(), '@OUTPUT@'),
-            'HEAD', '.'],
+            pg_git_revision],
   output: distdir + '.tar.gz',
 )
 
@@ -3403,7 +3502,7 @@ if bzip2.found()
               '--format', 'tar.bz2',
               '--prefix', distdir + '/',
               '-o', join_paths(meson.build_root(), '@OUTPUT@'),
-              'HEAD', '.'],
+              pg_git_revision],
     output: distdir + '.tar.bz2',
   )
 else
@@ -3419,7 +3518,10 @@ alias_target('pgdist', [tar_gz, tar_bz2])
 # But not if we are in a subproject, in case the parent project wants to
 # create a dist using the standard Meson command.
 if not meson.is_subproject()
-  meson.add_dist_script(perl, '-e', 'exit 1')
+  # We can only pass the identifier perl here when we depend on >= 0.55
+  if meson.version().version_compare('>=0.55')
+    meson.add_dist_script(perl, '-e', 'exit 1')
+  endif
 endif
 
 

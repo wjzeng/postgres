@@ -960,7 +960,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 				ereport(ERROR,
 						(errcode(ERRCODE_OUT_OF_MEMORY),
 						 errmsg("out of shared memory"),
-						 errhint("You might need to increase %s.", "max_locks_per_transaction")));
+						 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
 			else
 				return LOCKACQUIRE_NOT_AVAIL;
 		}
@@ -998,7 +998,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
-					 errhint("You might need to increase %s.", "max_locks_per_transaction")));
+					 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
 		else
 			return LOCKACQUIRE_NOT_AVAIL;
 	}
@@ -1032,7 +1032,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 
 		/*
 		 * Sleep till someone wakes me up. We do this even in the dontWait
-		 * case, beause while trying to go to sleep, we may discover that we
+		 * case, because while trying to go to sleep, we may discover that we
 		 * can acquire the lock immediately after all.
 		 */
 
@@ -1060,7 +1060,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 
 		/*
 		 * Check the proclock entry status. If dontWait = true, this is an
-		 * expected case; otherwise, it will open happen if something in the
+		 * expected case; otherwise, it will only happen if something in the
 		 * ipc communication doesn't work correctly.
 		 */
 		if (!(proclock->holdMask & LOCKBIT_ON(lockmode)))
@@ -2801,7 +2801,7 @@ FastPathGetRelationLockEntry(LOCALLOCK *locallock)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
-					 errhint("You might need to increase %s.", "max_locks_per_transaction")));
+					 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
 		}
 		GrantLock(proclock->tag.myLock, proclock, lockmode);
 		FAST_PATH_CLEAR_LOCKMODE(MyProc, f, lockmode);
@@ -4186,7 +4186,7 @@ lock_twophase_recover(TransactionId xid, uint16 info,
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
-				 errhint("You might need to increase %s.", "max_locks_per_transaction")));
+				 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
 	}
 
 	/*
@@ -4251,7 +4251,7 @@ lock_twophase_recover(TransactionId xid, uint16 info,
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
-				 errhint("You might need to increase %s.", "max_locks_per_transaction")));
+				 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
 	}
 
 	/*
@@ -4601,7 +4601,7 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
-					 errhint("You might need to increase %s.", "max_locks_per_transaction")));
+					 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
 		}
 		GrantLock(proclock->tag.myLock, proclock, ExclusiveLock);
 
