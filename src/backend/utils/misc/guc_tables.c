@@ -87,6 +87,7 @@
 #include "utils/pg_locale.h"
 #include "utils/plancache.h"
 #include "utils/ps_status.h"
+#include "utils/rls.h"
 #include "utils/xml.h"
 
 /* This value is normally passed in from the Makefile */
@@ -517,7 +518,8 @@ bool		check_function_bodies = true;
  * This GUC exists solely for backward compatibility, check its definition for
  * details.
  */
-bool		default_with_oids = false;
+static bool default_with_oids = false;
+
 bool		current_role_is_superuser;
 
 int			log_min_error_statement = ERROR;
@@ -555,7 +557,7 @@ int			tcp_user_timeout;
  * This avoids breaking compatibility with clients that have never supported
  * renegotiation and therefore always try to zero it.
  */
-int			ssl_renegotiation_limit;
+static int	ssl_renegotiation_limit;
 
 /*
  * This really belongs in pg_shmem.c, but is defined here so that it doesn't
@@ -563,7 +565,7 @@ int			ssl_renegotiation_limit;
  */
 int			huge_pages = HUGE_PAGES_TRY;
 int			huge_page_size;
-int			huge_pages_status = HUGE_PAGES_UNKNOWN;
+static int	huge_pages_status = HUGE_PAGES_UNKNOWN;
 
 /*
  * These variables are all dummies that don't do anything, except in some
@@ -4692,7 +4694,7 @@ struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"standby_slot_names", PGC_SIGHUP, REPLICATION_PRIMARY,
+		{"synchronized_standby_slots", PGC_SIGHUP, REPLICATION_PRIMARY,
 			gettext_noop("Lists streaming replication standby server slot "
 						 "names that logical WAL sender processes will wait for."),
 			gettext_noop("Logical WAL sender processes will send decoded "
@@ -4700,9 +4702,9 @@ struct config_string ConfigureNamesString[] =
 						 "replication slots confirm receiving WAL."),
 			GUC_LIST_INPUT
 		},
-		&standby_slot_names,
+		&synchronized_standby_slots,
 		"",
-		check_standby_slot_names, assign_standby_slot_names, NULL
+		check_synchronized_standby_slots, assign_synchronized_standby_slots, NULL
 	},
 
 	/* End-of-list marker */

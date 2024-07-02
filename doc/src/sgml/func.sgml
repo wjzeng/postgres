@@ -18861,6 +18861,16 @@ DETAIL:  Missing "]" after array dimensions.
     </tbody>
    </tgroup>
   </table>
+  <note>
+   <para>
+    The <replaceable>context_item</replaceable> expression is converted to
+    <type>jsonb</type> by an implicit cast if the expression is not already of
+    type <type>jsonb</type>. Note, however, that any parsing errors that occur
+    during that conversion are thrown unconditionally, that is, are not
+    handled according to the (specified or implicit) <literal>ON ERROR</literal>
+    clause.
+   </para>
+  </note>
   </sect2>
 
  <sect2 id="functions-sqljson-table">
@@ -18929,7 +18939,7 @@ DETAIL:  Missing "]" after array dimensions.
 JSON_TABLE (
     <replaceable>context_item</replaceable>, <replaceable>path_expression</replaceable> <optional> AS <replaceable>json_path_name</replaceable> </optional> <optional> PASSING { <replaceable>value</replaceable> AS <replaceable>varname</replaceable> } <optional>, ...</optional> </optional>
     COLUMNS ( <replaceable class="parameter">json_table_column</replaceable> <optional>, ...</optional> )
-    <optional> { <literal>ERROR</literal> | <literal>EMPTY</literal> } <literal>ON ERROR</literal> </optional>
+    <optional> { <literal>ERROR</literal> | <literal>EMPTY</literal> <optional>ARRAY</optional>} <literal>ON ERROR</literal> </optional>
 )
 
 <phrase>
@@ -18941,8 +18951,8 @@ where <replaceable class="parameter">json_table_column</replaceable> is:
         <optional> PATH <replaceable>path_expression</replaceable> </optional>
         <optional> { WITHOUT | WITH { CONDITIONAL | <optional>UNCONDITIONAL</optional> } } <optional> ARRAY </optional> WRAPPER </optional>
         <optional> { KEEP | OMIT } QUOTES <optional> ON SCALAR STRING </optional> </optional>
-        <optional> { ERROR | NULL | EMPTY { ARRAY | OBJECT } | DEFAULT <replaceable>expression</replaceable> } ON EMPTY </optional>
-        <optional> { ERROR | NULL | EMPTY { ARRAY | OBJECT } | DEFAULT <replaceable>expression</replaceable> } ON ERROR </optional>
+        <optional> { ERROR | NULL | EMPTY { <optional>ARRAY</optional> | OBJECT } | DEFAULT <replaceable>expression</replaceable> } ON EMPTY </optional>
+        <optional> { ERROR | NULL | EMPTY { <optional>ARRAY</optional> | OBJECT } | DEFAULT <replaceable>expression</replaceable> } ON ERROR </optional>
   | <replaceable>name</replaceable> <replaceable>type</replaceable> EXISTS <optional> PATH <replaceable>path_expression</replaceable> </optional>
         <optional> { ERROR | TRUE | FALSE | UNKNOWN } ON ERROR </optional>
   | NESTED <optional> PATH </optional> <replaceable>path_expression</replaceable> <optional> AS <replaceable>json_path_name</replaceable> </optional> COLUMNS ( <replaceable>json_table_column</replaceable> <optional>, ...</optional> )
@@ -25276,9 +25286,9 @@ SELECT has_function_privilege('joeuser', 'myfunc(int, text)', 'execute');
         Constructs an <type>aclitem</type> array holding the default access
         privileges for an object of type <parameter>type</parameter> belonging
         to the role with OID <parameter>ownerId</parameter>.  This represents
-        the access privileges that will be assumed when an object's ACL entry
-        is null.  (The default access privileges are described in
-        <xref linkend="ddl-priv"/>.)
+        the access privileges that will be assumed when an object's
+        <acronym>ACL</acronym> entry is null. (The default access privileges
+        are described in <xref linkend="ddl-priv"/>.)
         The <parameter>type</parameter> parameter must be one of
         'c' for <literal>COLUMN</literal>,
         'r' for <literal>TABLE</literal> and table-like objects,
@@ -29047,7 +29057,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         adding the rows produced when decoding each new transaction commit.
         If the specified slot is a logical failover slot then the function will
         not return until all physical slots specified in
-        <link linkend="guc-standby-slot-names"><varname>standby_slot_names</varname></link>
+        <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link>
         have confirmed WAL receipt.
        </para></entry>
       </row>
@@ -29127,7 +29137,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         slot may return to an earlier position. If the specified slot is a
         logical failover slot then the function will not return until all
         physical slots specified in
-        <link linkend="guc-standby-slot-names"><varname>standby_slot_names</varname></link>
+        <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link>
         have confirmed WAL receipt.
        </para></entry>
       </row>

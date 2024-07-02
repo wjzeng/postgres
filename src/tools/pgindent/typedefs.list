@@ -2717,7 +2717,6 @@ SplitPoint
 SplitTextOutputData
 SplitVar
 StackElem
-StandbySlotNamesConfigData
 StartDataPtrType
 StartLOPtrType
 StartLOsPtrType
@@ -2782,6 +2781,7 @@ SyncRepConfigData
 SyncRepStandbyData
 SyncRequestHandler
 SyncRequestType
+SyncStandbySlotsConfigData
 SyncingTablesState
 SysFKRelationship
 SysScanDesc
@@ -3099,9 +3099,9 @@ WaitEvent
 WaitEventActivity
 WaitEventBufferPin
 WaitEventClient
-WaitEventExtensionCounterData
-WaitEventExtensionEntryById
-WaitEventExtensionEntryByName
+WaitEventCustomCounterData
+WaitEventCustomEntryByInfo
+WaitEventCustomEntryByName
 WaitEventIO
 WaitEventIPC
 WaitEventSet
@@ -3931,6 +3931,7 @@ string
 substitute_actual_parameters_context
 substitute_actual_srf_parameters_context
 substitute_phv_relids_context
+subxids_array_status
 symbol
 tablespaceinfo
 td_entry
