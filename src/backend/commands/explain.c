@@ -125,6 +125,7 @@ static void show_sort_info(SortState *sortstate, ExplainState *es);
 static void show_incremental_sort_info(IncrementalSortState *incrsortstate,
 									   ExplainState *es);
 static void show_hash_info(HashState *hashstate, ExplainState *es);
+static void show_material_info(MaterialState *mstate, ExplainState *es);
 static void show_memoize_info(MemoizeState *mstate, List *ancestors,
 							  ExplainState *es);
 static void show_hashagg_info(AggState *aggstate, ExplainState *es);
@@ -1749,6 +1750,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					case JOIN_ANTI:
 						jointype = "Anti";
 						break;
+					case JOIN_RIGHT_SEMI:
+						jointype = "Right Semi";
+						break;
 					case JOIN_RIGHT_ANTI:
 						jointype = "Right Anti";
 						break;
@@ -2247,6 +2251,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 		case T_Hash:
 			show_hash_info(castNode(HashState, planstate), es);
+			break;
+		case T_Material:
+			show_material_info(castNode(MaterialState, planstate), es);
 			break;
 		case T_Memoize:
 			show_memoize_info(castNode(MemoizeState, planstate), ancestors,
@@ -3316,6 +3323,42 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 							 hinstrument.nbuckets, hinstrument.nbatch,
 							 spacePeakKb);
 		}
+	}
+}
+
+/*
+ * Show information on material node, storage method and maximum memory/disk
+ * space used.
+ */
+static void
+show_material_info(MaterialState *mstate, ExplainState *es)
+{
+	Tuplestorestate *tupstore = mstate->tuplestorestate;
+	const char *storageType;
+	int64		spaceUsedKB;
+
+	/*
+	 * Nothing to show if ANALYZE option wasn't used or if execution didn't
+	 * get as far as creating the tuplestore.
+	 */
+	if (!es->analyze || tupstore == NULL)
+		return;
+
+	storageType = tuplestore_storage_type_name(tupstore);
+	spaceUsedKB = BYTES_TO_KILOBYTES(tuplestore_space_used(tupstore));
+
+	if (es->format != EXPLAIN_FORMAT_TEXT)
+	{
+		ExplainPropertyText("Storage", storageType, es);
+		ExplainPropertyInteger("Maximum Storage", "kB", spaceUsedKB, es);
+	}
+	else
+	{
+		ExplainIndentText(es);
+		appendStringInfo(es->str,
+						 "Storage: %s  Maximum Storage: " INT64_FORMAT "kB\n",
+						 storageType,
+						 spaceUsedKB);
 	}
 }
 
