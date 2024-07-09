@@ -1416,6 +1416,17 @@ my %tests = (
 		},
 	},
 
+	'CREATE DATABASE regression_invalid...' => {
+		create_order => 1,
+		create_sql => q(
+		    CREATE DATABASE regression_invalid;
+			UPDATE pg_database SET datconnlimit = -2 WHERE datname = 'regression_invalid'),
+		regexp => qr/^CREATE DATABASE regression_invalid/m,
+
+		# invalid databases should never be dumped
+		like => {},
+	},
+
 	'CREATE ACCESS METHOD gist2' => {
 		create_order => 52,
 		create_sql =>
@@ -3094,11 +3105,13 @@ my %tests = (
 
 	'GRANT SELECT ON TABLE measurement' => {
 		create_order => 91,
-		create_sql   => 'GRANT SELECT ON
-						   TABLE dump_test.measurement
+		create_sql => 'GRANT SELECT ON TABLE dump_test.measurement
+						   TO regress_dump_test_role;
+					   GRANT SELECT(city_id) ON TABLE dump_test.measurement
 						   TO regress_dump_test_role;',
 		regexp =>
-		  qr/^GRANT SELECT ON TABLE dump_test.measurement TO regress_dump_test_role;/m,
+		  qr/^\QGRANT SELECT ON TABLE dump_test.measurement TO regress_dump_test_role;\E\n.*
+			 ^\QGRANT SELECT(city_id) ON TABLE dump_test.measurement TO regress_dump_test_role;\E/xms,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -3387,7 +3400,7 @@ $node->psql('postgres', 'create database regress_pg_dump_test;');
 
 # Start with number of command_fails_like()*2 tests below (each
 # command_fails_like is actually 2 tests)
-my $num_tests = 12;
+my $num_tests = 14;
 
 foreach my $run (sort keys %pgdump_runs)
 {
@@ -3515,6 +3528,14 @@ command_fails_like(
 	qr/\Qpg_dump: [archiver (db)] connection to database "qqq" failed: FATAL:  database "qqq" does not exist\E/,
 	'pg_dump: [archiver (db)] connection to database "qqq" failed: FATAL:  database "qqq" does not exist'
 );
+
+#########################################
+# Test connecting to an invalid database
+
+command_fails_like(
+	[ 'pg_dump', '-p', "$port", '-d', 'regression_invalid' ],
+	qr/pg_dump: .* connection to database .* failed: FATAL:  cannot connect to invalid database "regression_invalid"/,
+	'connecting to an invalid database');
 
 #########################################
 # Test connecting with an unprivileged user

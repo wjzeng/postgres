@@ -380,7 +380,8 @@ InitProcess(void)
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
-	MyPgXact->delayChkpt = 0;
+	MyPgXact->delayChkpt = false;
+	MyProc->delayChkptEnd = false;
 	MyPgXact->vacuumFlags = 0;
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */
 	if (IsAutoVacuumWorkerProcess())
@@ -562,7 +563,8 @@ InitAuxiliaryProcess(void)
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
 	MyProc->isBackgroundWorker = IsBackgroundWorker;
-	MyPgXact->delayChkpt = 0;
+	MyPgXact->delayChkpt = false;
+	MyProc->delayChkptEnd = false;
 	MyPgXact->vacuumFlags = 0;
 	MyProc->lwWaiting = false;
 	MyProc->lwWaitMode = 0;
@@ -803,6 +805,10 @@ ProcKill(int code, Datum arg)
 
 	Assert(MyProc != NULL);
 
+	/* not safe if forked by system(), etc. */
+	if (MyProc->pid != (int) getpid())
+		elog(PANIC, "ProcKill() called in child process");
+
 	/* Make sure we're out of the sync rep lists */
 	SyncRepCleanupAtProcExit();
 
@@ -926,6 +932,10 @@ AuxiliaryProcKill(int code, Datum arg)
 	PGPROC	   *proc;
 
 	Assert(proctype >= 0 && proctype < NUM_AUXILIARY_PROCS);
+
+	/* not safe if forked by system(), etc. */
+	if (MyProc->pid != (int) getpid())
+		elog(PANIC, "AuxiliaryProcKill() called in child process");
 
 	auxproc = &AuxiliaryProcs[proctype];
 
