@@ -614,31 +614,66 @@ gssapiopt = get_option('gssapi')
 krb_srvtab = ''
 have_gssapi = false
 if not gssapiopt.disabled()
-  gssapi = dependency('krb5-gssapi', required: gssapiopt)
+  gssapi = dependency('krb5-gssapi', required: false)
   have_gssapi = gssapi.found()
 
+  if have_gssapi
+      gssapi_deps = [gssapi]
+  elif not have_gssapi
+    # Hardcoded lookup for gssapi. This is necessary as gssapi on windows does
+    # not install neither pkg-config nor cmake dependency information.
+    if host_system == 'windows'
+      is_64  = cc.sizeof('void *', args: test_c_args) == 8
+      if is_64
+        gssapi_search_libs = ['gssapi64', 'krb5_64', 'comerr64']
+      else
+        gssapi_search_libs = ['gssapi32', 'krb5_32', 'comerr32']
+      endif
+    else
+      gssapi_search_libs = ['gssapi_krb5']
+    endif
+
+    gssapi_deps = []
+    foreach libname : gssapi_search_libs
+      lib = cc.find_library(libname, dirs: test_lib_d, required: false)
+      if lib.found()
+        have_gssapi = true
+        gssapi_deps += lib
+      endif
+    endforeach
+
+    if have_gssapi
+      # Meson before 0.57.0 did not support using check_header() etc with
+      # declare_dependency(). Thus the tests below use the library looked up
+      # above.  Once we require a newer meson version, we can simplify.
+      gssapi = declare_dependency(dependencies: gssapi_deps)
+    endif
+  endif
+
   if not have_gssapi
-  elif cc.check_header('gssapi/gssapi.h', dependencies: gssapi, required: false,
+  elif cc.check_header('gssapi/gssapi.h', dependencies: gssapi_deps, required: false,
       args: test_c_args, include_directories: postgres_inc)
     cdata.set('HAVE_GSSAPI_GSSAPI_H', 1)
-  elif cc.check_header('gssapi.h', args: test_c_args, dependencies: gssapi, required: gssapiopt)
+  elif cc.check_header('gssapi.h', dependencies: gssapi_deps, required: gssapiopt,
+      args: test_c_args, include_directories: postgres_inc)
     cdata.set('HAVE_GSSAPI_H', 1)
   else
     have_gssapi = false
   endif
 
   if not have_gssapi
-  elif cc.check_header('gssapi/gssapi_ext.h', dependencies: gssapi, required: false,
+  elif cc.check_header('gssapi/gssapi_ext.h', dependencies: gssapi_deps, required: false,
       args: test_c_args, include_directories: postgres_inc)
     cdata.set('HAVE_GSSAPI_GSSAPI_EXT_H', 1)
-  elif cc.check_header('gssapi_ext.h', args: test_c_args, dependencies: gssapi, required: gssapiopt)
+  elif cc.check_header('gssapi_ext.h', dependencies: gssapi_deps, required: gssapiopt,
+      args: test_c_args, include_directories: postgres_inc)
     cdata.set('HAVE_GSSAPI_EXT_H', 1)
   else
     have_gssapi = false
   endif
 
   if not have_gssapi
-  elif cc.has_function('gss_store_cred_into', dependencies: gssapi,
+  elif cc.has_function('gss_store_cred_into', dependencies: gssapi_deps,
       args: test_c_args, include_directories: postgres_inc)
     cdata.set('ENABLE_GSS', 1)
 
@@ -649,6 +684,11 @@ if not gssapiopt.disabled()
   else
     have_gssapi = false
   endif
+
+  if not have_gssapi and gssapiopt.enabled()
+    error('dependency lookup for gssapi failed')
+  endif
+
 endif
 if not have_gssapi
   gssapi = not_found_dep
@@ -773,11 +813,25 @@ endif
 
 icuopt = get_option('icu')
 if not icuopt.disabled()
-  icu = dependency('icu-uc', required: icuopt)
-  icu_i18n = dependency('icu-i18n', required: icuopt)
+  icu = dependency('icu-uc', required: false)
+  if icu.found()
+    icu_i18n = dependency('icu-i18n', required: true)
+  endif
+
+  # Unfortunately the dependency is named differently with cmake
+  if not icu.found() # combine with above once meson 0.60.0 is required
+    icu = dependency('ICU', required: icuopt,
+                     components: ['uc'], modules: ['ICU::uc'], method: 'cmake')
+    if icu.found()
+      icu_i18n = dependency('ICU', required: true,
+                            components: ['i18n'], modules: ['ICU::i18n'])
+    endif
+  endif
 
   if icu.found()
     cdata.set('USE_ICU', 1)
+  else
+    icu_i18n = not_found_dep
   endif
 
 else
@@ -793,7 +847,12 @@ endif
 
 libxmlopt = get_option('libxml')
 if not libxmlopt.disabled()
-  libxml = dependency('libxml-2.0', required: libxmlopt, version: '>= 2.6.23')
+  libxml = dependency('libxml-2.0', required: false, version: '>= 2.6.23')
+  # Unfortunately the dependency is named differently with cmake
+  if not libxml.found() # combine with above once meson 0.60.0 is required
+    libxml = dependency('LibXml2', required: libxmlopt, version: '>= 2.6.23',
+      method: 'cmake')
+  endif
 
   if libxml.found()
     cdata.set('USE_LIBXML', 1)
@@ -810,7 +869,11 @@ endif
 
 libxsltopt = get_option('libxslt')
 if not libxsltopt.disabled()
-  libxslt = dependency('libxslt', required: libxsltopt)
+  libxslt = dependency('libxslt', required: false)
+  # Unfortunately the dependency is named differently with cmake
+  if not libxslt.found() # combine with above once meson 0.60.0 is required
+    libxslt = dependency('LibXslt', required: libxsltopt, method: 'cmake')
+  endif
 
   if libxslt.found()
     cdata.set('USE_LIBXSLT', 1)
@@ -827,7 +890,13 @@ endif
 
 lz4opt = get_option('lz4')
 if not lz4opt.disabled()
-  lz4 = dependency('liblz4', required: lz4opt)
+  lz4 = dependency('liblz4', required: false)
+  # Unfortunately the dependency is named differently with cmake
+  if not lz4.found() # combine with above once meson 0.60.0 is required
+    lz4 = dependency('lz4', required: lz4opt,
+                     method: 'cmake', modules: ['LZ4::lz4_shared'],
+                    )
+  endif
 
   if lz4.found()
     cdata.set('USE_LZ4', 1)
@@ -1346,9 +1415,26 @@ if uuidopt != 'none'
     uuidfunc = 'uuid_to_string'
     uuidheader = 'uuid.h'
   elif uuidopt == 'ossp'
-    uuid = dependency('ossp-uuid', required: true)
+    uuid = dependency('ossp-uuid', required: false)
     uuidfunc = 'uuid_export'
     uuidheader = 'uuid.h'
+
+    # Hardcoded lookup for ossp-uuid. This is necessary as ossp-uuid on
+    # windows installs neither a pkg-config nor a cmake dependency
+    # information. Nor is there another supported uuid implementation
+    # available on windows.
+    #
+    # Sometimes the ossp-uuid library is named 'uuid' sometimes 'ossp-uuid'
+    if not uuid.found()
+      uuid = cc.find_library('ossp-uuid',
+        required: false, dirs: test_lib_d,
+        has_headers: uuidheader, header_include_directories: postgres_inc)
+    endif
+    if not uuid.found()
+      uuid = cc.find_library('uuid',
+        required: true, dirs: test_lib_d,
+        has_headers: uuidheader, header_include_directories: postgres_inc)
+    endif
   else
     error('unknown uuid build option value: @0@'.format(uuidopt))
   endif
@@ -1429,7 +1515,12 @@ endif
 
 zstdopt = get_option('zstd')
 if not zstdopt.disabled()
-  zstd = dependency('libzstd', required: zstdopt, version: '>=1.4.0')
+  zstd = dependency('libzstd', required: false, version: '>=1.4.0')
+  # Unfortunately the dependency is named differently with cmake
+  if not zstd.found() # combine with above once meson 0.60.0 is required
+    zstd = dependency('zstd', required: zstdopt, version: '>=1.4.0',
+                      method: 'cmake', modules: ['zstd::libzstd_shared'])
+  endif
 
   if zstd.found()
     cdata.set('USE_ZSTD', 1)
@@ -2326,6 +2417,7 @@ decl_checks = [
   ['strlcat', 'string.h'],
   ['strlcpy', 'string.h'],
   ['strnlen', 'string.h'],
+  ['strsep',  'string.h'],
 ]
 
 # Need to check for function declarations for these functions, because
@@ -2594,6 +2686,7 @@ func_checks = [
   ['strlcat'],
   ['strlcpy'],
   ['strnlen'],
+  ['strsep'],
   ['strsignal'],
   ['sync_file_range'],
   ['syncfs'],

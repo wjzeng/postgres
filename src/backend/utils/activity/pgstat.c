@@ -132,6 +132,7 @@
  * ---------
  */
 #define PGSTAT_FILE_ENTRY_END	'E' /* end of file */
+#define PGSTAT_FILE_ENTRY_FIXED	'F' /* fixed-numbered stats entry */
 #define PGSTAT_FILE_ENTRY_NAME	'N' /* stats entry identified by name */
 #define PGSTAT_FILE_ENTRY_HASH	'S' /* stats entry identified by
 									 * PgStat_HashKey */
@@ -354,6 +355,7 @@ static const PgStat_KindInfo pgstat_kind_infos[PGSTAT_NUM_KINDS] = {
 		.shared_data_off = offsetof(PgStatShared_Archiver, stats),
 		.shared_data_len = sizeof(((PgStatShared_Archiver *) 0)->stats),
 
+		.init_shmem_cb = pgstat_archiver_init_shmem_cb,
 		.reset_all_cb = pgstat_archiver_reset_all_cb,
 		.snapshot_cb = pgstat_archiver_snapshot_cb,
 	},
@@ -368,6 +370,7 @@ static const PgStat_KindInfo pgstat_kind_infos[PGSTAT_NUM_KINDS] = {
 		.shared_data_off = offsetof(PgStatShared_BgWriter, stats),
 		.shared_data_len = sizeof(((PgStatShared_BgWriter *) 0)->stats),
 
+		.init_shmem_cb = pgstat_bgwriter_init_shmem_cb,
 		.reset_all_cb = pgstat_bgwriter_reset_all_cb,
 		.snapshot_cb = pgstat_bgwriter_snapshot_cb,
 	},
@@ -382,6 +385,7 @@ static const PgStat_KindInfo pgstat_kind_infos[PGSTAT_NUM_KINDS] = {
 		.shared_data_off = offsetof(PgStatShared_Checkpointer, stats),
 		.shared_data_len = sizeof(((PgStatShared_Checkpointer *) 0)->stats),
 
+		.init_shmem_cb = pgstat_checkpointer_init_shmem_cb,
 		.reset_all_cb = pgstat_checkpointer_reset_all_cb,
 		.snapshot_cb = pgstat_checkpointer_snapshot_cb,
 	},
@@ -396,6 +400,7 @@ static const PgStat_KindInfo pgstat_kind_infos[PGSTAT_NUM_KINDS] = {
 		.shared_data_off = offsetof(PgStatShared_IO, stats),
 		.shared_data_len = sizeof(((PgStatShared_IO *) 0)->stats),
 
+		.init_shmem_cb = pgstat_io_init_shmem_cb,
 		.reset_all_cb = pgstat_io_reset_all_cb,
 		.snapshot_cb = pgstat_io_snapshot_cb,
 	},
@@ -410,6 +415,7 @@ static const PgStat_KindInfo pgstat_kind_infos[PGSTAT_NUM_KINDS] = {
 		.shared_data_off = offsetof(PgStatShared_SLRU, stats),
 		.shared_data_len = sizeof(((PgStatShared_SLRU *) 0)->stats),
 
+		.init_shmem_cb = pgstat_slru_init_shmem_cb,
 		.reset_all_cb = pgstat_slru_reset_all_cb,
 		.snapshot_cb = pgstat_slru_snapshot_cb,
 	},
@@ -424,6 +430,7 @@ static const PgStat_KindInfo pgstat_kind_infos[PGSTAT_NUM_KINDS] = {
 		.shared_data_off = offsetof(PgStatShared_Wal, stats),
 		.shared_data_len = sizeof(((PgStatShared_Wal *) 0)->stats),
 
+		.init_shmem_cb = pgstat_wal_init_shmem_cb,
 		.reset_all_cb = pgstat_wal_reset_all_cb,
 		.snapshot_cb = pgstat_wal_snapshot_cb,
 	},
@@ -1353,6 +1360,9 @@ pgstat_write_statsfile(void)
 
 	pgstat_assert_is_up();
 
+	/* should be called only by the checkpointer or single user mode */
+	Assert(!IsUnderPostmaster || MyBackendType == B_CHECKPOINTER);
+
 	/* we're shutting down, so it's ok to just override this */
 	pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_NONE;
 
@@ -1390,6 +1400,9 @@ pgstat_write_statsfile(void)
 
 		pgstat_build_snapshot_fixed(kind);
 		ptr = ((char *) &pgStatLocal.snapshot) + info->snapshot_ctl_off;
+
+		fputc(PGSTAT_FILE_ENTRY_FIXED, fpout);
+		write_chunk_s(fpout, &kind);
 		write_chunk(fpout, ptr, info->shared_data_len);
 	}
 
@@ -1465,12 +1478,9 @@ pgstat_write_statsfile(void)
 						tmpfile)));
 		unlink(tmpfile);
 	}
-	else if (rename(tmpfile, statfile) < 0)
+	else if (durable_rename(tmpfile, statfile, LOG) < 0)
 	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not rename temporary statistics file \"%s\" to \"%s\": %m",
-						tmpfile, statfile)));
+		/* durable_rename already emitted log message */
 		unlink(tmpfile);
 	}
 }
@@ -1485,7 +1495,7 @@ read_chunk(FILE *fpin, void *ptr, size_t len)
 #define read_chunk_s(fpin, ptr) read_chunk(fpin, ptr, sizeof(*ptr))
 
 /*
- * Reads in existing statistics file into the shared stats hash.
+ * Reads in existing statistics file into memory.
  *
  * This function is called in the only process that is accessing the shared
  * stats so locking is not required.
@@ -1531,25 +1541,9 @@ pgstat_read_statsfile(void)
 		format_id != PGSTAT_FILE_FORMAT_ID)
 		goto error;
 
-	/* Read various stats structs with fixed number of objects */
-	for (int kind = PGSTAT_KIND_FIRST_VALID; kind <= PGSTAT_KIND_LAST; kind++)
-	{
-		char	   *ptr;
-		const PgStat_KindInfo *info = pgstat_get_kind_info(kind);
-
-		if (!info->fixed_amount)
-			continue;
-
-		Assert(info->shared_ctl_off != 0);
-
-		ptr = ((char *) shmem) + info->shared_ctl_off + info->shared_data_off;
-		if (!read_chunk(fpin, ptr, info->shared_data_len))
-			goto error;
-	}
-
 	/*
-	 * We found an existing statistics file. Read it and put all the hash
-	 * table entries into place.
+	 * We found an existing statistics file. Read it and put all the stats
+	 * data into place.
 	 */
 	for (;;)
 	{
@@ -1557,6 +1551,33 @@ pgstat_read_statsfile(void)
 
 		switch (t)
 		{
+			case PGSTAT_FILE_ENTRY_FIXED:
+				{
+					PgStat_Kind kind;
+					const PgStat_KindInfo *info;
+					char	   *ptr;
+
+					/* entry for fixed-numbered stats */
+					if (!read_chunk_s(fpin, &kind))
+						goto error;
+
+					if (!pgstat_is_kind_valid(kind))
+						goto error;
+
+					info = pgstat_get_kind_info(kind);
+
+					if (!info->fixed_amount)
+						goto error;
+
+					/* Load back stats into shared memory */
+					ptr = ((char *) shmem) + info->shared_ctl_off +
+						info->shared_data_off;
+
+					if (!read_chunk(fpin, ptr, info->shared_data_len))
+						goto error;
+
+					break;
+				}
 			case PGSTAT_FILE_ENTRY_HASH:
 			case PGSTAT_FILE_ENTRY_NAME:
 				{

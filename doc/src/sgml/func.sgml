@@ -19038,14 +19038,15 @@ where <replaceable class="parameter">json_table_column</replaceable> is:
     </term>
     <listitem>
     <para>
-     The input data to query (<replaceable>context_item</replaceable>),
-     the JSON path expression defining the query (<replaceable>path_expression</replaceable>)
-     with an optional name (<replaceable>json_path_name</replaceable>), and an
-     optional <literal>PASSING</literal> clause, which can provide data values
-     to the <replaceable>path_expression</replaceable>.  The result of the input
-     data evaluation using the aforementioned elements is called the
-     <firstterm>row pattern</firstterm>, which is used as the source for row
-     values in the constructed view.
+     The <replaceable>context_item</replaceable> specifies the input document
+     to query, the <replaceable>path_expression</replaceable> is an SQL/JSON
+     path expression defining the query, and <replaceable>json_path_name</replaceable>
+     is an optional name for the <replaceable>path_expression</replaceable>.
+     The optional <literal>PASSING</literal> clause provides data values for
+     the variables mentioned in the <replaceable>path_expression</replaceable>.
+     The result of the input data evaluation using the aforementioned elements
+     is called the <firstterm>row pattern</firstterm>, which is used as the
+     source for row values in the constructed view.
     </para>
     </listitem>
    </varlistentry>
@@ -22048,7 +22049,7 @@ SELECT NULLIF(value, '(none)') ...
         as well as <type>inet</type>, <type>interval</type>,
         <type>money</type>, <type>oid</type>, <type>pg_lsn</type>,
         <type>tid</type>, <type>xid8</type>,
-        and arrays of any of these types.
+        and also arrays and composite types containing sortable data types.
        </para></entry>
        <entry>Yes</entry>
       </row>
@@ -22067,7 +22068,7 @@ SELECT NULLIF(value, '(none)') ...
         as well as <type>inet</type>, <type>interval</type>,
         <type>money</type>, <type>oid</type>, <type>pg_lsn</type>,
         <type>tid</type>, <type>xid8</type>,
-        and arrays of any of these types.
+        and also arrays and composite types containing sortable data types.
        </para></entry>
        <entry>Yes</entry>
       </row>
@@ -26661,12 +26662,12 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
         <indexterm>
          <primary>pg_get_acl</primary>
         </indexterm>
-        <function>pg_get_acl</function> ( <parameter>classid</parameter> <type>oid</type>, <parameter>objid</parameter> <type>oid</type> )
+        <function>pg_get_acl</function> ( <parameter>classid</parameter> <type>oid</type>, <parameter>objid</parameter> <type>oid</type>, <parameter>objsubid</parameter> <type>integer</type> )
         <returnvalue>aclitem[]</returnvalue>
        </para>
        <para>
         Returns the <acronym>ACL</acronym> for a database object, specified
-        by catalog OID and object OID. This function returns
+        by catalog OID, object OID and sub-object ID. This function returns
         <literal>NULL</literal> values for undefined objects.
        </para></entry>
       </row>
@@ -26792,7 +26793,7 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
 <programlisting>
 postgres=# SELECT
     (pg_identify_object(s.classid,s.objid,s.objsubid)).*,
-    pg_catalog.pg_get_acl(s.classid,s.objid) AS acl
+    pg_catalog.pg_get_acl(s.classid,s.objid,s.objsubid) AS acl
 FROM pg_catalog.pg_shdepend AS s
 JOIN pg_catalog.pg_database AS d
     ON d.datname = current_database() AND
@@ -28000,6 +28001,17 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
         not running, it will be equal to <literal>summarized_lsn</literal>.
         <literal>summarizer_pid</literal> is the PID of the WAL summarizer
         process, if it is running, and otherwise NULL.
+       </para>
+       <para>
+        As a special exception, the WAL summarizer will refuse to generate
+        WAL summary files if run on WAL generated under
+        <literal>wal_level=minimal</literal>, since such summaries would be
+        unsafe to use as the basis for an incremental backup. In this case,
+        the fields above will continue to advance as if summaries were being
+        generated, but nothing will be written to disk. Once the summarizer
+        reaches WAL generated while <literal>wal_level</literal> was set
+        to <literal>replica</literal> or higher, it will resume writing
+        summaries to disk.
        </para></entry>
       </row>
      </tbody>
@@ -28163,6 +28175,10 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
         calling role is a member of the role whose backend is being canceled or
         the calling role has privileges of <literal>pg_signal_backend</literal>,
         however only superusers can cancel superuser backends.
+        As an exception, roles with privileges of
+        <literal>pg_signal_autovacuum_worker</literal> are permitted to
+        cancel autovacuum worker processes, which are otherwise considered
+        superuser backends.
        </para></entry>
       </row>
 
@@ -28237,6 +28253,10 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
         is a member of the role whose backend is being terminated or the
         calling role has privileges of <literal>pg_signal_backend</literal>,
         however only superusers can terminate superuser backends.
+        As an exception, roles with privileges of
+        <literal>pg_signal_autovacuum_worker</literal> are permitted to
+        terminate autovacuum worker processes, which are otherwise considered
+        superuser backends.
        </para>
        <para>
         If <parameter>timeout</parameter> is not specified or zero, this
