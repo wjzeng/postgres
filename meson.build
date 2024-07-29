@@ -799,7 +799,10 @@ if add_languages('cpp', required: llvmopt, native: false)
     llvm_binpath = llvm.get_variable(configtool: 'bindir')
 
     ccache = find_program('ccache', native: true, required: false)
-    clang = find_program(llvm_binpath / 'clang', required: true)
+
+    # Some distros put LLVM and clang in different paths, so fallback to
+    # find via PATH, too.
+    clang = find_program(llvm_binpath / 'clang', 'clang', required: true)
   endif
 elif llvmopt.auto()
   message('llvm requires a C++ compiler')
@@ -1146,15 +1149,26 @@ endif
 
 if not get_option('readline').disabled()
   libedit_preferred = get_option('libedit_preferred')
-  # Set the order of readline dependencies
-  check_readline_deps = libedit_preferred ? \
-    ['libedit', 'readline'] : ['readline', 'libedit']
+  # Set the order of readline dependencies.
+  # cc.find_library breaks and throws on the first dependency which
+  # is marked as required=true and can't be found. Thus, we only mark
+  # the last dependency to look up as required, to not throw too early.
+  check_readline_deps = [
+    {
+      'name': libedit_preferred ? 'libedit' : 'readline',
+      'required': false
+    },
+    {
+      'name': libedit_preferred ? 'readline' : 'libedit',
+      'required': get_option('readline')
+    }
+  ]
 
   foreach readline_dep : check_readline_deps
-    readline = dependency(readline_dep, required: false)
+    readline = dependency(readline_dep['name'], required: false)
     if not readline.found()
-      readline = cc.find_library(readline_dep,
-        required: get_option('readline'),
+      readline = cc.find_library(readline_dep['name'],
+        required: readline_dep['required'],
         dirs: test_lib_d)
     endif
     if readline.found()
@@ -1362,6 +1376,7 @@ if sslopt in ['auto', 'openssl']
 
       # Function introduced in OpenSSL 1.1.1
       ['X509_get_signature_info'],
+      ['SSL_CTX_set_num_tickets'],
     ]
 
     are_openssl_funcs_complete = true
@@ -1415,7 +1430,9 @@ if uuidopt != 'none'
     uuidfunc = 'uuid_to_string'
     uuidheader = 'uuid.h'
   elif uuidopt == 'ossp'
-    uuid = dependency('ossp-uuid', required: false)
+    # In upstream, the package and library is called just 'uuid', but many
+    # distros change it to 'ossp-uuid'.
+    uuid = dependency('ossp-uuid', 'uuid', required: false)
     uuidfunc = 'uuid_export'
     uuidheader = 'uuid.h'
 
@@ -1423,8 +1440,6 @@ if uuidopt != 'none'
     # windows installs neither a pkg-config nor a cmake dependency
     # information. Nor is there another supported uuid implementation
     # available on windows.
-    #
-    # Sometimes the ossp-uuid library is named 'uuid' sometimes 'ossp-uuid'
     if not uuid.found()
       uuid = cc.find_library('ossp-uuid',
         required: false, dirs: test_lib_d,
@@ -3266,15 +3281,17 @@ test_install_destdir = meson.build_root() / 'tmp_install/'
 if build_system != 'windows'
   # On unixoid systems this is trivial, we just prepend the destdir
   assert(dir_prefix.startswith('/')) # enforced by meson
-  test_install_location = '@0@@1@'.format(test_install_destdir, dir_prefix)
+  temp_install_bindir = '@0@@1@'.format(test_install_destdir, dir_prefix / dir_bin)
+  temp_install_libdir = '@0@@1@'.format(test_install_destdir, dir_prefix / dir_lib)
 else
   # drives, drive-relative paths, etc make this complicated on windows, call
   # into a copy of meson's logic for it
   command = [
     python, '-c',
     'import sys; from pathlib import PurePath; d1=sys.argv[1]; d2=sys.argv[2]; print(str(PurePath(d1, *PurePath(d2).parts[1:])))',
-    test_install_destdir, dir_prefix]
-  test_install_location = run_command(command, check: true).stdout().strip()
+    test_install_destdir]
+  temp_install_bindir = run_command(command, dir_prefix / dir_bin, check: true).stdout().strip()
+  temp_install_libdir = run_command(command, dir_prefix / dir_lib, check: true).stdout().strip()
 endif
 
 meson_install_args = meson_args + ['install'] + {
@@ -3311,7 +3328,6 @@ testport = 40000
 
 test_env = environment()
 
-temp_install_bindir = test_install_location / get_option('bindir')
 test_initdb_template = meson.build_root() / 'tmp_install' / 'initdb-template'
 test_env.set('PG_REGRESS', pg_regress.full_path())
 test_env.set('REGRESS_SHLIB', regress_module.full_path())
@@ -3326,7 +3342,7 @@ test_env.set('PG_TEST_EXTRA', get_option('PG_TEST_EXTRA'))
 # that works (everything but windows, basically). On windows everything
 # library-like gets installed into bindir, solving that issue.
 if library_path_var != ''
-  test_env.prepend(library_path_var, test_install_location / get_option('libdir'))
+  test_env.prepend(library_path_var, temp_install_libdir)
 endif
 
 

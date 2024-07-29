@@ -85,7 +85,7 @@ typedef struct InjectionPointsCtl
 	InjectionPointEntry entries[MAX_INJECTION_POINTS];
 } InjectionPointsCtl;
 
-static InjectionPointsCtl *ActiveInjectionPoints;
+NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
 
 /*
  * Backend local cache of injection callbacks already loaded, stored in
@@ -568,5 +568,19 @@ InjectionPointCached(const char *name)
 		cache_entry->callback(name, cache_entry->private_data);
 #else
 	elog(ERROR, "Injection points are not supported by this build");
+#endif
+}
+
+/*
+ * Test if an injection point is defined.
+ */
+bool
+IsInjectionPointAttached(const char *name)
+{
+#ifdef USE_INJECTION_POINTS
+	return InjectionPointCacheRefresh(name) != NULL;
+#else
+	elog(ERROR, "Injection points are not supported by this build");
+	return false;				/* silence compiler */
 #endif
 }
