@@ -346,11 +346,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	 */
 	if (do_refresh)
 	{
-		RefreshMatViewByOid(address.objectId, false, false,
-							pstate->p_sourcetext, NULL, qc);
-
-		if (qc)
-			qc->commandTag = CMDTAG_SELECT;
+		RefreshMatViewByOid(address.objectId, true, false, false,
+							pstate->p_sourcetext, qc);
 	}
 
 	return address;

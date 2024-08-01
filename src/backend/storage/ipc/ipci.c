@@ -94,7 +94,6 @@ CalculateShmemSize(int *num_semaphores)
 
 	/* Compute number of semaphores we'll need */
 	numSemas = ProcGlobalSemas();
-	numSemas += SpinlockSemas();
 
 	/* Return the number of semaphores if requested by the caller */
 	if (num_semaphores)
@@ -111,7 +110,6 @@ CalculateShmemSize(int *num_semaphores)
 	 */
 	size = 100000;
 	size = add_size(size, PGSemaphoreShmemSize(numSemas));
-	size = add_size(size, SpinlockSemaSize());
 	size = add_size(size, hash_estimate_size(SHMEM_INDEX_SIZE,
 											 sizeof(ShmemIndexEnt)));
 	size = add_size(size, dsm_estimate_size());
@@ -152,9 +150,6 @@ CalculateShmemSize(int *num_semaphores)
 	size = add_size(size, WaitEventCustomShmemSize());
 	size = add_size(size, InjectionPointShmemSize());
 	size = add_size(size, SlotSyncShmemSize());
-#ifdef EXEC_BACKEND
-	size = add_size(size, ShmemBackendArraySize());
-#endif
 
 	/* include additional requested shmem from preload libraries */
 	size = add_size(size, total_addin_request);
@@ -229,28 +224,12 @@ CreateSharedMemoryAndSemaphores(void)
 	PGReserveSemaphores(numSemas);
 
 	/*
-	 * If spinlocks are disabled, initialize emulation layer (which depends on
-	 * semaphores, so the order is important here).
-	 */
-#ifndef HAVE_SPINLOCKS
-	SpinlockSemaInit();
-#endif
-
-	/*
 	 * Set up shared memory allocation mechanism
 	 */
 	InitShmemAllocation();
 
 	/* Initialize subsystems */
 	CreateOrAttachShmemStructs();
-
-#ifdef EXEC_BACKEND
-
-	/*
-	 * Alloc the win32 shared backend array
-	 */
-	ShmemBackendArrayAllocation();
-#endif
 
 	/* Initialize dynamic shared memory facilities. */
 	dsm_postmaster_startup(shim);

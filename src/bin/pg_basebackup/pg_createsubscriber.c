@@ -778,6 +778,28 @@ setup_publisher(struct LogicalRepInfo *dbinfo)
 		else
 			exit(1);
 
+		/*
+		 * Since we are using the LSN returned by the last replication slot as
+		 * recovery_target_lsn, this LSN is ahead of the current WAL position
+		 * and the recovery waits until the publisher writes a WAL record to
+		 * reach the target and ends the recovery. On idle systems, this wait
+		 * time is unpredictable and could lead to failure in promoting the
+		 * subscriber. To avoid that, insert a harmless WAL record.
+		 */
+		if (i == num_dbs - 1 && !dry_run)
+		{
+			PGresult   *res;
+
+			res = PQexec(conn, "SELECT pg_log_standby_snapshot()");
+			if (PQresultStatus(res) != PGRES_TUPLES_OK)
+			{
+				pg_log_error("could not write an additional WAL record: %s",
+							 PQresultErrorMessage(res));
+				disconnect_database(conn, true);
+			}
+			PQclear(res);
+		}
+
 		disconnect_database(conn, false);
 	}
 
@@ -2185,12 +2207,7 @@ main(int argc, char **argv)
 	pg_log_info("stopping the subscriber");
 	stop_standby_server(subscriber_dir);
 
-	/*
-	 * Create the required objects for each database on publisher. This step
-	 * is here mainly because if we stop the standby we cannot verify if the
-	 * primary slot is in use. We could use an extra connection for it but it
-	 * doesn't seem worth.
-	 */
+	/* Create the required objects for each database on publisher */
 	consistent_lsn = setup_publisher(dbinfo);
 
 	/* Write the required recovery parameters */

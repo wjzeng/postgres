@@ -187,18 +187,6 @@ PGAC_ARG_BOOL(enable, rpath, yes,
 AC_SUBST(enable_rpath)
 
 #
-# Spinlocks
-#
-PGAC_ARG_BOOL(enable, spinlocks, yes,
-              [do not use spinlocks])
-
-#
-# Atomic operations
-#
-PGAC_ARG_BOOL(enable, atomics, yes,
-              [do not use atomic operations])
-
-#
 # --enable-debug adds -g to compiler flags
 #
 PGAC_ARG_BOOL(enable, debug, no,
@@ -1294,20 +1282,6 @@ if test "$with_zlib" = yes; then
 If you have zlib already installed, see config.log for details on the
 failure.  It is possible the compiler isn't looking in the proper directory.
 Use --without-zlib to disable zlib support.])])
-fi
-
-if test "$enable_spinlocks" = yes; then
-  AC_DEFINE(HAVE_SPINLOCKS, 1, [Define to 1 if you have spinlocks.])
-else
-  AC_MSG_WARN([
-*** Not using spinlocks will cause poor performance.])
-fi
-
-if test "$enable_atomics" = yes; then
-  AC_DEFINE(HAVE_ATOMICS, 1, [Define to 1 if you want to use atomics if available.])
-else
-  AC_MSG_WARN([
-*** Not using atomic operations will cause poor performance.])
 fi
 
 if test "$with_gssapi" = yes ; then
@@ -2424,7 +2398,13 @@ fi
 # For linkers that understand --export-dynamic, add that to the LDFLAGS_EX_BE
 # (backend specific ldflags). One some platforms this will always fail (e.g.,
 # windows), but on others it depends on the choice of linker (e.g., solaris).
+# macOS uses -export_dynamic instead.  (On macOS, the option is only
+# needed when also using -flto, but we add it anyway since it's
+# harmless.)
 PGAC_PROG_CC_LD_VARFLAGS_OPT(LDFLAGS_EX_BE, [-Wl,--export-dynamic], $link_test_func)
+if test x"$LDFLAGS_EX_BE" = x""; then
+  PGAC_PROG_CC_LD_VARFLAGS_OPT(LDFLAGS_EX_BE, [-Wl,-export_dynamic], $link_test_func)
+fi
 AC_SUBST(LDFLAGS_EX_BE)
 
 # Create compiler version string
