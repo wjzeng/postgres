@@ -826,6 +826,7 @@ cache_locale_time(void)
 	char	   *bufptr;
 	time_t		timenow;
 	struct tm  *timeinfo;
+	struct tm	timeinfobuf;
 	bool		strftimefail = false;
 	int			encoding;
 	int			i;
@@ -876,7 +877,7 @@ cache_locale_time(void)
 
 	/* We use times close to current time as data for strftime(). */
 	timenow = time(NULL);
-	timeinfo = localtime(&timenow);
+	timeinfo = gmtime_r(&timenow, &timeinfobuf);
 
 	/* Store the strftime results in MAX_L10N_DATA-sized portions of buf[] */
 	bufptr = buf;
@@ -1464,11 +1465,7 @@ make_icu_collator(const char *iculocstr,
 bool
 pg_locale_deterministic(pg_locale_t locale)
 {
-	/* default locale must always be deterministic */
-	if (locale == NULL)
-		return true;
-	else
-		return locale->deterministic;
+	return locale->deterministic;
 }
 
 /*
@@ -1759,7 +1756,7 @@ get_collation_actual_version(char collprovider, const char *collcollate)
 		locale_t	loc;
 
 		/* Look up FreeBSD collation version. */
-		loc = newlocale(LC_COLLATE, collcollate, NULL);
+		loc = newlocale(LC_COLLATE_MASK, collcollate, NULL);
 		if (loc)
 		{
 			collversion =
@@ -1812,7 +1809,7 @@ get_collation_actual_version(char collprovider, const char *collcollate)
  * pg_strncoll_libc_win32_utf8
  *
  * Win32 does not have UTF-8. Convert UTF8 arguments to wide characters and
- * invoke wcscoll() or wcscoll_l().
+ * invoke wcscoll_l().
  */
 #ifdef WIN32
 static int
@@ -1828,7 +1825,7 @@ pg_strncoll_libc_win32_utf8(const char *arg1, size_t len1, const char *arg2,
 	int			r;
 	int			result;
 
-	Assert(!locale || locale->provider == COLLPROVIDER_LIBC);
+	Assert(locale->provider == COLLPROVIDER_LIBC);
 	Assert(GetDatabaseEncoding() == PG_UTF8);
 #ifndef WIN32
 	Assert(false);
@@ -1868,10 +1865,7 @@ pg_strncoll_libc_win32_utf8(const char *arg1, size_t len1, const char *arg2,
 	((LPWSTR) a2p)[r] = 0;
 
 	errno = 0;
-	if (locale)
-		result = wcscoll_l((LPWSTR) a1p, (LPWSTR) a2p, locale->info.lt);
-	else
-		result = wcscoll((LPWSTR) a1p, (LPWSTR) a2p);
+	result = wcscoll_l((LPWSTR) a1p, (LPWSTR) a2p, locale->info.lt);
 	if (result == 2147483647)	/* _NLSCMPERROR; missing from mingw headers */
 		ereport(ERROR,
 				(errmsg("could not compare Unicode strings: %m")));
@@ -1886,9 +1880,9 @@ pg_strncoll_libc_win32_utf8(const char *arg1, size_t len1, const char *arg2,
 /*
  * pg_strcoll_libc
  *
- * Call strcoll(), strcoll_l(), wcscoll(), or wcscoll_l() as appropriate for
- * the given locale, platform, and database encoding. If the locale is NULL,
- * use the database collation.
+ * Call strcoll_l() or wcscoll_l() as appropriate for the given locale,
+ * platform, and database encoding. If the locale is NULL, use the database
+ * collation.
  *
  * Arguments must be encoded in the database encoding and nul-terminated.
  */
@@ -1897,7 +1891,7 @@ pg_strcoll_libc(const char *arg1, const char *arg2, pg_locale_t locale)
 {
 	int			result;
 
-	Assert(!locale || locale->provider == COLLPROVIDER_LIBC);
+	Assert(locale->provider == COLLPROVIDER_LIBC);
 #ifdef WIN32
 	if (GetDatabaseEncoding() == PG_UTF8)
 	{
@@ -1908,10 +1902,7 @@ pg_strcoll_libc(const char *arg1, const char *arg2, pg_locale_t locale)
 	}
 	else
 #endif							/* WIN32 */
-	if (locale)
 		result = strcoll_l(arg1, arg2, locale->info.lt);
-	else
-		result = strcoll(arg1, arg2);
 
 	return result;
 }
@@ -1933,7 +1924,7 @@ pg_strncoll_libc(const char *arg1, size_t len1, const char *arg2, size_t len2,
 	char	   *arg2n;
 	int			result;
 
-	Assert(!locale || locale->provider == COLLPROVIDER_LIBC);
+	Assert(locale->provider == COLLPROVIDER_LIBC);
 
 #ifdef WIN32
 	/* check for this case before doing the work for nul-termination */
@@ -2064,9 +2055,9 @@ pg_strncoll_icu(const char *arg1, int32_t len1, const char *arg2, int32_t len2,
 /*
  * pg_strcoll
  *
- * Call ucol_strcollUTF8(), ucol_strcoll(), strcoll(), strcoll_l(), wcscoll(),
- * or wcscoll_l() as appropriate for the given locale, platform, and database
- * encoding. If the locale is not specified, use the database collation.
+ * Call ucol_strcollUTF8(), ucol_strcoll(), strcoll_l() or wcscoll_l() as
+ * appropriate for the given locale, platform, and database encoding. If the
+ * locale is not specified, use the database collation.
  *
  * Arguments must be encoded in the database encoding and nul-terminated.
  *
@@ -2079,7 +2070,7 @@ pg_strcoll(const char *arg1, const char *arg2, pg_locale_t locale)
 {
 	int			result;
 
-	if (!locale || locale->provider == COLLPROVIDER_LIBC)
+	if (locale->provider == COLLPROVIDER_LIBC)
 		result = pg_strcoll_libc(arg1, arg2, locale);
 #ifdef USE_ICU
 	else if (locale->provider == COLLPROVIDER_ICU)
@@ -2095,9 +2086,9 @@ pg_strcoll(const char *arg1, const char *arg2, pg_locale_t locale)
 /*
  * pg_strncoll
  *
- * Call ucol_strcollUTF8(), ucol_strcoll(), strcoll(), strcoll_l(), wcscoll(),
- * or wcscoll_l() as appropriate for the given locale, platform, and database
- * encoding. If the locale is not specified, use the database collation.
+ * Call ucol_strcollUTF8(), ucol_strcoll(), strcoll_l() or wcscoll_l() as
+ * appropriate for the given locale, platform, and database encoding. If the
+ * locale is not specified, use the database collation.
  *
  * Arguments must be encoded in the database encoding.
  *
@@ -2115,7 +2106,7 @@ pg_strncoll(const char *arg1, size_t len1, const char *arg2, size_t len2,
 {
 	int			result;
 
-	if (!locale || locale->provider == COLLPROVIDER_LIBC)
+	if (locale->provider == COLLPROVIDER_LIBC)
 		result = pg_strncoll_libc(arg1, len1, arg2, len2, locale);
 #ifdef USE_ICU
 	else if (locale->provider == COLLPROVIDER_ICU)
@@ -2133,18 +2124,8 @@ static size_t
 pg_strxfrm_libc(char *dest, const char *src, size_t destsize,
 				pg_locale_t locale)
 {
-	Assert(!locale || locale->provider == COLLPROVIDER_LIBC);
-
-#ifdef TRUST_STRXFRM
-	if (locale)
-		return strxfrm_l(dest, src, destsize, locale->info.lt);
-	else
-		return strxfrm(dest, src, destsize);
-#else
-	/* shouldn't happen */
-	PGLOCALE_SUPPORT_ERROR(locale->provider);
-	return 0;					/* keep compiler quiet */
-#endif
+	Assert(locale->provider == COLLPROVIDER_LIBC);
+	return strxfrm_l(dest, src, destsize, locale->info.lt);
 }
 
 static size_t
@@ -2156,7 +2137,7 @@ pg_strnxfrm_libc(char *dest, const char *src, size_t srclen, size_t destsize,
 	size_t		bufsize = srclen + 1;
 	size_t		result;
 
-	Assert(!locale || locale->provider == COLLPROVIDER_LIBC);
+	Assert(locale->provider == COLLPROVIDER_LIBC);
 
 	if (bufsize > TEXTBUFLEN)
 		buf = palloc(bufsize);
@@ -2328,7 +2309,7 @@ pg_strnxfrm_prefix_icu(char *dest, const char *src, int32_t srclen,
 bool
 pg_strxfrm_enabled(pg_locale_t locale)
 {
-	if (!locale || locale->provider == COLLPROVIDER_LIBC)
+	if (locale->provider == COLLPROVIDER_LIBC)
 #ifdef TRUST_STRXFRM
 		return true;
 #else
@@ -2353,6 +2334,10 @@ pg_strxfrm_enabled(pg_locale_t locale)
  * The provided 'src' must be nul-terminated. If 'destsize' is zero, 'dest'
  * may be NULL.
  *
+ * Not all providers support pg_strxfrm() safely. The caller should check
+ * pg_strxfrm_enabled() first, otherwise this function may return wrong
+ * results or an error.
+ *
  * Returns the number of bytes needed (or more) to store the transformed
  * string, excluding the terminating nul byte. If the value returned is
  * 'destsize' or greater, the resulting contents of 'dest' are undefined.
@@ -2362,7 +2347,7 @@ pg_strxfrm(char *dest, const char *src, size_t destsize, pg_locale_t locale)
 {
 	size_t		result = 0;		/* keep compiler quiet */
 
-	if (!locale || locale->provider == COLLPROVIDER_LIBC)
+	if (locale->provider == COLLPROVIDER_LIBC)
 		result = pg_strxfrm_libc(dest, src, destsize, locale);
 #ifdef USE_ICU
 	else if (locale->provider == COLLPROVIDER_ICU)
@@ -2385,6 +2370,10 @@ pg_strxfrm(char *dest, const char *src, size_t destsize, pg_locale_t locale)
  * 'src' does not need to be nul-terminated. If 'destsize' is zero, 'dest' may
  * be NULL.
  *
+ * Not all providers support pg_strnxfrm() safely. The caller should check
+ * pg_strxfrm_enabled() first, otherwise this function may return wrong
+ * results or an error.
+ *
  * Returns the number of bytes needed (or more) to store the transformed
  * string, excluding the terminating nul byte. If the value returned is
  * 'destsize' or greater, the resulting contents of 'dest' are undefined.
@@ -2399,7 +2388,7 @@ pg_strnxfrm(char *dest, size_t destsize, const char *src, size_t srclen,
 {
 	size_t		result = 0;		/* keep compiler quiet */
 
-	if (!locale || locale->provider == COLLPROVIDER_LIBC)
+	if (locale->provider == COLLPROVIDER_LIBC)
 		result = pg_strnxfrm_libc(dest, src, srclen, destsize, locale);
 #ifdef USE_ICU
 	else if (locale->provider == COLLPROVIDER_ICU)
@@ -2419,7 +2408,7 @@ pg_strnxfrm(char *dest, size_t destsize, const char *src, size_t srclen,
 bool
 pg_strxfrm_prefix_enabled(pg_locale_t locale)
 {
-	if (!locale || locale->provider == COLLPROVIDER_LIBC)
+	if (locale->provider == COLLPROVIDER_LIBC)
 		return false;
 	else if (locale->provider == COLLPROVIDER_ICU)
 		return true;
@@ -2439,6 +2428,10 @@ pg_strxfrm_prefix_enabled(pg_locale_t locale)
  *
  * The provided 'src' must be nul-terminated.
  *
+ * Not all providers support pg_strxfrm_prefix() safely. The caller should
+ * check pg_strxfrm_prefix_enabled() first, otherwise this function may return
+ * wrong results or an error.
+ *
  * If destsize is not large enough to hold the resulting byte sequence, stores
  * only the first destsize bytes in 'dest'. Returns the number of bytes
  * actually copied to 'dest'.
@@ -2449,13 +2442,11 @@ pg_strxfrm_prefix(char *dest, const char *src, size_t destsize,
 {
 	size_t		result = 0;		/* keep compiler quiet */
 
-	if (!locale)
-		PGLOCALE_SUPPORT_ERROR(COLLPROVIDER_LIBC);
 #ifdef USE_ICU
-	else if (locale->provider == COLLPROVIDER_ICU)
+	if (locale->provider == COLLPROVIDER_ICU)
 		result = pg_strnxfrm_prefix_icu(dest, src, -1, destsize, locale);
-#endif
 	else
+#endif
 		PGLOCALE_SUPPORT_ERROR(locale->provider);
 
 	return result;
@@ -2469,6 +2460,10 @@ pg_strxfrm_prefix(char *dest, const char *src, size_t destsize,
  * untransformed strings. The result is not nul-terminated.
  *
  * The provided 'src' must be nul-terminated.
+ *
+ * Not all providers support pg_strnxfrm_prefix() safely. The caller should
+ * check pg_strxfrm_prefix_enabled() first, otherwise this function may return
+ * wrong results or an error.
  *
  * If destsize is not large enough to hold the resulting byte sequence, stores
  * only the first destsize bytes in 'dest'. Returns the number of bytes
@@ -2484,13 +2479,11 @@ pg_strnxfrm_prefix(char *dest, size_t destsize, const char *src,
 {
 	size_t		result = 0;		/* keep compiler quiet */
 
-	if (!locale)
-		PGLOCALE_SUPPORT_ERROR(COLLPROVIDER_LIBC);
 #ifdef USE_ICU
-	else if (locale->provider == COLLPROVIDER_ICU)
+	if (locale->provider == COLLPROVIDER_ICU)
 		result = pg_strnxfrm_prefix_icu(dest, src, -1, destsize, locale);
-#endif
 	else
+#endif
 		PGLOCALE_SUPPORT_ERROR(locale->provider);
 
 	return result;
