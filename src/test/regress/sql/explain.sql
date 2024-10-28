@@ -163,9 +163,22 @@ select explain_filter('explain (verbose) select * from t1 where pg_temp.mysin(f1
 set compute_query_id = on;
 select explain_filter('explain (verbose) select * from int8_tbl i8');
 
+-- Test compute_query_id with utility statements containing plannable query
+select explain_filter('explain (verbose) declare test_cur cursor for select * from int8_tbl');
+select explain_filter('explain (verbose) create table test_ctas as select 1');
+
 -- Test SERIALIZE option
 select explain_filter('explain (analyze,serialize) select * from int8_tbl i8');
 select explain_filter('explain (analyze,serialize text,buffers,timing off) select * from int8_tbl i8');
 select explain_filter('explain (analyze,serialize binary,buffers,timing) select * from int8_tbl i8');
 -- this tests an edge case where we have no data to return
 select explain_filter('explain (analyze,serialize) create temp table explain_temp as select * from int8_tbl i8');
+
+-- Test tuplestore storage usage in Window aggregate (memory case)
+select explain_filter('explain (analyze,costs off) select sum(n) over() from generate_series(1,10) a(n)');
+-- Test tuplestore storage usage in Window aggregate (disk case)
+set work_mem to 64;
+select explain_filter('explain (analyze,costs off) select sum(n) over() from generate_series(1,2000) a(n)');
+-- Test tuplestore storage usage in Window aggregate (memory and disk case, final result is disk)
+select explain_filter('explain (analyze,costs off) select sum(n) over(partition by m) from (SELECT n < 3 as m, n from generate_series(1,2000) a(n))');
+reset work_mem;

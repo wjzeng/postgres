@@ -24,14 +24,13 @@
 #include "access/twophase.h"
 #include "access/xlogprefetcher.h"
 #include "access/xlogrecovery.h"
+#include "access/xlogwait.h"
 #include "commands/async.h"
-#include "commands/waitlsn.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
-#include "postmaster/postmaster.h"
 #include "postmaster/walsummarizer.h"
 #include "replication/logicallauncher.h"
 #include "replication/origin.h"
@@ -50,7 +49,6 @@
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "storage/sinvaladt.h"
-#include "storage/spin.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
 
@@ -177,6 +175,12 @@ AttachSharedMemoryStructs(void)
 	/* InitProcess must've been called already */
 	Assert(MyProc != NULL);
 	Assert(IsUnderPostmaster);
+
+	/*
+	 * In EXEC_BACKEND mode, backends don't inherit the number of fast-path
+	 * groups we calculated before setting the shmem up, so recalculate it.
+	 */
+	InitializeFastPathLocks();
 
 	CreateOrAttachShmemStructs();
 

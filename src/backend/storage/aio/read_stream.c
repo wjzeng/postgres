@@ -89,7 +89,6 @@
  */
 #include "postgres.h"
 
-#include "catalog/pg_tablespace.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "storage/smgr.h"
@@ -795,6 +794,20 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 #endif
 
 	return buffer;
+}
+
+/*
+ * Transitional support for code that would like to perform or skip reads
+ * itself, without using the stream.  Returns, and consumes, the next block
+ * number that would be read by the stream's look-ahead algorithm, or
+ * InvalidBlockNumber if the end of the stream is reached.  Also reports the
+ * strategy that would be used to read it.
+ */
+BlockNumber
+read_stream_next_block(ReadStream *stream, BufferAccessStrategy *strategy)
+{
+	*strategy = stream->ios[0].op.strategy;
+	return read_stream_get_block(stream, NULL);
 }
 
 /*

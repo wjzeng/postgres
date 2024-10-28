@@ -62,11 +62,11 @@
 #include "access/xlogreader.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
+#include "access/xlogwait.h"
 #include "backup/basebackup.h"
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
 #include "catalog/pg_database.h"
-#include "commands/waitlsn.h"
 #include "common/controldata_utils.h"
 #include "common/file_utils.h"
 #include "executor/instrument.h"
@@ -74,7 +74,6 @@
 #include "pg_trace.h"
 #include "pgstat.h"
 #include "port/atomics.h"
-#include "port/pg_iovec.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/startup.h"
 #include "postmaster/walsummarizer.h"
@@ -98,7 +97,6 @@
 #include "utils/guc_hooks.h"
 #include "utils/guc_tables.h"
 #include "utils/injection_point.h"
-#include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
@@ -6168,7 +6166,7 @@ StartupXLOG(void)
 
 	/*
 	 * Wake up all waiters for replay LSN.  They need to report an error that
-	 * recovery was ended before achieving the target LSN.
+	 * recovery was ended before reaching the target LSN.
 	 */
 	WaitLSNSetLatches(InvalidXLogRecPtr);
 
@@ -6727,14 +6725,15 @@ LogCheckpointEnd(bool restartpoint)
 	 */
 	if (restartpoint)
 		ereport(LOG,
-				(errmsg("restartpoint complete: wrote %d buffers (%.1f%%); "
-						"%d WAL file(s) added, %d removed, %d recycled; "
-						"write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; "
-						"sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; "
-						"distance=%d kB, estimate=%d kB; "
-						"lsn=%X/%X, redo lsn=%X/%X",
+				(errmsg("restartpoint complete: wrote %d buffers (%.1f%%), "
+						"wrote %d SLRU buffers; %d WAL file(s) added, "
+						"%d removed, %d recycled; write=%ld.%03d s, "
+						"sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, "
+						"longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, "
+						"estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X",
 						CheckpointStats.ckpt_bufs_written,
 						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
+						CheckpointStats.ckpt_slru_written,
 						CheckpointStats.ckpt_segs_added,
 						CheckpointStats.ckpt_segs_removed,
 						CheckpointStats.ckpt_segs_recycled,
@@ -6750,14 +6749,15 @@ LogCheckpointEnd(bool restartpoint)
 						LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo))));
 	else
 		ereport(LOG,
-				(errmsg("checkpoint complete: wrote %d buffers (%.1f%%); "
-						"%d WAL file(s) added, %d removed, %d recycled; "
-						"write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; "
-						"sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; "
-						"distance=%d kB, estimate=%d kB; "
-						"lsn=%X/%X, redo lsn=%X/%X",
+				(errmsg("checkpoint complete: wrote %d buffers (%.1f%%), "
+						"wrote %d SLRU buffers; %d WAL file(s) added, "
+						"%d removed, %d recycled; write=%ld.%03d s, "
+						"sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, "
+						"longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, "
+						"estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X",
 						CheckpointStats.ckpt_bufs_written,
 						(double) CheckpointStats.ckpt_bufs_written * 100 / NBuffers,
+						CheckpointStats.ckpt_slru_written,
 						CheckpointStats.ckpt_segs_added,
 						CheckpointStats.ckpt_segs_removed,
 						CheckpointStats.ckpt_segs_recycled,
@@ -6878,8 +6878,11 @@ update_checkpoint_display(int flags, bool restartpoint, bool reset)
  * In this case, we only insert an XLOG_CHECKPOINT_SHUTDOWN record, and it's
  * both the record marking the completion of the checkpoint and the location
  * from which WAL replay would begin if needed.
+ *
+ * Returns true if a new checkpoint was performed, or false if it was skipped
+ * because the system was idle.
  */
-void
+bool
 CreateCheckPoint(int flags)
 {
 	bool		shutdown;
@@ -6971,7 +6974,7 @@ CreateCheckPoint(int flags)
 			END_CRIT_SECTION();
 			ereport(DEBUG1,
 					(errmsg_internal("checkpoint skipped because system is idle")));
-			return;
+			return false;
 		}
 	}
 
@@ -7353,6 +7356,8 @@ CreateCheckPoint(int flags)
 									 CheckpointStats.ckpt_segs_added,
 									 CheckpointStats.ckpt_segs_removed,
 									 CheckpointStats.ckpt_segs_recycled);
+
+	return true;
 }
 
 /*

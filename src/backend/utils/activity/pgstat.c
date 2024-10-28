@@ -105,7 +105,6 @@
 #include "access/xlog.h"
 #include "lib/dshash.h"
 #include "pgstat.h"
-#include "port/atomics.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
@@ -411,6 +410,8 @@ static const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE]
 		.shared_data_off = offsetof(PgStatShared_IO, stats),
 		.shared_data_len = sizeof(((PgStatShared_IO *) 0)->stats),
 
+		.flush_fixed_cb = pgstat_io_flush_cb,
+		.have_fixed_pending_cb = pgstat_io_have_pending_cb,
 		.init_shmem_cb = pgstat_io_init_shmem_cb,
 		.reset_all_cb = pgstat_io_reset_all_cb,
 		.snapshot_cb = pgstat_io_snapshot_cb,
@@ -426,6 +427,8 @@ static const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE]
 		.shared_data_off = offsetof(PgStatShared_SLRU, stats),
 		.shared_data_len = sizeof(((PgStatShared_SLRU *) 0)->stats),
 
+		.flush_fixed_cb = pgstat_slru_flush_cb,
+		.have_fixed_pending_cb = pgstat_slru_have_pending_cb,
 		.init_shmem_cb = pgstat_slru_init_shmem_cb,
 		.reset_all_cb = pgstat_slru_reset_all_cb,
 		.snapshot_cb = pgstat_slru_snapshot_cb,
@@ -442,6 +445,8 @@ static const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE]
 		.shared_data_len = sizeof(((PgStatShared_Wal *) 0)->stats),
 
 		.init_backend_cb = pgstat_wal_init_backend_cb,
+		.flush_fixed_cb = pgstat_wal_flush_cb,
+		.have_fixed_pending_cb = pgstat_wal_have_pending_cb,
 		.init_shmem_cb = pgstat_wal_init_shmem_cb,
 		.reset_all_cb = pgstat_wal_reset_all_cb,
 		.snapshot_cb = pgstat_wal_snapshot_cb,
@@ -671,13 +676,37 @@ pgstat_report_stat(bool force)
 	}
 
 	/* Don't expend a clock check if nothing to do */
-	if (dlist_is_empty(&pgStatPending) &&
-		!have_iostats &&
-		!have_slrustats &&
-		!pgstat_have_pending_wal())
+	if (dlist_is_empty(&pgStatPending))
 	{
-		Assert(pending_since == 0);
-		return 0;
+		bool		do_flush = false;
+
+		/* Check for pending fixed-numbered stats */
+		for (PgStat_Kind kind = PGSTAT_KIND_MIN; kind <= PGSTAT_KIND_MAX; kind++)
+		{
+			const PgStat_KindInfo *kind_info = pgstat_get_kind_info(kind);
+
+			if (!kind_info)
+				continue;
+			if (!kind_info->fixed_amount)
+			{
+				Assert(kind_info->have_fixed_pending_cb == NULL);
+				continue;
+			}
+			if (!kind_info->have_fixed_pending_cb)
+				continue;
+
+			if (kind_info->have_fixed_pending_cb())
+			{
+				do_flush = true;
+				break;
+			}
+		}
+
+		if (!do_flush)
+		{
+			Assert(pending_since == 0);
+			return 0;
+		}
 	}
 
 	/*
@@ -730,14 +759,23 @@ pgstat_report_stat(bool force)
 	/* flush database / relation / function / ... stats */
 	partial_flush |= pgstat_flush_pending_entries(nowait);
 
-	/* flush IO stats */
-	partial_flush |= pgstat_flush_io(nowait);
+	/* flush of fixed-numbered stats */
+	for (PgStat_Kind kind = PGSTAT_KIND_MIN; kind <= PGSTAT_KIND_MAX; kind++)
+	{
+		const PgStat_KindInfo *kind_info = pgstat_get_kind_info(kind);
 
-	/* flush wal stats */
-	partial_flush |= pgstat_flush_wal(nowait);
+		if (!kind_info)
+			continue;
+		if (!kind_info->fixed_amount)
+		{
+			Assert(kind_info->flush_fixed_cb == NULL);
+			continue;
+		}
+		if (!kind_info->flush_fixed_cb)
+			continue;
 
-	/* flush SLRU stats */
-	partial_flush |= pgstat_slru_flush(nowait);
+		partial_flush |= kind_info->flush_fixed_cb(nowait);
+	}
 
 	last_flush = now;
 
@@ -807,7 +845,7 @@ pgstat_reset_counters(void)
  * GRANT system.
  */
 void
-pgstat_reset(PgStat_Kind kind, Oid dboid, Oid objoid)
+pgstat_reset(PgStat_Kind kind, Oid dboid, uint64 objid)
 {
 	const PgStat_KindInfo *kind_info = pgstat_get_kind_info(kind);
 	TimestampTz ts = GetCurrentTimestamp();
@@ -816,7 +854,7 @@ pgstat_reset(PgStat_Kind kind, Oid dboid, Oid objoid)
 	Assert(!pgstat_get_kind_info(kind)->fixed_amount);
 
 	/* reset the "single counter" */
-	pgstat_reset_entry(kind, dboid, objoid, ts);
+	pgstat_reset_entry(kind, dboid, objid, ts);
 
 	if (!kind_info->accessed_across_databases)
 		pgstat_reset_database_timestamp(dboid, ts);
@@ -887,7 +925,7 @@ pgstat_clear_snapshot(void)
 }
 
 void *
-pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, Oid objoid)
+pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid)
 {
 	PgStat_HashKey key;
 	PgStat_EntryRef *entry_ref;
@@ -902,7 +940,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, Oid objoid)
 
 	key.kind = kind;
 	key.dboid = dboid;
-	key.objoid = objoid;
+	key.objid = objid;
 
 	/* if we need to build a full snapshot, do so */
 	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
@@ -928,7 +966,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, Oid objoid)
 
 	pgStatLocal.snapshot.mode = pgstat_fetch_consistency;
 
-	entry_ref = pgstat_get_entry_ref(kind, dboid, objoid, false, NULL);
+	entry_ref = pgstat_get_entry_ref(kind, dboid, objid, false, NULL);
 
 	if (entry_ref == NULL || entry_ref->shared_entry->dropped)
 	{
@@ -997,13 +1035,13 @@ pgstat_get_stat_snapshot_timestamp(bool *have_snapshot)
 }
 
 bool
-pgstat_have_entry(PgStat_Kind kind, Oid dboid, Oid objoid)
+pgstat_have_entry(PgStat_Kind kind, Oid dboid, uint64 objid)
 {
 	/* fixed-numbered stats always exist */
 	if (pgstat_get_kind_info(kind)->fixed_amount)
 		return true;
 
-	return pgstat_get_entry_ref(kind, dboid, objoid, false, NULL) != NULL;
+	return pgstat_get_entry_ref(kind, dboid, objid, false, NULL) != NULL;
 }
 
 /*
@@ -1218,7 +1256,7 @@ pgstat_build_snapshot_fixed(PgStat_Kind kind)
  * created, false otherwise.
  */
 PgStat_EntryRef *
-pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid, Oid objoid, bool *created_entry)
+pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *created_entry)
 {
 	PgStat_EntryRef *entry_ref;
 
@@ -1233,7 +1271,7 @@ pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid, Oid objoid, bool *created
 								  ALLOCSET_SMALL_SIZES);
 	}
 
-	entry_ref = pgstat_get_entry_ref(kind, dboid, objoid,
+	entry_ref = pgstat_get_entry_ref(kind, dboid, objid,
 									 true, created_entry);
 
 	if (entry_ref->pending == NULL)
@@ -1256,11 +1294,11 @@ pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid, Oid objoid, bool *created
  * that it shouldn't be needed.
  */
 PgStat_EntryRef *
-pgstat_fetch_pending_entry(PgStat_Kind kind, Oid dboid, Oid objoid)
+pgstat_fetch_pending_entry(PgStat_Kind kind, Oid dboid, uint64 objid)
 {
 	PgStat_EntryRef *entry_ref;
 
-	entry_ref = pgstat_get_entry_ref(kind, dboid, objoid, false, NULL);
+	entry_ref = pgstat_get_entry_ref(kind, dboid, objid, false, NULL);
 
 	if (entry_ref == NULL || entry_ref->pending == NULL)
 		return NULL;
@@ -1609,8 +1647,9 @@ pgstat_write_statsfile(XLogRecPtr redo)
 		 */
 		if (!pgstat_is_kind_valid(ps->key.kind))
 		{
-			elog(WARNING, "found unknown stats entry %u/%u/%u",
-				 ps->key.kind, ps->key.dboid, ps->key.objoid);
+			elog(WARNING, "found unknown stats entry %u/%u/%llu",
+				 ps->key.kind, ps->key.dboid,
+				 (unsigned long long) ps->key.objid);
 			continue;
 		}
 
@@ -1846,8 +1885,9 @@ pgstat_read_statsfile(XLogRecPtr redo)
 
 						if (!pgstat_is_kind_valid(key.kind))
 						{
-							elog(WARNING, "invalid stats kind for entry %u/%u/%u of type %c",
-								 key.kind, key.dboid, key.objoid, t);
+							elog(WARNING, "invalid stats kind for entry %u/%u/%llu of type %c",
+								 key.kind, key.dboid,
+								 (unsigned long long) key.objid, t);
 							goto error;
 						}
 					}
@@ -1918,8 +1958,9 @@ pgstat_read_statsfile(XLogRecPtr redo)
 					if (found)
 					{
 						dshash_release_lock(pgStatLocal.shared_hash, p);
-						elog(WARNING, "found duplicate stats entry %u/%u/%u of type %c",
-							 key.kind, key.dboid, key.objoid, t);
+						elog(WARNING, "found duplicate stats entry %u/%u/%llu of type %c",
+							 key.kind, key.dboid,
+							 (unsigned long long) key.objid, t);
 						goto error;
 					}
 
@@ -1930,8 +1971,9 @@ pgstat_read_statsfile(XLogRecPtr redo)
 									pgstat_get_entry_data(key.kind, header),
 									pgstat_get_entry_len(key.kind)))
 					{
-						elog(WARNING, "could not read data for entry %u/%u/%u of type %c",
-							 key.kind, key.dboid, key.objoid, t);
+						elog(WARNING, "could not read data for entry %u/%u/%llu of type %c",
+							 key.kind, key.dboid,
+							 (unsigned long long) key.objid, t);
 						goto error;
 					}
 

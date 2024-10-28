@@ -4290,8 +4290,6 @@ getPublications(Archive *fout)
 
 	query = createPQExpBuffer();
 
-	resetPQExpBuffer(query);
-
 	/* Get the publications. */
 	if (fout->remoteVersion >= 130000)
 		appendPQExpBufferStr(query,
@@ -4315,6 +4313,9 @@ getPublications(Archive *fout)
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
 	ntups = PQntuples(res);
+
+	if (ntups == 0)
+		goto cleanup;
 
 	i_tableoid = PQfnumber(res, "tableoid");
 	i_oid = PQfnumber(res, "oid");
@@ -4354,6 +4355,8 @@ getPublications(Archive *fout)
 		/* Decide whether we want to dump it */
 		selectDumpableObject(&(pubinfo[i].dobj), fout);
 	}
+
+cleanup:
 	PQclear(res);
 
 	destroyPQExpBuffer(query);
@@ -5232,6 +5235,8 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 		appendPQExpBufferStr(query, ", streaming = on");
 	else if (strcmp(subinfo->substream, "p") == 0)
 		appendPQExpBufferStr(query, ", streaming = parallel");
+	else
+		appendPQExpBufferStr(query, ", streaming = off");
 
 	if (strcmp(subinfo->subtwophasestate, two_phase_disabled) != 0)
 		appendPQExpBufferStr(query, ", two_phase = on");
@@ -5819,7 +5824,7 @@ getExtensions(Archive *fout, int *numExtensions)
 	int			ntups;
 	int			i;
 	PQExpBuffer query;
-	ExtensionInfo *extinfo;
+	ExtensionInfo *extinfo = NULL;
 	int			i_tableoid;
 	int			i_oid;
 	int			i_extname;
@@ -5839,6 +5844,8 @@ getExtensions(Archive *fout, int *numExtensions)
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
 	ntups = PQntuples(res);
+	if (ntups == 0)
+		goto cleanup;
 
 	extinfo = (ExtensionInfo *) pg_malloc(ntups * sizeof(ExtensionInfo));
 
@@ -5868,6 +5875,7 @@ getExtensions(Archive *fout, int *numExtensions)
 		selectDumpableExtension(&(extinfo[i]), dopt);
 	}
 
+cleanup:
 	PQclear(res);
 	destroyPQExpBuffer(query);
 
@@ -7412,6 +7420,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_conname,
 				i_condeferrable,
 				i_condeferred,
+				i_conperiod,
 				i_contableoid,
 				i_conoid,
 				i_condef,
@@ -7493,10 +7502,17 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 
 	if (fout->remoteVersion >= 150000)
 		appendPQExpBufferStr(query,
-							 "i.indnullsnotdistinct ");
+							 "i.indnullsnotdistinct, ");
 	else
 		appendPQExpBufferStr(query,
-							 "false AS indnullsnotdistinct ");
+							 "false AS indnullsnotdistinct, ");
+
+	if (fout->remoteVersion >= 180000)
+		appendPQExpBufferStr(query,
+							 "c.conperiod ");
+	else
+		appendPQExpBufferStr(query,
+							 "NULL AS conperiod ");
 
 	/*
 	 * The point of the messy-looking outer join is to find a constraint that
@@ -7564,6 +7580,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_conname = PQfnumber(res, "conname");
 	i_condeferrable = PQfnumber(res, "condeferrable");
 	i_condeferred = PQfnumber(res, "condeferred");
+	i_conperiod = PQfnumber(res, "conperiod");
 	i_contableoid = PQfnumber(res, "contableoid");
 	i_conoid = PQfnumber(res, "conoid");
 	i_condef = PQfnumber(res, "condef");
@@ -7671,6 +7688,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				constrinfo->conindex = indxinfo[j].dobj.dumpId;
 				constrinfo->condeferrable = *(PQgetvalue(res, j, i_condeferrable)) == 't';
 				constrinfo->condeferred = *(PQgetvalue(res, j, i_condeferred)) == 't';
+				constrinfo->conperiod = *(PQgetvalue(res, j, i_conperiod)) == 't';
 				constrinfo->conislocal = true;
 				constrinfo->separate = true;
 
@@ -15899,8 +15917,13 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			binary_upgrade_set_pg_class_oids(fout, q,
 											 tbinfo->dobj.catId.oid);
 
+		/*
+		 * PostgreSQL 18 has disabled UNLOGGED for partitioned tables, so
+		 * ignore it when dumping if it was set in this case.
+		 */
 		appendPQExpBuffer(q, "CREATE %s%s %s",
-						  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
+						  (tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED &&
+						   tbinfo->relkind != RELKIND_PARTITIONED_TABLE) ?
 						  "UNLOGGED " : "",
 						  reltypename,
 						  qualrelname);
@@ -17102,6 +17125,8 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 								  (k == 0) ? "" : ", ",
 								  fmtId(attname));
 			}
+			if (coninfo->conperiod)
+				appendPQExpBufferStr(q, " WITHOUT OVERLAPS");
 
 			if (indxinfo->indnkeyattrs < indxinfo->indnattrs)
 				appendPQExpBufferStr(q, ") INCLUDE (");
@@ -17556,6 +17581,15 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
 			appendPQExpBufferStr(query, "BY DEFAULT");
 		appendPQExpBuffer(query, " AS IDENTITY (\n    SEQUENCE NAME %s\n",
 						  fmtQualifiedDumpable(tbinfo));
+
+		/*
+		 * Emit persistence option only if it's different from the owning
+		 * table's.  This avoids using this new syntax unnecessarily.
+		 */
+		if (tbinfo->relpersistence != owning_tab->relpersistence)
+			appendPQExpBuffer(query, "    %s\n",
+							  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
+							  "UNLOGGED" : "LOGGED");
 	}
 	else
 	{
@@ -17588,15 +17622,7 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
 					  seq->cache, (seq->cycled ? "\n    CYCLE" : ""));
 
 	if (tbinfo->is_identity_sequence)
-	{
 		appendPQExpBufferStr(query, "\n);\n");
-		if (tbinfo->relpersistence != owning_tab->relpersistence)
-			appendPQExpBuffer(query,
-							  "ALTER SEQUENCE %s SET %s;\n",
-							  fmtQualifiedDumpable(tbinfo),
-							  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
-							  "UNLOGGED" : "LOGGED");
-	}
 	else
 		appendPQExpBufferStr(query, ";\n");
 

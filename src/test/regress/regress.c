@@ -21,8 +21,6 @@
 
 #include "access/detoast.h"
 #include "access/htup_details.h"
-#include "access/transam.h"
-#include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
@@ -39,7 +37,6 @@
 #include "parser/parse_coerce.h"
 #include "port/atomics.h"
 #include "storage/spin.h"
-#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/geo_decls.h"
 #include "utils/memutils.h"
@@ -379,8 +376,7 @@ ttdummy(PG_FUNCTION_ARGS)
 	newoff = Int32GetDatum((int32) DatumGetInt64(newoff));
 
 	/* Connect to SPI manager */
-	if ((ret = SPI_connect()) < 0)
-		elog(ERROR, "ttdummy (%s): SPI_connect returned %d", relname, ret);
+	SPI_connect();
 
 	/* Fetch tuple values and nulls */
 	cvals = (Datum *) palloc(natts * sizeof(Datum));

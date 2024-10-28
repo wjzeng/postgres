@@ -3768,6 +3768,7 @@ RelationSetNewRelfilenumber(Relation relation, char persistence)
 {
 	RelFileNumber newrelfilenumber;
 	Relation	pg_class;
+	ItemPointerData otid;
 	HeapTuple	tuple;
 	Form_pg_class classform;
 	MultiXactId minmulti = InvalidMultiXactId;
@@ -3810,11 +3811,12 @@ RelationSetNewRelfilenumber(Relation relation, char persistence)
 	 */
 	pg_class = table_open(RelationRelationId, RowExclusiveLock);
 
-	tuple = SearchSysCacheCopy1(RELOID,
-								ObjectIdGetDatum(RelationGetRelid(relation)));
+	tuple = SearchSysCacheLockedCopy1(RELOID,
+									  ObjectIdGetDatum(RelationGetRelid(relation)));
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "could not find tuple for relation %u",
 			 RelationGetRelid(relation));
+	otid = tuple->t_self;
 	classform = (Form_pg_class) GETSTRUCT(tuple);
 
 	/*
@@ -3934,9 +3936,10 @@ RelationSetNewRelfilenumber(Relation relation, char persistence)
 		classform->relminmxid = minmulti;
 		classform->relpersistence = persistence;
 
-		CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+		CatalogTupleUpdate(pg_class, &otid, tuple);
 	}
 
+	UnlockTuple(pg_class, &otid, InplaceUpdateTupleLock);
 	heap_freetuple(tuple);
 
 	table_close(pg_class, RowExclusiveLock);
@@ -5581,11 +5584,14 @@ RelationGetIdentityKeyBitmap(Relation relation)
 /*
  * RelationGetExclusionInfo -- get info about index's exclusion constraint
  *
- * This should be called only for an index that is known to have an
- * associated exclusion constraint.  It returns arrays (palloc'd in caller's
- * context) of the exclusion operator OIDs, their underlying functions'
- * OIDs, and their strategy numbers in the index's opclasses.  We cache
- * all this information since it requires a fair amount of work to get.
+ * This should be called only for an index that is known to have an associated
+ * exclusion constraint or primary key/unique constraint using WITHOUT
+ * OVERLAPS.
+
+ * It returns arrays (palloc'd in caller's context) of the exclusion operator
+ * OIDs, their underlying functions' OIDs, and their strategy numbers in the
+ * index's opclasses.  We cache all this information since it requires a fair
+ * amount of work to get.
  */
 void
 RelationGetExclusionInfo(Relation indexRelation,
@@ -5649,7 +5655,10 @@ RelationGetExclusionInfo(Relation indexRelation,
 		int			nelem;
 
 		/* We want the exclusion constraint owning the index */
-		if (conform->contype != CONSTRAINT_EXCLUSION ||
+		if ((conform->contype != CONSTRAINT_EXCLUSION &&
+			 !(conform->conperiod && (
+									  conform->contype == CONSTRAINT_PRIMARY
+									  || conform->contype == CONSTRAINT_UNIQUE))) ||
 			conform->conindid != RelationGetRelid(indexRelation))
 			continue;
 

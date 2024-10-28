@@ -204,6 +204,7 @@ typedef struct IndexInfo
 	bool		ii_Concurrent;
 	bool		ii_BrokenHotChain;
 	bool		ii_Summarizing;
+	bool		ii_WithoutOverlaps;
 	int			ii_ParallelWorkers;
 	Oid			ii_Am;
 	void	   *ii_AmCache;
@@ -484,6 +485,9 @@ typedef struct ResultRelInfo
 	/* Have the projection and the slots above been initialized? */
 	bool		ri_projectNewInfoValid;
 
+	/* updates do LockTuple() before oldtup read; see README.tuplock */
+	bool		ri_needLockTagTuple;
+
 	/* triggers to be fired, if any */
 	TriggerDesc *ri_TrigDesc;
 
@@ -703,6 +707,11 @@ typedef struct EState
 	struct EPQState *es_epq_active;
 
 	bool		es_use_parallel_mode;	/* can we use parallel workers? */
+
+	int			es_parallel_workers_to_launch;	/* number of workers to
+												 * launch. */
+	int			es_parallel_workers_launched;	/* number of workers actually
+												 * launched. */
 
 	/* The per-query shared memory area to use for parallel execution. */
 	struct dsa_area *es_query_dsa;
@@ -1824,8 +1833,6 @@ typedef struct SharedBitmapHeapInstrumentation
  *
  *		bitmapqualorig	   execution state for bitmapqualorig expressions
  *		tbm				   bitmap obtained from child index scan(s)
- *		tbmiterator		   iterator for scanning current pages
- *		tbmres			   current-page data
  *		pvmbuffer		   buffer for visibility-map lookups of prefetched pages
  *		stats			   execution statistics
  *		prefetch_iterator  iterator for prefetching ahead of current page
@@ -1833,10 +1840,12 @@ typedef struct SharedBitmapHeapInstrumentation
  *		prefetch_target    current target prefetch distance
  *		prefetch_maximum   maximum value for prefetch_target
  *		initialized		   is node is ready to iterate
- *		shared_tbmiterator	   shared iterator
  *		shared_prefetch_iterator shared iterator for prefetching
  *		pstate			   shared state for parallel bitmap scan
  *		sinstrument		   statistics for parallel workers
+ *		recheck			   do current page's tuples need recheck
+ *		blockno			   used to validate pf and current block stay in sync
+ *		prefetch_blockno   used to validate pf stays ahead of current block
  * ----------------
  */
 typedef struct BitmapHeapScanState
@@ -1844,8 +1853,6 @@ typedef struct BitmapHeapScanState
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprState  *bitmapqualorig;
 	TIDBitmap  *tbm;
-	TBMIterator *tbmiterator;
-	TBMIterateResult *tbmres;
 	Buffer		pvmbuffer;
 	BitmapHeapScanInstrumentation stats;
 	TBMIterator *prefetch_iterator;
@@ -1853,10 +1860,12 @@ typedef struct BitmapHeapScanState
 	int			prefetch_target;
 	int			prefetch_maximum;
 	bool		initialized;
-	TBMSharedIterator *shared_tbmiterator;
 	TBMSharedIterator *shared_prefetch_iterator;
 	ParallelBitmapHeapState *pstate;
 	SharedBitmapHeapInstrumentation *sinstrument;
+	bool		recheck;
+	BlockNumber blockno;
+	BlockNumber prefetch_blockno;
 } BitmapHeapScanState;
 
 /* ----------------

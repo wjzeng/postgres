@@ -1192,6 +1192,12 @@ pg_stat_get_checkpointer_num_requested(PG_FUNCTION_ARGS)
 }
 
 Datum
+pg_stat_get_checkpointer_num_performed(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->num_performed);
+}
+
+Datum
 pg_stat_get_checkpointer_restartpoints_timed(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->restartpoints_timed);
@@ -1213,6 +1219,12 @@ Datum
 pg_stat_get_checkpointer_buffers_written(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->buffers_written);
+}
+
+Datum
+pg_stat_get_checkpointer_slru_written(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64(pgstat_fetch_stat_checkpointer()->slru_written);
 }
 
 Datum
@@ -2046,8 +2058,8 @@ pg_stat_have_stats(PG_FUNCTION_ARGS)
 {
 	char	   *stats_type = text_to_cstring(PG_GETARG_TEXT_P(0));
 	Oid			dboid = PG_GETARG_OID(1);
-	Oid			objoid = PG_GETARG_OID(2);
+	uint64		objid = PG_GETARG_INT64(2);
 	PgStat_Kind kind = pgstat_get_kind_from_str(stats_type);
 
-	PG_RETURN_BOOL(pgstat_have_entry(kind, dboid, objoid));
+	PG_RETURN_BOOL(pgstat_have_entry(kind, dboid, objid));
 }

@@ -18,8 +18,6 @@
 #include "catalog/index.h"
 #include "commands/vacuum.h"
 #include "nodes/pathnodes.h"
-#include "utils/guc.h"
-#include "utils/rel.h"
 
 PG_MODULE_MAGIC;
 
@@ -308,6 +306,7 @@ dihandler(PG_FUNCTION_ARGS)
 	amroutine->amvacuumcleanup = divacuumcleanup;
 	amroutine->amcanreturn = NULL;
 	amroutine->amcostestimate = dicostestimate;
+	amroutine->amgettreeheight = NULL;
 	amroutine->amoptions = dioptions;
 	amroutine->amproperty = NULL;
 	amroutine->ambuildphasename = NULL;

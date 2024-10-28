@@ -16,7 +16,6 @@
 #include "postgres.h"
 
 #include "catalog/pg_aggregate.h"
-#include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "commands/dbcommands.h"
 #include "miscadmin.h"
@@ -37,7 +36,6 @@
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/fmgroids.h"
-#include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 #include "utils/xml.h"
@@ -3890,7 +3888,7 @@ transformJsonAggConstructor(ParseState *pstate, JsonAggConstructor *agg_ctor,
 /*
  * Transform JSON_OBJECTAGG() aggregate function.
  *
- * JSON_OBJECT() is transformed into a JsonConstructorExpr node of type
+ * JSON_OBJECTAGG() is transformed into a JsonConstructorExpr node of type
  * JSCTOR_JSON_OBJECTAGG, which at runtime becomes a
  * json[b]_object_agg[_unique][_strict](agg->arg->key, agg->arg->value) call
  * depending on the output JSON format.  The result is coerced to the target

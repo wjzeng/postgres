@@ -834,6 +834,7 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 											  true, /* islocal */
 											  0,	/* inhcount */
 											  true, /* noinherit */
+											  false,	/* conperiod */
 											  isInternal);	/* is_internal */
 	}
 
@@ -1168,7 +1169,7 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 			 * Initialize our fabricated parse node by copying the original
 			 * one, then resetting fields that we pass separately.
 			 */
-			childStmt = (CreateTrigStmt *) copyObject(stmt);
+			childStmt = copyObject(stmt);
 			childStmt->funcname = NIL;
 			childStmt->whenClause = NULL;
 
@@ -4096,8 +4097,11 @@ afterTriggerAddEvent(AfterTriggerEventList *events,
 		chunk->endptr = chunk->endfree = (char *) chunk + chunksize;
 		Assert(chunk->endfree - chunk->freeptr >= needed);
 
-		if (events->head == NULL)
+		if (events->tail == NULL)
+		{
+			Assert(events->head == NULL);
 			events->head = chunk;
+		}
 		else
 			events->tail->next = chunk;
 		events->tail = chunk;
