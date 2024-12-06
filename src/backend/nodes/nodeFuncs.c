@@ -1723,8 +1723,7 @@ exprLocation(const Node *expr)
 			loc = ((const Constraint *) expr)->location;
 			break;
 		case T_FunctionParameter:
-			/* just use typename's location */
-			loc = exprLocation((Node *) ((const FunctionParameter *) expr)->argType);
+			loc = ((const FunctionParameter *) expr)->location;
 			break;
 		case T_XmlSerialize:
 			/* XMLSERIALIZE keyword should always be the first thing */
@@ -2021,7 +2020,7 @@ check_functions_in_node(Node *node, check_function_callback checker,
  *			... do special actions for other node types
  *		}
  *		// for any node type not specially processed, do:
- *		return expression_tree_walker(node, my_walker, (void *) context);
+ *		return expression_tree_walker(node, my_walker, context);
  * }
  *
  * The "context" argument points to a struct that holds whatever context
@@ -2894,7 +2893,7 @@ range_table_entry_walker_impl(RangeTblEntry *rte,
  *			... do special transformations of other node types
  *		}
  *		// for any node type not specially processed, do:
- *		return expression_tree_mutator(node, my_mutator, (void *) context);
+ *		return expression_tree_mutator(node, my_mutator, context);
  * }
  *
  * The "context" argument points to a struct that holds whatever context

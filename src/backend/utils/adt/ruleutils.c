@@ -2516,6 +2516,28 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 								 conForm->connoinherit ? " NO INHERIT" : "");
 				break;
 			}
+		case CONSTRAINT_NOTNULL:
+			{
+				if (conForm->conrelid)
+				{
+					AttrNumber	attnum;
+
+					attnum = extractNotNullColumn(tup);
+
+					appendStringInfo(&buf, "NOT NULL %s",
+									 quote_identifier(get_attname(conForm->conrelid,
+																  attnum, false)));
+					if (((Form_pg_constraint) GETSTRUCT(tup))->connoinherit)
+						appendStringInfoString(&buf, " NO INHERIT");
+				}
+				else if (conForm->contypid)
+				{
+					/* conkey is null for domain not-null constraints */
+					appendStringInfoString(&buf, "NOT NULL");
+				}
+				break;
+			}
+
 		case CONSTRAINT_TRIGGER:
 
 			/*
@@ -6331,13 +6353,19 @@ get_setop_query(Node *setOp, Query *query, deparse_context *context)
 		Query	   *subquery = rte->subquery;
 
 		Assert(subquery != NULL);
-		Assert(subquery->setOperations == NULL);
-		/* Need parens if WITH, ORDER BY, FOR UPDATE, or LIMIT; see gram.y */
+
+		/*
+		 * We need parens if WITH, ORDER BY, FOR UPDATE, or LIMIT; see gram.y.
+		 * Also add parens if the leaf query contains its own set operations.
+		 * (That shouldn't happen unless one of the other clauses is also
+		 * present, see transformSetOperationTree; but let's be safe.)
+		 */
 		need_paren = (subquery->cteList ||
 					  subquery->sortClause ||
 					  subquery->rowMarks ||
 					  subquery->limitOffset ||
-					  subquery->limitCount);
+					  subquery->limitCount ||
+					  subquery->setOperations);
 		if (need_paren)
 			appendStringInfoChar(buf, '(');
 		get_query_def(subquery, buf, context->namespaces,

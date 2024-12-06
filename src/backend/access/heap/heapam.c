@@ -6165,8 +6165,8 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
  * transaction.  If compatible, return true with the buffer exclusive-locked,
  * and the caller must release that by calling
  * heap_inplace_update_and_unlock(), calling heap_inplace_unlock(), or raising
- * an error.  Otherwise, return false after blocking transactions, if any,
- * have ended.
+ * an error.  Otherwise, call release_callback(arg), wait for blocking
+ * transactions to end, and return false.
  *
  * Since this is intended for system catalogs and SERIALIZABLE doesn't cover
  * DDL, this doesn't guarantee any particular predicate locking.
@@ -6200,7 +6200,8 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
  */
 bool
 heap_inplace_lock(Relation relation,
-				  HeapTuple oldtup_ptr, Buffer buffer)
+				  HeapTuple oldtup_ptr, Buffer buffer,
+				  void (*release_callback) (void *), void *arg)
 {
 	HeapTupleData oldtup = *oldtup_ptr; /* minimize diff vs. heap_update() */
 	TM_Result	result;
@@ -6212,6 +6213,17 @@ heap_inplace_lock(Relation relation,
 #endif
 
 	Assert(BufferIsValid(buffer));
+
+	/*
+	 * Construct shared cache inval if necessary.  Because we pass a tuple
+	 * version without our own inplace changes or inplace changes other
+	 * sessions complete while we wait for locks, inplace update mustn't
+	 * change catcache lookup keys.  But we aren't bothering with index
+	 * updates either, so that's true a fortiori.  After LockBuffer(), it
+	 * would be too late, because this might reach a
+	 * CatalogCacheInitializeCache() that locks "buffer".
+	 */
+	CacheInvalidateHeapTupleInplace(relation, oldtup_ptr, NULL);
 
 	LockTuple(relation, &oldtup.t_self, InplaceUpdateTupleLock);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
@@ -6265,6 +6277,7 @@ heap_inplace_lock(Relation relation,
 										lockmode, NULL))
 			{
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+				release_callback(arg);
 				ret = false;
 				MultiXactIdWait((MultiXactId) xwait, mxact_status, infomask,
 								relation, &oldtup.t_self, XLTW_Update,
@@ -6280,6 +6293,7 @@ heap_inplace_lock(Relation relation,
 		else
 		{
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			release_callback(arg);
 			ret = false;
 			XactLockTableWait(xwait, relation, &oldtup.t_self,
 							  XLTW_Update);
@@ -6291,6 +6305,7 @@ heap_inplace_lock(Relation relation,
 		if (!ret)
 		{
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+			release_callback(arg);
 		}
 	}
 
@@ -6305,6 +6320,7 @@ heap_inplace_lock(Relation relation,
 	if (!ret)
 	{
 		UnlockTuple(relation, &oldtup.t_self, InplaceUpdateTupleLock);
+		ForgetInplace_Inval();
 		InvalidateCatalogSnapshot();
 	}
 	return ret;
@@ -6340,14 +6356,6 @@ heap_inplace_update_and_unlock(Relation relation,
 
 	dst = (char *) htup + htup->t_hoff;
 	src = (char *) tuple->t_data + tuple->t_data->t_hoff;
-
-	/*
-	 * Construct shared cache inval if necessary.  Note that because we only
-	 * pass the new version of the tuple, this mustn't be used for any
-	 * operations that could change catcache lookup keys.  But we aren't
-	 * bothering with index updates either, so that's true a fortiori.
-	 */
-	CacheInvalidateHeapTupleInplace(relation, tuple, NULL);
 
 	/* Like RecordTransactionCommit(), log only if needed */
 	if (XLogStandbyInfoActive())
@@ -6477,6 +6485,7 @@ heap_inplace_unlock(Relation relation,
 {
 	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 	UnlockTuple(relation, &oldtup->t_self, InplaceUpdateTupleLock);
+	ForgetInplace_Inval();
 }
 
 #define		FRM_NOOP				0x0001
@@ -8293,7 +8302,6 @@ index_delete_sort(TM_IndexDeleteOp *delstate)
 {
 	TM_IndexDelete *deltids = delstate->deltids;
 	int			ndeltids = delstate->ndeltids;
-	int			low = 0;
 
 	/*
 	 * Shellsort gap sequence (taken from Sedgewick-Incerpi paper).
@@ -8309,7 +8317,7 @@ index_delete_sort(TM_IndexDeleteOp *delstate)
 
 	for (int g = 0; g < lengthof(gaps); g++)
 	{
-		for (int hi = gaps[g], i = low + hi; i < ndeltids; i++)
+		for (int hi = gaps[g], i = hi; i < ndeltids; i++)
 		{
 			TM_IndexDelete d = deltids[i];
 			int			j = i;

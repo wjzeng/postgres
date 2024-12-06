@@ -72,6 +72,12 @@ relation_statistics_update(FunctionCallInfo fcinfo, int elevel)
 	stats_check_required_arg(fcinfo, relarginfo, RELATION_ARG);
 	reloid = PG_GETARG_OID(RELATION_ARG);
 
+	if (RecoveryInProgress())
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("recovery is in progress"),
+				 errhint("Statistics cannot be modified during recovery.")));
+
 	stats_lock_check_privileges(reloid);
 
 	/*
@@ -170,6 +176,8 @@ relation_statistics_update(FunctionCallInfo fcinfo, int elevel)
 
 	/* release the lock, consistent with vac_update_relstats() */
 	table_close(crel, RowExclusiveLock);
+
+	CommandCounterIncrement();
 
 	return result;
 }

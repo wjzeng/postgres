@@ -1192,6 +1192,14 @@ ExecInitExprRec(Expr *node, ExprState *state,
 							 state);
 
 				/*
+				 * If first argument is of varlena type, we'll need to ensure
+				 * that the value passed to the comparison function is a
+				 * read-only pointer.
+				 */
+				scratch.d.func.make_ro =
+					(get_typlen(exprType((Node *) linitial(op->args))) == -1);
+
+				/*
 				 * Change opcode of call instruction to EEOP_NULLIF.
 				 *
 				 * XXX: historically we've not called the function usage
@@ -2908,8 +2916,7 @@ expr_setup_walker(Node *node, ExprSetupInfo *info)
 		return false;
 	if (IsA(node, GroupingFunc))
 		return false;
-	return expression_tree_walker(node, expr_setup_walker,
-								  (void *) info);
+	return expression_tree_walker(node, expr_setup_walker, info);
 }
 
 /*
@@ -4004,8 +4011,9 @@ ExecBuildHash32Expr(TupleDesc desc, const TupleTableSlotOps *ops,
 	ListCell   *lc2;
 	intptr_t	strict_opcode;
 	intptr_t	opcode;
+	int			num_exprs = list_length(hash_exprs);
 
-	Assert(list_length(hash_exprs) == list_length(collations));
+	Assert(num_exprs == list_length(collations));
 
 	state->parent = parent;
 
@@ -4013,11 +4021,11 @@ ExecBuildHash32Expr(TupleDesc desc, const TupleTableSlotOps *ops,
 	ExecCreateExprSetupSteps(state, (Node *) hash_exprs);
 
 	/*
-	 * When hashing more than 1 expression or if we have an init value, we
-	 * need somewhere to store the intermediate hash value so that it's
-	 * available to be combined with the result of subsequent hashing.
+	 * Make a place to store intermediate hash values between subsequent
+	 * hashing of individual expressions.  We only need this if there is more
+	 * than one expression to hash or an initial value plus one expression.
 	 */
-	if (list_length(hash_exprs) > 1 || init_value != 0)
+	if ((int64) num_exprs + (init_value != 0) > 1)
 		iresult = palloc(sizeof(NullableDatum));
 
 	if (init_value == 0)
@@ -4032,11 +4040,15 @@ ExecBuildHash32Expr(TupleDesc desc, const TupleTableSlotOps *ops,
 	}
 	else
 	{
-		/* Set up operation to set the initial value. */
+		/*
+		 * Set up operation to set the initial value.  Normally we store this
+		 * in the intermediate hash value location, but if there are no exprs
+		 * to hash, store it in the ExprState's result field.
+		 */
 		scratch.opcode = EEOP_HASHDATUM_SET_INITVAL;
 		scratch.d.hashdatum_initvalue.init_value = UInt32GetDatum(init_value);
-		scratch.resvalue = &iresult->value;
-		scratch.resnull = &iresult->isnull;
+		scratch.resvalue = num_exprs > 0 ? &iresult->value : &state->resvalue;
+		scratch.resnull = num_exprs > 0 ? &iresult->isnull : &state->resnull;
 
 		ExprEvalPushStep(state, &scratch);
 
@@ -4074,7 +4086,7 @@ ExecBuildHash32Expr(TupleDesc desc, const TupleTableSlotOps *ops,
 						&fcinfo->args[0].value,
 						&fcinfo->args[0].isnull);
 
-		if (i == list_length(hash_exprs) - 1)
+		if (i == num_exprs - 1)
 		{
 			/* the result for hashing the final expr is stored in the state */
 			scratch.resvalue = &state->resvalue;

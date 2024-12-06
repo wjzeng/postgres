@@ -449,6 +449,8 @@ systable_beginscan(Relation heapRelation,
 										 snapshot, nkeys, 0);
 		index_rescan(sysscan->iscan, idxkey, nkeys, NULL, 0);
 		sysscan->scan = NULL;
+
+		pfree(idxkey);
 	}
 	else
 	{
@@ -713,6 +715,8 @@ systable_beginscan_ordered(Relation heapRelation,
 	index_rescan(sysscan->iscan, idxkey, nkeys, NULL, 0);
 	sysscan->scan = NULL;
 
+	pfree(idxkey);
+
 	/*
 	 * If CheckXidAlive is set then set a flag to indicate that system table
 	 * scan is in-progress.  See detailed comments in xact.c where these
@@ -814,6 +818,7 @@ systable_inplace_update_begin(Relation relation,
 	int			retries = 0;
 	SysScanDesc scan;
 	HeapTuple	oldtup;
+	BufferHeapTupleTableSlot *bslot;
 
 	/*
 	 * For now, we don't allow parallel updates.  Unlike a regular update,
@@ -835,10 +840,9 @@ systable_inplace_update_begin(Relation relation,
 	Assert(IsInplaceUpdateRelation(relation) || !IsSystemRelation(relation));
 
 	/* Loop for an exclusive-locked buffer of a non-updated tuple. */
-	for (;;)
+	do
 	{
 		TupleTableSlot *slot;
-		BufferHeapTupleTableSlot *bslot;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -864,11 +868,9 @@ systable_inplace_update_begin(Relation relation,
 		slot = scan->slot;
 		Assert(TTS_IS_BUFFERTUPLE(slot));
 		bslot = (BufferHeapTupleTableSlot *) slot;
-		if (heap_inplace_lock(scan->heap_rel,
-							  bslot->base.tuple, bslot->buffer))
-			break;
-		systable_endscan(scan);
-	};
+	} while (!heap_inplace_lock(scan->heap_rel,
+								bslot->base.tuple, bslot->buffer,
+								(void (*) (void *)) systable_endscan, scan));
 
 	*oldtupcopy = heap_copytuple(oldtup);
 	*state = scan;

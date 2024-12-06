@@ -1341,6 +1341,15 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
            <para>
             The server must request MD5 hashed password authentication.
            </para>
+           <warning>
+            <para>
+             Support for MD5-encrypted passwords is deprecated and will be
+             removed in a future release of
+             <productname>PostgreSQL</productname>.  Refer to
+             <xref linkend="auth-password"/> for details about migrating to
+             another password type.
+            </para>
+           </warning>
           </listitem>
          </varlistentry>
 
@@ -9256,7 +9265,9 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
    The file <filename>.pgpass</filename> in a user's home directory can
    contain passwords to
    be used if the connection requires a password (and no password has been
-   specified otherwise). On Microsoft Windows the file is named
+   specified otherwise). On Unix systems, the directory can be specified by
+   the <envar>HOME</envar> environment variable, or if undefined, the home
+   directory of the effective user.  On Microsoft Windows the file is named
    <filename>%APPDATA%\postgresql\pgpass.conf</filename> (where
    <filename>%APPDATA%</filename> refers to the Application Data subdirectory in
    the user's profile).

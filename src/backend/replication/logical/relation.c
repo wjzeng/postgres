@@ -220,41 +220,63 @@ logicalrep_rel_att_by_name(LogicalRepRelation *remoterel, const char *attname)
 }
 
 /*
- * Report error with names of the missing local relation column(s), if any.
+ * Returns a comma-separated string of attribute names based on the provided
+ * relation and bitmap indicating which attributes to include.
+ */
+static char *
+logicalrep_get_attrs_str(LogicalRepRelation *remoterel, Bitmapset *atts)
+{
+	StringInfoData attsbuf;
+	int			attcnt = 0;
+	int			i = -1;
+
+	Assert(!bms_is_empty(atts));
+
+	initStringInfo(&attsbuf);
+
+	while ((i = bms_next_member(atts, i)) >= 0)
+	{
+		attcnt++;
+		if (attcnt > 1)
+			appendStringInfo(&attsbuf, _(", "));
+
+		appendStringInfo(&attsbuf, _("\"%s\""), remoterel->attnames[i]);
+	}
+
+	return attsbuf.data;
+}
+
+/*
+ * If attempting to replicate missing or generated columns, report an error.
+ * Prioritize 'missing' errors if both occur though the prioritization is
+ * arbitrary.
  */
 static void
-logicalrep_report_missing_attrs(LogicalRepRelation *remoterel,
-								Bitmapset *missingatts)
+logicalrep_report_missing_or_gen_attrs(LogicalRepRelation *remoterel,
+									   Bitmapset *missingatts,
+									   Bitmapset *generatedatts)
 {
 	if (!bms_is_empty(missingatts))
-	{
-		StringInfoData missingattsbuf;
-		int			missingattcnt = 0;
-		int			i;
-
-		initStringInfo(&missingattsbuf);
-
-		i = -1;
-		while ((i = bms_next_member(missingatts, i)) >= 0)
-		{
-			missingattcnt++;
-			if (missingattcnt == 1)
-				appendStringInfo(&missingattsbuf, _("\"%s\""),
-								 remoterel->attnames[i]);
-			else
-				appendStringInfo(&missingattsbuf, _(", \"%s\""),
-								 remoterel->attnames[i]);
-		}
-
 		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg_plural("logical replication target relation \"%s.%s\" is missing replicated column: %s",
-							   "logical replication target relation \"%s.%s\" is missing replicated columns: %s",
-							   missingattcnt,
-							   remoterel->nspname,
-							   remoterel->relname,
-							   missingattsbuf.data)));
-	}
+				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg_plural("logical replication target relation \"%s.%s\" is missing replicated column: %s",
+							  "logical replication target relation \"%s.%s\" is missing replicated columns: %s",
+							  bms_num_members(missingatts),
+							  remoterel->nspname,
+							  remoterel->relname,
+							  logicalrep_get_attrs_str(remoterel,
+													   missingatts)));
+
+	if (!bms_is_empty(generatedatts))
+		ereport(ERROR,
+				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg_plural("logical replication target relation \"%s.%s\" has incompatible generated column: %s",
+							  "logical replication target relation \"%s.%s\" has incompatible generated columns: %s",
+							  bms_num_members(generatedatts),
+							  remoterel->nspname,
+							  remoterel->relname,
+							  logicalrep_get_attrs_str(remoterel,
+													   generatedatts)));
 }
 
 /*
@@ -380,6 +402,7 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 		MemoryContext oldctx;
 		int			i;
 		Bitmapset  *missingatts;
+		Bitmapset  *generatedattrs = NULL;
 
 		/* Release the no-longer-useful attrmap, if any. */
 		if (entry->attrmap)
@@ -421,7 +444,7 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 			int			attnum;
 			Form_pg_attribute attr = TupleDescAttr(desc, i);
 
-			if (attr->attisdropped || attr->attgenerated)
+			if (attr->attisdropped)
 			{
 				entry->attrmap->attnums[i] = -1;
 				continue;
@@ -432,12 +455,20 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 
 			entry->attrmap->attnums[i] = attnum;
 			if (attnum >= 0)
+			{
+				/* Remember which subscriber columns are generated. */
+				if (attr->attgenerated)
+					generatedattrs = bms_add_member(generatedattrs, attnum);
+
 				missingatts = bms_del_member(missingatts, attnum);
+			}
 		}
 
-		logicalrep_report_missing_attrs(remoterel, missingatts);
+		logicalrep_report_missing_or_gen_attrs(remoterel, missingatts,
+											   generatedattrs);
 
 		/* be tidy */
+		bms_free(generatedattrs);
 		bms_free(missingatts);
 
 		/*
@@ -750,11 +781,9 @@ FindUsableIndexForReplicaIdentityFull(Relation localrel, AttrMap *attrmap)
 	{
 		bool		isUsableIdx;
 		Relation	idxRel;
-		IndexInfo  *idxInfo;
 
 		idxRel = index_open(idxoid, AccessShareLock);
-		idxInfo = BuildIndexInfo(idxRel);
-		isUsableIdx = IsIndexUsableForReplicaIdentityFull(idxInfo, attrmap);
+		isUsableIdx = IsIndexUsableForReplicaIdentityFull(idxRel, attrmap);
 		index_close(idxRel, AccessShareLock);
 
 		/* Return the first eligible index found */
@@ -801,22 +830,22 @@ FindUsableIndexForReplicaIdentityFull(Relation localrel, AttrMap *attrmap)
  * to sequential execution, which might not be a good idea in some cases.
  */
 bool
-IsIndexUsableForReplicaIdentityFull(IndexInfo *indexInfo, AttrMap *attrmap)
+IsIndexUsableForReplicaIdentityFull(Relation idxrel, AttrMap *attrmap)
 {
 	AttrNumber	keycol;
 
 	/* Ensure that the index access method has a valid equal strategy */
-	if (get_equal_strategy_number_for_am(indexInfo->ii_Am) == InvalidStrategy)
+	if (get_equal_strategy_number_for_am(idxrel->rd_rel->relam) == InvalidStrategy)
 		return false;
 
 	/* The index must not be a partial index */
-	if (indexInfo->ii_Predicate != NIL)
+	if (!heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
 		return false;
 
-	Assert(indexInfo->ii_NumIndexAttrs >= 1);
+	Assert(idxrel->rd_index->indnatts >= 1);
 
 	/* The leftmost index field must not be an expression */
-	keycol = indexInfo->ii_IndexAttrNumbers[0];
+	keycol = idxrel->rd_index->indkey.values[0];
 	if (!AttributeNumberIsValid(keycol))
 		return false;
 
@@ -834,7 +863,7 @@ IsIndexUsableForReplicaIdentityFull(IndexInfo *indexInfo, AttrMap *attrmap)
 		IndexAmRoutine *amroutine;
 
 		/* The given index access method must implement amgettuple. */
-		amroutine = GetIndexAmRoutineByAmId(indexInfo->ii_Am, false);
+		amroutine = GetIndexAmRoutineByAmId(idxrel->rd_rel->relam, false);
 		Assert(amroutine->amgettuple != NULL);
 	}
 #endif
@@ -855,7 +884,7 @@ GetRelationIdentityOrPK(Relation rel)
 	idxoid = RelationGetReplicaIndex(rel);
 
 	if (!OidIsValid(idxoid))
-		idxoid = RelationGetPrimaryKeyIndex(rel);
+		idxoid = RelationGetPrimaryKeyIndex(rel, false);
 
 	return idxoid;
 }
