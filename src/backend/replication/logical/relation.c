@@ -17,9 +17,7 @@
 
 #include "postgres.h"
 
-#ifdef USE_ASSERT_CHECKING
 #include "access/amapi.h"
-#endif
 #include "access/genam.h"
 #include "access/table.h"
 #include "catalog/namespace.h"
@@ -29,6 +27,7 @@
 #include "replication/logicalrelation.h"
 #include "replication/worker_internal.h"
 #include "utils/inval.h"
+#include "utils/syscache.h"
 
 
 static MemoryContext LogicalRepRelMapContext = NULL;
@@ -797,9 +796,10 @@ FindUsableIndexForReplicaIdentityFull(Relation localrel, AttrMap *attrmap)
 /*
  * Returns true if the index is usable for replica identity full.
  *
- * The index must be btree or hash, non-partial, and the leftmost field must be
- * a column (not an expression) that references the remote relation column. These
- * limitations help to keep the index scan similar to PK/RI index scans.
+ * The index must have an equal strategy for each key column, be non-partial,
+ * and the leftmost field must be a column (not an expression) that references
+ * the remote relation column. These limitations help to keep the index scan
+ * similar to PK/RI index scans.
  *
  * attrmap is a map of local attributes to remote ones. We can consult this
  * map to check whether the local index attribute has a corresponding remote
@@ -812,19 +812,6 @@ FindUsableIndexForReplicaIdentityFull(Relation localrel, AttrMap *attrmap)
  * compare the tuples for non-PK/RI index scans. See
  * RelationFindReplTupleByIndex().
  *
- * The reasons why only Btree and Hash indexes can be considered as usable are:
- *
- * 1) Other index access methods don't have a fixed strategy for equality
- * operation. Refer get_equal_strategy_number_for_am().
- *
- * 2) For indexes other than PK and REPLICA IDENTITY, we need to match the
- * local and remote tuples. The equality routine tuples_equal() cannot accept
- * a datatype (e.g. point or box) that does not have a default operator class
- * for Btree or Hash.
- *
- * XXX: Note that BRIN and GIN indexes do not implement "amgettuple" which
- * will be used later to fetch the tuples. See RelationFindReplTupleByIndex().
- *
  * XXX: To support partial indexes, the required changes are likely to be larger.
  * If none of the tuples satisfy the expression for the index scan, we fall-back
  * to sequential execution, which might not be a good idea in some cases.
@@ -833,16 +820,39 @@ bool
 IsIndexUsableForReplicaIdentityFull(Relation idxrel, AttrMap *attrmap)
 {
 	AttrNumber	keycol;
-
-	/* Ensure that the index access method has a valid equal strategy */
-	if (get_equal_strategy_number_for_am(idxrel->rd_rel->relam) == InvalidStrategy)
-		return false;
+	oidvector  *indclass;
 
 	/* The index must not be a partial index */
 	if (!heap_attisnull(idxrel->rd_indextuple, Anum_pg_index_indpred, NULL))
 		return false;
 
 	Assert(idxrel->rd_index->indnatts >= 1);
+
+	indclass = (oidvector *) DatumGetPointer(SysCacheGetAttrNotNull(INDEXRELID,
+																	idxrel->rd_indextuple,
+																	Anum_pg_index_indclass));
+
+	/* Ensure that the index has a valid equal strategy for each key column */
+	for (int i = 0; i < idxrel->rd_index->indnkeyatts; i++)
+	{
+		if (get_equal_strategy_number(indclass->values[i]) == InvalidStrategy)
+			return false;
+	}
+
+	/*
+	 * For indexes other than PK and REPLICA IDENTITY, we need to match the
+	 * local and remote tuples.  The equality routine tuples_equal() cannot
+	 * accept a data type where the type cache cannot provide an equality
+	 * operator.
+	 */
+	for (int i = 0; i < idxrel->rd_att->natts; i++)
+	{
+		TypeCacheEntry *typentry;
+
+		typentry = lookup_type_cache(TupleDescAttr(idxrel->rd_att, i)->atttypid, TYPECACHE_EQ_OPR_FINFO);
+		if (!OidIsValid(typentry->eq_opr_finfo.fn_oid))
+			return false;
+	}
 
 	/* The leftmost index field must not be an expression */
 	keycol = idxrel->rd_index->indkey.values[0];
@@ -858,15 +868,12 @@ IsIndexUsableForReplicaIdentityFull(Relation idxrel, AttrMap *attrmap)
 		attrmap->attnums[AttrNumberGetAttrOffset(keycol)] < 0)
 		return false;
 
-#ifdef USE_ASSERT_CHECKING
-	{
-		IndexAmRoutine *amroutine;
-
-		/* The given index access method must implement amgettuple. */
-		amroutine = GetIndexAmRoutineByAmId(idxrel->rd_rel->relam, false);
-		Assert(amroutine->amgettuple != NULL);
-	}
-#endif
+	/*
+	 * The given index access method must implement "amgettuple", which will
+	 * be used later to fetch the tuples.  See RelationFindReplTupleByIndex().
+	 */
+	if (GetIndexAmRoutineByAmId(idxrel->rd_rel->relam, false)->amgettuple == NULL)
+		return false;
 
 	return true;
 }

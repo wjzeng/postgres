@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/gist.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/transam.h"
@@ -39,16 +40,12 @@ static bool tuples_equal(TupleTableSlot *slot1, TupleTableSlot *slot2,
 
 /*
  * Returns the fixed strategy number, if any, of the equality operator for the
- * given index access method, otherwise, InvalidStrategy.
- *
- * Currently, only Btree and Hash indexes are supported. The other index access
- * methods don't have a fixed strategy for equality operation - instead, the
- * support routines of each operator class interpret the strategy numbers
- * according to the operator class's definition.
+ * given operator class, otherwise, InvalidStrategy.
  */
 StrategyNumber
-get_equal_strategy_number_for_am(Oid am)
+get_equal_strategy_number(Oid opclass)
 {
+	Oid			am = get_opclass_method(opclass);
 	int			ret;
 
 	switch (am)
@@ -59,25 +56,15 @@ get_equal_strategy_number_for_am(Oid am)
 		case HASH_AM_OID:
 			ret = HTEqualStrategyNumber;
 			break;
+		case GIST_AM_OID:
+			ret = GistTranslateStratnum(opclass, RTEqualStrategyNumber);
+			break;
 		default:
-			/* XXX: Only Btree and Hash indexes are supported */
 			ret = InvalidStrategy;
 			break;
 	}
 
 	return ret;
-}
-
-/*
- * Return the appropriate strategy number which corresponds to the equality
- * operator.
- */
-static StrategyNumber
-get_equal_strategy_number(Oid opclass)
-{
-	Oid			am = get_opclass_method(opclass);
-
-	return get_equal_strategy_number_for_am(am);
 }
 
 /*
@@ -134,6 +121,8 @@ build_replindex_scan_key(ScanKey skey, Relation rel, Relation idxrel,
 		optype = get_opclass_input_type(opclass->values[index_attoff]);
 		opfamily = get_opclass_family(opclass->values[index_attoff]);
 		eq_strategy = get_equal_strategy_number(opclass->values[index_attoff]);
+		if (!eq_strategy)
+			elog(ERROR, "missing equal strategy for opclass %u", opclass->values[index_attoff]);
 
 		operator = get_opfamily_member(opfamily, optype,
 									   optype,
@@ -825,7 +814,7 @@ CheckCmdReplicaIdentity(Relation rel, CmdType cmd)
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 				 errmsg("cannot update table \"%s\"",
 						RelationGetRelationName(rel)),
-				 errdetail("Replica identity consists of an unpublished generated column.")));
+				 errdetail("Replica identity must not contain unpublished generated columns.")));
 	else if (cmd == CMD_DELETE && !pubdesc.rf_valid_for_delete)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
@@ -843,7 +832,7 @@ CheckCmdReplicaIdentity(Relation rel, CmdType cmd)
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 				 errmsg("cannot delete from table \"%s\"",
 						RelationGetRelationName(rel)),
-				 errdetail("Replica identity consists of an unpublished generated column.")));
+				 errdetail("Replica identity must not contain unpublished generated columns.")));
 
 	/* If relation has replica identity we are always good. */
 	if (OidIsValid(RelationGetReplicaIndex(rel)))
