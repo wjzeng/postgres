@@ -26,7 +26,7 @@
  *	before ExecutorEnd.  This can be omitted only in case of EXPLAIN,
  *	which should also omit ExecutorRun.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1257,6 +1257,7 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_ReturningSlot = NULL;
 	resultRelInfo->ri_TrigOldSlot = NULL;
 	resultRelInfo->ri_TrigNewSlot = NULL;
+	resultRelInfo->ri_AllNullSlot = NULL;
 	resultRelInfo->ri_MergeActions[MERGE_WHEN_MATCHED] = NIL;
 	resultRelInfo->ri_MergeActions[MERGE_WHEN_NOT_MATCHED_BY_SOURCE] = NIL;
 	resultRelInfo->ri_MergeActions[MERGE_WHEN_NOT_MATCHED_BY_TARGET] = NIL;
@@ -1751,10 +1752,14 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 	{
 		oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
 		resultRelInfo->ri_ConstraintExprs =
-			(ExprState **) palloc(ncheck * sizeof(ExprState *));
+			(ExprState **) palloc0(ncheck * sizeof(ExprState *));
 		for (i = 0; i < ncheck; i++)
 		{
 			Expr	   *checkconstr;
+
+			/* Skip not enforced constraint */
+			if (!check[i].ccenforced)
+				continue;
 
 			checkconstr = stringToNode(check[i].ccbin);
 			resultRelInfo->ri_ConstraintExprs[i] =
@@ -1782,7 +1787,7 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 		 * is not to be treated as a failure.  Therefore, use ExecCheck not
 		 * ExecQual.
 		 */
-		if (!ExecCheck(checkconstr, econtext))
+		if (checkconstr && !ExecCheck(checkconstr, econtext))
 			return check[i].ccname;
 	}
 

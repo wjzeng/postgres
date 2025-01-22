@@ -4,7 +4,7 @@
  *	  Routines to determine which indexes are usable for scanning a
  *	  given relation, and create Paths accordingly.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2620,7 +2620,7 @@ match_clause_to_index(PlannerInfo *root,
  *
  *	  It is also possible to match a list of OR clauses if it might be
  *	  transformed into a single ScalarArrayOpExpr clause.  On success,
- *	  the returning index clause will contain a trasformed clause.
+ *	  the returning index clause will contain a transformed clause.
  *
  *	  For boolean indexes, it is also possible to match the clause directly
  *	  to the indexkey; or perhaps the clause is (NOT indexkey).
@@ -3675,7 +3675,7 @@ expand_indexqual_rowcompare(PlannerInfo *root,
 		{
 			RowCompareExpr *rc = makeNode(RowCompareExpr);
 
-			rc->rctype = (RowCompareType) op_strategy;
+			rc->cmptype = (CompareType) op_strategy;
 			rc->opnos = new_ops;
 			rc->opfamilies = list_copy_head(clause->opfamilies,
 											matching_cols);

@@ -47,6 +47,7 @@ AggSplit
 AggState
 AggStatePerAgg
 AggStatePerGroup
+AggStatePerGroupData
 AggStatePerHash
 AggStatePerPhase
 AggStatePerTrans
@@ -263,6 +264,7 @@ BitmapAndState
 BitmapHeapPath
 BitmapHeapScan
 BitmapHeapScanInstrumentation
+BitmapHeapScanDesc
 BitmapHeapScanState
 BitmapIndexScan
 BitmapIndexScanState
@@ -383,6 +385,7 @@ CaseTestExpr
 CaseWhen
 Cash
 CastInfo
+CatCInProgress
 CatCList
 CatCTup
 CatCache
@@ -454,7 +457,9 @@ CommitTimestampEntry
 CommitTimestampShared
 CommonEntry
 CommonTableExpr
+CompactAttribute
 CompareScalarsContext
+CompareType
 CompiledExprState
 CompositeIOData
 CompositeTypeStmt
@@ -1981,6 +1986,7 @@ PX_Combo
 PX_HMAC
 PX_MD
 Page
+PageData
 PageGistNSN
 PageHeader
 PageHeaderData
@@ -2121,6 +2127,7 @@ PgFdwSamplingMethod
 PgFdwScanState
 PgIfAddrCallback
 PgStatShared_Archiver
+PgStatShared_Backend
 PgStatShared_BgWriter
 PgStatShared_Checkpointer
 PgStatShared_Common
@@ -2136,6 +2143,8 @@ PgStatShared_SLRU
 PgStatShared_Subscription
 PgStatShared_Wal
 PgStat_ArchiverStats
+PgStat_Backend
+PgStat_BackendPending
 PgStat_BackendSubEntry
 PgStat_BgWriterStats
 PgStat_BktypeIO
@@ -2472,6 +2481,10 @@ ResultRelInfo
 ResultState
 ReturnSetInfo
 ReturnStmt
+ReturningClause
+ReturningExpr
+ReturningOption
+ReturningOptionKind
 RevmapContents
 RevokeRoleGrantAction
 RewriteMappingDataEntry
@@ -2488,7 +2501,6 @@ RoleSpecType
 RoleStmtType
 RollupData
 RowCompareExpr
-RowCompareType
 RowExpr
 RowIdentityVarInfo
 RowMarkClause
@@ -2612,11 +2624,14 @@ SetOpCmd
 SetOpPath
 SetOpState
 SetOpStatePerGroup
+SetOpStatePerGroupData
+SetOpStatePerInput
 SetOpStrategy
 SetOperation
 SetOperationStmt
 SetQuantifier
 SetToDefault
+SetVarReturningType_context
 SetupWorkerPtrType
 ShDependObjectInfo
 SharedAggInfo
@@ -2812,6 +2827,7 @@ TAR_MEMBER
 TBMIterateResult
 TBMIteratingState
 TBMIterator
+TBMPrivateIterator
 TBMSharedIterator
 TBMSharedIteratorState
 TBMStatus
@@ -3022,6 +3038,7 @@ TypeCat
 TypeFuncClass
 TypeInfo
 TypeName
+TzAbbrevCache
 U32
 U8
 UChar
@@ -3077,6 +3094,7 @@ Var
 VarBit
 VarChar
 VarParamState
+VarReturningType
 VarString
 VarStringSortSupport
 Variable
@@ -3737,6 +3755,7 @@ pg_sha256_ctx
 pg_sha384_ctx
 pg_sha512_ctx
 pg_snapshot
+pg_special_case
 pg_stack_base_t
 pg_time_t
 pg_time_usec_t

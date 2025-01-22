@@ -4,7 +4,7 @@
  *	  Post-processing of a completed plan tree: fix references to subplan
  *	  vars, compute regproc values for operators, etc
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1795,6 +1795,12 @@ set_append_references(PlannerInfo *root,
 				PartitionedRelPruneInfo *pinfo = lfirst(l2);
 
 				pinfo->rtindex += rtoffset;
+				pinfo->initial_pruning_steps =
+					fix_scan_list(root, pinfo->initial_pruning_steps,
+								  rtoffset, 1);
+				pinfo->exec_pruning_steps =
+					fix_scan_list(root, pinfo->exec_pruning_steps,
+								  rtoffset, 1);
 			}
 		}
 	}
@@ -1871,6 +1877,12 @@ set_mergeappend_references(PlannerInfo *root,
 				PartitionedRelPruneInfo *pinfo = lfirst(l2);
 
 				pinfo->rtindex += rtoffset;
+				pinfo->initial_pruning_steps =
+					fix_scan_list(root, pinfo->initial_pruning_steps,
+								  rtoffset, 1);
+				pinfo->exec_pruning_steps =
+					fix_scan_list(root, pinfo->exec_pruning_steps,
+								  rtoffset, 1);
 			}
 		}
 	}
@@ -3069,6 +3081,21 @@ fix_join_expr_mutator(Node *node, fix_join_expr_context *context)
 	if (IsA(node, Var))
 	{
 		Var		   *var = (Var *) node;
+
+		/*
+		 * Verify that Vars with non-default varreturningtype only appear in
+		 * the RETURNING list, and refer to the target relation.
+		 */
+		if (var->varreturningtype != VAR_RETURNING_DEFAULT)
+		{
+			if (context->inner_itlist != NULL ||
+				context->outer_itlist == NULL ||
+				context->acceptable_rel == 0)
+				elog(ERROR, "variable returning old/new found outside RETURNING list");
+			if (var->varno != context->acceptable_rel)
+				elog(ERROR, "wrong varno %d (expected %d) for variable returning old/new",
+					 var->varno, context->acceptable_rel);
+		}
 
 		/* Look for the var in the input tlists, first in the outer */
 		if (context->outer_itlist)

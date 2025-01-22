@@ -1,5 +1,5 @@
 
-# Copyright (c) 2021-2024, PostgreSQL Global Development Group
+# Copyright (c) 2021-2025, PostgreSQL Global Development Group
 
 use strict;
 use warnings FATAL => 'all';
@@ -213,7 +213,7 @@ my $nthreads = 2;
 
 {
 	my ($stderr);
-	run_log([ 'pgbench', '-j', '2', '--bad-option' ], '2>', \$stderr);
+	run_log([ 'pgbench', '--jobs' => '2', '--bad-option' ], '2>', \$stderr);
 	$nthreads = 1 if $stderr =~ m/threads are not supported on this platform/;
 }
 
@@ -666,6 +666,56 @@ SELECT :v0, :v1, :v2, :v3;
              permute(:size-6, :size, 5432) = 8648551549198294572 and \
              permute(:size-7, :size, 5432) = 4542876852200565125)
 }
+	});
+
+# test nested \if constructs
+$node->pgbench(
+	'--no-vacuum --client=1 --exit-on-abort --transactions=1',
+	0,
+	[qr{actually processed}],
+	[qr{^$}],
+	'nested ifs',
+	{
+		'pgbench_nested_if' => q(
+			\if false
+				SELECT 1 / 0;
+				\if true
+					SELECT 1 / 0;
+				\elif true
+					SELECT 1 / 0;
+				\else
+					SELECT 1 / 0;
+				\endif
+				SELECT 1 / 0;
+			\elif false
+				\if true
+					SELECT 1 / 0;
+				\elif true
+					SELECT 1 / 0;
+				\else
+					SELECT 1 / 0;
+				\endif
+			\else
+				\if false
+					SELECT 1 / 0;
+				\elif false
+					SELECT 1 / 0;
+				\else
+					SELECT 'correct';
+				\endif
+			\endif
+			\if true
+				SELECT 'correct';
+			\else
+				\if true
+					SELECT 1 / 0;
+				\elif true
+					SELECT 1 / 0;
+				\else
+					SELECT 1 / 0;
+				\endif
+			\endif
+		)
 	});
 
 # random determinism when seeded

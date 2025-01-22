@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024, PostgreSQL Global Development Group
+# Copyright (c) 2022-2025, PostgreSQL Global Development Group
 
 # Entry point for building PostgreSQL with meson
 #
@@ -334,7 +334,7 @@ endif
 # External programs
 perl = find_program(get_option('PERL'), required: true, native: true)
 python = find_program(get_option('PYTHON'), required: true, native: true)
-flex = find_program(get_option('FLEX'), native: true, version: '>= 2.5.35')
+flex = find_program(get_option('FLEX'), native: true)
 bison = find_program(get_option('BISON'), native: true, version: '>= 2.3')
 sed = find_program(get_option('SED'), 'sed', native: true, required: false)
 prove = find_program(get_option('PROVE'), native: true, required: false)
@@ -1727,6 +1727,7 @@ if cc.compiles('''
       my_label:
       return 1;
     }''',
+    name: 'computed goto',
     args: test_c_args)
   cdata.set('HAVE_COMPUTED_GOTO', 1)
 endif
@@ -1743,6 +1744,7 @@ if cc.compiles('''
         ({ _Static_assert(1, "foo"); });
     }
     ''',
+    name: '_Static_assert',
     args: test_c_args)
   cdata.set('HAVE__STATIC_ASSERT', 1)
 endif
@@ -2099,7 +2101,7 @@ __sync_val_compare_and_swap(&val, 0, 37);'''},
   {'name': 'HAVE_GCC__SYNC_INT64_CAS',
    'desc': '__sync_val_compare_and_swap(int64)',
    'test': '''
-INT64 val = 0;
+int64_t val = 0;
 __sync_val_compare_and_swap(&val, 0, 37);'''},
 
   {'name': 'HAVE_GCC__ATOMIC_INT32_CAS',
@@ -2112,13 +2114,14 @@ __atomic_compare_exchange_n(&val, &expect, 37, 0, __ATOMIC_SEQ_CST, __ATOMIC_REL
   {'name': 'HAVE_GCC__ATOMIC_INT64_CAS',
    'desc': ' __atomic_compare_exchange_n(int64)',
    'test': '''
-INT64 val = 0;
-INT64 expect = 0;
+int64_t val = 0;
+int64_t expect = 0;
 __atomic_compare_exchange_n(&val, &expect, 37, 0, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED);'''},
 ]
 
 foreach check : atomic_checks
   test = '''
+#include <stdint.h>
 int main(void)
 {
 @0@
@@ -2359,6 +2362,7 @@ elif host_cpu == 'ppc' or host_cpu == 'ppc64'
       }
       int test_adds(int x) { return addi(3, x) + addi(x, 5); }
       ''',
+      name: '@0@: "i"(x) when __builtin_constant_p(x)'.format(host_cpu),
       args: test_c_args)
       cdata.set('HAVE_I_CONSTRAINT__BUILTIN_CONSTANT_P', 1)
     endif
@@ -2537,7 +2541,7 @@ endif
 
 # Check if the C compiler understands typeof or a variant.  Define
 # HAVE_TYPEOF if so, and define 'typeof' to the actual key word.
-foreach kw : ['typeof', '__typeof__', 'decltype']
+foreach kw : ['typeof', '__typeof__']
   if cc.compiles('''
 int main(void)
 {
@@ -2547,7 +2551,7 @@ int main(void)
     return y;
 }
 '''.format(kw),
-    name: 'typeof()',
+    name: kw,
     args: test_c_args, include_directories: postgres_inc)
 
     cdata.set('HAVE_TYPEOF', 1)

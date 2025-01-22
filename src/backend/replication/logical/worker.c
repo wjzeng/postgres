@@ -2,7 +2,7 @@
  * worker.c
  *	   PostgreSQL logical replication worker (apply)
  *
- * Copyright (c) 2016-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2025, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/worker.c
@@ -3948,7 +3948,10 @@ apply_worker_exit(void)
 }
 
 /*
- * Reread subscription info if needed. Most changes will be exit.
+ * Reread subscription info if needed.
+ *
+ * For significant changes, we react by exiting the current process; a new
+ * one will be launched afterwards if needed.
  */
 void
 maybe_reread_subscription(void)

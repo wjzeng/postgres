@@ -6,7 +6,7 @@
  * Code supporting the direct import of relation attribute statistics, similar
  * to what is done by the ANALYZE command.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -538,7 +538,7 @@ get_attr_stat_type(Oid reloid, AttrNumber attnum, int elevel,
 	 * When analyzing an expression index, believe the expression tree's type
 	 * not the column datatype --- the latter might be the opckeytype storage
 	 * type of the opclass, which is not interesting for our purposes. This
-	 * mimics the behvior of examine_attribute().
+	 * mimics the behavior of examine_attribute().
 	 */
 	if (expr == NULL)
 	{

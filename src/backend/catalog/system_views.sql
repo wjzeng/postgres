@@ -1,7 +1,7 @@
 /*
  * PostgreSQL System Views
  *
- * Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Copyright (c) 1996-2025, PostgreSQL Global Development Group
  *
  * src/backend/catalog/system_views.sql
  *
@@ -634,7 +634,12 @@ REVOKE ALL ON pg_ident_file_mappings FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION pg_ident_file_mappings() FROM PUBLIC;
 
 CREATE VIEW pg_timezone_abbrevs AS
-    SELECT * FROM pg_timezone_abbrevs();
+    SELECT * FROM pg_timezone_abbrevs_zone() z
+    UNION ALL
+    (SELECT * FROM pg_timezone_abbrevs_abbrevs() a
+     WHERE NOT EXISTS (SELECT 1 FROM pg_timezone_abbrevs_zone() z2
+                       WHERE z2.abbrev = a.abbrev))
+    ORDER BY abbrev;
 
 CREATE VIEW pg_timezone_names AS
     SELECT * FROM pg_timezone_names();
@@ -1156,14 +1161,16 @@ SELECT
        b.object,
        b.context,
        b.reads,
+       b.read_bytes,
        b.read_time,
        b.writes,
+       b.write_bytes,
        b.write_time,
        b.writebacks,
        b.writeback_time,
        b.extends,
+       b.extend_bytes,
        b.extend_time,
-       b.op_bytes,
        b.hits,
        b.evictions,
        b.reuses,

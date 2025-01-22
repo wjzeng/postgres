@@ -1221,8 +1221,10 @@ where o.ten = 0;
 (1 row)
 
 --
--- Test rescan of a SetOp node
+-- Test rescan of a hashed SetOp node
 --
+begin;
+set local enable_sort = off;
 explain (costs off)
 select count(*) from
   onek o cross join lateral (
@@ -1231,21 +1233,60 @@ select count(*) from
     select * from onek i2 where i2.unique1 = o.unique2
   ) ss
 where o.ten = 1;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
+                         QUERY PLAN                         
+------------------------------------------------------------
  Aggregate
    ->  Nested Loop
          ->  Seq Scan on onek o
                Filter: (ten = 1)
-         ->  Subquery Scan on ss
-               ->  HashSetOp Except
-                     ->  Append
-                           ->  Subquery Scan on "*SELECT* 1"
-                                 ->  Index Scan using onek_unique1 on onek i1
-                                       Index Cond: (unique1 = o.unique1)
-                           ->  Subquery Scan on "*SELECT* 2"
-                                 ->  Index Scan using onek_unique1 on onek i2
-                                       Index Cond: (unique1 = o.unique2)
+         ->  HashSetOp Except
+               ->  Index Scan using onek_unique1 on onek i1
+                     Index Cond: (unique1 = o.unique1)
+               ->  Index Scan using onek_unique1 on onek i2
+                     Index Cond: (unique1 = o.unique2)
+(9 rows)
+
+select count(*) from
+  onek o cross join lateral (
+    select * from onek i1 where i1.unique1 = o.unique1
+    except
+    select * from onek i2 where i2.unique1 = o.unique2
+  ) ss
+where o.ten = 1;
+ count 
+-------
+   100
+(1 row)
+
+rollback;
+--
+-- Test rescan of a sorted SetOp node
+--
+begin;
+set local enable_hashagg = off;
+explain (costs off)
+select count(*) from
+  onek o cross join lateral (
+    select * from onek i1 where i1.unique1 = o.unique1
+    except
+    select * from onek i2 where i2.unique1 = o.unique2
+  ) ss
+where o.ten = 1;
+                                                                                                     QUERY PLAN                                                                                                      
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate
+   ->  Nested Loop
+         ->  Seq Scan on onek o
+               Filter: (ten = 1)
+         ->  SetOp Except
+               ->  Sort
+                     Sort Key: i1.unique1, i1.unique2, i1.two, i1.four, i1.ten, i1.twenty, i1.hundred, i1.thousand, i1.twothousand, i1.fivethous, i1.tenthous, i1.odd, i1.even, i1.stringu1, i1.stringu2, i1.string4
+                     ->  Index Scan using onek_unique1 on onek i1
+                           Index Cond: (unique1 = o.unique1)
+               ->  Sort
+                     Sort Key: i2.unique1, i2.unique2, i2.two, i2.four, i2.ten, i2.twenty, i2.hundred, i2.thousand, i2.twothousand, i2.fivethous, i2.tenthous, i2.odd, i2.even, i2.stringu1, i2.stringu2, i2.string4
+                     ->  Index Scan using onek_unique1 on onek i2
+                           Index Cond: (unique1 = o.unique2)
 (13 rows)
 
 select count(*) from
@@ -1260,6 +1301,7 @@ where o.ten = 1;
    100
 (1 row)
 
+rollback;
 --
 -- Test rescan of a RecursiveUnion node
 --
@@ -1846,6 +1888,109 @@ order by 1, 2;
  4567890123456789 | 9135780246913578
  4567890123456789 | 9135780246913578
  4567890123456789 | 9135780246913578
+(11 rows)
+
+-- strict expressions containing variables of rels under the same lowest
+-- nulling outer join can escape being wrapped
+explain (verbose, costs off)
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 inner join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Sort
+   Output: t1.q1, ((t2.q1 + 1))
+   Sort Key: t1.q1, ((t2.q1 + 1))
+   ->  Hash Right Join
+         Output: t1.q1, (t2.q1 + 1)
+         Hash Cond: (t2.q2 = t1.q2)
+         ->  Hash Join
+               Output: t2.q1, t2.q2
+               Hash Cond: (t2.q2 = t3.q2)
+               ->  Seq Scan on public.int8_tbl t2
+                     Output: t2.q1, t2.q2
+               ->  Hash
+                     Output: t3.q2
+                     ->  Seq Scan on public.int8_tbl t3
+                           Output: t3.q2
+         ->  Hash
+               Output: t1.q1, t1.q2
+               ->  Seq Scan on public.int8_tbl t1
+                     Output: t1.q1, t1.q2
+(19 rows)
+
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 inner join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+        q1        |        x         
+------------------+------------------
+              123 |              124
+              123 |              124
+              123 |              124
+              123 | 4567890123456790
+              123 | 4567890123456790
+ 4567890123456789 |              124
+ 4567890123456789 |              124
+ 4567890123456789 | 4567890123456790
+ 4567890123456789 | 4567890123456790
+ 4567890123456789 | 4567890123456790
+ 4567890123456789 | 4567890123456790
+(11 rows)
+
+-- otherwise we need to wrap the strict expressions
+explain (verbose, costs off)
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 left join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Sort
+   Output: t1.q1, ((t2.q1 + 1))
+   Sort Key: t1.q1, ((t2.q1 + 1))
+   ->  Hash Right Join
+         Output: t1.q1, ((t2.q1 + 1))
+         Hash Cond: (t2.q2 = t1.q2)
+         ->  Nested Loop Left Join
+               Output: t2.q2, ((t2.q1 + 1))
+               ->  Seq Scan on public.int8_tbl t2
+                     Output: t2.q1, t2.q2
+               ->  Seq Scan on public.int8_tbl t3
+                     Output: t3.q2, (t2.q1 + 1)
+                     Filter: (t2.q2 = t3.q2)
+         ->  Hash
+               Output: t1.q1, t1.q2
+               ->  Seq Scan on public.int8_tbl t1
+                     Output: t1.q1, t1.q2
+(17 rows)
+
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 left join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+        q1        |        x         
+------------------+------------------
+              123 |              124
+              123 |              124
+              123 |              124
+              123 | 4567890123456790
+              123 | 4567890123456790
+ 4567890123456789 |              124
+ 4567890123456789 |              124
+ 4567890123456789 | 4567890123456790
+ 4567890123456789 | 4567890123456790
+ 4567890123456789 | 4567890123456790
+ 4567890123456789 | 4567890123456790
 (11 rows)
 
 -- lateral references for simple Vars can escape being wrapped if the

@@ -638,8 +638,11 @@ select sum(ss.tst::int) from
 where o.ten = 0;
 
 --
--- Test rescan of a SetOp node
+-- Test rescan of a hashed SetOp node
 --
+begin;
+set local enable_sort = off;
+
 explain (costs off)
 select count(*) from
   onek o cross join lateral (
@@ -656,6 +659,33 @@ select count(*) from
     select * from onek i2 where i2.unique1 = o.unique2
   ) ss
 where o.ten = 1;
+
+rollback;
+
+--
+-- Test rescan of a sorted SetOp node
+--
+begin;
+set local enable_hashagg = off;
+
+explain (costs off)
+select count(*) from
+  onek o cross join lateral (
+    select * from onek i1 where i1.unique1 = o.unique1
+    except
+    select * from onek i2 where i2.unique1 = o.unique2
+  ) ss
+where o.ten = 1;
+
+select count(*) from
+  onek o cross join lateral (
+    select * from onek i1 where i1.unique1 = o.unique1
+    except
+    select * from onek i2 where i2.unique1 = o.unique2
+  ) ss
+where o.ten = 1;
+
+rollback;
 
 --
 -- Test rescan of a RecursiveUnion node
@@ -936,6 +966,39 @@ select t1.q1, x from
   int8_tbl t1 left join
   (int8_tbl t2 left join
    lateral (select t2.q1+t3.q1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+
+-- strict expressions containing variables of rels under the same lowest
+-- nulling outer join can escape being wrapped
+explain (verbose, costs off)
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 inner join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 inner join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+
+-- otherwise we need to wrap the strict expressions
+explain (verbose, costs off)
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 left join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
+  on t1.q2 = t2.q2
+order by 1, 2;
+
+select t1.q1, x from
+  int8_tbl t1 left join
+  (int8_tbl t2 left join
+   lateral (select t2.q1+1 as x, * from int8_tbl t3) t3 on t2.q2 = t3.q2)
   on t1.q2 = t2.q2
 order by 1, 2;
 

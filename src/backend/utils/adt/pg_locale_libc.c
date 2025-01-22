@@ -2,7 +2,7 @@
  *
  * PostgreSQL locale utilities for libc
  *
- * Portions Copyright (c) 2002-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2002-2025, PostgreSQL Global Development Group
  *
  * src/backend/utils/adt/pg_locale_libc.c
  *
@@ -10,6 +10,9 @@
  */
 
 #include "postgres.h"
+
+#include <limits.h>
+#include <wctype.h>
 
 #include "access/htup_details.h"
 #include "catalog/pg_database.h"
@@ -22,6 +25,14 @@
 #include "utils/pg_locale.h"
 #include "utils/syscache.h"
 
+#ifdef __GLIBC__
+#include <gnu/libc-version.h>
+#endif
+
+#ifdef WIN32
+#include <shlwapi.h>
+#endif
+
 /*
  * Size of stack buffer to use for string transformations, used to avoid heap
  * allocations in typical cases. This should be large enough that most strings
@@ -32,12 +43,20 @@
 
 extern pg_locale_t create_pg_locale_libc(Oid collid, MemoryContext context);
 
-extern int	strncoll_libc(const char *arg1, ssize_t len1,
+extern size_t strlower_libc(char *dst, size_t dstsize, const char *src,
+							ssize_t srclen, pg_locale_t locale);
+extern size_t strtitle_libc(char *dst, size_t dstsize, const char *src,
+							ssize_t srclen, pg_locale_t locale);
+extern size_t strupper_libc(char *dst, size_t dstsize, const char *src,
+							ssize_t srclen, pg_locale_t locale);
+
+static int	strncoll_libc(const char *arg1, ssize_t len1,
 						  const char *arg2, ssize_t len2,
 						  pg_locale_t locale);
-extern size_t strnxfrm_libc(char *dest, size_t destsize,
+static size_t strnxfrm_libc(char *dest, size_t destsize,
 							const char *src, ssize_t srclen,
 							pg_locale_t locale);
+extern char *get_collation_actual_version_libc(const char *collcollate);
 static locale_t make_libc_collator(const char *collate,
 								   const char *ctype);
 static void report_newlocale_failure(const char *localename);
@@ -47,6 +66,357 @@ static int	strncoll_libc_win32_utf8(const char *arg1, ssize_t len1,
 									 const char *arg2, ssize_t len2,
 									 pg_locale_t locale);
 #endif
+
+static size_t strlower_libc_sb(char *dest, size_t destsize,
+							   const char *src, ssize_t srclen,
+							   pg_locale_t locale);
+static size_t strlower_libc_mb(char *dest, size_t destsize,
+							   const char *src, ssize_t srclen,
+							   pg_locale_t locale);
+static size_t strtitle_libc_sb(char *dest, size_t destsize,
+							   const char *src, ssize_t srclen,
+							   pg_locale_t locale);
+static size_t strtitle_libc_mb(char *dest, size_t destsize,
+							   const char *src, ssize_t srclen,
+							   pg_locale_t locale);
+static size_t strupper_libc_sb(char *dest, size_t destsize,
+							   const char *src, ssize_t srclen,
+							   pg_locale_t locale);
+static size_t strupper_libc_mb(char *dest, size_t destsize,
+							   const char *src, ssize_t srclen,
+							   pg_locale_t locale);
+
+static const struct collate_methods collate_methods_libc = {
+	.strncoll = strncoll_libc,
+	.strnxfrm = strnxfrm_libc,
+	.strnxfrm_prefix = NULL,
+
+	/*
+	 * Unfortunately, it seems that strxfrm() for non-C collations is broken
+	 * on many common platforms; testing of multiple versions of glibc reveals
+	 * that, for many locales, strcoll() and strxfrm() do not return
+	 * consistent results. While no other libc other than Cygwin has so far
+	 * been shown to have a problem, we take the conservative course of action
+	 * for right now and disable this categorically.  (Users who are certain
+	 * this isn't a problem on their system can define TRUST_STRXFRM.)
+	 */
+#ifdef TRUST_STRXFRM
+	.strxfrm_is_safe = true,
+#else
+	.strxfrm_is_safe = false,
+#endif
+};
+
+#ifdef WIN32
+static const struct collate_methods collate_methods_libc_win32_utf8 = {
+	.strncoll = strncoll_libc_win32_utf8,
+	.strnxfrm = strnxfrm_libc,
+	.strnxfrm_prefix = NULL,
+#ifdef TRUST_STRXFRM
+	.strxfrm_is_safe = true,
+#else
+	.strxfrm_is_safe = false,
+#endif
+};
+#endif
+
+size_t
+strlower_libc(char *dst, size_t dstsize, const char *src,
+			  ssize_t srclen, pg_locale_t locale)
+{
+	if (pg_database_encoding_max_length() > 1)
+		return strlower_libc_mb(dst, dstsize, src, srclen, locale);
+	else
+		return strlower_libc_sb(dst, dstsize, src, srclen, locale);
+}
+
+size_t
+strtitle_libc(char *dst, size_t dstsize, const char *src,
+			  ssize_t srclen, pg_locale_t locale)
+{
+	if (pg_database_encoding_max_length() > 1)
+		return strtitle_libc_mb(dst, dstsize, src, srclen, locale);
+	else
+		return strtitle_libc_sb(dst, dstsize, src, srclen, locale);
+}
+
+size_t
+strupper_libc(char *dst, size_t dstsize, const char *src,
+			  ssize_t srclen, pg_locale_t locale)
+{
+	if (pg_database_encoding_max_length() > 1)
+		return strupper_libc_mb(dst, dstsize, src, srclen, locale);
+	else
+		return strupper_libc_sb(dst, dstsize, src, srclen, locale);
+}
+
+static size_t
+strlower_libc_sb(char *dest, size_t destsize, const char *src, ssize_t srclen,
+				 pg_locale_t locale)
+{
+	if (srclen < 0)
+		srclen = strlen(src);
+
+	if (srclen + 1 <= destsize)
+	{
+		locale_t	loc = locale->info.lt;
+		char	   *p;
+
+		if (srclen + 1 > destsize)
+			return srclen;
+
+		memcpy(dest, src, srclen);
+		dest[srclen] = '\0';
+
+		/*
+		 * Note: we assume that tolower_l() will not be so broken as to need
+		 * an isupper_l() guard test.  When using the default collation, we
+		 * apply the traditional Postgres behavior that forces ASCII-style
+		 * treatment of I/i, but in non-default collations you get exactly
+		 * what the collation says.
+		 */
+		for (p = dest; *p; p++)
+		{
+			if (locale->is_default)
+				*p = pg_tolower((unsigned char) *p);
+			else
+				*p = tolower_l((unsigned char) *p, loc);
+		}
+	}
+
+	return srclen;
+}
+
+static size_t
+strlower_libc_mb(char *dest, size_t destsize, const char *src, ssize_t srclen,
+				 pg_locale_t locale)
+{
+	locale_t	loc = locale->info.lt;
+	size_t		result_size;
+	wchar_t    *workspace;
+	char	   *result;
+	size_t		curr_char;
+	size_t		max_size;
+
+	if (srclen < 0)
+		srclen = strlen(src);
+
+	/* Overflow paranoia */
+	if ((srclen + 1) > (INT_MAX / sizeof(wchar_t)))
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+
+	/* Output workspace cannot have more codes than input bytes */
+	workspace = (wchar_t *) palloc((srclen + 1) * sizeof(wchar_t));
+
+	char2wchar(workspace, srclen + 1, src, srclen, locale);
+
+	for (curr_char = 0; workspace[curr_char] != 0; curr_char++)
+		workspace[curr_char] = towlower_l(workspace[curr_char], loc);
+
+	/*
+	 * Make result large enough; case change might change number of bytes
+	 */
+	max_size = curr_char * pg_database_encoding_max_length();
+	result = palloc(max_size + 1);
+
+	result_size = wchar2char(result, workspace, max_size + 1, locale);
+
+	if (result_size + 1 > destsize)
+		return result_size;
+
+	memcpy(dest, result, result_size);
+	dest[result_size] = '\0';
+
+	pfree(workspace);
+	pfree(result);
+
+	return result_size;
+}
+
+static size_t
+strtitle_libc_sb(char *dest, size_t destsize, const char *src, ssize_t srclen,
+				 pg_locale_t locale)
+{
+	if (srclen < 0)
+		srclen = strlen(src);
+
+	if (srclen + 1 <= destsize)
+	{
+		locale_t	loc = locale->info.lt;
+		int			wasalnum = false;
+		char	   *p;
+
+		memcpy(dest, src, srclen);
+		dest[srclen] = '\0';
+
+		/*
+		 * Note: we assume that toupper_l()/tolower_l() will not be so broken
+		 * as to need guard tests.  When using the default collation, we apply
+		 * the traditional Postgres behavior that forces ASCII-style treatment
+		 * of I/i, but in non-default collations you get exactly what the
+		 * collation says.
+		 */
+		for (p = dest; *p; p++)
+		{
+			if (locale->is_default)
+			{
+				if (wasalnum)
+					*p = pg_tolower((unsigned char) *p);
+				else
+					*p = pg_toupper((unsigned char) *p);
+			}
+			else
+			{
+				if (wasalnum)
+					*p = tolower_l((unsigned char) *p, loc);
+				else
+					*p = toupper_l((unsigned char) *p, loc);
+			}
+			wasalnum = isalnum_l((unsigned char) *p, loc);
+		}
+	}
+
+	return srclen;
+}
+
+static size_t
+strtitle_libc_mb(char *dest, size_t destsize, const char *src, ssize_t srclen,
+				 pg_locale_t locale)
+{
+	locale_t	loc = locale->info.lt;
+	int			wasalnum = false;
+	size_t		result_size;
+	wchar_t    *workspace;
+	char	   *result;
+	size_t		curr_char;
+	size_t		max_size;
+
+	if (srclen < 0)
+		srclen = strlen(src);
+
+	/* Overflow paranoia */
+	if ((srclen + 1) > (INT_MAX / sizeof(wchar_t)))
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+
+	/* Output workspace cannot have more codes than input bytes */
+	workspace = (wchar_t *) palloc((srclen + 1) * sizeof(wchar_t));
+
+	char2wchar(workspace, srclen + 1, src, srclen, locale);
+
+	for (curr_char = 0; workspace[curr_char] != 0; curr_char++)
+	{
+		if (wasalnum)
+			workspace[curr_char] = towlower_l(workspace[curr_char], loc);
+		else
+			workspace[curr_char] = towupper_l(workspace[curr_char], loc);
+		wasalnum = iswalnum_l(workspace[curr_char], loc);
+	}
+
+	/*
+	 * Make result large enough; case change might change number of bytes
+	 */
+	max_size = curr_char * pg_database_encoding_max_length();
+	result = palloc(max_size + 1);
+
+	result_size = wchar2char(result, workspace, max_size + 1, locale);
+
+	if (result_size + 1 > destsize)
+		return result_size;
+
+	memcpy(dest, result, result_size);
+	dest[result_size] = '\0';
+
+	pfree(workspace);
+	pfree(result);
+
+	return result_size;
+}
+
+static size_t
+strupper_libc_sb(char *dest, size_t destsize, const char *src, ssize_t srclen,
+				 pg_locale_t locale)
+{
+	if (srclen < 0)
+		srclen = strlen(src);
+
+	if (srclen + 1 <= destsize)
+	{
+		locale_t	loc = locale->info.lt;
+		char	   *p;
+
+		memcpy(dest, src, srclen);
+		dest[srclen] = '\0';
+
+		/*
+		 * Note: we assume that toupper_l() will not be so broken as to need
+		 * an islower_l() guard test.  When using the default collation, we
+		 * apply the traditional Postgres behavior that forces ASCII-style
+		 * treatment of I/i, but in non-default collations you get exactly
+		 * what the collation says.
+		 */
+		for (p = dest; *p; p++)
+		{
+			if (locale->is_default)
+				*p = pg_toupper((unsigned char) *p);
+			else
+				*p = toupper_l((unsigned char) *p, loc);
+		}
+	}
+
+	return srclen;
+}
+
+static size_t
+strupper_libc_mb(char *dest, size_t destsize, const char *src, ssize_t srclen,
+				 pg_locale_t locale)
+{
+	locale_t	loc = locale->info.lt;
+	size_t		result_size;
+	wchar_t    *workspace;
+	char	   *result;
+	size_t		curr_char;
+	size_t		max_size;
+
+	if (srclen < 0)
+		srclen = strlen(src);
+
+	/* Overflow paranoia */
+	if ((srclen + 1) > (INT_MAX / sizeof(wchar_t)))
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+
+	/* Output workspace cannot have more codes than input bytes */
+	workspace = (wchar_t *) palloc((srclen + 1) * sizeof(wchar_t));
+
+	char2wchar(workspace, srclen + 1, src, srclen, locale);
+
+	for (curr_char = 0; workspace[curr_char] != 0; curr_char++)
+		workspace[curr_char] = towupper_l(workspace[curr_char], loc);
+
+	/*
+	 * Make result large enough; case change might change number of bytes
+	 */
+	max_size = curr_char * pg_database_encoding_max_length();
+	result = palloc(max_size + 1);
+
+	result_size = wchar2char(result, workspace, max_size + 1, locale);
+
+	if (result_size + 1 > destsize)
+		return result_size;
+
+	memcpy(dest, result, result_size);
+	dest[result_size] = '\0';
+
+	pfree(workspace);
+	pfree(result);
+
+	return result_size;
+}
 
 pg_locale_t
 create_pg_locale_libc(Oid collid, MemoryContext context)
@@ -103,6 +473,15 @@ create_pg_locale_libc(Oid collid, MemoryContext context)
 	result->ctype_is_c = (strcmp(ctype, "C") == 0) ||
 		(strcmp(ctype, "POSIX") == 0);
 	result->info.lt = loc;
+	if (!result->collate_is_c)
+	{
+#ifdef WIN32
+		if (GetDatabaseEncoding() == PG_UTF8)
+			result->collate = &collate_methods_libc_win32_utf8;
+		else
+#endif
+			result->collate = &collate_methods_libc;
+	}
 
 	return result;
 }
@@ -200,12 +579,6 @@ strncoll_libc(const char *arg1, ssize_t len1, const char *arg2, ssize_t len2,
 
 	Assert(locale->provider == COLLPROVIDER_LIBC);
 
-#ifdef WIN32
-	/* check for this case before doing the work for nul-termination */
-	if (GetDatabaseEncoding() == PG_UTF8)
-		return strncoll_libc_win32_utf8(arg1, len1, arg2, len2, locale);
-#endif							/* WIN32 */
-
 	if (bufsize1 + bufsize2 > TEXTBUFLEN)
 		buf = palloc(bufsize1 + bufsize2);
 
@@ -281,6 +654,71 @@ strnxfrm_libc(char *dest, size_t destsize, const char *src, ssize_t srclen,
 	Assert(result >= destsize || dest[result] == '\0');
 
 	return result;
+}
+
+char *
+get_collation_actual_version_libc(const char *collcollate)
+{
+	char	   *collversion = NULL;
+
+	if (pg_strcasecmp("C", collcollate) != 0 &&
+		pg_strncasecmp("C.", collcollate, 2) != 0 &&
+		pg_strcasecmp("POSIX", collcollate) != 0)
+	{
+#if defined(__GLIBC__)
+		/* Use the glibc version because we don't have anything better. */
+		collversion = pstrdup(gnu_get_libc_version());
+#elif defined(LC_VERSION_MASK)
+		locale_t	loc;
+
+		/* Look up FreeBSD collation version. */
+		loc = newlocale(LC_COLLATE_MASK, collcollate, NULL);
+		if (loc)
+		{
+			collversion =
+				pstrdup(querylocale(LC_COLLATE_MASK | LC_VERSION_MASK, loc));
+			freelocale(loc);
+		}
+		else
+			ereport(ERROR,
+					(errmsg("could not load locale \"%s\"", collcollate)));
+#elif defined(WIN32)
+		/*
+		 * If we are targeting Windows Vista and above, we can ask for a name
+		 * given a collation name (earlier versions required a location code
+		 * that we don't have).
+		 */
+		NLSVERSIONINFOEX version = {sizeof(NLSVERSIONINFOEX)};
+		WCHAR		wide_collcollate[LOCALE_NAME_MAX_LENGTH];
+
+		MultiByteToWideChar(CP_ACP, 0, collcollate, -1, wide_collcollate,
+							LOCALE_NAME_MAX_LENGTH);
+		if (!GetNLSVersionEx(COMPARE_STRING, wide_collcollate, &version))
+		{
+			/*
+			 * GetNLSVersionEx() wants a language tag such as "en-US", not a
+			 * locale name like "English_United States.1252".  Until those
+			 * values can be prevented from entering the system, or 100%
+			 * reliably converted to the more useful tag format, tolerate the
+			 * resulting error and report that we have no version data.
+			 */
+			if (GetLastError() == ERROR_INVALID_PARAMETER)
+				return NULL;
+
+			ereport(ERROR,
+					(errmsg("could not get collation version for locale \"%s\": error code %lu",
+							collcollate,
+							GetLastError())));
+		}
+		collversion = psprintf("%lu.%lu,%lu.%lu",
+							   (version.dwNLSVersion >> 8) & 0xFFFF,
+							   version.dwNLSVersion & 0xFF,
+							   (version.dwDefinedVersion >> 8) & 0xFFFF,
+							   version.dwDefinedVersion & 0xFF);
+#endif
+	}
+
+	return collversion;
 }
 
 /*

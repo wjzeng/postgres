@@ -3,7 +3,7 @@
  * restrictinfo.c
  *	  RestrictInfo node manipulation routines.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -96,7 +96,7 @@ make_restrictinfo(PlannerInfo *root,
  * make_plain_restrictinfo
  *
  * Common code for the main entry points and the recursive cases.  Also,
- * useful while contrucitng RestrictInfos above OR clause, which already has
+ * useful while constructing RestrictInfos above OR clause, which already has
  * RestrictInfos above its subclauses.
  */
 RestrictInfo *

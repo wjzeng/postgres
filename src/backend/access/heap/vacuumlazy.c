@@ -3,6 +3,60 @@
  * vacuumlazy.c
  *	  Concurrent ("lazy") vacuuming.
  *
+ * Heap relations are vacuumed in three main phases. In phase I, vacuum scans
+ * relation pages, pruning and freezing tuples and saving dead tuples' TIDs in
+ * a TID store. If that TID store fills up or vacuum finishes scanning the
+ * relation, it progresses to phase II: index vacuuming. Index vacuuming
+ * deletes the dead index entries referenced in the TID store. In phase III,
+ * vacuum scans the blocks of the relation referred to by the TIDs in the TID
+ * store and reaps the corresponding dead items, freeing that space for future
+ * tuples.
+ *
+ * If there are no indexes or index scanning is disabled, phase II may be
+ * skipped. If phase I identified very few dead index entries or if vacuum's
+ * failsafe mechanism has triggered (to avoid transaction ID wraparound),
+ * vacuum may skip phases II and III.
+ *
+ * If the TID store fills up in phase I, vacuum suspends phase I, proceeds to
+ * phases II and II, cleaning up the dead tuples referenced in the current TID
+ * store. This empties the TID store resumes phase I.
+ *
+ * In a way, the phases are more like states in a state machine, but they have
+ * been referred to colloquially as phases for so long that they are referred
+ * to as such here.
+ *
+ * Manually invoked VACUUMs may scan indexes during phase II in parallel. For
+ * more information on this, see the comment at the top of vacuumparallel.c.
+ *
+ * In between phases, vacuum updates the freespace map (every
+ * VACUUM_FSM_EVERY_PAGES).
+ *
+ * After completing all three phases, vacuum may truncate the relation if it
+ * has emptied pages at the end. Finally, vacuum updates relation statistics
+ * in pg_class and the cumulative statistics subsystem.
+ *
+ * Relation Scanning:
+ *
+ * Vacuum scans the heap relation, starting at the beginning and progressing
+ * to the end, skipping pages as permitted by their visibility status, vacuum
+ * options, and various other requirements.
+ *
+ * When page skipping is not disabled, a non-aggressive vacuum may scan pages
+ * that are marked all-visible (and even all-frozen) in the visibility map if
+ * the range of skippable pages is below SKIP_PAGES_THRESHOLD.
+ *
+ * Once vacuum has decided to scan a given block, it must read the block and
+ * obtain a cleanup lock to prune tuples on the page. A non-aggressive vacuum
+ * may choose to skip pruning and freezing if it cannot acquire a cleanup lock
+ * on the buffer right away. In this case, it may miss cleaning up dead tuples
+ * and their associated index entries (though it is free to reap any existing
+ * dead items on the page).
+ *
+ * After pruning and freezing, pages that are newly all-visible and all-frozen
+ * are marked as such in the visibility map.
+ *
+ * Dead TID Storage:
+ *
  * The major space usage for vacuuming is storage for the dead tuple IDs that
  * are to be removed from indexes.  We want to ensure we can vacuum even the
  * very largest relations with finite memory space usage.  To do that, we set
@@ -20,7 +74,7 @@
  * that there only needs to be one call to lazy_vacuum, after the initial pass
  * completes.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -188,7 +242,22 @@ typedef struct LVRelState
 	BlockNumber rel_pages;		/* total number of pages */
 	BlockNumber scanned_pages;	/* # pages examined (not skipped via VM) */
 	BlockNumber removed_pages;	/* # pages removed by relation truncation */
-	BlockNumber frozen_pages;	/* # pages with newly frozen tuples */
+	BlockNumber new_frozen_tuple_pages; /* # pages with newly frozen tuples */
+
+	/* # pages newly set all-visible in the VM */
+	BlockNumber vm_new_visible_pages;
+
+	/*
+	 * # pages newly set all-visible and all-frozen in the VM. This is a
+	 * subset of vm_new_visible_pages. That is, vm_new_visible_pages includes
+	 * all pages set all-visible, but vm_new_visible_frozen_pages includes
+	 * only those which were also set all-frozen.
+	 */
+	BlockNumber vm_new_visible_frozen_pages;
+
+	/* # all-visible pages newly set all-frozen in the VM */
+	BlockNumber vm_new_frozen_pages;
+
 	BlockNumber lpdead_item_pages;	/* # pages with LP_DEAD items */
 	BlockNumber missed_dead_pages;	/* # pages with missed dead tuples */
 	BlockNumber nonempty_pages; /* actually, last nonempty page + 1 */
@@ -407,7 +476,7 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 	/* Initialize page counters explicitly (be tidy) */
 	vacrel->scanned_pages = 0;
 	vacrel->removed_pages = 0;
-	vacrel->frozen_pages = 0;
+	vacrel->new_frozen_tuple_pages = 0;
 	vacrel->lpdead_item_pages = 0;
 	vacrel->missed_dead_pages = 0;
 	vacrel->nonempty_pages = 0;
@@ -427,6 +496,10 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 	vacrel->live_tuples = 0;
 	vacrel->recently_dead_tuples = 0;
 	vacrel->missed_dead_tuples = 0;
+
+	vacrel->vm_new_visible_pages = 0;
+	vacrel->vm_new_visible_frozen_pages = 0;
+	vacrel->vm_new_frozen_pages = 0;
 
 	/*
 	 * Get cutoffs that determine which deleted tuples are considered DEAD,
@@ -696,10 +769,18 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 								 vacrel->NewRelminMxid, diff);
 			}
 			appendStringInfo(&buf, _("frozen: %u pages from table (%.2f%% of total) had %lld tuples frozen\n"),
-							 vacrel->frozen_pages,
+							 vacrel->new_frozen_tuple_pages,
 							 orig_rel_pages == 0 ? 100.0 :
-							 100.0 * vacrel->frozen_pages / orig_rel_pages,
+							 100.0 * vacrel->new_frozen_tuple_pages /
+							 orig_rel_pages,
 							 (long long) vacrel->tuples_frozen);
+
+			appendStringInfo(&buf,
+							 _("visibility map: %u pages set all-visible, %u pages set all-frozen (%u were all-visible)\n"),
+							 vacrel->vm_new_visible_pages,
+							 vacrel->vm_new_visible_frozen_pages +
+							 vacrel->vm_new_frozen_pages,
+							 vacrel->vm_new_frozen_pages);
 			if (vacrel->do_index_vacuuming)
 			{
 				if (vacrel->nindexes == 0 || vacrel->num_index_scans == 0)
@@ -1353,6 +1434,8 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 		 */
 		if (!PageIsAllVisible(page))
 		{
+			uint8		old_vmbits;
+
 			START_CRIT_SECTION();
 
 			/* mark buffer dirty before writing a WAL record */
@@ -1372,10 +1455,24 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 				log_newpage_buffer(buf, true);
 
 			PageSetAllVisible(page);
-			visibilitymap_set(vacrel->rel, blkno, buf, InvalidXLogRecPtr,
-							  vmbuffer, InvalidTransactionId,
-							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
+			old_vmbits = visibilitymap_set(vacrel->rel, blkno, buf,
+										   InvalidXLogRecPtr,
+										   vmbuffer, InvalidTransactionId,
+										   VISIBILITYMAP_ALL_VISIBLE |
+										   VISIBILITYMAP_ALL_FROZEN);
 			END_CRIT_SECTION();
+
+			/*
+			 * If the page wasn't already set all-visible and/or all-frozen in
+			 * the VM, count it as newly set for logging.
+			 */
+			if ((old_vmbits & VISIBILITYMAP_ALL_VISIBLE) == 0)
+			{
+				vacrel->vm_new_visible_pages++;
+				vacrel->vm_new_visible_frozen_pages++;
+			}
+			else if ((old_vmbits & VISIBILITYMAP_ALL_FROZEN) == 0)
+				vacrel->vm_new_frozen_pages++;
 		}
 
 		freespace = PageGetHeapFreeSpace(page);
@@ -1453,11 +1550,12 @@ lazy_scan_prune(LVRelState *vacrel,
 	if (presult.nfrozen > 0)
 	{
 		/*
-		 * We don't increment the frozen_pages instrumentation counter when
-		 * nfrozen == 0, since it only counts pages with newly frozen tuples
-		 * (don't confuse that with pages newly set all-frozen in VM).
+		 * We don't increment the new_frozen_tuple_pages instrumentation
+		 * counter when nfrozen == 0, since it only counts pages with newly
+		 * frozen tuples (don't confuse that with pages newly set all-frozen
+		 * in VM).
 		 */
-		vacrel->frozen_pages++;
+		vacrel->new_frozen_tuple_pages++;
 	}
 
 	/*
@@ -1529,6 +1627,7 @@ lazy_scan_prune(LVRelState *vacrel,
 	 */
 	if (!all_visible_according_to_vm && presult.all_visible)
 	{
+		uint8		old_vmbits;
 		uint8		flags = VISIBILITYMAP_ALL_VISIBLE;
 
 		if (presult.all_frozen)
@@ -1552,9 +1651,24 @@ lazy_scan_prune(LVRelState *vacrel,
 		 */
 		PageSetAllVisible(page);
 		MarkBufferDirty(buf);
-		visibilitymap_set(vacrel->rel, blkno, buf, InvalidXLogRecPtr,
-						  vmbuffer, presult.vm_conflict_horizon,
-						  flags);
+		old_vmbits = visibilitymap_set(vacrel->rel, blkno, buf,
+									   InvalidXLogRecPtr,
+									   vmbuffer, presult.vm_conflict_horizon,
+									   flags);
+
+		/*
+		 * If the page wasn't already set all-visible and/or all-frozen in the
+		 * VM, count it as newly set for logging.
+		 */
+		if ((old_vmbits & VISIBILITYMAP_ALL_VISIBLE) == 0)
+		{
+			vacrel->vm_new_visible_pages++;
+			if (presult.all_frozen)
+				vacrel->vm_new_visible_frozen_pages++;
+		}
+		else if ((old_vmbits & VISIBILITYMAP_ALL_FROZEN) == 0 &&
+				 presult.all_frozen)
+			vacrel->vm_new_frozen_pages++;
 	}
 
 	/*
@@ -1604,6 +1718,8 @@ lazy_scan_prune(LVRelState *vacrel,
 	else if (all_visible_according_to_vm && presult.all_visible &&
 			 presult.all_frozen && !VM_ALL_FROZEN(vacrel->rel, blkno, &vmbuffer))
 	{
+		uint8		old_vmbits;
+
 		/*
 		 * Avoid relying on all_visible_according_to_vm as a proxy for the
 		 * page-level PD_ALL_VISIBLE bit being set, since it might have become
@@ -1623,10 +1739,31 @@ lazy_scan_prune(LVRelState *vacrel,
 		 * was logged when the page's tuples were frozen.
 		 */
 		Assert(!TransactionIdIsValid(presult.vm_conflict_horizon));
-		visibilitymap_set(vacrel->rel, blkno, buf, InvalidXLogRecPtr,
-						  vmbuffer, InvalidTransactionId,
-						  VISIBILITYMAP_ALL_VISIBLE |
-						  VISIBILITYMAP_ALL_FROZEN);
+		old_vmbits = visibilitymap_set(vacrel->rel, blkno, buf,
+									   InvalidXLogRecPtr,
+									   vmbuffer, InvalidTransactionId,
+									   VISIBILITYMAP_ALL_VISIBLE |
+									   VISIBILITYMAP_ALL_FROZEN);
+
+		/*
+		 * The page was likely already set all-visible in the VM. However,
+		 * there is a small chance that it was modified sometime between
+		 * setting all_visible_according_to_vm and checking the visibility
+		 * during pruning. Check the return value of old_vmbits anyway to
+		 * ensure the visibility map counters used for logging are accurate.
+		 */
+		if ((old_vmbits & VISIBILITYMAP_ALL_VISIBLE) == 0)
+		{
+			vacrel->vm_new_visible_pages++;
+			vacrel->vm_new_visible_frozen_pages++;
+		}
+
+		/*
+		 * We already checked that the page was not set all-frozen in the VM
+		 * above, so we don't need to test the value of old_vmbits.
+		 */
+		else
+			vacrel->vm_new_frozen_pages++;
 	}
 }
 
@@ -2272,6 +2409,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	if (heap_page_is_all_visible(vacrel, buffer, &visibility_cutoff_xid,
 								 &all_frozen))
 	{
+		uint8		old_vmbits;
 		uint8		flags = VISIBILITYMAP_ALL_VISIBLE;
 
 		if (all_frozen)
@@ -2281,8 +2419,25 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		}
 
 		PageSetAllVisible(page);
-		visibilitymap_set(vacrel->rel, blkno, buffer, InvalidXLogRecPtr,
-						  vmbuffer, visibility_cutoff_xid, flags);
+		old_vmbits = visibilitymap_set(vacrel->rel, blkno, buffer,
+									   InvalidXLogRecPtr,
+									   vmbuffer, visibility_cutoff_xid,
+									   flags);
+
+		/*
+		 * If the page wasn't already set all-visible and/or all-frozen in the
+		 * VM, count it as newly set for logging.
+		 */
+		if ((old_vmbits & VISIBILITYMAP_ALL_VISIBLE) == 0)
+		{
+			vacrel->vm_new_visible_pages++;
+			if (all_frozen)
+				vacrel->vm_new_visible_frozen_pages++;
+		}
+
+		else if ((old_vmbits & VISIBILITYMAP_ALL_FROZEN) == 0 &&
+				 all_frozen)
+			vacrel->vm_new_frozen_pages++;
 	}
 
 	/* Revert to the previous phase information for error traceback */

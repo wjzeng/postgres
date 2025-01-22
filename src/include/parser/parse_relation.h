@@ -4,7 +4,7 @@
  *	  prototypes for parse_relation.c.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/parser/parse_relation.h
@@ -114,6 +114,7 @@ extern void errorMissingRTE(ParseState *pstate, RangeVar *relation) pg_attribute
 extern void errorMissingColumn(ParseState *pstate,
 							   const char *relname, const char *colname, int location) pg_attribute_noreturn();
 extern void expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
+					  VarReturningType returning_type,
 					  int location, bool include_dropped,
 					  List **colnames, List **colvars);
 extern List *expandNSItemVars(ParseState *pstate, ParseNamespaceItem *nsitem,

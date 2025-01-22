@@ -7,7 +7,7 @@
  *	  and join trees.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/primnodes.h
@@ -223,6 +223,11 @@ typedef struct Expr
  * Note that it affects the meaning of all of varno, varnullingrels, and
  * varnosyn, all of which refer to the range table of that query level.
  *
+ * varreturningtype is used for Vars that refer to the target relation in the
+ * RETURNING list of data-modifying queries.  The default behavior is to
+ * return old values for DELETE and new values for INSERT and UPDATE, but it
+ * is also possible to explicitly request old or new values.
+ *
  * In the parser, varnosyn and varattnosyn are either identical to
  * varno/varattno, or they specify the column's position in an aliased JOIN
  * RTE that hides the semantic referent RTE's refname.  This is a syntactic
@@ -243,6 +248,14 @@ typedef struct Expr
 /* Symbols for the indexes of the special RTE entries in rules */
 #define    PRS2_OLD_VARNO			1
 #define    PRS2_NEW_VARNO			2
+
+/* Returning behavior for Vars in RETURNING list */
+typedef enum VarReturningType
+{
+	VAR_RETURNING_DEFAULT,		/* return OLD for DELETE, else return NEW */
+	VAR_RETURNING_OLD,			/* return OLD for DELETE/UPDATE, else NULL */
+	VAR_RETURNING_NEW,			/* return NEW for INSERT/UPDATE, else NULL */
+} VarReturningType;
 
 typedef struct Var
 {
@@ -278,6 +291,9 @@ typedef struct Var
 	 * >0 means N levels up
 	 */
 	Index		varlevelsup;
+
+	/* returning type of this var (see above) */
+	VarReturningType varreturningtype;
 
 	/*
 	 * varnosyn/varattnosyn are ignored for equality, because Vars with
@@ -1436,6 +1452,33 @@ typedef struct RowExpr
 } RowExpr;
 
 /*
+ * CompareType - fundamental semantics of certain operators
+ *
+ * These enum symbols represent the fundamental semantics of certain operators
+ * that the system needs to have some hardcoded knowledge about.  (For
+ * example, RowCompareExpr needs to know which operators can be determined to
+ * act like =, <>, <, etc.)  Index access methods map (some of) strategy
+ * numbers to these values so that the system can know about the meaning of
+ * (some of) the operators without needing hardcoded knowledge of index AM's
+ * strategy numbering.
+ *
+ * XXX Currently, this mapping is not fully developed and most values are
+ * chosen to match btree strategy numbers, which is not going to work very
+ * well for other access methods.
+ */
+typedef enum CompareType
+{
+	COMPARE_LT = 1,				/* BTLessStrategyNumber */
+	COMPARE_LE = 2,				/* BTLessEqualStrategyNumber */
+	COMPARE_EQ = 3,				/* BTEqualStrategyNumber */
+	COMPARE_GE = 4,				/* BTGreaterEqualStrategyNumber */
+	COMPARE_GT = 5,				/* BTGreaterStrategyNumber */
+	COMPARE_NE = 6,				/* no such btree strategy */
+	COMPARE_OVERLAP,
+	COMPARE_CONTAINED_BY,
+} CompareType;
+
+/*
  * RowCompareExpr - row-wise comparison, such as (a, b) <= (1, 2)
  *
  * We support row comparison for any operator that can be determined to
@@ -1446,26 +1489,14 @@ typedef struct RowExpr
  *
  * A RowCompareExpr node is only generated for the < <= > >= cases;
  * the = and <> cases are translated to simple AND or OR combinations
- * of the pairwise comparisons.  However, we include = and <> in the
- * RowCompareType enum for the convenience of parser logic.
+ * of the pairwise comparisons.
  */
-typedef enum RowCompareType
-{
-	/* Values of this enum are chosen to match btree strategy numbers */
-	ROWCOMPARE_LT = 1,			/* BTLessStrategyNumber */
-	ROWCOMPARE_LE = 2,			/* BTLessEqualStrategyNumber */
-	ROWCOMPARE_EQ = 3,			/* BTEqualStrategyNumber */
-	ROWCOMPARE_GE = 4,			/* BTGreaterEqualStrategyNumber */
-	ROWCOMPARE_GT = 5,			/* BTGreaterStrategyNumber */
-	ROWCOMPARE_NE = 6,			/* no such btree strategy */
-} RowCompareType;
-
 typedef struct RowCompareExpr
 {
 	Expr		xpr;
 
 	/* LT LE GE or GT, never EQ or NE */
-	RowCompareType rctype;
+	CompareType cmptype;
 	/* OID list of pairwise comparison ops */
 	List	   *opnos pg_node_attr(query_jumble_ignore);
 	/* OID list of containing operator families */
@@ -2127,6 +2158,30 @@ typedef struct InferenceElem
 	Oid			infercollid;	/* OID of collation, or InvalidOid */
 	Oid			inferopclass;	/* OID of att opclass, or InvalidOid */
 } InferenceElem;
+
+/*
+ * ReturningExpr - return OLD/NEW.(expression) in RETURNING list
+ *
+ * This is used when updating an auto-updatable view and returning a view
+ * column that is not simply a Var referring to the base relation.  In such
+ * cases, OLD/NEW.viewcol can expand to an arbitrary expression, but the
+ * result is required to be NULL if the OLD/NEW row doesn't exist.  To handle
+ * this, the rewriter wraps the expanded expression in a ReturningExpr, which
+ * is equivalent to "CASE WHEN (OLD/NEW row exists) THEN (expr) ELSE NULL".
+ *
+ * A similar situation can arise when rewriting the RETURNING clause of a
+ * rule, which may also contain arbitrary expressions.
+ *
+ * ReturningExpr nodes never appear in a parsed Query --- they are only ever
+ * inserted by the rewriter.
+ */
+typedef struct ReturningExpr
+{
+	Expr		xpr;
+	int			retlevelsup;	/* > 0 if it belongs to outer query */
+	bool		retold;			/* true for OLD, false for NEW */
+	Expr	   *retexpr;		/* expression to be returned */
+} ReturningExpr;
 
 /*--------------------
  * TargetEntry -

@@ -35,7 +35,7 @@
  * stack is empty.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -80,7 +80,7 @@
  */
 static SnapshotData CurrentSnapshotData = {SNAPSHOT_MVCC};
 static SnapshotData SecondarySnapshotData = {SNAPSHOT_MVCC};
-SnapshotData CatalogSnapshotData = {SNAPSHOT_MVCC};
+static SnapshotData CatalogSnapshotData = {SNAPSHOT_MVCC};
 SnapshotData SnapshotSelfData = {SNAPSHOT_SELF};
 SnapshotData SnapshotAnyData = {SNAPSHOT_ANY};
 SnapshotData SnapshotToastData = {SNAPSHOT_TOAST};
@@ -212,16 +212,12 @@ Snapshot
 GetTransactionSnapshot(void)
 {
 	/*
-	 * Return historic snapshot if doing logical decoding. We'll never need a
-	 * non-historic transaction snapshot in this (sub-)transaction, so there's
-	 * no need to be careful to set one up for later calls to
-	 * GetTransactionSnapshot().
+	 * This should not be called while doing logical decoding.  Historic
+	 * snapshots are only usable for catalog access, not for general-purpose
+	 * queries.
 	 */
 	if (HistoricSnapshotActive())
-	{
-		Assert(!FirstSnapshotSet);
-		return HistoricSnapshot;
-	}
+		elog(ERROR, "cannot take query snapshot during logical decoding");
 
 	/* First call in transaction? */
 	if (!FirstSnapshotSet)
@@ -875,7 +871,7 @@ SnapshotResetXmin(void)
 
 	if (pairingheap_is_empty(&RegisteredSnapshots))
 	{
-		MyProc->xmin = InvalidTransactionId;
+		MyProc->xmin = TransactionXmin = InvalidTransactionId;
 		return;
 	}
 
@@ -883,7 +879,7 @@ SnapshotResetXmin(void)
 										pairingheap_first(&RegisteredSnapshots));
 
 	if (TransactionIdPrecedes(MyProc->xmin, minSnapshot->xmin))
-		MyProc->xmin = minSnapshot->xmin;
+		MyProc->xmin = TransactionXmin = minSnapshot->xmin;
 }
 
 /*

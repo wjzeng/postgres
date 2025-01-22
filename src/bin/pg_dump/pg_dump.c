@@ -4,7 +4,7 @@
  *	  pg_dump is a utility for dumping out a postgres database
  *	  into a script file.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *	pg_dump will read the system catalogs in a database and dump out a
@@ -7253,20 +7253,15 @@ getOwnedSeqs(Archive *fout, TableInfo tblinfo[], int numTables)
 					 seqinfo->owning_tab, seqinfo->dobj.catId.oid);
 
 		/*
-		 * Only dump identity sequences if we're going to dump the table that
-		 * it belongs to.
-		 */
-		if (owning_tab->dobj.dump == DUMP_COMPONENT_NONE &&
-			seqinfo->is_identity_sequence)
-		{
-			seqinfo->dobj.dump = DUMP_COMPONENT_NONE;
-			continue;
-		}
-
-		/*
-		 * Otherwise we need to dump the components that are being dumped for
-		 * the table and any components which the sequence is explicitly
-		 * marked with.
+		 * For an identity sequence, dump exactly the same components for the
+		 * sequence as for the owning table.  This is important because we
+		 * treat the identity sequence as an integral part of the table.  For
+		 * example, there is not any DDL command that allows creation of such
+		 * a sequence independently of the table.
+		 *
+		 * For other owned sequences such as serial sequences, we need to dump
+		 * the components that are being dumped for the table and any
+		 * components that the sequence is explicitly marked with.
 		 *
 		 * We can't simply use the set of components which are being dumped
 		 * for the table as the table might be in an extension (and only the
@@ -7279,10 +7274,17 @@ getOwnedSeqs(Archive *fout, TableInfo tblinfo[], int numTables)
 		 * marked by checkExtensionMembership() and this will be a no-op as
 		 * the table will be equivalently marked.
 		 */
-		seqinfo->dobj.dump = seqinfo->dobj.dump | owning_tab->dobj.dump;
+		if (seqinfo->is_identity_sequence)
+			seqinfo->dobj.dump = owning_tab->dobj.dump;
+		else
+			seqinfo->dobj.dump |= owning_tab->dobj.dump;
 
+		/* Make sure that necessary data is available if we're dumping it */
 		if (seqinfo->dobj.dump != DUMP_COMPONENT_NONE)
+		{
 			seqinfo->interesting = true;
+			owning_tab->interesting = true;
+		}
 	}
 }
 
@@ -9345,8 +9347,8 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
  * constraints and the columns in the child don't have their own NOT NULL
  * declarations, we suppress printing constraints in the child: the
  * constraints are acquired at the point where the child is attached to the
- * parent.  This is tracked in ->notnull_inh (which is set in flagInhAttrs for
- * servers pre-18).
+ * parent.  This is tracked in ->notnull_islocal (which is set in flagInhAttrs
+ * for servers pre-18).
  *
  * Any of these constraints might have the NO INHERIT bit.  If so we set
  * ->notnull_noinh and NO INHERIT will be printed by dumpTableSchema.
@@ -16220,6 +16222,38 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 											  fmtQualifiedDumpable(coll));
 					}
 				}
+
+				/*
+				 * On the other hand, if we choose not to print a column
+				 * (likely because it is created by inheritance), but the
+				 * column has a locally-defined not-null constraint, we need
+				 * to dump the constraint as a standalone object.
+				 *
+				 * This syntax isn't SQL-conforming, but if you wanted
+				 * standard output you wouldn't be creating non-standard
+				 * objects to begin with.
+				 */
+				if (!shouldPrintColumn(dopt, tbinfo, j) &&
+					!tbinfo->attisdropped[j] &&
+					tbinfo->notnull_constrs[j] != NULL &&
+					tbinfo->notnull_islocal[j])
+				{
+					/* Format properly if not first attr */
+					if (actual_atts == 0)
+						appendPQExpBufferStr(q, " (");
+					else
+						appendPQExpBufferChar(q, ',');
+					appendPQExpBufferStr(q, "\n    ");
+					actual_atts++;
+
+					if (tbinfo->notnull_constrs[j][0] == '\0')
+						appendPQExpBuffer(q, "NOT NULL %s",
+										  fmtId(tbinfo->attnames[j]));
+					else
+						appendPQExpBuffer(q, "CONSTRAINT %s NOT NULL %s",
+										  tbinfo->notnull_constrs[j],
+										  fmtId(tbinfo->attnames[j]));
+				}
 			}
 
 			/*
@@ -16479,7 +16513,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 				 * conislocal.  The inhcount is fixed by ALTER TABLE INHERIT,
 				 * below.  Special hack: in versions < 18, columns with no
 				 * local definition need their constraint to be matched by
-				 * column number in conkeys instead of by contraint name,
+				 * column number in conkeys instead of by constraint name,
 				 * because the latter is not available.  (We distinguish the
 				 * case because the constraint name is the empty string.)
 				 */
@@ -16660,29 +16694,6 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			/* None of this applies to dropped columns */
 			if (tbinfo->attisdropped[j])
 				continue;
-
-			/*
-			 * If we didn't dump the column definition explicitly above, and
-			 * it is not-null and did not inherit that property from a parent,
-			 * we have to mark it separately.
-			 */
-			if (!shouldPrintColumn(dopt, tbinfo, j) &&
-				tbinfo->notnull_constrs[j] != NULL &&
-				(tbinfo->notnull_islocal[j] && !tbinfo->ispartition && !dopt->binary_upgrade))
-			{
-				/* No constraint name desired? */
-				if (tbinfo->notnull_constrs[j][0] == '\0')
-					appendPQExpBuffer(q,
-									  "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET NOT NULL;\n",
-									  foreign, qualrelname,
-									  fmtId(tbinfo->attnames[j]));
-				else
-					appendPQExpBuffer(q,
-									  "ALTER %sTABLE ONLY %s ADD CONSTRAINT %s NOT NULL %s;\n",
-									  foreign, qualrelname,
-									  tbinfo->notnull_constrs[j],
-									  fmtId(tbinfo->attnames[j]));
-			}
 
 			/*
 			 * Dump per-column statistics information. We only issue an ALTER

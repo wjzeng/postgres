@@ -12,7 +12,7 @@
  * identifying statement boundaries in multi-statement source strings.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/parsenodes.h
@@ -197,6 +197,15 @@ typedef struct Query
 
 	OnConflictExpr *onConflict; /* ON CONFLICT DO [NOTHING | UPDATE] */
 
+	/*
+	 * The following three fields describe the contents of the RETURNING list
+	 * for INSERT/UPDATE/DELETE/MERGE. returningOldAlias and returningNewAlias
+	 * are the alias names for OLD and NEW, which may be user-supplied values,
+	 * the defaults "old" and "new", or NULL (if the default "old"/"new" is
+	 * already in use as the alias for some other relation).
+	 */
+	char	   *returningOldAlias pg_node_attr(query_jumble_ignore);
+	char	   *returningNewAlias pg_node_attr(query_jumble_ignore);
 	List	   *returningList;	/* return-values list (of TargetEntry) */
 
 	List	   *groupClause;	/* a list of SortGroupClause's */
@@ -1727,6 +1736,41 @@ typedef struct MergeWhenClause
 } MergeWhenClause;
 
 /*
+ * ReturningOptionKind -
+ *		Possible kinds of option in RETURNING WITH(...) list
+ *
+ * Currently, this is used only for specifying OLD/NEW aliases.
+ */
+typedef enum ReturningOptionKind
+{
+	RETURNING_OPTION_OLD,		/* specify alias for OLD in RETURNING */
+	RETURNING_OPTION_NEW,		/* specify alias for NEW in RETURNING */
+} ReturningOptionKind;
+
+/*
+ * ReturningOption -
+ *		An individual option in the RETURNING WITH(...) list
+ */
+typedef struct ReturningOption
+{
+	NodeTag		type;
+	ReturningOptionKind option; /* specified option */
+	char	   *value;			/* option's value */
+	ParseLoc	location;		/* token location, or -1 if unknown */
+} ReturningOption;
+
+/*
+ * ReturningClause -
+ *		List of RETURNING expressions, together with any WITH(...) options
+ */
+typedef struct ReturningClause
+{
+	NodeTag		type;
+	List	   *options;		/* list of ReturningOption elements */
+	List	   *exprs;			/* list of expressions to return */
+} ReturningClause;
+
+/*
  * TriggerTransition -
  *	   representation of transition row or table naming clause
  *
@@ -2043,7 +2087,7 @@ typedef struct InsertStmt
 	List	   *cols;			/* optional: names of the target columns */
 	Node	   *selectStmt;		/* the source SELECT/VALUES, or NULL */
 	OnConflictClause *onConflictClause; /* ON CONFLICT clause */
-	List	   *returningList;	/* list of expressions to return */
+	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
 	OverridingKind override;	/* OVERRIDING clause */
 	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
@@ -2060,7 +2104,7 @@ typedef struct DeleteStmt
 	RangeVar   *relation;		/* relation to delete from */
 	List	   *usingClause;	/* optional using clause for more tables */
 	Node	   *whereClause;	/* qualifications */
-	List	   *returningList;	/* list of expressions to return */
+	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
 	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
 	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
@@ -2077,7 +2121,7 @@ typedef struct UpdateStmt
 	List	   *targetList;		/* the target list (of ResTarget) */
 	Node	   *whereClause;	/* qualifications */
 	List	   *fromClause;		/* optional from clause for more tables */
-	List	   *returningList;	/* list of expressions to return */
+	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
 	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
 	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
@@ -2094,7 +2138,7 @@ typedef struct MergeStmt
 	Node	   *sourceRelation; /* source relation */
 	Node	   *joinCondition;	/* join condition between source and target */
 	List	   *mergeWhenClauses;	/* list of MergeWhenClause(es) */
-	List	   *returningList;	/* list of expressions to return */
+	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
 	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
 	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
@@ -2736,6 +2780,8 @@ typedef enum ConstrType			/* types of constraints */
 	CONSTR_ATTR_NOT_DEFERRABLE,
 	CONSTR_ATTR_DEFERRED,
 	CONSTR_ATTR_IMMEDIATE,
+	CONSTR_ATTR_ENFORCED,
+	CONSTR_ATTR_NOT_ENFORCED,
 } ConstrType;
 
 /* Foreign key action codes */
@@ -2757,6 +2803,7 @@ typedef struct Constraint
 	char	   *conname;		/* Constraint name, or NULL if unnamed */
 	bool		deferrable;		/* DEFERRABLE? */
 	bool		initdeferred;	/* INITIALLY DEFERRED? */
+	bool		is_enforced;	/* enforced constraint? */
 	bool		skip_validation;	/* skip validation of existing rows? */
 	bool		initially_valid;	/* mark the new constraint as valid? */
 	bool		is_no_inherit;	/* is constraint non-inheritable? */

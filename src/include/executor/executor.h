@@ -4,7 +4,7 @@
  *	  support for the POSTGRES executor module
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/executor.h
@@ -131,23 +131,18 @@ extern void execTuplesHashPrepare(int numCols,
 								  FmgrInfo **hashFunctions);
 extern TupleHashTable BuildTupleHashTable(PlanState *parent,
 										  TupleDesc inputDesc,
-										  int numCols, AttrNumber *keyColIdx,
+										  const TupleTableSlotOps *inputOps,
+										  int numCols,
+										  AttrNumber *keyColIdx,
 										  const Oid *eqfuncoids,
 										  FmgrInfo *hashfunctions,
 										  Oid *collations,
-										  long nbuckets, Size additionalsize,
+										  long nbuckets,
+										  Size additionalsize,
+										  MemoryContext metacxt,
 										  MemoryContext tablecxt,
-										  MemoryContext tempcxt, bool use_variable_hash_iv);
-extern TupleHashTable BuildTupleHashTableExt(PlanState *parent,
-											 TupleDesc inputDesc,
-											 int numCols, AttrNumber *keyColIdx,
-											 const Oid *eqfuncoids,
-											 FmgrInfo *hashfunctions,
-											 Oid *collations,
-											 long nbuckets, Size additionalsize,
-											 MemoryContext metacxt,
-											 MemoryContext tablecxt,
-											 MemoryContext tempcxt, bool use_variable_hash_iv);
+										  MemoryContext tempcxt,
+										  bool use_variable_hash_iv);
 extern TupleHashEntry LookupTupleHashEntry(TupleHashTable hashtable,
 										   TupleTableSlot *slot,
 										   bool *isnew, uint32 *hash);
@@ -584,6 +579,9 @@ extern void ExecAssignExprContext(EState *estate, PlanState *planstate);
 extern TupleDesc ExecGetResultType(PlanState *planstate);
 extern const TupleTableSlotOps *ExecGetResultSlotOps(PlanState *planstate,
 													 bool *isfixed);
+extern const TupleTableSlotOps *ExecGetCommonSlotOps(PlanState **planstates,
+													 int nplans);
+extern const TupleTableSlotOps *ExecGetCommonChildSlotOps(PlanState *ps);
 extern void ExecAssignProjectionInfo(PlanState *planstate,
 									 TupleDesc inputDesc);
 extern void ExecConditionalAssignProjectionInfo(PlanState *planstate,
@@ -631,6 +629,7 @@ extern int	ExecCleanTargetListLength(List *targetlist);
 extern TupleTableSlot *ExecGetTriggerOldSlot(EState *estate, ResultRelInfo *relInfo);
 extern TupleTableSlot *ExecGetTriggerNewSlot(EState *estate, ResultRelInfo *relInfo);
 extern TupleTableSlot *ExecGetReturningSlot(EState *estate, ResultRelInfo *relInfo);
+extern TupleTableSlot *ExecGetAllNullSlot(EState *estate, ResultRelInfo *relInfo);
 extern TupleConversionMap *ExecGetChildToRootMap(ResultRelInfo *resultRelInfo);
 extern TupleConversionMap *ExecGetRootToChildMap(ResultRelInfo *resultRelInfo, EState *estate);
 

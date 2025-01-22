@@ -63,7 +63,7 @@
  * the standbys which are considered as synchronous at that moment
  * will release waiters from the queue.
  *
- * Portions Copyright (c) 2010-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2025, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/syncrep.c
@@ -992,6 +992,7 @@ check_synchronous_standby_names(char **newval, void **extra, GucSource source)
 {
 	if (*newval != NULL && (*newval)[0] != '\0')
 	{
+		yyscan_t	scanner;
 		int			parse_rc;
 		SyncRepConfigData *pconf;
 
@@ -1000,9 +1001,9 @@ check_synchronous_standby_names(char **newval, void **extra, GucSource source)
 		syncrep_parse_error_msg = NULL;
 
 		/* Parse the synchronous_standby_names string */
-		syncrep_scanner_init(*newval);
-		parse_rc = syncrep_yyparse();
-		syncrep_scanner_finish();
+		syncrep_scanner_init(*newval, &scanner);
+		parse_rc = syncrep_yyparse(scanner);
+		syncrep_scanner_finish(scanner);
 
 		if (parse_rc != 0 || syncrep_parse_result == NULL)
 		{

@@ -1235,9 +1235,10 @@ DELETE FROM temporal_rng WHERE id = '[5,6)';
 INSERT INTO temporal_rng (id, valid_at) VALUES
   ('[5,6)', daterange('2018-01-01', '2018-02-01')),
   ('[5,6)', daterange('2018-02-01', '2018-03-01'));
-INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
+INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id)
+  VALUES ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
 UPDATE temporal_rng SET valid_at = daterange('2016-02-01', '2016-03-01')
-WHERE id = '[5,6)' AND valid_at = daterange('2018-02-01', '2018-03-01');
+  WHERE id = '[5,6)' AND valid_at = daterange('2018-02-01', '2018-03-01');
 -- A PK update sliding the edge between two referenced rows:
 INSERT INTO temporal_rng (id, valid_at) VALUES
   ('[6,7)', daterange('2018-01-01', '2018-02-01')),
@@ -1245,12 +1246,39 @@ INSERT INTO temporal_rng (id, valid_at) VALUES
 INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES
   ('[4,5)', daterange('2018-01-15', '2018-02-15'), '[6,7)');
 UPDATE temporal_rng
-SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN daterange('2018-01-01', '2018-01-05')
-                    WHEN lower(valid_at) = '2018-02-01' THEN daterange('2018-01-05', '2018-03-01') END
-WHERE id = '[6,7)';
+  SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN daterange('2018-01-01', '2018-01-05')
+                      WHEN lower(valid_at) = '2018-02-01' THEN daterange('2018-01-05', '2018-03-01') END
+  WHERE id = '[6,7)';
+-- a PK update shrinking the referenced range but still valid:
+-- There are two references: one fulfilled by the first pk row,
+-- the other fulfilled by both pk rows combined.
+INSERT INTO temporal_rng (id, valid_at) VALUES
+  ('[1,2)', daterange('2018-01-01', '2018-03-01')),
+  ('[1,2)', daterange('2018-03-01', '2018-06-01'));
+INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES
+  ('[1,2)', daterange('2018-01-15', '2018-02-01'), '[1,2)'),
+  ('[2,3)', daterange('2018-01-15', '2018-05-01'), '[1,2)');
+UPDATE temporal_rng SET valid_at = daterange('2018-01-15', '2018-03-01')
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-15'::date;
+-- a PK update growing the referenced range is fine:
+UPDATE temporal_rng SET valid_at = daterange('2018-01-01', '2018-03-01')
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-25'::date;
+-- a PK update shrinking the referenced range and changing the id invalidates the whole range (error):
+UPDATE temporal_rng SET id = '[2,3)', valid_at = daterange('2018-01-15', '2018-03-01')
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-15'::date;
+-- a PK update changing only the id invalidates the whole range (error):
+UPDATE temporal_rng SET id = '[2,3)'
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-15'::date;
+-- a PK update that loses time from both ends, but is still valid:
+INSERT INTO temporal_rng (id, valid_at) VALUES
+  ('[2,3)', daterange('2018-01-01', '2018-03-01'));
+INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES
+  ('[5,6)', daterange('2018-01-15', '2018-02-01'), '[2,3)');
+UPDATE temporal_rng SET valid_at = daterange('2018-01-15', '2018-02-15')
+  WHERE id = '[2,3)';
 -- a PK update that fails because both are referenced:
 UPDATE temporal_rng SET valid_at = daterange('2016-01-01', '2016-02-01')
-WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
+  WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
 -- a PK update that fails because both are referenced, but not 'til commit:
 BEGIN;
   ALTER TABLE temporal_fk_rng2rng
@@ -1258,15 +1286,15 @@ BEGIN;
     DEFERRABLE INITIALLY DEFERRED;
 
   UPDATE temporal_rng SET valid_at = daterange('2016-01-01', '2016-02-01')
-  WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
+    WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
 COMMIT;
 -- changing the scalar part fails:
 UPDATE temporal_rng SET id = '[7,8)'
-WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
+  WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
 -- then delete the objecting FK record and the same PK update succeeds:
 DELETE FROM temporal_fk_rng2rng WHERE id = '[3,4)';
 UPDATE temporal_rng SET valid_at = daterange('2016-01-01', '2016-02-01')
-WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
+  WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
 
 --
 -- test FK referenced updates RESTRICT
@@ -1288,9 +1316,10 @@ DELETE FROM temporal_rng WHERE id = '[5,6)';
 INSERT INTO temporal_rng (id, valid_at) VALUES
   ('[5,6)', daterange('2018-01-01', '2018-02-01')),
   ('[5,6)', daterange('2018-02-01', '2018-03-01'));
-INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
+INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES
+  ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
 UPDATE temporal_rng SET valid_at = daterange('2016-02-01', '2016-03-01')
-WHERE id = '[5,6)' AND valid_at = daterange('2018-02-01', '2018-03-01');
+  WHERE id = '[5,6)' AND valid_at = daterange('2018-02-01', '2018-03-01');
 -- A PK update sliding the edge between two referenced rows:
 INSERT INTO temporal_rng (id, valid_at) VALUES
   ('[6,7)', daterange('2018-01-01', '2018-02-01')),
@@ -1298,9 +1327,9 @@ INSERT INTO temporal_rng (id, valid_at) VALUES
 INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES
   ('[4,5)', daterange('2018-01-15', '2018-02-15'), '[6,7)');
 UPDATE temporal_rng
-SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN daterange('2018-01-01', '2018-01-05')
-                    WHEN lower(valid_at) = '2018-02-01' THEN daterange('2018-01-05', '2018-03-01') END
-WHERE id = '[6,7)';
+  SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN daterange('2018-01-01', '2018-01-05')
+                      WHEN lower(valid_at) = '2018-02-01' THEN daterange('2018-01-05', '2018-03-01') END
+  WHERE id = '[6,7)';
 -- a PK update that fails because both are referenced (even before commit):
 BEGIN;
   ALTER TABLE temporal_fk_rng2rng
@@ -1311,11 +1340,11 @@ BEGIN;
 ROLLBACK;
 -- changing the scalar part fails:
 UPDATE temporal_rng SET id = '[7,8)'
-WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
+  WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
 -- then delete the objecting FK record and the same PK update succeeds:
 DELETE FROM temporal_fk_rng2rng WHERE id = '[3,4)';
 UPDATE temporal_rng SET valid_at = daterange('2016-01-01', '2016-02-01')
-WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
+  WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
 
 --
 -- test FK referenced deletes NO ACTION
@@ -1335,7 +1364,8 @@ DELETE FROM temporal_rng WHERE id = '[5,6)';
 INSERT INTO temporal_rng (id, valid_at) VALUES
   ('[5,6)', daterange('2018-01-01', '2018-02-01')),
   ('[5,6)', daterange('2018-02-01', '2018-03-01'));
-INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
+INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES
+  ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
 DELETE FROM temporal_rng WHERE id = '[5,6)' AND valid_at = daterange('2018-02-01', '2018-03-01');
 -- a PK delete that fails because both are referenced:
 DELETE FROM temporal_rng WHERE id = '[5,6)' AND valid_at = daterange('2018-01-01', '2018-02-01');
@@ -1369,7 +1399,8 @@ DELETE FROM temporal_rng WHERE id = '[5,6)';
 INSERT INTO temporal_rng (id, valid_at) VALUES
   ('[5,6)', daterange('2018-01-01', '2018-02-01')),
   ('[5,6)', daterange('2018-02-01', '2018-03-01'));
-INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
+INSERT INTO temporal_fk_rng2rng (id, valid_at, parent_id) VALUES
+  ('[3,4)', daterange('2018-01-05', '2018-01-10'), '[5,6)');
 DELETE FROM temporal_rng WHERE id = '[5,6)' AND valid_at = daterange('2018-02-01', '2018-03-01');
 -- a PK delete that fails because both are referenced (even before commit):
 BEGIN;
@@ -1692,9 +1723,10 @@ DELETE FROM temporal_mltrng WHERE id = '[5,6)';
 INSERT INTO temporal_mltrng (id, valid_at) VALUES
   ('[5,6)', datemultirange(daterange('2018-01-01', '2018-02-01'))),
   ('[5,6)', datemultirange(daterange('2018-02-01', '2018-03-01')));
-INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES ('[3,4)', datemultirange(daterange('2018-01-05', '2018-01-10')), '[5,6)');
+INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES
+  ('[3,4)', datemultirange(daterange('2018-01-05', '2018-01-10')), '[5,6)');
 UPDATE temporal_mltrng SET valid_at = datemultirange(daterange('2016-02-01', '2016-03-01'))
-WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-02-01', '2018-03-01'));
+  WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-02-01', '2018-03-01'));
 -- A PK update sliding the edge between two referenced rows:
 INSERT INTO temporal_mltrng (id, valid_at) VALUES
   ('[6,7)', datemultirange(daterange('2018-01-01', '2018-02-01'))),
@@ -1702,12 +1734,39 @@ INSERT INTO temporal_mltrng (id, valid_at) VALUES
 INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES
   ('[4,5)', datemultirange(daterange('2018-01-15', '2018-02-15')), '[6,7)');
 UPDATE temporal_mltrng
-SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN datemultirange(daterange('2018-01-01', '2018-01-05'))
-                    WHEN lower(valid_at) = '2018-02-01' THEN datemultirange(daterange('2018-01-05', '2018-03-01')) END
-WHERE id = '[6,7)';
+  SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN datemultirange(daterange('2018-01-01', '2018-01-05'))
+                      WHEN lower(valid_at) = '2018-02-01' THEN datemultirange(daterange('2018-01-05', '2018-03-01')) END
+  WHERE id = '[6,7)';
+-- a PK update shrinking the referenced multirange but still valid:
+-- There are two references: one fulfilled by the first pk row,
+-- the other fulfilled by both pk rows combined.
+INSERT INTO temporal_mltrng (id, valid_at) VALUES
+  ('[1,2)', datemultirange(daterange('2018-01-01', '2018-03-01'))),
+  ('[1,2)', datemultirange(daterange('2018-03-01', '2018-06-01')));
+INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES
+  ('[1,2)', datemultirange(daterange('2018-01-15', '2018-02-01')), '[1,2)'),
+  ('[2,3)', datemultirange(daterange('2018-01-15', '2018-05-01')), '[1,2)');
+UPDATE temporal_mltrng SET valid_at = datemultirange(daterange('2018-01-15', '2018-03-01'))
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-15'::date;
+-- a PK update growing the referenced multirange is fine:
+UPDATE temporal_mltrng SET valid_at = datemultirange(daterange('2018-01-01', '2018-03-01'))
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-25'::date;
+-- a PK update shrinking the referenced multirange and changing the id invalidates the whole multirange (error):
+UPDATE temporal_mltrng SET id = '[2,3)', valid_at = datemultirange(daterange('2018-01-15', '2018-03-01'))
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-15'::date;
+-- a PK update changing only the id invalidates the whole multirange (error):
+UPDATE temporal_mltrng SET id = '[2,3)'
+  WHERE id = '[1,2)' AND valid_at @> '2018-01-15'::date;
+-- a PK update that loses time from both ends, but is still valid:
+INSERT INTO temporal_mltrng (id, valid_at) VALUES
+  ('[2,3)', datemultirange(daterange('2018-01-01', '2018-03-01')));
+INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES
+  ('[5,6)', datemultirange(daterange('2018-01-15', '2018-02-01')), '[2,3)');
+UPDATE temporal_mltrng SET valid_at = datemultirange(daterange('2018-01-15', '2018-02-15'))
+  WHERE id = '[2,3)';
 -- a PK update that fails because both are referenced:
 UPDATE temporal_mltrng SET valid_at = datemultirange(daterange('2016-01-01', '2016-02-01'))
-WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-01-01', '2018-02-01'));
+  WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-01-01', '2018-02-01'));
 -- a PK update that fails because both are referenced, but not 'til commit:
 BEGIN;
   ALTER TABLE temporal_fk_mltrng2mltrng
@@ -1719,7 +1778,7 @@ BEGIN;
 COMMIT;
 -- changing the scalar part fails:
 UPDATE temporal_mltrng SET id = '[7,8)'
-WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-01-01', '2018-02-01'));
+  WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-01-01', '2018-02-01'));
 
 --
 -- test FK referenced updates RESTRICT
@@ -1741,9 +1800,10 @@ DELETE FROM temporal_mltrng WHERE id = '[5,6)';
 INSERT INTO temporal_mltrng (id, valid_at) VALUES
   ('[5,6)', datemultirange(daterange('2018-01-01', '2018-02-01'))),
   ('[5,6)', datemultirange(daterange('2018-02-01', '2018-03-01')));
-INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES ('[3,4)', datemultirange(daterange('2018-01-05', '2018-01-10')), '[5,6)');
+INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES
+  ('[3,4)', datemultirange(daterange('2018-01-05', '2018-01-10')), '[5,6)');
 UPDATE temporal_mltrng SET valid_at = datemultirange(daterange('2016-02-01', '2016-03-01'))
-WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-02-01', '2018-03-01'));
+  WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-02-01', '2018-03-01'));
 -- A PK update sliding the edge between two referenced rows:
 INSERT INTO temporal_mltrng (id, valid_at) VALUES
   ('[6,7)', datemultirange(daterange('2018-01-01', '2018-02-01'))),
@@ -1751,9 +1811,9 @@ INSERT INTO temporal_mltrng (id, valid_at) VALUES
 INSERT INTO temporal_fk_mltrng2mltrng (id, valid_at, parent_id) VALUES
   ('[4,5)', datemultirange(daterange('2018-01-15', '2018-02-15')), '[6,7)');
 UPDATE temporal_mltrng
-SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN datemultirange(daterange('2018-01-01', '2018-01-05'))
-                    WHEN lower(valid_at) = '2018-02-01' THEN datemultirange(daterange('2018-01-05', '2018-03-01')) END
-WHERE id = '[6,7)';
+  SET valid_at = CASE WHEN lower(valid_at) = '2018-01-01' THEN datemultirange(daterange('2018-01-01', '2018-01-05'))
+                      WHEN lower(valid_at) = '2018-02-01' THEN datemultirange(daterange('2018-01-05', '2018-03-01')) END
+  WHERE id = '[6,7)';
 -- a PK update that fails because both are referenced (even before commit):
 BEGIN;
   ALTER TABLE temporal_fk_mltrng2mltrng
@@ -1765,7 +1825,7 @@ BEGIN;
 ROLLBACK;
 -- changing the scalar part fails:
 UPDATE temporal_mltrng SET id = '[7,8)'
-WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-01-01', '2018-02-01'));
+  WHERE id = '[5,6)' AND valid_at = datemultirange(daterange('2018-01-01', '2018-02-01'));
 
 --
 -- test FK referenced deletes NO ACTION

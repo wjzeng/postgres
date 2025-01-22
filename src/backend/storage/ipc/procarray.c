@@ -34,7 +34,7 @@
  * happen, it would tie up KnownAssignedXids indefinitely, so we protect
  * ourselves by pruning the array when a valid list of running XIDs arrives.
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -3622,8 +3622,7 @@ CountDBBackends(Oid databaseid)
 }
 
 /*
- * CountDBConnections --- counts database backends ignoring any background
- *		worker processes
+ * CountDBConnections --- counts database backends (only regular backends)
  */
 int
 CountDBConnections(Oid databaseid)
@@ -3641,8 +3640,8 @@ CountDBConnections(Oid databaseid)
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
-		if (proc->isBackgroundWorker)
-			continue;			/* do not count background workers */
+		if (!proc->isRegularBackend)
+			continue;			/* count only regular backend processes */
 		if (!OidIsValid(databaseid) ||
 			proc->databaseId == databaseid)
 			count++;
@@ -3695,6 +3694,7 @@ CancelDBBackends(Oid databaseid, ProcSignalReason sigmode, bool conflictPending)
 
 /*
  * CountUserBackends --- count backends that are used by specified user
+ * (only regular backends, not any type of background worker)
  */
 int
 CountUserBackends(Oid roleid)
@@ -3712,8 +3712,8 @@ CountUserBackends(Oid roleid)
 
 		if (proc->pid == 0)
 			continue;			/* do not count prepared xacts */
-		if (proc->isBackgroundWorker)
-			continue;			/* do not count background workers */
+		if (!proc->isRegularBackend)
+			continue;			/* count only regular backend processes */
 		if (proc->roleId == roleid)
 			count++;
 	}

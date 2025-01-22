@@ -22,7 +22,7 @@
  * tuples (unless buffering mode is disabled).
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -657,10 +657,12 @@ gistInitBuffering(GISTBuildState *buildstate)
 	itupMinSize = (Size) MAXALIGN(sizeof(IndexTupleData));
 	for (i = 0; i < index->rd_att->natts; i++)
 	{
-		if (TupleDescAttr(index->rd_att, i)->attlen < 0)
+		CompactAttribute *attr = TupleDescCompactAttr(index->rd_att, i);
+
+		if (attr->attlen < 0)
 			itupMinSize += VARHDRSZ;
 		else
-			itupMinSize += TupleDescAttr(index->rd_att, i)->attlen;
+			itupMinSize += attr->attlen;
 	}
 
 	/* Calculate average and maximal number of index tuples which fit to page */

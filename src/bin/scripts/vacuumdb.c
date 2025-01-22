@@ -2,7 +2,7 @@
  *
  * vacuumdb
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/scripts/vacuumdb.c
@@ -461,15 +461,14 @@ escape_quotes(const char *src)
 /*
  * vacuum_one_database
  *
- * Process tables in the given database.  If the 'tables' list is empty,
+ * Process tables in the given database.  If the 'objects' list is empty,
  * process all tables in the database.
  *
  * Note that this function is only concerned with running exactly one stage
  * when in analyze-in-stages mode; caller must iterate on us if necessary.
  *
  * If concurrentCons is > 1, multiple connections are used to vacuum tables
- * in parallel.  In this case and if the table list is empty, we first obtain
- * a list of tables from the database.
+ * in parallel.
  */
 static void
 vacuum_one_database(ConnParams *cparams,

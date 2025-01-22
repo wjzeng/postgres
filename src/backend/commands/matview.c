@@ -3,7 +3,7 @@
  * matview.c
  *	  materialized view support
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -319,7 +319,7 @@ RefreshMatViewByOid(Oid matviewOid, bool is_create, bool skipData,
 	OIDNewHeap = make_new_heap(matviewOid, tableSpace,
 							   matviewRel->rd_rel->relam,
 							   relpersistence, ExclusiveLock);
-	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
+	Assert(CheckRelationOidLockedByMe(OIDNewHeap, AccessExclusiveLock, false));
 
 	/* Generate the data, if wanted. */
 	if (!skipData)

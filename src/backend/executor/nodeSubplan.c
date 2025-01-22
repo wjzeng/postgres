@@ -11,7 +11,7 @@
  * subplans, which are re-evaluated every time their result is required.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -519,6 +519,11 @@ buildSubPlanHash(SubPlanState *node, ExprContext *econtext)
 	 *
 	 * If it's not necessary to distinguish FALSE and UNKNOWN, then we don't
 	 * need to store subplan output rows that contain NULL.
+	 *
+	 * Because the input slot for each hash table is always the slot resulting
+	 * from an ExecProject(), we can use TTSOpsVirtual for the input ops. This
+	 * saves a needless fetch inner op step for the hashing ExprState created
+	 * in BuildTupleHashTable().
 	 */
 	MemoryContextReset(node->hashtablecxt);
 	node->havehashrows = false;
@@ -531,19 +536,20 @@ buildSubPlanHash(SubPlanState *node, ExprContext *econtext)
 	if (node->hashtable)
 		ResetTupleHashTable(node->hashtable);
 	else
-		node->hashtable = BuildTupleHashTableExt(node->parent,
-												 node->descRight,
-												 ncols,
-												 node->keyColIdx,
-												 node->tab_eq_funcoids,
-												 node->tab_hash_funcs,
-												 node->tab_collations,
-												 nbuckets,
-												 0,
-												 node->planstate->state->es_query_cxt,
-												 node->hashtablecxt,
-												 node->hashtempcxt,
-												 false);
+		node->hashtable = BuildTupleHashTable(node->parent,
+											  node->descRight,
+											  &TTSOpsVirtual,
+											  ncols,
+											  node->keyColIdx,
+											  node->tab_eq_funcoids,
+											  node->tab_hash_funcs,
+											  node->tab_collations,
+											  nbuckets,
+											  0,
+											  node->planstate->state->es_query_cxt,
+											  node->hashtablecxt,
+											  node->hashtempcxt,
+											  false);
 
 	if (!subplan->unknownEqFalse)
 	{
@@ -559,19 +565,20 @@ buildSubPlanHash(SubPlanState *node, ExprContext *econtext)
 		if (node->hashnulls)
 			ResetTupleHashTable(node->hashnulls);
 		else
-			node->hashnulls = BuildTupleHashTableExt(node->parent,
-													 node->descRight,
-													 ncols,
-													 node->keyColIdx,
-													 node->tab_eq_funcoids,
-													 node->tab_hash_funcs,
-													 node->tab_collations,
-													 nbuckets,
-													 0,
-													 node->planstate->state->es_query_cxt,
-													 node->hashtablecxt,
-													 node->hashtempcxt,
-													 false);
+			node->hashnulls = BuildTupleHashTable(node->parent,
+												  node->descRight,
+												  &TTSOpsVirtual,
+												  ncols,
+												  node->keyColIdx,
+												  node->tab_eq_funcoids,
+												  node->tab_hash_funcs,
+												  node->tab_collations,
+												  nbuckets,
+												  0,
+												  node->planstate->state->es_query_cxt,
+												  node->hashtablecxt,
+												  node->hashtempcxt,
+												  false);
 	}
 	else
 		node->hashnulls = NULL;

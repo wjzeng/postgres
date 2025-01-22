@@ -4,7 +4,7 @@
  *		Querytree manipulation subroutines for query rewriter.
  *
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/rewrite/rewriteManip.h
@@ -89,6 +89,7 @@ extern Node *ReplaceVarsFromTargetList(Node *node,
 									   int target_varno, int sublevels_up,
 									   RangeTblEntry *target_rte,
 									   List *targetlist,
+									   int result_relation,
 									   ReplaceVarsNoMatchOption nomatch_option,
 									   int nomatch_varno,
 									   bool *outer_hasSubLinks);

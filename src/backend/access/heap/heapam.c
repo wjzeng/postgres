@@ -3,7 +3,7 @@
  * heapam.c
  *	  heap access method code
  *
- * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -378,6 +378,8 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	ItemPointerSetInvalid(&scan->rs_ctup.t_self);
 	scan->rs_cbuf = InvalidBuffer;
 	scan->rs_cblock = InvalidBlockNumber;
+	scan->rs_ntuples = 0;
+	scan->rs_cindex = 0;
 
 	/*
 	 * Initialize to ForwardScanDirection because it is most common and
@@ -943,8 +945,8 @@ heapgettup_pagemode(HeapScanDesc scan,
 {
 	HeapTuple	tuple = &(scan->rs_ctup);
 	Page		page;
-	int			lineindex;
-	int			linesleft;
+	uint32		lineindex;
+	uint32		linesleft;
 
 	if (likely(scan->rs_inited))
 	{
@@ -989,6 +991,7 @@ continue_page:
 			ItemId		lpp;
 			OffsetNumber lineoff;
 
+			Assert(lineindex <= scan->rs_ntuples);
 			lineoff = scan->rs_vistuples[lineindex];
 			lpp = PageGetItemId(page, lineoff);
 			Assert(ItemIdIsNormal(lpp));
@@ -1045,7 +1048,16 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	/*
 	 * allocate and initialize scan descriptor
 	 */
-	scan = (HeapScanDesc) palloc(sizeof(HeapScanDescData));
+	if (flags & SO_TYPE_BITMAPSCAN)
+	{
+		BitmapHeapScanDesc bscan = palloc(sizeof(BitmapHeapScanDescData));
+
+		bscan->rs_vmbuffer = InvalidBuffer;
+		bscan->rs_empty_tuples_pending = 0;
+		scan = (HeapScanDesc) bscan;
+	}
+	else
+		scan = (HeapScanDesc) palloc(sizeof(HeapScanDescData));
 
 	scan->rs_base.rs_rd = relation;
 	scan->rs_base.rs_snapshot = snapshot;
@@ -1053,8 +1065,6 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	scan->rs_base.rs_flags = flags;
 	scan->rs_base.rs_parallel = parallel_scan;
 	scan->rs_strategy = NULL;	/* set in initscan */
-	scan->rs_vmbuffer = InvalidBuffer;
-	scan->rs_empty_tuples_pending = 0;
 
 	/*
 	 * Disable page-at-a-time mode if it's not a MVCC-safe snapshot.
@@ -1170,18 +1180,23 @@ heap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 	if (BufferIsValid(scan->rs_cbuf))
 		ReleaseBuffer(scan->rs_cbuf);
 
-	if (BufferIsValid(scan->rs_vmbuffer))
+	if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
 	{
-		ReleaseBuffer(scan->rs_vmbuffer);
-		scan->rs_vmbuffer = InvalidBuffer;
-	}
+		BitmapHeapScanDesc bscan = (BitmapHeapScanDesc) scan;
 
-	/*
-	 * Reset rs_empty_tuples_pending, a field only used by bitmap heap scan,
-	 * to avoid incorrectly emitting NULL-filled tuples from a previous scan
-	 * on rescan.
-	 */
-	scan->rs_empty_tuples_pending = 0;
+		/*
+		 * Reset empty_tuples_pending, a field only used by bitmap heap scan,
+		 * to avoid incorrectly emitting NULL-filled tuples from a previous
+		 * scan on rescan.
+		 */
+		bscan->rs_empty_tuples_pending = 0;
+
+		if (BufferIsValid(bscan->rs_vmbuffer))
+		{
+			ReleaseBuffer(bscan->rs_vmbuffer);
+			bscan->rs_vmbuffer = InvalidBuffer;
+		}
+	}
 
 	/*
 	 * The read stream is reset on rescan. This must be done before
@@ -1210,8 +1225,14 @@ heap_endscan(TableScanDesc sscan)
 	if (BufferIsValid(scan->rs_cbuf))
 		ReleaseBuffer(scan->rs_cbuf);
 
-	if (BufferIsValid(scan->rs_vmbuffer))
-		ReleaseBuffer(scan->rs_vmbuffer);
+	if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
+	{
+		BitmapHeapScanDesc bscan = (BitmapHeapScanDesc) sscan;
+
+		bscan->rs_empty_tuples_pending = 0;
+		if (BufferIsValid(bscan->rs_vmbuffer))
+			ReleaseBuffer(bscan->rs_vmbuffer);
+	}
 
 	/*
 	 * Must free the read stream before freeing the BufferAccessStrategy.
@@ -4197,8 +4218,6 @@ static bool
 heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 				 bool isnull1, bool isnull2)
 {
-	Form_pg_attribute att;
-
 	/*
 	 * If one value is NULL and other is not, then they are certainly not
 	 * equal
@@ -4228,8 +4247,10 @@ heap_attr_equals(TupleDesc tupdesc, int attrnum, Datum value1, Datum value2,
 	}
 	else
 	{
+		CompactAttribute *att;
+
 		Assert(attrnum <= tupdesc->natts);
-		att = TupleDescAttr(tupdesc, attrnum - 1);
+		att = TupleDescCompactAttr(tupdesc, attrnum - 1);
 		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
 }
@@ -4311,7 +4332,7 @@ HeapDetermineColumnsInfo(Relation relation,
 		 * that system attributes can't be stored externally.
 		 */
 		if (attrnum < 0 || isnull1 ||
-			TupleDescAttr(tupdesc, attrnum - 1)->attlen != -1)
+			TupleDescCompactAttr(tupdesc, attrnum - 1)->attlen != -1)
 			continue;
 
 		/*
@@ -6384,7 +6405,7 @@ heap_inplace_update_and_unlock(Relation relation,
 	 *
 	 * ["D" is a VACUUM (ONLY_DATABASE_STATS)]
 	 * ["R" is a VACUUM tbl]
-	 * D: vac_update_datfrozenid() -> systable_beginscan(pg_class)
+	 * D: vac_update_datfrozenxid() -> systable_beginscan(pg_class)
 	 * D: systable_getnext() returns pg_class tuple of tbl
 	 * R: memcpy() into pg_class tuple of tbl
 	 * D: raise pg_database.datfrozenxid, XLogInsert(), finish

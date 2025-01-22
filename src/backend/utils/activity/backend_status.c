@@ -2,7 +2,7 @@
  * backend_status.c
  *	  Backend status reporting infrastructure.
  *
- * Copyright (c) 2001-2024, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2025, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -425,6 +425,10 @@ pgstat_bestart(void)
 #endif
 
 	PGSTAT_END_WRITE_ACTIVITY(vbeentry);
+
+	/* Create the backend statistics entry */
+	if (pgstat_tracks_backend_bktype(MyBackendType))
+		pgstat_create_backend(MyProcNumber);
 
 	/* Update app name to current GUC setting */
 	if (application_name)
