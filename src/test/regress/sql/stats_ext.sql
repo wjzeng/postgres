@@ -45,6 +45,20 @@ CREATE STATISTICS tst ON (y) FROM ext_stats_test; -- single column reference
 CREATE STATISTICS tst ON y + z FROM ext_stats_test; -- missing parentheses
 CREATE STATISTICS tst ON (x, y) FROM ext_stats_test; -- tuple expression
 DROP TABLE ext_stats_test;
+-- statistics on virtual generated column not allowed
+CREATE TABLE ext_stats_test1 (x int, y int, z int GENERATED ALWAYS AS (x+y) VIRTUAL, w xid);
+CREATE STATISTICS tst on z from ext_stats_test1;
+CREATE STATISTICS tst on (z) from ext_stats_test1;
+CREATE STATISTICS tst on (z+1) from ext_stats_test1;
+CREATE STATISTICS tst (ndistinct) ON z from ext_stats_test1;
+-- statistics on system column not allowed
+CREATE STATISTICS tst on tableoid from ext_stats_test1;
+CREATE STATISTICS tst on (tableoid) from ext_stats_test1;
+CREATE STATISTICS tst on (tableoid::int+1) from ext_stats_test1;
+CREATE STATISTICS tst (ndistinct) ON xmin from ext_stats_test1;
+-- statistics without a less-than operator not supported
+CREATE STATISTICS tst (ndistinct) ON w from ext_stats_test1;
+DROP TABLE ext_stats_test1;
 
 -- Ensure stats are dropped sanely, and test IF NOT EXISTS while at it
 CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER);
@@ -1693,3 +1707,15 @@ RESET SESSION AUTHORIZATION;
 DROP TABLE stats_ext_tbl;
 DROP SCHEMA tststats CASCADE;
 DROP USER regress_stats_user1;
+
+CREATE TABLE grouping_unique (x integer);
+INSERT INTO grouping_unique (x) SELECT gs FROM generate_series(1,1000) AS gs;
+ANALYZE grouping_unique;
+
+-- Optimiser treat GROUP-BY operator as an 'uniqueser' of the input
+SELECT * FROM check_estimated_rows('
+  SELECT * FROM generate_series(1, 1) t1 LEFT JOIN (
+    SELECT x FROM grouping_unique t2 GROUP BY x) AS q1
+  ON t1.t1 = q1.x;
+');
+DROP TABLE grouping_unique;

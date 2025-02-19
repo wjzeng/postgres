@@ -135,7 +135,7 @@ ExecInitAppend(Append *node, EState *estate, int eflags)
 	appendstate->as_begun = false;
 
 	/* If run-time partition pruning is enabled, then set that up now */
-	if (node->part_prune_info != NULL)
+	if (node->part_prune_index >= 0)
 	{
 		PartitionPruneState *prunestate;
 
@@ -144,10 +144,11 @@ ExecInitAppend(Append *node, EState *estate, int eflags)
 		 * subplans to initialize (validsubplans) by taking into account the
 		 * result of performing initial pruning if any.
 		 */
-		prunestate = ExecInitPartitionPruning(&appendstate->ps,
-											  list_length(node->appendplans),
-											  node->part_prune_info,
-											  &validsubplans);
+		prunestate = ExecInitPartitionExecPruning(&appendstate->ps,
+												  list_length(node->appendplans),
+												  node->part_prune_index,
+												  node->apprelids,
+												  &validsubplans);
 		appendstate->as_prune_state = prunestate;
 		nplans = bms_num_members(validsubplans);
 
@@ -594,7 +595,7 @@ choose_next_subplan_locally(AppendState *node)
 		else if (!node->as_valid_subplans_identified)
 		{
 			node->as_valid_subplans =
-				ExecFindMatchingSubPlans(node->as_prune_state, false);
+				ExecFindMatchingSubPlans(node->as_prune_state, false, NULL);
 			node->as_valid_subplans_identified = true;
 		}
 
@@ -661,7 +662,7 @@ choose_next_subplan_for_leader(AppendState *node)
 		if (!node->as_valid_subplans_identified)
 		{
 			node->as_valid_subplans =
-				ExecFindMatchingSubPlans(node->as_prune_state, false);
+				ExecFindMatchingSubPlans(node->as_prune_state, false, NULL);
 			node->as_valid_subplans_identified = true;
 
 			/*
@@ -737,7 +738,7 @@ choose_next_subplan_for_worker(AppendState *node)
 	else if (!node->as_valid_subplans_identified)
 	{
 		node->as_valid_subplans =
-			ExecFindMatchingSubPlans(node->as_prune_state, false);
+			ExecFindMatchingSubPlans(node->as_prune_state, false, NULL);
 		node->as_valid_subplans_identified = true;
 
 		mark_invalid_subplans_as_finished(node);
@@ -890,7 +891,7 @@ ExecAppendAsyncBegin(AppendState *node)
 	if (!node->as_valid_subplans_identified)
 	{
 		node->as_valid_subplans =
-			ExecFindMatchingSubPlans(node->as_prune_state, false);
+			ExecFindMatchingSubPlans(node->as_prune_state, false, NULL);
 		node->as_valid_subplans_identified = true;
 
 		classify_matching_subplans(node);

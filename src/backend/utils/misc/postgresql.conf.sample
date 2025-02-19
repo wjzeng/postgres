@@ -192,12 +192,15 @@
 #bgwriter_lru_multiplier = 2.0		# 0-10.0 multiplier on buffers scanned/round
 #bgwriter_flush_after = 0		# measured in pages, 0 disables
 
-# - Asynchronous Behavior -
+# - I/O -
 
 #backend_flush_after = 0		# measured in pages, 0 disables
 #effective_io_concurrency = 1		# 1-1000; 0 disables prefetching
 #maintenance_io_concurrency = 10	# 1-1000; 0 disables prefetching
 #io_combine_limit = 128kB		# usually 1-32 blocks (depends on OS)
+
+# - Worker Processes -
+
 #max_worker_processes = 8		# (change requires restart)
 #max_parallel_workers_per_gather = 2	# limited by max_parallel_workers
 #max_parallel_maintenance_workers = 2	# limited by max_parallel_workers
@@ -326,6 +329,7 @@
 				# (change requires restart)
 #wal_keep_size = 0		# in megabytes; 0 disables
 #max_slot_wal_keep_size = -1	# in megabytes; -1 disables
+#idle_replication_slot_timeout = 0	# in minutes; 0 disables
 #wal_sender_timeout = 60s	# in milliseconds; 0 disables
 #track_commit_timestamp = off	# collect timestamp of transaction commit
 				# (change requires restart)
@@ -632,6 +636,7 @@
 #track_activities = on
 #track_activity_query_size = 1024	# (change requires restart)
 #track_counts = on
+#track_cost_delay_timing = off
 #track_io_timing = off
 #track_wal_io_timing = off
 #track_functions = none			# none, pl, all
@@ -670,6 +675,9 @@ autovacuum_worker_slots = 16	# autovacuum worker slots to allocate
 #autovacuum_vacuum_insert_scale_factor = 0.2	# fraction of inserts over table
 						# size before insert vacuum
 #autovacuum_analyze_scale_factor = 0.1	# fraction of table size before analyze
+#autovacuum_vacuum_max_threshold = 100000000    # max number of row updates
+						# before vacuum; -1 disables max
+						# threshold
 #autovacuum_freeze_max_age = 200000000	# maximum XID age before forced vacuum
 					# (change requires restart)
 #autovacuum_multixact_freeze_max_age = 400000000	# maximum multixact age
@@ -698,6 +706,7 @@ autovacuum_worker_slots = 16	# autovacuum worker slots to allocate
 #vacuum_multixact_freeze_table_age = 150000000
 #vacuum_multixact_freeze_min_age = 5000000
 #vacuum_multixact_failsafe_age = 1600000000
+#vacuum_max_eager_freeze_failure_rate = 0.03 # 0 disables eager scanning
 
 #------------------------------------------------------------------------------
 # CLIENT CONNECTION DEFAULTS

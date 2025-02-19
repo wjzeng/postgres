@@ -11,7 +11,7 @@ use Test::More;
 # Test set-up
 my ($node, $port);
 $node = PostgreSQL::Test::Cluster->new('test');
-$node->init;
+$node->init(auth_extra => [ '--create-role' => 'no_such_user' ]);
 $node->start;
 $port = $node->port;
 
@@ -85,7 +85,10 @@ $node->command_checks_all(
 # Failing to connect to the initial database due to bad username is an error.
 $node->command_checks_all(
 	[ 'pg_amcheck', '--username' => 'no_such_user', 'postgres' ],
-	1, [qr/^$/], [], 'checking with a non-existent user');
+	1,
+	[qr/^$/],
+	[qr/role "no_such_user" does not exist/],
+	'checking with a non-existent user');
 
 #########################################
 # Test checking databases without amcheck installed

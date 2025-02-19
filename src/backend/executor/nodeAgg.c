@@ -269,6 +269,7 @@
 #include "utils/datum.h"
 #include "utils/dynahash.h"
 #include "utils/expandeddatum.h"
+#include "utils/injection_point.h"
 #include "utils/logtape.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -1453,7 +1454,7 @@ find_cols_walker(Node *node, FindColsContext *context)
  * To implement hashed aggregation, we need a hashtable that stores a
  * representative tuple and an array of AggStatePerGroup structs for each
  * distinct set of GROUP BY column values.  We compute the hash key from the
- * GROUP BY columns.  The per-group data is allocated in lookup_hash_entry(),
+ * GROUP BY columns.  The per-group data is allocated in initialize_hash_entry(),
  * for each entry.
  *
  * We have a separate hashtable and associated perhash data structure for each
@@ -1488,6 +1489,14 @@ build_hash_tables(AggState *aggstate)
 		nbuckets = hash_choose_num_buckets(aggstate->hashentrysize,
 										   perhash->aggnode->numGroups,
 										   memory);
+
+#ifdef USE_INJECTION_POINTS
+		if (IS_INJECTION_POINT_ATTACHED("hash-aggregate-oversize-table"))
+		{
+			nbuckets = memory / sizeof(TupleHashEntryData);
+			INJECTION_POINT_CACHED("hash-aggregate-oversize-table");
+		}
+#endif
 
 		build_hash_table(aggstate, setno, nbuckets);
 	}
@@ -1542,7 +1551,7 @@ build_hash_table(AggState *aggstate, int setno, long nbuckets)
  * at all.  Only columns of the first two types need to be stored in the
  * hashtable, and getting rid of the others can make the table entries
  * significantly smaller.  The hashtable only contains the relevant columns,
- * and is packed/unpacked in lookup_hash_entry() / agg_retrieve_hash_table()
+ * and is packed/unpacked in lookup_hash_entries() / agg_retrieve_hash_table()
  * into the format of the normal input descriptor.
  *
  * Additional columns, in addition to the columns grouped by, come from two
@@ -1860,6 +1869,18 @@ hash_agg_check_limits(AggState *aggstate)
 													 true);
 	Size		hashkey_mem = MemoryContextMemAllocated(aggstate->hashcontext->ecxt_per_tuple_memory,
 														true);
+	bool		do_spill = false;
+
+#ifdef USE_INJECTION_POINTS
+	if (ngroups >= 1000)
+	{
+		if (IS_INJECTION_POINT_ATTACHED("hash-aggregate-spill-1000"))
+		{
+			do_spill = true;
+			INJECTION_POINT_CACHED("hash-aggregate-spill-1000");
+		}
+	}
+#endif
 
 	/*
 	 * Don't spill unless there's at least one group in the hash table so we
@@ -1869,8 +1890,11 @@ hash_agg_check_limits(AggState *aggstate)
 		(meta_mem + hashkey_mem > aggstate->hash_mem_limit ||
 		 ngroups > aggstate->hash_ngroups_limit))
 	{
-		hash_agg_enter_spill_mode(aggstate);
+		do_spill = true;
 	}
+
+	if (do_spill)
+		hash_agg_enter_spill_mode(aggstate);
 }
 
 /*
@@ -1881,6 +1905,7 @@ hash_agg_check_limits(AggState *aggstate)
 static void
 hash_agg_enter_spill_mode(AggState *aggstate)
 {
+	INJECTION_POINT("hash-aggregate-enter-spill-mode");
 	aggstate->hash_spill_mode = true;
 	hashagg_recompile_expressions(aggstate, aggstate->table_filled, true);
 
@@ -2076,8 +2101,6 @@ initialize_hash_entry(AggState *aggstate, TupleHashTable hashtable,
 
 /*
  * Look up hash entries for the current tuple in all hashed grouping sets.
- *
- * Be aware that lookup_hash_entry can reset the tmpcontext.
  *
  * Some entries may be left NULL if we are in "spill mode". The same tuple
  * will belong to different groups for each grouping set, so may match a group
@@ -2652,6 +2675,7 @@ agg_refill_hash_table(AggState *aggstate)
 	 */
 	hashagg_recompile_expressions(aggstate, true, true);
 
+	INJECTION_POINT("hash-aggregate-process-batch");
 	for (;;)
 	{
 		TupleTableSlot *spillslot = aggstate->hash_spill_rslot;
@@ -2900,6 +2924,15 @@ hashagg_spill_init(HashAggSpill *spill, LogicalTapeSet *tapeset, int used_bits,
 	npartitions = hash_choose_num_partitions(input_groups, hashentrysize,
 											 used_bits, &partition_bits);
 
+#ifdef USE_INJECTION_POINTS
+	if (IS_INJECTION_POINT_ATTACHED("hash-aggregate-single-partition"))
+	{
+		npartitions = 1;
+		partition_bits = 0;
+		INJECTION_POINT_CACHED("hash-aggregate-single-partition");
+	}
+#endif
+
 	spill->partitions = palloc0(sizeof(LogicalTape *) * npartitions);
 	spill->ntuples = palloc0(sizeof(int64) * npartitions);
 	spill->hll_card = palloc0(sizeof(hyperLogLogState) * npartitions);
@@ -2908,7 +2941,10 @@ hashagg_spill_init(HashAggSpill *spill, LogicalTapeSet *tapeset, int used_bits,
 		spill->partitions[i] = LogicalTapeCreate(tapeset);
 
 	spill->shift = 32 - used_bits - partition_bits;
-	spill->mask = (npartitions - 1) << spill->shift;
+	if (spill->shift < 32)
+		spill->mask = (npartitions - 1) << spill->shift;
+	else
+		spill->mask = 0;
 	spill->npartitions = npartitions;
 
 	for (int i = 0; i < npartitions; i++)
@@ -2957,7 +2993,11 @@ hashagg_spill_tuple(AggState *aggstate, HashAggSpill *spill,
 
 	tuple = ExecFetchSlotMinimalTuple(spillslot, &shouldFree);
 
-	partition = (hash & spill->mask) >> spill->shift;
+	if (spill->shift < 32)
+		partition = (hash & spill->mask) >> spill->shift;
+	else
+		partition = 0;
+
 	spill->ntuples[partition]++;
 
 	/*

@@ -212,7 +212,7 @@ typedef struct PgStat_TableXactStatus
  * ------------------------------------------------------------
  */
 
-#define PGSTAT_FILE_FORMAT_ID	0x01A5BCB1
+#define PGSTAT_FILE_FORMAT_ID	0x01A5BCB3
 
 typedef struct PgStat_ArchiverStats
 {
@@ -274,14 +274,16 @@ typedef enum IOObject
 {
 	IOOBJECT_RELATION,
 	IOOBJECT_TEMP_RELATION,
+	IOOBJECT_WAL,
 } IOObject;
 
-#define IOOBJECT_NUM_TYPES (IOOBJECT_TEMP_RELATION + 1)
+#define IOOBJECT_NUM_TYPES (IOOBJECT_WAL + 1)
 
 typedef enum IOContext
 {
 	IOCONTEXT_BULKREAD,
 	IOCONTEXT_BULKWRITE,
+	IOCONTEXT_INIT,
 	IOCONTEXT_NORMAL,
 	IOCONTEXT_VACUUM,
 } IOContext;
@@ -465,6 +467,11 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter analyze_count;
 	TimestampTz last_autoanalyze_time;	/* autovacuum initiated */
 	PgStat_Counter autoanalyze_count;
+
+	PgStat_Counter total_vacuum_time;	/* times in milliseconds */
+	PgStat_Counter total_autovacuum_time;
+	PgStat_Counter total_analyze_time;
+	PgStat_Counter total_autoanalyze_time;
 } PgStat_StatTabEntry;
 
 typedef struct PgStat_WalStats
@@ -488,7 +495,6 @@ typedef struct PgStat_WalStats
  */
 typedef struct PgStat_PendingWalStats
 {
-	PgStat_Counter wal_buffers_full;
 	PgStat_Counter wal_write;
 	PgStat_Counter wal_sync;
 	instr_time	wal_write_time;
@@ -649,10 +655,11 @@ extern void pgstat_assoc_relation(Relation rel);
 extern void pgstat_unlink_relation(Relation rel);
 
 extern void pgstat_report_vacuum(Oid tableoid, bool shared,
-								 PgStat_Counter livetuples, PgStat_Counter deadtuples);
+								 PgStat_Counter livetuples, PgStat_Counter deadtuples,
+								 TimestampTz starttime);
 extern void pgstat_report_analyze(Relation rel,
 								  PgStat_Counter livetuples, PgStat_Counter deadtuples,
-								  bool resetcounter);
+								  bool resetcounter, TimestampTz starttime);
 
 /*
  * If stats are enabled, but pending data hasn't been prepared yet, call

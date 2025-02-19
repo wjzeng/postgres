@@ -849,6 +849,7 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 	int			max_walsenders;
 	int			cur_walsenders;
 	int			max_prepared_transactions;
+	char	   *max_slot_wal_keep_size;
 
 	pg_log_info("checking settings on publisher");
 
@@ -872,6 +873,7 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 	 * - wal_level = logical
 	 * - max_replication_slots >= current + number of dbs to be converted
 	 * - max_wal_senders >= current + number of dbs to be converted
+	 * - max_slot_wal_keep_size = -1 (to prevent deletion of required WAL files)
 	 * -----------------------------------------------------------------------
 	 */
 	res = PQexec(conn,
@@ -880,7 +882,8 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 				 " (SELECT count(*) FROM pg_catalog.pg_replication_slots),"
 				 " pg_catalog.current_setting('max_wal_senders'),"
 				 " (SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE backend_type = 'walsender'),"
-				 " pg_catalog.current_setting('max_prepared_transactions')");
+				 " pg_catalog.current_setting('max_prepared_transactions'),"
+				 " pg_catalog.current_setting('max_slot_wal_keep_size')");
 
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
 	{
@@ -895,6 +898,7 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 	max_walsenders = atoi(PQgetvalue(res, 0, 3));
 	cur_walsenders = atoi(PQgetvalue(res, 0, 4));
 	max_prepared_transactions = atoi(PQgetvalue(res, 0, 5));
+	max_slot_wal_keep_size = pg_strdup(PQgetvalue(res, 0, 6));
 
 	PQclear(res);
 
@@ -905,6 +909,8 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 	pg_log_debug("publisher: current wal senders: %d", cur_walsenders);
 	pg_log_debug("publisher: max_prepared_transactions: %d",
 				 max_prepared_transactions);
+	pg_log_debug("publisher: max_slot_wal_keep_size: %s",
+				 max_slot_wal_keep_size);
 
 	disconnect_database(conn, false);
 
@@ -937,6 +943,18 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 		pg_log_warning("two_phase option will not be enabled for replication slots");
 		pg_log_warning_detail("Subscriptions will be created with the two_phase option disabled.  "
 							  "Prepared transactions will be replicated at COMMIT PREPARED.");
+	}
+
+	/*
+	 * Validate 'max_slot_wal_keep_size'. If this parameter is set to a
+	 * non-default value, it may cause replication failures due to required
+	 * WAL files being prematurely removed.
+	 */
+	if (dry_run && (strcmp(max_slot_wal_keep_size, "-1") != 0))
+	{
+		pg_log_warning("required WAL could be removed from the publisher");
+		pg_log_warning_hint("Set the configuration parameter \"%s\" to -1 to ensure that required WAL files are not prematurely removed.",
+							"max_slot_wal_keep_size");
 	}
 
 	pg_free(wal_level);
@@ -1130,6 +1148,7 @@ check_and_drop_existing_subscriptions(PGconn *conn,
 
 	PQclear(res);
 	destroyPQExpBuffer(query);
+	PQfreemem(dbname);
 }
 
 /*
@@ -1329,7 +1348,7 @@ create_logical_replication_slot(PGconn *conn, struct LogicalRepInfo *dbinfo)
 					  "SELECT lsn FROM pg_catalog.pg_create_logical_replication_slot(%s, 'pgoutput', false, false, false)",
 					  slot_name_esc);
 
-	pg_free(slot_name_esc);
+	PQfreemem(slot_name_esc);
 
 	pg_log_debug("command is: %s", str->data);
 
@@ -1375,7 +1394,7 @@ drop_replication_slot(PGconn *conn, struct LogicalRepInfo *dbinfo,
 
 	appendPQExpBuffer(str, "SELECT pg_catalog.pg_drop_replication_slot(%s)", slot_name_esc);
 
-	pg_free(slot_name_esc);
+	PQfreemem(slot_name_esc);
 
 	pg_log_debug("command is: %s", str->data);
 
@@ -1438,6 +1457,10 @@ start_standby_server(const struct CreateSubscriberOptions *opt, bool restricted_
 	appendPQExpBuffer(pg_ctl_cmd, "\"%s\" start -D ", pg_ctl_path);
 	appendShellString(pg_ctl_cmd, subscriber_dir);
 	appendPQExpBuffer(pg_ctl_cmd, " -s -o \"-c sync_replication_slots=off\"");
+
+	/* Prevent unintended slot invalidation */
+	appendPQExpBuffer(pg_ctl_cmd, " -o \"-c idle_replication_slot_timeout=0\"");
+
 	if (restricted_access)
 	{
 		appendPQExpBuffer(pg_ctl_cmd, " -o \"-p %s\"", opt->sub_port);
@@ -1614,8 +1637,8 @@ create_publication(PGconn *conn, struct LogicalRepInfo *dbinfo)
 	/* For cleanup purposes */
 	dbinfo->made_publication = true;
 
-	pg_free(ipubname_esc);
-	pg_free(spubname_esc);
+	PQfreemem(ipubname_esc);
+	PQfreemem(spubname_esc);
 	destroyPQExpBuffer(str);
 }
 
@@ -1638,7 +1661,7 @@ drop_publication(PGconn *conn, struct LogicalRepInfo *dbinfo)
 
 	appendPQExpBuffer(str, "DROP PUBLICATION %s", pubname_esc);
 
-	pg_free(pubname_esc);
+	PQfreemem(pubname_esc);
 
 	pg_log_debug("command is: %s", str->data);
 
@@ -1702,10 +1725,10 @@ create_subscription(PGconn *conn, const struct LogicalRepInfo *dbinfo)
 					  "slot_name = %s, copy_data = false)",
 					  subname_esc, pubconninfo_esc, pubname_esc, replslotname_esc);
 
-	pg_free(pubname_esc);
-	pg_free(subname_esc);
-	pg_free(pubconninfo_esc);
-	pg_free(replslotname_esc);
+	PQfreemem(pubname_esc);
+	PQfreemem(subname_esc);
+	PQfreemem(pubconninfo_esc);
+	PQfreemem(replslotname_esc);
 
 	pg_log_debug("command is: %s", str->data);
 
@@ -1812,8 +1835,8 @@ set_replication_progress(PGconn *conn, const struct LogicalRepInfo *dbinfo, cons
 		PQclear(res);
 	}
 
-	pg_free(subname);
-	pg_free(dbname);
+	PQfreemem(subname);
+	PQfreemem(dbname);
 	pg_free(originname);
 	pg_free(lsnstr);
 	destroyPQExpBuffer(str);
@@ -1856,7 +1879,7 @@ enable_subscription(PGconn *conn, const struct LogicalRepInfo *dbinfo)
 		PQclear(res);
 	}
 
-	pg_free(subname);
+	PQfreemem(subname);
 	destroyPQExpBuffer(str);
 }
 

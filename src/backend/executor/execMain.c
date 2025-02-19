@@ -46,6 +46,7 @@
 #include "commands/matview.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
+#include "executor/execPartition.h"
 #include "executor/nodeSubplan.h"
 #include "foreign/fdwapi.h"
 #include "mb/pg_wchar.h"
@@ -850,9 +851,22 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	/*
 	 * initialize the node's execution state
 	 */
-	ExecInitRangeTable(estate, rangeTable, plannedstmt->permInfos);
+	ExecInitRangeTable(estate, rangeTable, plannedstmt->permInfos,
+					   bms_copy(plannedstmt->unprunableRelids));
 
 	estate->es_plannedstmt = plannedstmt;
+	estate->es_part_prune_infos = plannedstmt->partPruneInfos;
+
+	/*
+	 * Perform runtime "initial" pruning to identify which child subplans,
+	 * corresponding to the children of plan nodes that contain
+	 * PartitionPruneInfo such as Append, will not be executed. The results,
+	 * which are bitmapsets of indexes of the child subplans that will be
+	 * executed, are saved in es_part_prune_results.  These results correspond
+	 * to each PartitionPruneInfo entry, and the es_part_prune_results list is
+	 * parallel to es_part_prune_infos.
+	 */
+	ExecDoInitialPruning(estate);
 
 	/*
 	 * Next, build the ExecRowMark array from the PlanRowMark(s), if any.
@@ -868,8 +882,13 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 			Relation	relation;
 			ExecRowMark *erm;
 
-			/* ignore "parent" rowmarks; they are irrelevant at runtime */
-			if (rc->isParent)
+			/*
+			 * Ignore "parent" rowmarks, because they are irrelevant at
+			 * runtime.  Also ignore the rowmarks belonging to child tables
+			 * that have been pruned in ExecDoInitialPruning().
+			 */
+			if (rc->isParent ||
+				!bms_is_member(rc->rti, estate->es_unpruned_relids))
 				continue;
 
 			/* get relation's OID (will produce InvalidOid if subquery) */
@@ -1762,6 +1781,7 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 				continue;
 
 			checkconstr = stringToNode(check[i].ccbin);
+			checkconstr = (Expr *) expand_generated_columns_in_expr((Node *) checkconstr, rel, 1);
 			resultRelInfo->ri_ConstraintExprs[i] =
 				ExecPrepareExpr(checkconstr, estate);
 		}
@@ -2309,7 +2329,9 @@ ExecBuildSlotValueDescription(Oid reloid,
 
 		if (table_perm || column_perm)
 		{
-			if (slot->tts_isnull[i])
+			if (att->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+				val = "virtual";
+			else if (slot->tts_isnull[i])
 				val = "null";
 			else
 			{
@@ -2640,12 +2662,14 @@ bool
 EvalPlanQualFetchRowMark(EPQState *epqstate, Index rti, TupleTableSlot *slot)
 {
 	ExecAuxRowMark *earm = epqstate->relsubs_rowmark[rti - 1];
-	ExecRowMark *erm = earm->rowmark;
+	ExecRowMark *erm;
 	Datum		datum;
 	bool		isNull;
 
 	Assert(earm != NULL);
 	Assert(epqstate->origslot != NULL);
+
+	erm = earm->rowmark;
 
 	if (RowMarkRequiresRowShareLock(erm->markType))
 		elog(ERROR, "EvalPlanQual doesn't support locking rowmarks");
@@ -2919,6 +2943,13 @@ EvalPlanQualStart(EPQState *epqstate, Plan *planTree)
 				parentestate->es_param_exec_vals[i].isnull;
 		}
 	}
+
+	/*
+	 * Copy es_unpruned_relids so that pruned relations are ignored by
+	 * ExecInitLockRows() and ExecInitModifyTable() when initializing the plan
+	 * trees below.
+	 */
+	rcestate->es_unpruned_relids = parentestate->es_unpruned_relids;
 
 	/*
 	 * Initialize private state information for each SubPlan.  We must do this

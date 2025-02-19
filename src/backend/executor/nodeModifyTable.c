@@ -391,11 +391,14 @@ ExecCheckTIDVisible(EState *estate,
 }
 
 /*
- * Initialize to compute stored generated columns for a tuple
+ * Initialize generated columns handling for a tuple
  *
- * This fills the resultRelInfo's ri_GeneratedExprsI/ri_NumGeneratedNeededI
- * or ri_GeneratedExprsU/ri_NumGeneratedNeededU fields, depending on cmdtype.
+ * This fills the resultRelInfo's ri_GeneratedExprsI/ri_NumGeneratedNeededI or
+ * ri_GeneratedExprsU/ri_NumGeneratedNeededU fields, depending on cmdtype.
+ * This is used only for stored generated columns.
+ *
  * If cmdType == CMD_UPDATE, the ri_extraUpdatedCols field is filled too.
+ * This is used by both stored and virtual generated columns.
  *
  * Note: usually, a given query would need only one of ri_GeneratedExprsI and
  * ri_GeneratedExprsU per result rel; but MERGE can need both, and so can
@@ -403,9 +406,9 @@ ExecCheckTIDVisible(EState *estate,
  * UPDATE and INSERT actions.
  */
 void
-ExecInitStoredGenerated(ResultRelInfo *resultRelInfo,
-						EState *estate,
-						CmdType cmdtype)
+ExecInitGenerated(ResultRelInfo *resultRelInfo,
+				  EState *estate,
+				  CmdType cmdtype)
 {
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	TupleDesc	tupdesc = RelationGetDescr(rel);
@@ -416,7 +419,7 @@ ExecInitStoredGenerated(ResultRelInfo *resultRelInfo,
 	MemoryContext oldContext;
 
 	/* Nothing to do if no generated columns */
-	if (!(tupdesc->constr && tupdesc->constr->has_generated_stored))
+	if (!(tupdesc->constr && (tupdesc->constr->has_generated_stored || tupdesc->constr->has_generated_virtual)))
 		return;
 
 	/*
@@ -442,7 +445,9 @@ ExecInitStoredGenerated(ResultRelInfo *resultRelInfo,
 
 	for (int i = 0; i < natts; i++)
 	{
-		if (TupleDescAttr(tupdesc, i)->attgenerated == ATTRIBUTE_GENERATED_STORED)
+		char		attgenerated = TupleDescAttr(tupdesc, i)->attgenerated;
+
+		if (attgenerated)
 		{
 			Expr	   *expr;
 
@@ -467,8 +472,11 @@ ExecInitStoredGenerated(ResultRelInfo *resultRelInfo,
 			}
 
 			/* No luck, so prepare the expression for execution */
-			ri_GeneratedExprs[i] = ExecPrepareExpr(expr, estate);
-			ri_NumGeneratedNeeded++;
+			if (attgenerated == ATTRIBUTE_GENERATED_STORED)
+			{
+				ri_GeneratedExprs[i] = ExecPrepareExpr(expr, estate);
+				ri_NumGeneratedNeeded++;
+			}
 
 			/* If UPDATE, mark column in resultRelInfo->ri_extraUpdatedCols */
 			if (cmdtype == CMD_UPDATE)
@@ -476,6 +484,13 @@ ExecInitStoredGenerated(ResultRelInfo *resultRelInfo,
 					bms_add_member(resultRelInfo->ri_extraUpdatedCols,
 								   i + 1 - FirstLowInvalidHeapAttributeNumber);
 		}
+	}
+
+	if (ri_NumGeneratedNeeded == 0)
+	{
+		/* didn't need it after all */
+		pfree(ri_GeneratedExprs);
+		ri_GeneratedExprs = NULL;
 	}
 
 	/* Save in appropriate set of fields */
@@ -486,6 +501,8 @@ ExecInitStoredGenerated(ResultRelInfo *resultRelInfo,
 
 		resultRelInfo->ri_GeneratedExprsU = ri_GeneratedExprs;
 		resultRelInfo->ri_NumGeneratedNeededU = ri_NumGeneratedNeeded;
+
+		resultRelInfo->ri_extraUpdatedCols_valid = true;
 	}
 	else
 	{
@@ -526,7 +543,7 @@ ExecComputeStoredGenerated(ResultRelInfo *resultRelInfo,
 	if (cmdtype == CMD_UPDATE)
 	{
 		if (resultRelInfo->ri_GeneratedExprsU == NULL)
-			ExecInitStoredGenerated(resultRelInfo, estate, cmdtype);
+			ExecInitGenerated(resultRelInfo, estate, cmdtype);
 		if (resultRelInfo->ri_NumGeneratedNeededU == 0)
 			return;
 		ri_GeneratedExprs = resultRelInfo->ri_GeneratedExprsU;
@@ -534,7 +551,7 @@ ExecComputeStoredGenerated(ResultRelInfo *resultRelInfo,
 	else
 	{
 		if (resultRelInfo->ri_GeneratedExprsI == NULL)
-			ExecInitStoredGenerated(resultRelInfo, estate, cmdtype);
+			ExecInitGenerated(resultRelInfo, estate, cmdtype);
 		/* Early exit is impossible given the prior Assert */
 		Assert(resultRelInfo->ri_NumGeneratedNeededI > 0);
 		ri_GeneratedExprs = resultRelInfo->ri_GeneratedExprsI;
@@ -690,7 +707,7 @@ ExecInitUpdateProjection(ModifyTableState *mtstate,
 		Assert(whichrel >= 0 && whichrel < mtstate->mt_nrels);
 	}
 
-	updateColnos = (List *) list_nth(node->updateColnosLists, whichrel);
+	updateColnos = (List *) list_nth(mtstate->mt_updateColnosLists, whichrel);
 
 	/*
 	 * For UPDATE, we use the old tuple to fill up missing values in the tuple
@@ -3626,14 +3643,15 @@ ExecMergeNotMatched(ModifyTableContext *context, ResultRelInfo *resultRelInfo,
 void
 ExecInitMerge(ModifyTableState *mtstate, EState *estate)
 {
-	ModifyTable *node = (ModifyTable *) mtstate->ps.plan;
+	List	   *mergeActionLists = mtstate->mt_mergeActionLists;
+	List	   *mergeJoinConditions = mtstate->mt_mergeJoinConditions;
 	ResultRelInfo *rootRelInfo = mtstate->rootResultRelInfo;
 	ResultRelInfo *resultRelInfo;
 	ExprContext *econtext;
 	ListCell   *lc;
 	int			i;
 
-	if (node->mergeActionLists == NIL)
+	if (mergeActionLists == NIL)
 		return;
 
 	mtstate->mt_merge_subcommands = 0;
@@ -3650,14 +3668,14 @@ ExecInitMerge(ModifyTableState *mtstate, EState *estate)
 	 * anything here, do so there too.
 	 */
 	i = 0;
-	foreach(lc, node->mergeActionLists)
+	foreach(lc, mergeActionLists)
 	{
 		List	   *mergeActionList = lfirst(lc);
 		Node	   *joinCondition;
 		TupleDesc	relationDesc;
 		ListCell   *l;
 
-		joinCondition = (Node *) list_nth(node->mergeJoinConditions, i);
+		joinCondition = (Node *) list_nth(mergeJoinConditions, i);
 		resultRelInfo = mtstate->resultRelInfo + i;
 		i++;
 		relationDesc = RelationGetDescr(resultRelInfo->ri_RelationDesc);
@@ -4453,7 +4471,13 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	ModifyTableState *mtstate;
 	Plan	   *subplan = outerPlan(node);
 	CmdType		operation = node->operation;
-	int			nrels = list_length(node->resultRelations);
+	int			nrels;
+	List	   *resultRelations = NIL;
+	List	   *withCheckOptionLists = NIL;
+	List	   *returningLists = NIL;
+	List	   *updateColnosLists = NIL;
+	List	   *mergeActionLists = NIL;
+	List	   *mergeJoinConditions = NIL;
 	ResultRelInfo *resultRelInfo;
 	List	   *arowmarks;
 	ListCell   *l;
@@ -4462,6 +4486,57 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 	/* check for unsupported flags */
 	Assert(!(eflags & (EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
+
+	/*
+	 * Only consider unpruned relations for initializing their ResultRelInfo
+	 * struct and other fields such as withCheckOptions, etc.
+	 */
+	i = 0;
+	foreach(l, node->resultRelations)
+	{
+		Index		rti = lfirst_int(l);
+
+		if (bms_is_member(rti, estate->es_unpruned_relids))
+		{
+			resultRelations = lappend_int(resultRelations, rti);
+			if (node->withCheckOptionLists)
+			{
+				List	   *withCheckOptions = list_nth_node(List,
+															 node->withCheckOptionLists,
+															 i);
+
+				withCheckOptionLists = lappend(withCheckOptionLists, withCheckOptions);
+			}
+			if (node->returningLists)
+			{
+				List	   *returningList = list_nth_node(List,
+														  node->returningLists,
+														  i);
+
+				returningLists = lappend(returningLists, returningList);
+			}
+			if (node->updateColnosLists)
+			{
+				List	   *updateColnosList = list_nth(node->updateColnosLists, i);
+
+				updateColnosLists = lappend(updateColnosLists, updateColnosList);
+			}
+			if (node->mergeActionLists)
+			{
+				List	   *mergeActionList = list_nth(node->mergeActionLists, i);
+
+				mergeActionLists = lappend(mergeActionLists, mergeActionList);
+			}
+			if (node->mergeJoinConditions)
+			{
+				List	   *mergeJoinCondition = list_nth(node->mergeJoinConditions, i);
+
+				mergeJoinConditions = lappend(mergeJoinConditions, mergeJoinCondition);
+			}
+		}
+		i++;
+	}
+	nrels = list_length(resultRelations);
 
 	/*
 	 * create state structure
@@ -4483,6 +4558,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	mtstate->mt_merge_inserted = 0;
 	mtstate->mt_merge_updated = 0;
 	mtstate->mt_merge_deleted = 0;
+	mtstate->mt_updateColnosLists = updateColnosLists;
+	mtstate->mt_mergeActionLists = mergeActionLists;
+	mtstate->mt_mergeJoinConditions = mergeJoinConditions;
 
 	/*----------
 	 * Resolve the target relation. This is the same as:
@@ -4495,11 +4573,13 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * If it's a partitioned or inherited table, the root partition or
 	 * appendrel RTE doesn't appear elsewhere in the plan and its RT index is
 	 * given explicitly in node->rootRelation.  Otherwise, the target relation
-	 * is the sole relation in the node->resultRelations list.
+	 * is the sole relation in the node->resultRelations list and, since it can
+	 * never be pruned, also in the resultRelations list constructed above.
 	 *----------
 	 */
 	if (node->rootRelation > 0)
 	{
+		Assert(bms_is_member(node->rootRelation, estate->es_unpruned_relids));
 		mtstate->rootResultRelInfo = makeNode(ResultRelInfo);
 		ExecInitResultRelation(estate, mtstate->rootResultRelInfo,
 							   node->rootRelation);
@@ -4507,14 +4587,15 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	else
 	{
 		Assert(list_length(node->resultRelations) == 1);
+		Assert(list_length(resultRelations) == 1);
 		mtstate->rootResultRelInfo = mtstate->resultRelInfo;
 		ExecInitResultRelation(estate, mtstate->resultRelInfo,
-							   linitial_int(node->resultRelations));
+							   linitial_int(resultRelations));
 	}
 
 	/* set up epqstate with dummy subplan data for the moment */
 	EvalPlanQualInit(&mtstate->mt_epqstate, estate, NULL, NIL,
-					 node->epqParam, node->resultRelations);
+					 node->epqParam, resultRelations);
 	mtstate->fireBSTriggers = true;
 
 	/*
@@ -4532,13 +4613,13 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 */
 	resultRelInfo = mtstate->resultRelInfo;
 	i = 0;
-	foreach(l, node->resultRelations)
+	foreach(l, resultRelations)
 	{
 		Index		resultRelation = lfirst_int(l);
 		List	   *mergeActions = NIL;
 
-		if (node->mergeActionLists)
-			mergeActions = list_nth(node->mergeActionLists, i);
+		if (mergeActionLists)
+			mergeActions = list_nth(mergeActionLists, i);
 
 		if (resultRelInfo != mtstate->rootResultRelInfo)
 		{
@@ -4676,7 +4757,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * Initialize any WITH CHECK OPTION constraints if needed.
 	 */
 	resultRelInfo = mtstate->resultRelInfo;
-	foreach(l, node->withCheckOptionLists)
+	foreach(l, withCheckOptionLists)
 	{
 		List	   *wcoList = (List *) lfirst(l);
 		List	   *wcoExprs = NIL;
@@ -4699,7 +4780,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	/*
 	 * Initialize RETURNING projections if needed.
 	 */
-	if (node->returningLists)
+	if (returningLists)
 	{
 		TupleTableSlot *slot;
 		ExprContext *econtext;
@@ -4708,7 +4789,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		 * Initialize result tuple slot and assign its rowtype using the first
 		 * RETURNING list.  We assume the rest will look the same.
 		 */
-		mtstate->ps.plan->targetlist = (List *) linitial(node->returningLists);
+		mtstate->ps.plan->targetlist = (List *) linitial(returningLists);
 
 		/* Set up a slot for the output of the RETURNING projection(s) */
 		ExecInitResultTupleSlotTL(&mtstate->ps, &TTSOpsVirtual);
@@ -4723,7 +4804,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		 * Build a projection for each result rel.
 		 */
 		resultRelInfo = mtstate->resultRelInfo;
-		foreach(l, node->returningLists)
+		foreach(l, returningLists)
 		{
 			List	   *rlist = (List *) lfirst(l);
 
@@ -4824,8 +4905,13 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		ExecRowMark *erm;
 		ExecAuxRowMark *aerm;
 
-		/* ignore "parent" rowmarks; they are irrelevant at runtime */
-		if (rc->isParent)
+		/*
+		 * Ignore "parent" rowmarks, because they are irrelevant at runtime.
+		 * Also ignore the rowmarks belonging to child tables that have been
+		 * pruned in ExecDoInitialPruning().
+		 */
+		if (rc->isParent ||
+			!bms_is_member(rc->rti, estate->es_unpruned_relids))
 			continue;
 
 		/* Find ExecRowMark and build ExecAuxRowMark */

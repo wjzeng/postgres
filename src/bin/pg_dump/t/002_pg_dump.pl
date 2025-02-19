@@ -3054,9 +3054,9 @@ my %tests = (
 	'CREATE PUBLICATION pub5' => {
 		create_order => 50,
 		create_sql =>
-		  'CREATE PUBLICATION pub5 WITH (publish_generated_columns = true);',
+		  'CREATE PUBLICATION pub5 WITH (publish_generated_columns = stored);',
 		regexp => qr/^
-			\QCREATE PUBLICATION pub5 WITH (publish = 'insert, update, delete, truncate', publish_generated_columns = true);\E
+			\QCREATE PUBLICATION pub5 WITH (publish = 'insert, update, delete, truncate', publish_generated_columns = stored);\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
@@ -3706,12 +3706,14 @@ my %tests = (
 		create_order => 3,
 		create_sql => 'CREATE TABLE dump_test.test_table_generated (
 						   col1 int primary key,
-						   col2 int generated always as (col1 * 2) stored
+						   col2 int generated always as (col1 * 2) stored,
+						   col3 int generated always as (col1 * 3) virtual
 					   );',
 		regexp => qr/^
 			\QCREATE TABLE dump_test.test_table_generated (\E\n
 			\s+\Qcol1 integer NOT NULL,\E\n
-			\s+\Qcol2 integer GENERATED ALWAYS AS ((col1 * 2)) STORED\E\n
+			\s+\Qcol2 integer GENERATED ALWAYS AS ((col1 * 2)) STORED,\E\n
+			\s+\Qcol3 integer GENERATED ALWAYS AS ((col1 * 3))\E\n
 			\);
 			/xms,
 		like =>

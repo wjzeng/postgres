@@ -2469,13 +2469,6 @@ typedef enum AlterTableType
 	AT_ReAddStatistics,			/* internal to commands/tablecmds.c */
 } AlterTableType;
 
-typedef struct ReplicaIdentityStmt
-{
-	NodeTag		type;
-	char		identity_type;
-	char	   *name;
-} ReplicaIdentityStmt;
-
 typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 {
 	NodeTag		type;
@@ -2491,6 +2484,24 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 	bool		missing_ok;		/* skip error if missing? */
 	bool		recurse;		/* exec-time recursion */
 } AlterTableCmd;
+
+/* Ad-hoc node for AT_AlterConstraint */
+typedef struct ATAlterConstraint
+{
+	NodeTag		type;
+	char	   *conname;		/* Constraint name */
+	bool		alterDeferrability; /* changing deferrability properties? */
+	bool		deferrable;		/* DEFERRABLE? */
+	bool		initdeferred;	/* INITIALLY DEFERRED? */
+} ATAlterConstraint;
+
+/* Ad-hoc node for AT_ReplicaIdentity */
+typedef struct ReplicaIdentityStmt
+{
+	NodeTag		type;
+	char		identity_type;
+	char	   *name;
+} ReplicaIdentityStmt;
 
 
 /* ----------------------
@@ -2812,6 +2823,7 @@ typedef struct Constraint
 	char	   *cooked_expr;	/* CHECK or DEFAULT expression, as
 								 * nodeToString representation */
 	char		generated_when; /* ALWAYS or BY DEFAULT */
+	char		generated_kind; /* STORED or VIRTUAL */
 	bool		nulls_not_distinct; /* null treatment for UNIQUE constraints */
 	List	   *keys;			/* String nodes naming referenced key
 								 * column(s); for UNIQUE/PK/NOT NULL */

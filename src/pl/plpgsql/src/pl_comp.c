@@ -38,8 +38,6 @@
  * Our own local and global variables
  * ----------
  */
-PLpgSQL_stmt_block *plpgsql_parse_result;
-
 static int	datums_alloc;
 int			plpgsql_nDatums;
 PLpgSQL_datum **plpgsql_Datums;
@@ -373,6 +371,7 @@ do_compile(FunctionCallInfo fcinfo,
 
 	function->nstatements = 0;
 	function->requires_procedure_resowner = false;
+	function->has_exception_block = false;
 
 	/*
 	 * Initialize the compiler, particularly the namespace stack.  The
@@ -787,10 +786,9 @@ do_compile(FunctionCallInfo fcinfo,
 	/*
 	 * Now parse the function's text
 	 */
-	parse_rc = plpgsql_yyparse(scanner);
+	parse_rc = plpgsql_yyparse(&function->action, scanner);
 	if (parse_rc != 0)
 		elog(ERROR, "plpgsql parser returned %d", parse_rc);
-	function->action = plpgsql_parse_result;
 
 	plpgsql_scanner_finish(scanner);
 	pfree(proc_source);
@@ -813,6 +811,9 @@ do_compile(FunctionCallInfo fcinfo,
 		function->fn_argvarnos[i] = in_arg_varnos[i];
 
 	plpgsql_finish_datums(function);
+
+	if (function->has_exception_block)
+		plpgsql_mark_local_assignment_targets(function);
 
 	/* Debug dump for completed functions */
 	if (plpgsql_DumpExecTree)
@@ -909,6 +910,7 @@ plpgsql_compile_inline(char *proc_source)
 
 	function->nstatements = 0;
 	function->requires_procedure_resowner = false;
+	function->has_exception_block = false;
 
 	plpgsql_ns_init();
 	plpgsql_ns_push(func_name, PLPGSQL_LABEL_BLOCK);
@@ -945,10 +947,9 @@ plpgsql_compile_inline(char *proc_source)
 	/*
 	 * Now parse the function's text
 	 */
-	parse_rc = plpgsql_yyparse(scanner);
+	parse_rc = plpgsql_yyparse(&function->action, scanner);
 	if (parse_rc != 0)
 		elog(ERROR, "plpgsql parser returned %d", parse_rc);
-	function->action = plpgsql_parse_result;
 
 	plpgsql_scanner_finish(scanner);
 
@@ -965,6 +966,13 @@ plpgsql_compile_inline(char *proc_source)
 	function->fn_nargs = 0;
 
 	plpgsql_finish_datums(function);
+
+	if (function->has_exception_block)
+		plpgsql_mark_local_assignment_targets(function);
+
+	/* Debug dump for completed functions */
+	if (plpgsql_DumpExecTree)
+		plpgsql_dumptree(function);
 
 	/*
 	 * Pop the error context stack

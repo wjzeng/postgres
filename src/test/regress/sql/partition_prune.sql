@@ -1354,3 +1354,48 @@ drop operator class part_test_int4_ops2 using hash;
 drop operator ===(int4, int4);
 
 drop function explain_analyze(text);
+
+-- Runtime pruning on UPDATE using WITH CHECK OPTIONS and RETURNING
+create table part_abc (a int, b text, c bool) partition by list (a);
+create table part_abc_1 (b text, a int, c bool);
+create table part_abc_2 (a int, c bool, b text);
+alter table part_abc attach partition part_abc_1 for values in (1);
+alter table part_abc attach partition part_abc_2 for values in (2);
+insert into part_abc values (1, 'b', true);
+insert into part_abc values (2, 'c', true);
+create view part_abc_view as select * from part_abc where b <> 'a' with check option;
+prepare update_part_abc_view as update part_abc_view set b = $2 where a = $1 returning *;
+-- Only the unpruned partition should be shown in the list of relations to be
+-- updated
+explain (costs off) execute update_part_abc_view (1, 'd');
+execute update_part_abc_view (1, 'd');
+explain (costs off) execute update_part_abc_view (2, 'a');
+execute update_part_abc_view (2, 'a');
+-- All pruned.
+explain (costs off) execute update_part_abc_view (3, 'a');
+execute update_part_abc_view (3, 'a');
+deallocate update_part_abc_view;
+
+-- Runtime pruning on MERGE using a stable function
+create function stable_one() returns int as $$ begin return 1; end; $$ language plpgsql stable;
+explain (costs off)
+merge into part_abc_view pt
+using (select stable_one() as pid) as q join part_abc_1 pt1 on (q.pid = pt1.a) on pt.a = pt1.a
+when matched then delete returning pt.a;
+merge into part_abc_view pt
+using (select stable_one() as pid) as q join part_abc_1 pt1 on (q.pid = pt1.a) on pt.a = pt1.a
+when matched then delete returning pt.a;
+table part_abc_view;
+
+-- All pruned.
+explain (costs off)
+merge into part_abc_view pt
+using (select stable_one() + 2 as pid) as q join part_abc_1 pt1 on (q.pid = pt1.a) on pt.a = pt1.a
+when matched then delete returning pt.a;
+merge into part_abc_view pt
+using (select stable_one() + 2 as pid) as q join part_abc_1 pt1 on (q.pid = pt1.a) on pt.a = pt1.a
+when matched then delete returning pt.a;
+table part_abc_view;
+
+drop view part_abc_view;
+drop table part_abc;

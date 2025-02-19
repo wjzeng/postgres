@@ -1,3 +1,6 @@
+-- keep these tests aligned with generated_virtual.sql
+
+
 CREATE SCHEMA generated_stored_tests;
 GRANT USAGE ON SCHEMA generated_stored_tests TO PUBLIC;
 SET search_path = generated_stored_tests;
@@ -149,6 +152,7 @@ DROP TABLE gtest_normal, gtest_normal_child;
 -- test inheritance mismatches between parent and child
 CREATE TABLE gtestx (x int, b int DEFAULT 10) INHERITS (gtest1);  -- error
 CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS IDENTITY) INHERITS (gtest1);  -- error
+CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS (a * 22) VIRTUAL) INHERITS (gtest1);  -- error
 CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS (a * 22) STORED) INHERITS (gtest1);  -- ok, overrides parent
 \d+ gtestx
 INSERT INTO gtestx (a, x) VALUES (11, 22);
@@ -438,6 +442,9 @@ CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
 CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
     f3 WITH OPTIONS GENERATED ALWAYS AS IDENTITY  -- error
 ) FOR VALUES FROM ('2016-09-01') TO ('2016-10-01');
+CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
+    f3 GENERATED ALWAYS AS (f2 * 2) VIRTUAL  -- error
+) FOR VALUES FROM ('2016-09-01') TO ('2016-10-01');
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 DROP TABLE gtest_child3;
@@ -445,6 +452,9 @@ CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint DEFAULT 42);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 DROP TABLE gtest_child3;
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS IDENTITY);
+ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
+DROP TABLE gtest_child3;
+CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS (f2 * 33) VIRTUAL);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 DROP TABLE gtest_child3;
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS (f2 * 33) STORED);
@@ -715,4 +725,4 @@ CREATE TABLE gtest28b (LIKE gtest28a INCLUDING GENERATED);
 
 
 -- sanity check of system catalog
-SELECT attrelid, attname, attgenerated FROM pg_attribute WHERE attgenerated NOT IN ('', 's');
+SELECT attrelid, attname, attgenerated FROM pg_attribute WHERE attgenerated NOT IN ('', 's', 'v');

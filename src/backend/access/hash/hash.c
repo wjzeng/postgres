@@ -21,6 +21,7 @@
 #include "access/hash.h"
 #include "access/hash_xlog.h"
 #include "access/relscan.h"
+#include "access/stratnum.h"
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "commands/progress.h"
@@ -105,6 +106,8 @@ hashhandler(PG_FUNCTION_ARGS)
 	amroutine->amestimateparallelscan = NULL;
 	amroutine->aminitparallelscan = NULL;
 	amroutine->amparallelrescan = NULL;
+	amroutine->amtranslatestrategy = hashtranslatestrategy;
+	amroutine->amtranslatecmptype = hashtranslatecmptype;
 
 	PG_RETURN_POINTER(amroutine);
 }
@@ -120,7 +123,7 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	double		reltuples;
 	double		allvisfrac;
 	uint32		num_buckets;
-	long		sort_threshold;
+	Size		sort_threshold;
 	HashBuildState buildstate;
 
 	/*
@@ -155,13 +158,13 @@ hashbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * one page.  Also, "initial index size" accounting does not include the
 	 * metapage, nor the first bitmap page.
 	 */
-	sort_threshold = (maintenance_work_mem * 1024L) / BLCKSZ;
+	sort_threshold = (maintenance_work_mem * (Size) 1024) / BLCKSZ;
 	if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 		sort_threshold = Min(sort_threshold, NBuffers);
 	else
 		sort_threshold = Min(sort_threshold, NLocBuffer);
 
-	if (num_buckets >= (uint32) sort_threshold)
+	if (num_buckets >= sort_threshold)
 		buildstate.spool = _h_spoolinit(heap, index, num_buckets);
 	else
 		buildstate.spool = NULL;
@@ -613,7 +616,7 @@ loop_top:
 		xlrec.ntuples = metap->hashm_ntuples;
 
 		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, SizeOfHashUpdateMetaPage);
+		XLogRegisterData(&xlrec, SizeOfHashUpdateMetaPage);
 
 		XLogRegisterBuffer(0, metabuf, REGBUF_STANDARD);
 
@@ -713,7 +716,7 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 		bool		retain_pin = false;
 		bool		clear_dead_marking = false;
 
-		vacuum_delay_point();
+		vacuum_delay_point(false);
 
 		page = BufferGetPage(buf);
 		opaque = HashPageGetOpaque(page);
@@ -820,7 +823,7 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 				xlrec.is_primary_bucket_page = (buf == bucket_buf);
 
 				XLogBeginInsert();
-				XLogRegisterData((char *) &xlrec, SizeOfHashDelete);
+				XLogRegisterData(&xlrec, SizeOfHashDelete);
 
 				/*
 				 * bucket buffer was not changed, but still needs to be
@@ -835,7 +838,7 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 				}
 
 				XLogRegisterBuffer(1, buf, REGBUF_STANDARD);
-				XLogRegisterBufData(1, (char *) deletable,
+				XLogRegisterBufData(1, deletable,
 									ndeletable * sizeof(OffsetNumber));
 
 				recptr = XLogInsert(RM_HASH_ID, XLOG_HASH_DELETE);
@@ -921,4 +924,20 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
 							bstrategy);
 	else
 		LockBuffer(bucket_buf, BUFFER_LOCK_UNLOCK);
+}
+
+CompareType
+hashtranslatestrategy(StrategyNumber strategy, Oid opfamily, Oid opcintype)
+{
+	if (strategy == HTEqualStrategyNumber)
+		return COMPARE_EQ;
+	return COMPARE_INVALID;
+}
+
+StrategyNumber
+hashtranslatecmptype(CompareType cmptype, Oid opfamily, Oid opcintype)
+{
+	if (cmptype == COMPARE_EQ)
+		return HTEqualStrategyNumber;
+	return InvalidStrategy;
 }

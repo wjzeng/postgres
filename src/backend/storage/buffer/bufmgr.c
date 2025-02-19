@@ -1330,10 +1330,7 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 		 * StartReadBuffers() were made for the same blocks before
 		 * WaitReadBuffers(), only the first would issue the advice. That'd be
 		 * a better simulation of true asynchronous I/O, which would only
-		 * start the I/O once, but isn't done here for simplicity.  Note also
-		 * that the following call might actually issue two advice calls if we
-		 * cross a segment boundary; in a true asynchronous version we might
-		 * choose to process only one real I/O at a time in that case.
+		 * start the I/O once, but isn't done here for simplicity.
 		 */
 		smgrprefetch(operation->smgr,
 					 operation->forknum,
@@ -2221,7 +2218,7 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 		buf_block = BufHdrGetBlock(GetBufferDescriptor(buffers[i] - 1));
 
 		/* new buffers are zero-filled */
-		MemSet((char *) buf_block, 0, BLCKSZ);
+		MemSet(buf_block, 0, BLCKSZ);
 	}
 
 	/*
@@ -2472,20 +2469,19 @@ BufferIsExclusiveLocked(Buffer buffer)
 {
 	BufferDesc *bufHdr;
 
+	Assert(BufferIsPinned(buffer));
+
 	if (BufferIsLocal(buffer))
 	{
-		int			bufid = -buffer - 1;
-
-		bufHdr = GetLocalBufferDescriptor(bufid);
+		/* Content locks are not maintained for local buffers. */
+		return true;
 	}
 	else
 	{
 		bufHdr = GetBufferDescriptor(buffer - 1);
+		return LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
+									LW_EXCLUSIVE);
 	}
-
-	Assert(BufferIsPinned(buffer));
-	return LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
-								LW_EXCLUSIVE);
 }
 
 /*
@@ -2501,20 +2497,21 @@ BufferIsDirty(Buffer buffer)
 {
 	BufferDesc *bufHdr;
 
+	Assert(BufferIsPinned(buffer));
+
 	if (BufferIsLocal(buffer))
 	{
 		int			bufid = -buffer - 1;
 
 		bufHdr = GetLocalBufferDescriptor(bufid);
+		/* Content locks are not maintained for local buffers. */
 	}
 	else
 	{
 		bufHdr = GetBufferDescriptor(buffer - 1);
+		Assert(LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
+									LW_EXCLUSIVE));
 	}
-
-	Assert(BufferIsPinned(buffer));
-	Assert(LWLockHeldByMeInMode(BufferDescriptorGetContentLock(bufHdr),
-								LW_EXCLUSIVE));
 
 	return pg_atomic_read_u32(&bufHdr->state) & BM_DIRTY;
 }
@@ -3984,8 +3981,8 @@ BufferIsPermanent(Buffer buffer)
 XLogRecPtr
 BufferGetLSNAtomic(Buffer buffer)
 {
-	BufferDesc *bufHdr = GetBufferDescriptor(buffer - 1);
 	char	   *page = BufferGetPage(buffer);
+	BufferDesc *bufHdr;
 	XLogRecPtr	lsn;
 	uint32		buf_state;
 
@@ -3999,6 +3996,7 @@ BufferGetLSNAtomic(Buffer buffer)
 	Assert(BufferIsValid(buffer));
 	Assert(BufferIsPinned(buffer));
 
+	bufHdr = GetBufferDescriptor(buffer - 1);
 	buf_state = LockBufHdr(bufHdr);
 	lsn = PageGetLSN(page);
 	UnlockBufHdr(bufHdr, buf_state);

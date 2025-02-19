@@ -505,11 +505,19 @@ struct pg_conn
 								 * the server? */
 	uint32		allowed_auth_methods;	/* bitmask of acceptable AuthRequest
 										 * codes */
+	const pg_fe_sasl_mech *allowed_sasl_mechs[1];	/* and acceptable SASL
+													 * mechanisms */
 	bool		client_finished_auth;	/* have we finished our half of the
 										 * authentication exchange? */
 	char		current_auth_response;	/* used by pqTraceOutputMessage to
 										 * know which auth response we're
 										 * sending */
+
+	/* Callbacks for external async authentication */
+	PostgresPollingStatusType (*async_auth) (PGconn *conn);
+	void		(*cleanup_async_auth) (PGconn *conn);
+	pgsocket	altsock;		/* alternative socket for client to poll */
+
 
 	/* Transient state needed while establishing connection */
 	PGTargetServerType target_server_type;	/* desired session properties */

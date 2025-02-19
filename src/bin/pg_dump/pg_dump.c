@@ -50,6 +50,7 @@
 #include "catalog/pg_default_acl_d.h"
 #include "catalog/pg_largeobject_d.h"
 #include "catalog/pg_proc_d.h"
+#include "catalog/pg_publication_d.h"
 #include "catalog/pg_subscription_d.h"
 #include "catalog/pg_type_d.h"
 #include "common/connect.h"
@@ -1280,6 +1281,7 @@ setup_connection(Archive *AH, const char *dumpencoding,
 	 * we know how to escape strings.
 	 */
 	AH->encoding = PQclientEncoding(conn);
+	setFmtEncoding(AH->encoding);
 
 	std_strings = PQparameterStatus(conn, "standard_conforming_strings");
 	AH->std_strings = (std_strings && strcmp(std_strings, "on") == 0);
@@ -4317,7 +4319,7 @@ getPublications(Archive *fout)
 	if (fout->remoteVersion >= 180000)
 		appendPQExpBufferStr(query, "p.pubgencols ");
 	else
-		appendPQExpBufferStr(query, "false AS pubgencols ");
+		appendPQExpBuffer(query, "'%c' AS pubgencols ", PUBLISH_GENCOLS_NONE);
 
 	appendPQExpBufferStr(query, "FROM pg_publication p");
 
@@ -4363,8 +4365,8 @@ getPublications(Archive *fout)
 			(strcmp(PQgetvalue(res, i, i_pubtruncate), "t") == 0);
 		pubinfo[i].pubviaroot =
 			(strcmp(PQgetvalue(res, i, i_pubviaroot), "t") == 0);
-		pubinfo[i].pubgencols =
-			(strcmp(PQgetvalue(res, i, i_pubgencols), "t") == 0);
+		pubinfo[i].pubgencols_type =
+			*(PQgetvalue(res, i, i_pubgencols));
 
 		/* Decide whether we want to dump it */
 		selectDumpableObject(&(pubinfo[i].dobj), fout);
@@ -4446,8 +4448,8 @@ dumpPublication(Archive *fout, const PublicationInfo *pubinfo)
 	if (pubinfo->pubviaroot)
 		appendPQExpBufferStr(query, ", publish_via_partition_root = true");
 
-	if (pubinfo->pubgencols)
-		appendPQExpBufferStr(query, ", publish_generated_columns = true");
+	if (pubinfo->pubgencols_type == PUBLISH_GENCOLS_STORED)
+		appendPQExpBufferStr(query, ", publish_generated_columns = stored");
 
 	appendPQExpBufferStr(query, ");\n");
 
@@ -4680,6 +4682,8 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 				appendPQExpBufferStr(attribs, fmtId(attnames[k]));
 			}
 			pubrinfo[j].pubrattrs = attribs->data;
+			free(attribs);		/* but not attribs->data */
+			free(attnames);
 		}
 		else
 			pubrinfo[j].pubrattrs = NULL;
@@ -9422,6 +9426,7 @@ determineNotNullFlags(Archive *fout, PGresult *res, int r,
 					tbinfo->notnull_constrs[j] =
 						pstrdup(PQgetvalue(res, r, i_notnull_name));
 				}
+				free(default_name);
 			}
 		}
 	}
@@ -16188,6 +16193,9 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 					{
 						if (tbinfo->attgenerated[j] == ATTRIBUTE_GENERATED_STORED)
 							appendPQExpBuffer(q, " GENERATED ALWAYS AS (%s) STORED",
+											  tbinfo->attrdefs[j]->adef_expr);
+						else if (tbinfo->attgenerated[j] == ATTRIBUTE_GENERATED_VIRTUAL)
+							appendPQExpBuffer(q, " GENERATED ALWAYS AS (%s)",
 											  tbinfo->attrdefs[j]->adef_expr);
 						else
 							appendPQExpBuffer(q, " DEFAULT %s",

@@ -597,7 +597,7 @@ pgstat_report_activity(BackendState state, const char *cmd_str)
 
 	if (cmd_str != NULL)
 	{
-		memcpy((char *) beentry->st_activity_raw, cmd_str, len);
+		memcpy(beentry->st_activity_raw, cmd_str, len);
 		beentry->st_activity_raw[len] = '\0';
 		beentry->st_activity_start_timestamp = start_timestamp;
 	}
@@ -670,7 +670,7 @@ pgstat_report_appname(const char *appname)
 	 */
 	PGSTAT_BEGIN_WRITE_ACTIVITY(beentry);
 
-	memcpy((char *) beentry->st_appname, appname, len);
+	memcpy(beentry->st_appname, appname, len);
 	beentry->st_appname[len] = '\0';
 
 	PGSTAT_END_WRITE_ACTIVITY(beentry);
@@ -795,11 +795,11 @@ pgstat_read_current_status(void)
 				 * strcpy is safe even if the string is modified concurrently,
 				 * because there's always a \0 at the end of the buffer.
 				 */
-				strcpy(localappname, (char *) beentry->st_appname);
+				strcpy(localappname, beentry->st_appname);
 				localentry->backendStatus.st_appname = localappname;
-				strcpy(localclienthostname, (char *) beentry->st_clienthostname);
+				strcpy(localclienthostname, beentry->st_clienthostname);
 				localentry->backendStatus.st_clienthostname = localclienthostname;
-				strcpy(localactivity, (char *) beentry->st_activity_raw);
+				strcpy(localactivity, beentry->st_activity_raw);
 				localentry->backendStatus.st_activity_raw = localactivity;
 #ifdef USE_SSL
 				if (beentry->st_ssl)

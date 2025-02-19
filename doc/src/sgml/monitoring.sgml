@@ -2581,9 +2581,10 @@ description | Waiting for a newly initialized WAL file to reach durable storage
   </para>
 
   <para>
-   Currently, I/O on relations (e.g. tables, indexes) is tracked. However,
-   relation I/O which bypasses shared buffers (e.g. when moving a table from one
-   tablespace to another) is currently not tracked.
+   Currently, I/O on relations (e.g. tables, indexes) and WAL activity are
+   tracked. However, relation I/O which bypasses shared buffers
+   (e.g. when moving a table from one tablespace to another) is currently
+   not tracked.
   </para>
 
   <table id="pg-stat-io-view" xreflabel="pg_stat_io">
@@ -2636,6 +2637,11 @@ description | Waiting for a newly initialized WAL file to reach durable storage
           <literal>temp relation</literal>: Temporary relations.
          </para>
         </listitem>
+        <listitem>
+         <para>
+          <literal>wal</literal>: Write Ahead Logs.
+         </para>
+        </listitem>
        </itemizedlist>
        </para>
       </entry>
@@ -2658,6 +2664,13 @@ description | Waiting for a newly initialized WAL file to reach durable storage
           shared buffers. Thus, reads and writes of relation data to and from
           shared buffers are tracked in <varname>context</varname>
           <literal>normal</literal>.
+         </para>
+        </listitem>
+        <listitem>
+         <para>
+          <literal>init</literal>: I/O operations performed while creating the
+          WAL segments are tracked in <varname>context</varname>
+          <literal>init</literal>.
          </para>
         </listitem>
         <listitem>
@@ -4051,6 +4064,44 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       <para>
        Number of times this table has been analyzed by the autovacuum
        daemon
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>total_vacuum_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Total time this table has been manually vacuumed, in milliseconds
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>total_autovacuum_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Total time this table has been vacuumed by the autovacuum daemon,
+       in milliseconds
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>total_analyze_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Total time this table has been manually analyzed, in milliseconds
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>total_autoanalyze_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Total time this table has been analyzed by the autovacuum daemon,
+       in milliseconds
       </para></entry>
      </row>
     </tbody>
@@ -5555,6 +5606,18 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <literal>acquiring inherited sample rows</literal>.
       </para></entry>
      </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>delay_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Total time spent sleeping due to cost-based delay (see
+       <xref linkend="runtime-config-resource-vacuum-cost"/>, in milliseconds
+       (if <xref linkend="guc-track-cost-delay-timing"/> is enabled, otherwise
+       zero).
+      </para></entry>
+     </row>
     </tbody>
    </tgroup>
   </table>
@@ -6478,6 +6541,21 @@ FROM pg_stat_get_backend_idset() AS backendid;
        Number of indexes processed. This counter only advances when the
        phase is <literal>vacuuming indexes</literal> or
        <literal>cleaning up indexes</literal>.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>delay_time</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Total time spent sleeping due to cost-based delay (see
+       <xref linkend="runtime-config-resource-vacuum-cost"/>), in milliseconds
+       (if <xref linkend="guc-track-cost-delay-timing"/> is enabled, otherwise
+       zero).  This includes the time that any associated parallel workers have
+       slept.  However, parallel workers report their sleep time no more
+       frequently than once per second, so the reported value may be slightly
+       stale.
       </para></entry>
      </row>
     </tbody>

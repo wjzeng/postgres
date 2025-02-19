@@ -27,6 +27,7 @@
 #include "replication/logicalproto.h"
 #include "replication/origin.h"
 #include "replication/pgoutput.h"
+#include "rewrite/rewriteHandler.h"
 #include "utils/builtins.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -128,10 +129,13 @@ typedef struct RelationSyncEntry
 	bool		schema_sent;
 
 	/*
-	 * This is set if the 'publish_generated_columns' parameter is true, and
-	 * the relation contains generated columns.
+	 * This will be PUBLISH_GENCOLS_STORED if the relation contains generated
+	 * columns and the 'publish_generated_columns' parameter is set to
+	 * PUBLISH_GENCOLS_STORED. Otherwise, it will be PUBLISH_GENCOLS_NONE,
+	 * indicating that no generated columns should be published, unless
+	 * explicitly specified in the column list.
 	 */
-	bool		include_gencols;
+	PublishGencolsType include_gencols_type;
 	List	   *streamed_txns;	/* streamed toplevel transactions with this
 								 * schema */
 
@@ -763,7 +767,7 @@ send_relation_and_attrs(Relation relation, TransactionId xid,
 {
 	TupleDesc	desc = RelationGetDescr(relation);
 	Bitmapset  *columns = relentry->columns;
-	bool		include_gencols = relentry->include_gencols;
+	PublishGencolsType include_gencols_type = relentry->include_gencols_type;
 	int			i;
 
 	/*
@@ -778,7 +782,8 @@ send_relation_and_attrs(Relation relation, TransactionId xid,
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, i);
 
-		if (!logicalrep_should_publish_column(att, columns, include_gencols))
+		if (!logicalrep_should_publish_column(att, columns,
+											  include_gencols_type))
 			continue;
 
 		if (att->atttypid < FirstGenbkiObjectId)
@@ -790,7 +795,8 @@ send_relation_and_attrs(Relation relation, TransactionId xid,
 	}
 
 	OutputPluginPrepareWrite(ctx, false);
-	logicalrep_write_rel(ctx->out, xid, relation, columns, include_gencols);
+	logicalrep_write_rel(ctx->out, xid, relation, columns,
+						 include_gencols_type);
 	OutputPluginWrite(ctx, false);
 }
 
@@ -815,7 +821,8 @@ create_estate_for_relation(Relation rel)
 
 	addRTEPermissionInfo(&perminfos, rte);
 
-	ExecInitRangeTable(estate, list_make1(rte), perminfos);
+	ExecInitRangeTable(estate, list_make1(rte), perminfos,
+					   bms_make_singleton(1));
 
 	estate->es_output_cid = GetCurrentCommandId(false);
 
@@ -1004,7 +1011,7 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 				continue;
 
 			foreach(lc, rfnodes[idx])
-				filters = lappend(filters, stringToNode((char *) lfirst(lc)));
+				filters = lappend(filters, expand_generated_columns_in_expr(stringToNode((char *) lfirst(lc)), relation, 1));
 
 			/* combine the row filter and cache the ExprState */
 			rfnode = make_orclause(filters);
@@ -1044,7 +1051,7 @@ check_and_init_gencol(PGOutputData *data, List *publications,
 	/* There are no generated columns to be published. */
 	if (!gencolpresent)
 	{
-		entry->include_gencols = false;
+		entry->include_gencols_type = PUBLISH_GENCOLS_NONE;
 		return;
 	}
 
@@ -1064,10 +1071,10 @@ check_and_init_gencol(PGOutputData *data, List *publications,
 
 		if (first)
 		{
-			entry->include_gencols = pub->pubgencols;
+			entry->include_gencols_type = pub->pubgencols_type;
 			first = false;
 		}
-		else if (entry->include_gencols != pub->pubgencols)
+		else if (entry->include_gencols_type != pub->pubgencols_type)
 			ereport(ERROR,
 					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					errmsg("cannot use different values of publish_generated_columns for table \"%s.%s\" in different publications",
@@ -1131,7 +1138,8 @@ pgoutput_column_list_init(PGOutputData *data, List *publications,
 			{
 				MemoryContext oldcxt = MemoryContextSwitchTo(entry->entry_cxt);
 
-				relcols = pub_form_cols_map(relation, entry->include_gencols);
+				relcols = pub_form_cols_map(relation,
+											entry->include_gencols_type);
 				MemoryContextSwitchTo(oldcxt);
 			}
 
@@ -1571,17 +1579,17 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		case REORDER_BUFFER_CHANGE_INSERT:
 			logicalrep_write_insert(ctx->out, xid, targetrel, new_slot,
 									data->binary, relentry->columns,
-									relentry->include_gencols);
+									relentry->include_gencols_type);
 			break;
 		case REORDER_BUFFER_CHANGE_UPDATE:
 			logicalrep_write_update(ctx->out, xid, targetrel, old_slot,
 									new_slot, data->binary, relentry->columns,
-									relentry->include_gencols);
+									relentry->include_gencols_type);
 			break;
 		case REORDER_BUFFER_CHANGE_DELETE:
 			logicalrep_write_delete(ctx->out, xid, targetrel, old_slot,
 									data->binary, relentry->columns,
-									relentry->include_gencols);
+									relentry->include_gencols_type);
 			break;
 		default:
 			Assert(false);
@@ -1843,7 +1851,7 @@ pgoutput_stream_stop(struct LogicalDecodingContext *ctx,
 
 /*
  * Notify downstream to discard the streamed transaction (along with all
- * it's subtransactions, if it's a toplevel transaction).
+ * its subtransactions, if it's a toplevel transaction).
  */
 static void
 pgoutput_stream_abort(struct LogicalDecodingContext *ctx,
@@ -1876,7 +1884,7 @@ pgoutput_stream_abort(struct LogicalDecodingContext *ctx,
 
 /*
  * Notify downstream to apply the streamed transaction (along with all
- * it's subtransactions).
+ * its subtransactions).
  */
 static void
 pgoutput_stream_commit(struct LogicalDecodingContext *ctx,
@@ -2032,7 +2040,7 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 	{
 		entry->replicate_valid = false;
 		entry->schema_sent = false;
-		entry->include_gencols = false;
+		entry->include_gencols_type = PUBLISH_GENCOLS_NONE;
 		entry->streamed_txns = NIL;
 		entry->pubactions.pubinsert = entry->pubactions.pubupdate =
 			entry->pubactions.pubdelete = entry->pubactions.pubtruncate = false;
@@ -2082,7 +2090,7 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 		 * earlier definition.
 		 */
 		entry->schema_sent = false;
-		entry->include_gencols = false;
+		entry->include_gencols_type = PUBLISH_GENCOLS_NONE;
 		list_free(entry->streamed_txns);
 		entry->streamed_txns = NIL;
 		bms_free(entry->columns);

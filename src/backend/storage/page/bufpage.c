@@ -85,7 +85,7 @@ PageInit(Page page, Size pageSize, Size specialSize)
  * to pgstat.
  */
 bool
-PageIsVerifiedExtended(const PageData *page, BlockNumber blkno, int flags)
+PageIsVerifiedExtended(PageData *page, BlockNumber blkno, int flags)
 {
 	const PageHeaderData *p = (const PageHeaderData *) page;
 	size_t	   *pagebytes;
@@ -100,7 +100,7 @@ PageIsVerifiedExtended(const PageData *page, BlockNumber blkno, int flags)
 	{
 		if (DataChecksumsEnabled())
 		{
-			checksum = pg_checksum_page((char *) page, blkno);
+			checksum = pg_checksum_page(page, blkno);
 
 			if (checksum != p->pd_checksum)
 				checksum_failure = true;
@@ -415,7 +415,7 @@ PageRestoreTempPage(Page tempPage, Page oldPage)
 	Size		pageSize;
 
 	pageSize = PageGetPageSize(tempPage);
-	memcpy((char *) oldPage, (char *) tempPage, pageSize);
+	memcpy(oldPage, tempPage, pageSize);
 
 	pfree(tempPage);
 }
@@ -1094,8 +1094,8 @@ PageIndexTupleDelete(Page page, OffsetNumber offnum)
 		((char *) &phdr->pd_linp[offidx + 1] - (char *) phdr);
 
 	if (nbytes > 0)
-		memmove((char *) &(phdr->pd_linp[offidx]),
-				(char *) &(phdr->pd_linp[offidx + 1]),
+		memmove(&(phdr->pd_linp[offidx]),
+				&(phdr->pd_linp[offidx + 1]),
 				nbytes);
 
 	/*
@@ -1516,7 +1516,7 @@ PageSetChecksumCopy(Page page, BlockNumber blkno)
 											 PG_IO_ALIGN_SIZE,
 											 0);
 
-	memcpy(pageCopy, (char *) page, BLCKSZ);
+	memcpy(pageCopy, page, BLCKSZ);
 	((PageHeader) pageCopy)->pd_checksum = pg_checksum_page(pageCopy, blkno);
 	return pageCopy;
 }
@@ -1534,5 +1534,5 @@ PageSetChecksumInplace(Page page, BlockNumber blkno)
 	if (PageIsNew(page) || !DataChecksumsEnabled())
 		return;
 
-	((PageHeader) page)->pd_checksum = pg_checksum_page((char *) page, blkno);
+	((PageHeader) page)->pd_checksum = pg_checksum_page(page, blkno);
 }

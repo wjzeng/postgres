@@ -389,17 +389,14 @@ static void AlterIndexNamespaces(Relation classRel, Relation rel,
 static void AlterSeqNamespaces(Relation classRel, Relation rel,
 							   Oid oldNspOid, Oid newNspOid, ObjectAddresses *objsMoved,
 							   LOCKMODE lockmode);
-static ObjectAddress ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd,
-										   bool recurse, bool recursing, LOCKMODE lockmode);
-static bool ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
-									 Relation rel, HeapTuple contuple, List **otherrelids,
-									 LOCKMODE lockmode);
+static ObjectAddress ATExecAlterConstraint(Relation rel, ATAlterConstraint *cmdcon,
+										   bool recurse, LOCKMODE lockmode);
+static bool ATExecAlterConstraintInternal(ATAlterConstraint *cmdcon, Relation conrel,
+										  Relation tgrel, Relation rel, HeapTuple contuple,
+										  bool recurse, List **otherrelids, LOCKMODE lockmode);
 static void AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
 											bool deferrable, bool initdeferred,
 											List **otherrelids);
-static void ATExecAlterChildConstr(Constraint *cmdcon, Relation conrel, Relation tgrel,
-								   Relation rel, HeapTuple contuple, List **otherrelids,
-								   LOCKMODE lockmode);
 static ObjectAddress ATExecValidateConstraint(List **wqueue,
 											  Relation rel, char *constrName,
 											  bool recurse, bool recursing, LOCKMODE lockmode);
@@ -574,8 +571,9 @@ static void createForeignKeyActionTriggers(Relation rel, Oid refRelOid,
 										   Oid indexOid,
 										   Oid parentDelTrigger, Oid parentUpdTrigger,
 										   Oid *deleteTrigOid, Oid *updateTrigOid);
-static bool tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
-										 Oid partRelid,
+static bool tryAttachPartitionForeignKey(List **wqueue,
+										 ForeignKeyCacheInfo *fk,
+										 Relation partition,
 										 Oid parentConstrOid, int numfks,
 										 AttrNumber *mapped_conkey, AttrNumber *confkey,
 										 Oid *conpfeqop,
@@ -2282,8 +2280,8 @@ ExecuteTruncateGuts(List *explicit_rels,
 			xlrec.flags |= XLH_TRUNCATE_RESTART_SEQS;
 
 		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, SizeOfHeapTruncate);
-		XLogRegisterData((char *) logrelids, list_length(relids_logged) * sizeof(Oid));
+		XLogRegisterData(&xlrec, SizeOfHeapTruncate);
+		XLogRegisterData(logrelids, list_length(relids_logged) * sizeof(Oid));
 
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
@@ -3038,6 +3036,15 @@ MergeAttributes(List *columns, const List *supers, char relpersistence,
 									 errhint("A child table column cannot be generated unless its parent column is.")));
 					}
 
+					if (coldef->generated && restdef->generated && coldef->generated != restdef->generated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
+								 errmsg("column \"%s\" inherits from generated column of different kind",
+										restdef->colname),
+								 errdetail("Parent column is %s, child column is %s.",
+										   coldef->generated == ATTRIBUTE_GENERATED_STORED ? "STORED" : "VIRTUAL",
+										   restdef->generated == ATTRIBUTE_GENERATED_STORED ? "STORED" : "VIRTUAL")));
+
 					/*
 					 * Override the parent's default value for this column
 					 * (coldef->cooked_default) with the partition's local
@@ -3322,6 +3329,15 @@ MergeChildAttribute(List *inh_columns, int exist_attno, int newcol_attno, const 
 							inhdef->colname),
 					 errhint("A child table column cannot be generated unless its parent column is.")));
 	}
+
+	if (inhdef->generated && newdef->generated && newdef->generated != inhdef->generated)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
+				 errmsg("column \"%s\" inherits from generated column of different kind",
+						inhdef->colname),
+				 errdetail("Parent column is %s, child column is %s.",
+						   inhdef->generated == ATTRIBUTE_GENERATED_STORED ? "STORED" : "VIRTUAL",
+						   newdef->generated == ATTRIBUTE_GENERATED_STORED ? "STORED" : "VIRTUAL")));
 
 	/*
 	 * If new def has a default, override previous default
@@ -5151,6 +5167,8 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			ATSimplePermissions(cmd->subtype, rel,
 								ATT_TABLE | ATT_PARTITIONED_TABLE);
 			/* Recursion occurs during execution phase */
+			if (recurse)
+				cmd->recurse = true;
 			pass = AT_PASS_MISC;
 			break;
 		case AT_ValidateConstraint: /* VALIDATE CONSTRAINT */
@@ -5431,7 +5449,9 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab,
 											   lockmode);
 			break;
 		case AT_AlterConstraint:	/* ALTER CONSTRAINT */
-			address = ATExecAlterConstraint(rel, cmd, false, false, lockmode);
+			address = ATExecAlterConstraint(rel, castNode(ATAlterConstraint,
+														  cmd->def),
+											cmd->recurse, lockmode);
 			break;
 		case AT_ValidateConstraint: /* VALIDATE CONSTRAINT */
 			address = ATExecValidateConstraint(wqueue, rel, cmd->name, cmd->recurse,
@@ -6129,7 +6149,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap)
 		{
 			case CONSTR_CHECK:
 				needscan = true;
-				con->qualstate = ExecPrepareExpr((Expr *) con->qual, estate);
+				con->qualstate = ExecPrepareExpr((Expr *) expand_generated_columns_in_expr(con->qual, newrel ? newrel : oldrel, 1), estate);
 				break;
 			case CONSTR_FOREIGN:
 				/* Nothing to do here */
@@ -7307,7 +7327,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		 * DEFAULT value outside of the heap.  This may be disabled inside
 		 * AddRelationNewConstraints if the optimization cannot be applied.
 		 */
-		rawEnt->missingMode = (!colDef->generated);
+		rawEnt->missingMode = (colDef->generated != ATTRIBUTE_GENERATED_STORED);
 
 		rawEnt->generated = colDef->generated;
 
@@ -7783,6 +7803,14 @@ ATExecSetNotNull(List **wqueue, Relation rel, char *conName, char *colName,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
+
+	/* TODO: see transformColumnDefinition() */
+	if (TupleDescAttr(RelationGetDescr(rel), attnum - 1)->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("not-null constraints are not supported on virtual generated columns"),
+				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
+						   colName, RelationGetRelationName(rel))));
 
 	/* See if there's already a constraint */
 	tuple = findNotNullConstraintAttnum(RelationGetRelid(rel), attnum);
@@ -8410,6 +8438,8 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 	HeapTuple	tuple;
 	Form_pg_attribute attTup;
 	AttrNumber	attnum;
+	char		attgenerated;
+	bool		rewrite;
 	Oid			attrdefoid;
 	ObjectAddress address;
 	Expr	   *defval;
@@ -8424,36 +8454,70 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 						colName, RelationGetRelationName(rel))));
 
 	attTup = (Form_pg_attribute) GETSTRUCT(tuple);
-	attnum = attTup->attnum;
 
+	attnum = attTup->attnum;
 	if (attnum <= 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
 
-	if (attTup->attgenerated != ATTRIBUTE_GENERATED_STORED)
+	attgenerated = attTup->attgenerated;
+	if (!attgenerated)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("column \"%s\" of relation \"%s\" is not a generated column",
 						colName, RelationGetRelationName(rel))));
+
+	/*
+	 * TODO: This could be done, just need to recheck any constraints
+	 * afterwards.
+	 */
+	if (attgenerated == ATTRIBUTE_GENERATED_VIRTUAL &&
+		rel->rd_att->constr && rel->rd_att->constr->num_check > 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns on tables with check constraints"),
+				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
+						   colName, RelationGetRelationName(rel))));
+
+	/*
+	 * We need to prevent this because a change of expression could affect a
+	 * row filter and inject expressions that are not permitted in a row
+	 * filter.  XXX We could try to have a more precise check to catch only
+	 * publications with row filters, or even re-verify the row filter
+	 * expressions.
+	 */
+	if (attgenerated == ATTRIBUTE_GENERATED_VIRTUAL &&
+		GetRelationPublications(RelationGetRelid(rel)) != NIL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns on tables that are part of a publication"),
+				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
+						   colName, RelationGetRelationName(rel))));
+
+	rewrite = (attgenerated == ATTRIBUTE_GENERATED_STORED);
+
 	ReleaseSysCache(tuple);
 
-	/*
-	 * Clear all the missing values if we're rewriting the table, since this
-	 * renders them pointless.
-	 */
-	RelationClearMissing(rel);
+	if (rewrite)
+	{
+		/*
+		 * Clear all the missing values if we're rewriting the table, since
+		 * this renders them pointless.
+		 */
+		RelationClearMissing(rel);
 
-	/* make sure we don't conflict with later attribute modifications */
-	CommandCounterIncrement();
+		/* make sure we don't conflict with later attribute modifications */
+		CommandCounterIncrement();
 
-	/*
-	 * Find everything that depends on the column (constraints, indexes, etc),
-	 * and record enough information to let us recreate the objects after
-	 * rewrite.
-	 */
-	RememberAllDependentForRebuilding(tab, AT_SetExpression, rel, attnum, colName);
+		/*
+		 * Find everything that depends on the column (constraints, indexes,
+		 * etc), and record enough information to let us recreate the objects
+		 * after rewrite.
+		 */
+		RememberAllDependentForRebuilding(tab, AT_SetExpression, rel, attnum, colName);
+	}
 
 	/*
 	 * Drop the dependency records of the GENERATED expression, in particular
@@ -8482,7 +8546,7 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 	rawEnt->attnum = attnum;
 	rawEnt->raw_default = newExpr;
 	rawEnt->missingMode = false;
-	rawEnt->generated = ATTRIBUTE_GENERATED_STORED;
+	rawEnt->generated = attgenerated;
 
 	/* Store the generated expression */
 	AddRelationNewConstraints(rel, list_make1(rawEnt), NIL,
@@ -8491,16 +8555,19 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 	/* Make above new expression visible */
 	CommandCounterIncrement();
 
-	/* Prepare for table rewrite */
-	defval = (Expr *) build_column_default(rel, attnum);
+	if (rewrite)
+	{
+		/* Prepare for table rewrite */
+		defval = (Expr *) build_column_default(rel, attnum);
 
-	newval = (NewColumnValue *) palloc0(sizeof(NewColumnValue));
-	newval->attnum = attnum;
-	newval->expr = expression_planner(defval);
-	newval->is_generated = true;
+		newval = (NewColumnValue *) palloc0(sizeof(NewColumnValue));
+		newval->attnum = attnum;
+		newval->expr = expression_planner(defval);
+		newval->is_generated = true;
 
-	tab->newvals = lappend(tab->newvals, newval);
-	tab->rewrite |= AT_REWRITE_DEFAULT_VAL;
+		tab->newvals = lappend(tab->newvals, newval);
+		tab->rewrite |= AT_REWRITE_DEFAULT_VAL;
+	}
 
 	/* Drop any pg_statistic entry for the column */
 	RemoveStatistics(RelationGetRelid(rel), attnum);
@@ -8589,17 +8656,30 @@ ATExecDropExpression(Relation rel, const char *colName, bool missing_ok, LOCKMOD
 				 errmsg("cannot alter system column \"%s\"",
 						colName)));
 
-	if (attTup->attgenerated != ATTRIBUTE_GENERATED_STORED)
+	/*
+	 * TODO: This could be done, but it would need a table rewrite to
+	 * materialize the generated values.  Note that for the time being, we
+	 * still error with missing_ok, so that we don't silently leave the column
+	 * as generated.
+	 */
+	if (attTup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("ALTER TABLE / DROP EXPRESSION is not supported for virtual generated columns"),
+				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
+						   colName, RelationGetRelationName(rel))));
+
+	if (!attTup->attgenerated)
 	{
 		if (!missing_ok)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("column \"%s\" of relation \"%s\" is not a stored generated column",
+					 errmsg("column \"%s\" of relation \"%s\" is not a generated column",
 							colName, RelationGetRelationName(rel))));
 		else
 		{
 			ereport(NOTICE,
-					(errmsg("column \"%s\" of relation \"%s\" is not a stored generated column, skipping",
+					(errmsg("column \"%s\" of relation \"%s\" is not a generated column, skipping",
 							colName, RelationGetRelationName(rel))));
 			heap_freetuple(tuple);
 			table_close(attrelation, RowExclusiveLock);
@@ -8740,6 +8820,16 @@ ATExecSetStatistics(Relation rel, const char *colName, int16 colNum, Node *newVa
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot alter system column \"%s\"",
+						colName)));
+
+	/*
+	 * Prevent this as long as the ANALYZE code skips virtual generated
+	 * columns.
+	 */
+	if (attrtuple->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter statistics on virtual generated column \"%s\"",
 						colName)));
 
 	if (rel->rd_rel->relkind == RELKIND_INDEX ||
@@ -9772,22 +9862,12 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	 * Validity checks (permission checks wait till we have the column
 	 * numbers)
 	 */
-	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-	{
-		if (!recurse)
-			ereport(ERROR,
-					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("cannot use ONLY for foreign key on partitioned table \"%s\" referencing relation \"%s\"",
-							RelationGetRelationName(rel),
-							RelationGetRelationName(pkrel))));
-		if (fkconstraint->skip_validation && !fkconstraint->initially_valid)
-			ereport(ERROR,
-					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("cannot add NOT VALID foreign key on partitioned table \"%s\" referencing relation \"%s\"",
-							RelationGetRelationName(rel),
-							RelationGetRelationName(pkrel)),
-					 errdetail("This feature is not yet supported on partitioned tables.")));
-	}
+	if (!recurse && rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		ereport(ERROR,
+				errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("cannot use ONLY for foreign key on partitioned table \"%s\" referencing relation \"%s\"",
+					   RelationGetRelationName(rel),
+					   RelationGetRelationName(pkrel)));
 
 	if (pkrel->rd_rel->relkind != RELKIND_RELATION &&
 		pkrel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
@@ -9934,6 +10014,19 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 						 errmsg("invalid %s action for foreign key constraint containing generated column",
 								"ON DELETE")));
 		}
+
+		/*
+		 * FKs on virtual columns are not supported.  This would require
+		 * various additional support in ri_triggers.c, including special
+		 * handling in ri_NullCheck(), ri_KeysEqual(),
+		 * RI_FKey_fk_upd_check_required() (since all virtual columns appear
+		 * as NULL there).  Also not really practical as long as you can't
+		 * index virtual columns.
+		 */
+		if (attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("foreign key constraints on virtual generated columns are not supported")));
 	}
 
 	/*
@@ -9990,6 +10083,8 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		Oid			amid;
 		Oid			opfamily;
 		Oid			opcintype;
+		bool		for_overlaps;
+		CompareType cmptype;
 		Oid			pfeqop;
 		Oid			ppeqop;
 		Oid			ffeqop;
@@ -10006,56 +10101,27 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		opcintype = cla_tup->opcintype;
 		ReleaseSysCache(cla_ht);
 
-		if (with_period)
-		{
-			CompareType cmptype;
-			bool		for_overlaps = with_period && i == numpks - 1;
-
-			/*
-			 * GiST indexes are required to support temporal foreign keys
-			 * because they combine equals and overlaps.
-			 */
-			if (amid != GIST_AM_OID)
-				elog(ERROR, "only GiST indexes are supported for temporal foreign keys");
-
-			cmptype = for_overlaps ? COMPARE_OVERLAP : COMPARE_EQ;
-
-			/*
-			 * An opclass can use whatever strategy numbers it wants, so we
-			 * ask the opclass what number it actually uses instead of our RT*
-			 * constants.
-			 */
-			eqstrategy = GistTranslateStratnum(opclasses[i], cmptype);
-			if (eqstrategy == InvalidStrategy)
-			{
-				HeapTuple	tuple;
-
-				tuple = SearchSysCache1(CLAOID, ObjectIdGetDatum(opclasses[i]));
-				if (!HeapTupleIsValid(tuple))
-					elog(ERROR, "cache lookup failed for operator class %u", opclasses[i]);
-
-				ereport(ERROR,
-						errcode(ERRCODE_UNDEFINED_OBJECT),
-						for_overlaps
-						? errmsg("could not identify an overlaps operator for foreign key")
-						: errmsg("could not identify an equality operator for foreign key"),
-						errdetail("Could not translate compare type %d for operator class \"%s\" for access method \"%s\".",
-								  cmptype, NameStr(((Form_pg_opclass) GETSTRUCT(tuple))->opcname), "gist"));
-			}
-		}
-		else
-		{
-			/*
-			 * Check it's a btree; currently this can never fail since no
-			 * other index AMs support unique indexes.  If we ever did have
-			 * other types of unique indexes, we'd need a way to determine
-			 * which operator strategy number is equality.  (We could use
-			 * something like GistTranslateStratnum.)
-			 */
-			if (amid != BTREE_AM_OID)
-				elog(ERROR, "only b-tree indexes are supported for foreign keys");
-			eqstrategy = BTEqualStrategyNumber;
-		}
+		/*
+		 * Get strategy number from index AM.
+		 *
+		 * For a normal foreign-key constraint, this should not fail, since we
+		 * already checked that the index is unique and should therefore have
+		 * appropriate equal operators.  For a period foreign key, this could
+		 * fail if we selected a non-matching exclusion constraint earlier.
+		 * (XXX Maybe we should do these lookups earlier so we don't end up
+		 * doing that.)
+		 */
+		for_overlaps = with_period && i == numpks - 1;
+		cmptype = for_overlaps ? COMPARE_OVERLAP : COMPARE_EQ;
+		eqstrategy = IndexAmTranslateCompareType(cmptype, amid, opfamily, opcintype, true);
+		if (eqstrategy == InvalidStrategy)
+			ereport(ERROR,
+					errcode(ERRCODE_UNDEFINED_OBJECT),
+					for_overlaps
+					? errmsg("could not identify an overlaps operator for foreign key")
+					: errmsg("could not identify an equality operator for foreign key"),
+					errdetail("Could not translate compare type %d for operator family \"%s\", input type %s, access method \"%s\".",
+							  cmptype, get_opfamily_name(opfamily, false), format_type_be(opcintype), get_am_name(amid)));
 
 		/*
 		 * There had better be a primary equality operator for the index.
@@ -10782,14 +10848,12 @@ addFkRecurseReferencing(List **wqueue, Constraint *fkconstraint, Relation rel,
 		 */
 		for (int i = 0; i < pd->nparts; i++)
 		{
-			Oid			partitionId = pd->oids[i];
-			Relation	partition = table_open(partitionId, lockmode);
+			Relation	partition = table_open(pd->oids[i], lockmode);
 			List	   *partFKs;
 			AttrMap    *attmap;
 			AttrNumber	mapped_fkattnum[INDEX_MAX_KEYS];
 			bool		attached;
 			ObjectAddress address;
-			ListCell   *cell;
 
 			CheckAlterTableIsSafe(partition);
 
@@ -10802,13 +10866,11 @@ addFkRecurseReferencing(List **wqueue, Constraint *fkconstraint, Relation rel,
 			/* Check whether an existing constraint can be repurposed */
 			partFKs = copyObject(RelationGetFKeyList(partition));
 			attached = false;
-			foreach(cell, partFKs)
+			foreach_node(ForeignKeyCacheInfo, fk, partFKs)
 			{
-				ForeignKeyCacheInfo *fk;
-
-				fk = lfirst_node(ForeignKeyCacheInfo, cell);
-				if (tryAttachPartitionForeignKey(fk,
-												 partitionId,
+				if (tryAttachPartitionForeignKey(wqueue,
+												 fk,
+												 partition,
 												 parentConstr,
 												 numfks,
 												 mapped_fkattnum,
@@ -11260,8 +11322,9 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
 		{
 			ForeignKeyCacheInfo *fk = lfirst_node(ForeignKeyCacheInfo, lc);
 
-			if (tryAttachPartitionForeignKey(fk,
-											 RelationGetRelid(partRel),
+			if (tryAttachPartitionForeignKey(wqueue,
+											 fk,
+											 partRel,
 											 parentConstrOid,
 											 numfks,
 											 mapped_conkey,
@@ -11364,8 +11427,9 @@ CloneFkReferencing(List **wqueue, Relation parentRel, Relation partRel)
  * return false.
  */
 static bool
-tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
-							 Oid partRelid,
+tryAttachPartitionForeignKey(List **wqueue,
+							 ForeignKeyCacheInfo *fk,
+							 Relation partition,
 							 Oid parentConstrOid,
 							 int numfks,
 							 AttrNumber *mapped_conkey,
@@ -11379,6 +11443,7 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 	Form_pg_constraint parentConstr;
 	HeapTuple	partcontup;
 	Form_pg_constraint partConstr;
+	bool		queueValidation;
 	ScanKeyData key;
 	SysScanDesc scan;
 	HeapTuple	trigtup;
@@ -11411,18 +11476,12 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 		}
 	}
 
-	/*
-	 * Looks good so far; do some more extensive checks.  Presumably the check
-	 * for 'convalidated' could be dropped, since we don't really care about
-	 * that, but let's be careful for now.
-	 */
-	partcontup = SearchSysCache1(CONSTROID,
-								 ObjectIdGetDatum(fk->conoid));
+	/* Looks good so far; perform more extensive checks. */
+	partcontup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(fk->conoid));
 	if (!HeapTupleIsValid(partcontup))
 		elog(ERROR, "cache lookup failed for constraint %u", fk->conoid);
 	partConstr = (Form_pg_constraint) GETSTRUCT(partcontup);
 	if (OidIsValid(partConstr->conparentid) ||
-		!partConstr->convalidated ||
 		partConstr->condeferrable != parentConstr->condeferrable ||
 		partConstr->condeferred != parentConstr->condeferred ||
 		partConstr->confupdtype != parentConstr->confupdtype ||
@@ -11433,6 +11492,13 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 		ReleaseSysCache(partcontup);
 		return false;
 	}
+
+	/*
+	 * Will we need to validate this constraint?   A valid parent constraint
+	 * implies that all child constraints have been validated, so if this one
+	 * isn't, we must trigger phase 3 validation.
+	 */
+	queueValidation = parentConstr->convalidated && !partConstr->convalidated;
 
 	ReleaseSysCache(partcontup);
 	ReleaseSysCache(parentConstrTup);
@@ -11481,7 +11547,8 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 
 	systable_endscan(scan);
 
-	ConstraintSetParentConstraint(fk->conoid, parentConstrOid, partRelid);
+	ConstraintSetParentConstraint(fk->conoid, parentConstrOid,
+								  RelationGetRelid(partition));
 
 	/*
 	 * Like the constraint, attach partition's "check" triggers to the
@@ -11492,10 +11559,10 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 							   &insertTriggerOid, &updateTriggerOid);
 	Assert(OidIsValid(insertTriggerOid) && OidIsValid(parentInsTrigger));
 	TriggerSetParentTrigger(trigrel, insertTriggerOid, parentInsTrigger,
-							partRelid);
+							RelationGetRelid(partition));
 	Assert(OidIsValid(updateTriggerOid) && OidIsValid(parentUpdTrigger));
 	TriggerSetParentTrigger(trigrel, updateTriggerOid, parentUpdTrigger,
-							partRelid);
+							RelationGetRelid(partition));
 
 	/*
 	 * If the referenced table is partitioned, then the partition we're
@@ -11572,7 +11639,33 @@ tryAttachPartitionForeignKey(ForeignKeyCacheInfo *fk,
 		table_close(pg_constraint, RowShareLock);
 	}
 
+	/*
+	 * We updated this pg_constraint row above to set its parent; validating
+	 * it will cause its convalidated flag to change, so we need CCI here.  In
+	 * addition, we need it unconditionally for the rare case where the parent
+	 * table has *two* identical constraints; when reaching this function for
+	 * the second one, we must have made our changes visible, otherwise we
+	 * would try to attach both to this one.
+	 */
 	CommandCounterIncrement();
+
+	/* If validation is needed, put it in the queue now. */
+	if (queueValidation)
+	{
+		Relation	conrel;
+
+		conrel = table_open(ConstraintRelationId, RowExclusiveLock);
+		partcontup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(fk->conoid));
+		if (!HeapTupleIsValid(partcontup))
+			elog(ERROR, "cache lookup failed for constraint %u", fk->conoid);
+
+		/* Use the same lock as for AT_ValidateConstraint */
+		QueueFKConstraintValidation(wqueue, conrel, partition, partcontup,
+									ShareUpdateExclusiveLock);
+		ReleaseSysCache(partcontup);
+		table_close(conrel, RowExclusiveLock);
+	}
+
 	return true;
 }
 
@@ -11709,10 +11802,9 @@ GetForeignKeyCheckTriggers(Relation trigrel,
  * InvalidObjectAddress.
  */
 static ObjectAddress
-ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd, bool recurse,
-					  bool recursing, LOCKMODE lockmode)
+ATExecAlterConstraint(Relation rel, ATAlterConstraint *cmdcon, bool recurse,
+					  LOCKMODE lockmode)
 {
-	Constraint *cmdcon;
 	Relation	conrel;
 	Relation	tgrel;
 	SysScanDesc scan;
@@ -11721,9 +11813,17 @@ ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd, bool recurse,
 	Form_pg_constraint currcon;
 	ObjectAddress address;
 	List	   *otherrelids = NIL;
-	ListCell   *lc;
 
-	cmdcon = castNode(Constraint, cmd->def);
+	/*
+	 * Disallow altering ONLY a partitioned table, as it would make no sense.
+	 * This is okay for legacy inheritance.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE && !recurse)
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+				errmsg("constraint must be altered in child tables too"),
+				errhint("Do not specify the ONLY keyword."));
+
 
 	conrel = table_open(ConstraintRelationId, RowExclusiveLock);
 	tgrel = table_open(TriggerRelationId, RowExclusiveLock);
@@ -11804,28 +11904,22 @@ ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd, bool recurse,
 				 errhint("You may alter the constraint it derives from instead.")));
 	}
 
-	/*
-	 * Do the actual catalog work.  We can skip changing if already in the
-	 * desired state, but not if a partitioned table: partitions need to be
-	 * processed regardless, in case they had the constraint locally changed.
-	 */
 	address = InvalidObjectAddress;
-	if (currcon->condeferrable != cmdcon->deferrable ||
-		currcon->condeferred != cmdcon->initdeferred ||
-		rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-	{
-		if (ATExecAlterConstrRecurse(cmdcon, conrel, tgrel, rel, contuple,
-									 &otherrelids, lockmode))
-			ObjectAddressSet(address, ConstraintRelationId, currcon->oid);
-	}
 
 	/*
-	 * ATExecAlterConstrRecurse already invalidated relcache for the relations
-	 * having the constraint itself; here we also invalidate for relations
-	 * that have any triggers that are part of the constraint.
+	 * Do the actual catalog work, and recurse if necessary.
 	 */
-	foreach(lc, otherrelids)
-		CacheInvalidateRelcacheByRelid(lfirst_oid(lc));
+	if (ATExecAlterConstraintInternal(cmdcon, conrel, tgrel, rel, contuple,
+									  recurse, &otherrelids, lockmode))
+		ObjectAddressSet(address, ConstraintRelationId, currcon->oid);
+
+	/*
+	 * ATExecAlterConstraintInternal already invalidated relcache for the
+	 * relations having the constraint itself; here we also invalidate for
+	 * relations that have any triggers that are part of the constraint.
+	 */
+	foreach_oid(relid, otherrelids)
+		CacheInvalidateRelcacheByRelid(relid);
 
 	systable_endscan(scan);
 
@@ -11847,21 +11941,20 @@ ATExecAlterConstraint(Relation rel, AlterTableCmd *cmd, bool recurse,
  * but existing releases don't do that.)
  */
 static bool
-ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
-						 Relation rel, HeapTuple contuple, List **otherrelids,
-						 LOCKMODE lockmode)
+ATExecAlterConstraintInternal(ATAlterConstraint *cmdcon, Relation conrel,
+							  Relation tgrel, Relation rel, HeapTuple contuple,
+							  bool recurse, List **otherrelids, LOCKMODE lockmode)
 {
 	Form_pg_constraint currcon;
-	Oid			conoid;
-	Oid			refrelid;
+	Oid			refrelid = InvalidOid;
 	bool		changed = false;
 
 	/* since this function recurses, it could be driven to stack overflow */
 	check_stack_depth();
 
 	currcon = (Form_pg_constraint) GETSTRUCT(contuple);
-	conoid = currcon->oid;
-	refrelid = currcon->confrelid;
+	if (currcon->contype == CONSTRAINT_FOREIGN)
+		refrelid = currcon->confrelid;
 
 	/*
 	 * Update pg_constraint with the flags from cmdcon.
@@ -11869,8 +11962,9 @@ ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
 	 * If called to modify a constraint that's already in the desired state,
 	 * silently do nothing.
 	 */
-	if (currcon->condeferrable != cmdcon->deferrable ||
-		currcon->condeferred != cmdcon->initdeferred)
+	if (cmdcon->alterDeferrability &&
+		(currcon->condeferrable != cmdcon->deferrable ||
+		 currcon->condeferred != cmdcon->initdeferred))
 	{
 		HeapTuple	copyTuple;
 		Form_pg_constraint copy_con;
@@ -11881,8 +11975,7 @@ ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
 		copy_con->condeferred = cmdcon->initdeferred;
 		CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
 
-		InvokeObjectPostAlterHook(ConstraintRelationId,
-								  conoid, 0);
+		InvokeObjectPostAlterHook(ConstraintRelationId, currcon->oid, 0);
 
 		heap_freetuple(copyTuple);
 		changed = true;
@@ -11894,32 +11987,59 @@ ATExecAlterConstrRecurse(Constraint *cmdcon, Relation conrel, Relation tgrel,
 		 * Now we need to update the multiple entries in pg_trigger that
 		 * implement the constraint.
 		 */
-		AlterConstrTriggerDeferrability(conoid, tgrel, rel, cmdcon->deferrable,
+		AlterConstrTriggerDeferrability(currcon->oid, tgrel, rel,
+										cmdcon->deferrable,
 										cmdcon->initdeferred, otherrelids);
 	}
 
 	/*
 	 * If the table at either end of the constraint is partitioned, we need to
-	 * recurse and handle every constraint that is a child of this one.
+	 * handle every constraint that is a child of this one.
 	 *
-	 * (This assumes that the recurse flag is forcibly set for partitioned
-	 * tables, and not set for legacy inheritance, though we don't check for
-	 * that here.)
+	 * Note that this doesn't handle recursion the normal way, viz. by
+	 * scanning the list of child relations and recursing; instead it uses the
+	 * conparentid relationships.  This may need to be reconsidered.
 	 */
-	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
-		get_rel_relkind(refrelid) == RELKIND_PARTITIONED_TABLE)
-		ATExecAlterChildConstr(cmdcon, conrel, tgrel, rel, contuple,
-							   otherrelids, lockmode);
+	if (recurse && changed &&
+		(rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
+		 (OidIsValid(refrelid) &&
+		  get_rel_relkind(refrelid) == RELKIND_PARTITIONED_TABLE)))
+	{
+		ScanKeyData pkey;
+		SysScanDesc pscan;
+		HeapTuple	childtup;
+
+		ScanKeyInit(&pkey,
+					Anum_pg_constraint_conparentid,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(currcon->oid));
+
+		pscan = systable_beginscan(conrel, ConstraintParentIndexId,
+								   true, NULL, 1, &pkey);
+
+		while (HeapTupleIsValid(childtup = systable_getnext(pscan)))
+		{
+			Form_pg_constraint childcon = (Form_pg_constraint) GETSTRUCT(childtup);
+			Relation	childrel;
+
+			childrel = table_open(childcon->conrelid, lockmode);
+			ATExecAlterConstraintInternal(cmdcon, conrel, tgrel, childrel, childtup,
+										  recurse, otherrelids, lockmode);
+			table_close(childrel, NoLock);
+		}
+
+		systable_endscan(pscan);
+	}
 
 	return changed;
 }
 
 /*
- * A subroutine of ATExecAlterConstrRecurse that updated constraint trigger's
- * deferrability.
+ * A subroutine of ATExecAlterConstrDeferrability that updated constraint
+ * trigger's deferrability.
  *
  * The arguments to this function have the same meaning as the arguments to
- * ATExecAlterConstrRecurse.
+ * ATExecAlterConstrDeferrability.
  */
 static void
 AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
@@ -11977,49 +12097,6 @@ AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
 	}
 
 	systable_endscan(tgscan);
-}
-
-/*
- * Invokes ATExecAlterConstrRecurse for each constraint that is a child of the
- * specified constraint.
- *
- * The arguments to this function have the same meaning as the arguments to
- * ATExecAlterConstrRecurse.
- */
-static void
-ATExecAlterChildConstr(Constraint *cmdcon, Relation conrel, Relation tgrel,
-					   Relation rel, HeapTuple contuple, List **otherrelids,
-					   LOCKMODE lockmode)
-{
-	Form_pg_constraint currcon;
-	Oid			conoid;
-	ScanKeyData pkey;
-	SysScanDesc pscan;
-	HeapTuple	childtup;
-
-	currcon = (Form_pg_constraint) GETSTRUCT(contuple);
-	conoid = currcon->oid;
-
-	ScanKeyInit(&pkey,
-				Anum_pg_constraint_conparentid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(conoid));
-
-	pscan = systable_beginscan(conrel, ConstraintParentIndexId,
-							   true, NULL, 1, &pkey);
-
-	while (HeapTupleIsValid(childtup = systable_getnext(pscan)))
-	{
-		Form_pg_constraint childcon = (Form_pg_constraint) GETSTRUCT(childtup);
-		Relation	childrel;
-
-		childrel = table_open(childcon->conrelid, lockmode);
-		ATExecAlterConstrRecurse(cmdcon, conrel, tgrel, childrel, childtup,
-								 otherrelids, lockmode);
-		table_close(childrel, NoLock);
-	}
-
-	systable_endscan(pscan);
 }
 
 /*
@@ -12113,7 +12190,7 @@ ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
  *
  * Add an entry to the wqueue to validate the given foreign key constraint in
  * Phase 3 and update the convalidated field in the pg_constraint catalog
- * for the specified relation.
+ * for the specified relation and all its children.
  */
 static void
 QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation rel,
@@ -12126,6 +12203,7 @@ QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 
 	con = (Form_pg_constraint) GETSTRUCT(contuple);
 	Assert(con->contype == CONSTRAINT_FOREIGN);
+	Assert(!con->convalidated);
 
 	if (rel->rd_rel->relkind == RELKIND_RELATION)
 	{
@@ -12151,9 +12229,48 @@ QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 	}
 
 	/*
-	 * We disallow creating invalid foreign keys to or from partitioned
-	 * tables, so ignoring the recursion bit is okay.
+	 * If the table at either end of the constraint is partitioned, we need to
+	 * recurse and handle every constraint that is a child of this constraint.
 	 */
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ||
+		get_rel_relkind(con->confrelid) == RELKIND_PARTITIONED_TABLE)
+	{
+		ScanKeyData pkey;
+		SysScanDesc pscan;
+		HeapTuple	childtup;
+
+		ScanKeyInit(&pkey,
+					Anum_pg_constraint_conparentid,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(con->oid));
+
+		pscan = systable_beginscan(conrel, ConstraintParentIndexId,
+								   true, NULL, 1, &pkey);
+
+		while (HeapTupleIsValid(childtup = systable_getnext(pscan)))
+		{
+			Form_pg_constraint childcon;
+			Relation	childrel;
+
+			childcon = (Form_pg_constraint) GETSTRUCT(childtup);
+
+			/*
+			 * If the child constraint has already been validated, no further
+			 * action is required for it or its descendants, as they are all
+			 * valid.
+			 */
+			if (childcon->convalidated)
+				continue;
+
+			childrel = table_open(childcon->conrelid, lockmode);
+
+			QueueFKConstraintValidation(wqueue, conrel, childrel, childtup,
+										lockmode);
+			table_close(childrel, NoLock);
+		}
+
+		systable_endscan(pscan);
+	}
 
 	/*
 	 * Now update the catalog, while we have the door open.
@@ -12247,7 +12364,7 @@ QueueCheckConstraintValidation(List **wqueue, Relation conrel, Relation rel,
 	val = SysCacheGetAttrNotNull(CONSTROID, contuple,
 								 Anum_pg_constraint_conbin);
 	conbin = TextDatumGetCString(val);
-	newcon->qual = (Node *) stringToNode(conbin);
+	newcon->qual = expand_generated_columns_in_expr(stringToNode(conbin), rel, 1);
 
 	/* Find or create work queue entry for this table */
 	tab = ATGetQueueEntry(wqueue, rel);
@@ -13352,10 +13469,13 @@ ATPrepAlterColumnType(List **wqueue,
 	AclResult	aclresult;
 	bool		is_expr;
 
+	pstate->p_sourcetext = context->queryString;
+
 	if (rel->rd_rel->reloftype && !recursing)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("cannot alter column type of typed table")));
+				 errmsg("cannot alter column type of typed table"),
+				 parser_errposition(pstate, def->location)));
 
 	/* lookup the attribute so we can check inheritance status */
 	tuple = SearchSysCacheAttName(RelationGetRelid(rel), colName);
@@ -13363,7 +13483,8 @@ ATPrepAlterColumnType(List **wqueue,
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_COLUMN),
 				 errmsg("column \"%s\" of relation \"%s\" does not exist",
-						colName, RelationGetRelationName(rel))));
+						colName, RelationGetRelationName(rel)),
+				 parser_errposition(pstate, def->location)));
 	attTup = (Form_pg_attribute) GETSTRUCT(tuple);
 	attnum = attTup->attnum;
 
@@ -13371,8 +13492,8 @@ ATPrepAlterColumnType(List **wqueue,
 	if (attnum <= 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot alter system column \"%s\"",
-						colName)));
+				 errmsg("cannot alter system column \"%s\"", colName),
+				 parser_errposition(pstate, def->location)));
 
 	/*
 	 * Cannot specify USING when altering type of a generated column, because
@@ -13382,7 +13503,8 @@ ATPrepAlterColumnType(List **wqueue,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
 				 errmsg("cannot specify USING when altering type of generated column"),
-				 errdetail("Column \"%s\" is a generated column.", colName)));
+				 errdetail("Column \"%s\" is a generated column.", colName),
+				 parser_errposition(pstate, def->location)));
 
 	/*
 	 * Don't alter inherited columns.  At outer level, there had better not be
@@ -13392,8 +13514,8 @@ ATPrepAlterColumnType(List **wqueue,
 	if (attTup->attinhcount > 0 && !recursing)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-				 errmsg("cannot alter inherited column \"%s\"",
-						colName)));
+				 errmsg("cannot alter inherited column \"%s\"", colName),
+				 parser_errposition(pstate, def->location)));
 
 	/* Don't alter columns used in the partition key */
 	if (has_partition_attrs(rel,
@@ -13402,25 +13524,30 @@ ATPrepAlterColumnType(List **wqueue,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
 				 errmsg("cannot alter column \"%s\" because it is part of the partition key of relation \"%s\"",
-						colName, RelationGetRelationName(rel))));
+						colName, RelationGetRelationName(rel)),
+				 parser_errposition(pstate, def->location)));
 
 	/* Look up the target type */
-	typenameTypeIdAndMod(NULL, typeName, &targettype, &targettypmod);
+	typenameTypeIdAndMod(pstate, typeName, &targettype, &targettypmod);
 
 	aclresult = object_aclcheck(TypeRelationId, targettype, GetUserId(), ACL_USAGE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error_type(aclresult, targettype);
 
 	/* And the collation */
-	targetcollid = GetColumnDefCollation(NULL, def, targettype);
+	targetcollid = GetColumnDefCollation(pstate, def, targettype);
 
 	/* make sure datatype is legal for a column */
 	CheckAttributeType(colName, targettype, targetcollid,
 					   list_make1_oid(rel->rd_rel->reltype),
 					   0);
 
-	if (tab->relkind == RELKIND_RELATION ||
-		tab->relkind == RELKIND_PARTITIONED_TABLE)
+	if (attTup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+	{
+		/* do nothing */
+	}
+	else if (tab->relkind == RELKIND_RELATION ||
+			 tab->relkind == RELKIND_PARTITIONED_TABLE)
 	{
 		/*
 		 * Set up an expression to transform the old data value to the new
@@ -13493,11 +13620,12 @@ ATPrepAlterColumnType(List **wqueue,
 				 errmsg("\"%s\" is not a table",
 						RelationGetRelationName(rel))));
 
-	if (!RELKIND_HAS_STORAGE(tab->relkind))
+	if (!RELKIND_HAS_STORAGE(tab->relkind) || attTup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
 	{
 		/*
-		 * For relations without storage, do this check now.  Regular tables
-		 * will check it later when the table is being rewritten.
+		 * For relations or columns without storage, do this check now.
+		 * Regular tables will check it later when the table is being
+		 * rewritten.
 		 */
 		find_composite_type_dependencies(rel->rd_rel->reltype, rel, NULL);
 	}
@@ -16486,6 +16614,14 @@ MergeAttributesIntoExisting(Relation child_rel, Relation parent_rel, bool ispart
 						(errcode(ERRCODE_DATATYPE_MISMATCH),
 						 errmsg("column \"%s\" in child table must not be a generated column", parent_attname)));
 
+			if (parent_att->attgenerated && child_att->attgenerated && child_att->attgenerated != parent_att->attgenerated)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("column \"%s\" inherits from generated column of different kind", parent_attname),
+						 errdetail("Parent column is %s, child column is %s.",
+								   parent_att->attgenerated == ATTRIBUTE_GENERATED_STORED ? "STORED" : "VIRTUAL",
+								   child_att->attgenerated == ATTRIBUTE_GENERATED_STORED ? "STORED" : "VIRTUAL")));
+
 			/*
 			 * Regular inheritance children are independent enough not to
 			 * inherit identity columns.  But partitions are integral part of
@@ -18733,8 +18869,11 @@ ComputePartitionAttrs(ParseState *pstate, Relation rel, List *partParams, AttrNu
 						 parser_errposition(pstate, pelem->location)));
 
 			/*
-			 * Generated columns cannot work: They are computed after BEFORE
-			 * triggers, but partition routing is done before all triggers.
+			 * Stored generated columns cannot work: They are computed after
+			 * BEFORE triggers, but partition routing is done before all
+			 * triggers.  Maybe virtual generated columns could be made to
+			 * work, but then they would need to be handled as an expression
+			 * below.
 			 */
 			if (attform->attgenerated)
 				ereport(ERROR,
@@ -18816,9 +18955,12 @@ ComputePartitionAttrs(ParseState *pstate, Relation rel, List *partParams, AttrNu
 				}
 
 				/*
-				 * Generated columns cannot work: They are computed after
-				 * BEFORE triggers, but partition routing is done before all
-				 * triggers.
+				 * Stored generated columns cannot work: They are computed
+				 * after BEFORE triggers, but partition routing is done before
+				 * all triggers.  Virtual generated columns could probably
+				 * work, but it would require more work elsewhere (for example
+				 * SET EXPRESSION would need to check whether the column is
+				 * used in partition keys).  Seems safer to prohibit for now.
 				 */
 				i = -1;
 				while ((i = bms_next_member(expr_attrs, i)) >= 0)

@@ -1,3 +1,4 @@
+-- keep these tests aligned with generated_virtual.sql
 CREATE SCHEMA generated_stored_tests;
 GRANT USAGE ON SCHEMA generated_stored_tests TO PUBLIC;
 SET search_path = generated_stored_tests;
@@ -357,6 +358,10 @@ ERROR:  column "b" inherits from generated column but specifies default
 CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS IDENTITY) INHERITS (gtest1);  -- error
 NOTICE:  merging column "b" with inherited definition
 ERROR:  column "b" inherits from generated column but specifies identity
+CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS (a * 22) VIRTUAL) INHERITS (gtest1);  -- error
+NOTICE:  merging column "b" with inherited definition
+ERROR:  column "b" inherits from generated column of different kind
+DETAIL:  Parent column is STORED, child column is VIRTUAL.
 CREATE TABLE gtestx (x int, b int GENERATED ALWAYS AS (a * 22) STORED) INHERITS (gtest1);  -- ok, overrides parent
 NOTICE:  merging column "b" with inherited definition
 \d+ gtestx
@@ -868,6 +873,11 @@ CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
     f3 WITH OPTIONS GENERATED ALWAYS AS IDENTITY  -- error
 ) FOR VALUES FROM ('2016-09-01') TO ('2016-10-01');
 ERROR:  identity columns are not supported on partitions
+CREATE TABLE gtest_child3 PARTITION OF gtest_parent (
+    f3 GENERATED ALWAYS AS (f2 * 2) VIRTUAL  -- error
+) FOR VALUES FROM ('2016-09-01') TO ('2016-10-01');
+ERROR:  column "f3" inherits from generated column of different kind
+DETAIL:  Parent column is STORED, child column is VIRTUAL.
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 ERROR:  column "f3" in child table must be a generated column
@@ -880,6 +890,11 @@ CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWA
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
 ERROR:  table "gtest_child3" being attached contains an identity column "f3"
 DETAIL:  The new partition may not contain an identity column.
+DROP TABLE gtest_child3;
+CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS (f2 * 33) VIRTUAL);
+ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01'); -- error
+ERROR:  column "f3" inherits from generated column of different kind
+DETAIL:  Parent column is STORED, child column is VIRTUAL.
 DROP TABLE gtest_child3;
 CREATE TABLE gtest_child3 (f1 date NOT NULL, f2 bigint, f3 bigint GENERATED ALWAYS AS (f2 * 33) STORED);
 ALTER TABLE gtest_parent ATTACH PARTITION gtest_child3 FOR VALUES FROM ('2016-09-01') TO ('2016-10-01');
@@ -1124,6 +1139,8 @@ SELECT * FROM gtest27;
 
 ALTER TABLE gtest27 ALTER COLUMN x TYPE boolean USING x <> 0;  -- error
 ERROR:  cannot specify USING when altering type of generated column
+LINE 1: ALTER TABLE gtest27 ALTER COLUMN x TYPE boolean USING x <> 0...
+                                         ^
 DETAIL:  Column "x" is a generated column.
 ALTER TABLE gtest27 ALTER COLUMN x DROP DEFAULT;  -- error
 ERROR:  column "x" of relation "gtest27" is a generated column
@@ -1186,9 +1203,9 @@ SELECT * FROM gtest29;
 ALTER TABLE gtest29 ALTER COLUMN a SET EXPRESSION AS (a * 3);  -- error
 ERROR:  column "a" of relation "gtest29" is not a generated column
 ALTER TABLE gtest29 ALTER COLUMN a DROP EXPRESSION;  -- error
-ERROR:  column "a" of relation "gtest29" is not a stored generated column
+ERROR:  column "a" of relation "gtest29" is not a generated column
 ALTER TABLE gtest29 ALTER COLUMN a DROP EXPRESSION IF EXISTS;  -- notice
-NOTICE:  column "a" of relation "gtest29" is not a stored generated column, skipping
+NOTICE:  column "a" of relation "gtest29" is not a generated column, skipping
 -- Change the expression
 ALTER TABLE gtest29 ALTER COLUMN b SET EXPRESSION AS (a * 3);
 SELECT * FROM gtest29;
@@ -1469,7 +1486,7 @@ CREATE TABLE gtest28b (LIKE gtest28a INCLUDING GENERATED);
  x      | integer |           |          | generated always as (b * 2) stored
 
 -- sanity check of system catalog
-SELECT attrelid, attname, attgenerated FROM pg_attribute WHERE attgenerated NOT IN ('', 's');
+SELECT attrelid, attname, attgenerated FROM pg_attribute WHERE attgenerated NOT IN ('', 's', 'v');
  attrelid | attname | attgenerated 
 ----------+---------+--------------
 (0 rows)

@@ -20,6 +20,7 @@
 
 #include "access/nbtree.h"
 #include "access/relscan.h"
+#include "access/stratnum.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"
 #include "nodes/execnodes.h"
@@ -148,6 +149,8 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->amestimateparallelscan = btestimateparallelscan;
 	amroutine->aminitparallelscan = btinitparallelscan;
 	amroutine->amparallelrescan = btparallelrescan;
+	amroutine->amtranslatestrategy = bttranslatestrategy;
+	amroutine->amtranslatecmptype = bttranslatecmptype;
 
 	PG_RETURN_POINTER(amroutine);
 }
@@ -1134,7 +1137,7 @@ backtrack:
 	backtrack_to = P_NONE;
 
 	/* call vacuum_delay_point while not holding any buffer lock */
-	vacuum_delay_point();
+	vacuum_delay_point(false);
 
 	/*
 	 * We can't use _bt_getbuf() here because it always applies
@@ -1507,4 +1510,44 @@ int
 btgettreeheight(Relation rel)
 {
 	return _bt_getrootheight(rel);
+}
+
+CompareType
+bttranslatestrategy(StrategyNumber strategy, Oid opfamily, Oid opcintype)
+{
+	switch (strategy)
+	{
+		case BTLessStrategyNumber:
+			return COMPARE_LT;
+		case BTLessEqualStrategyNumber:
+			return COMPARE_LE;
+		case BTEqualStrategyNumber:
+			return COMPARE_EQ;
+		case BTGreaterEqualStrategyNumber:
+			return COMPARE_GE;
+		case BTGreaterStrategyNumber:
+			return COMPARE_GT;
+		default:
+			return COMPARE_INVALID;
+	}
+}
+
+StrategyNumber
+bttranslatecmptype(CompareType cmptype, Oid opfamily, Oid opcintype)
+{
+	switch (cmptype)
+	{
+		case COMPARE_LT:
+			return BTLessStrategyNumber;
+		case COMPARE_LE:
+			return BTLessEqualStrategyNumber;
+		case COMPARE_EQ:
+			return BTEqualStrategyNumber;
+		case COMPARE_GE:
+			return BTGreaterEqualStrategyNumber;
+		case COMPARE_GT:
+			return BTGreaterStrategyNumber;
+		default:
+			return InvalidStrategy;
+	}
 }
