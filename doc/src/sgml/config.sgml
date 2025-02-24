@@ -1209,6 +1209,32 @@ include_dir 'conf.d'
        </para>
       </listitem>
      </varlistentry>
+
+     <varlistentry id="guc-oauth-validator-libraries" xreflabel="oauth_validator_libraries">
+      <term><varname>oauth_validator_libraries</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>oauth_validator_libraries</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        The library/libraries to use for validating OAuth connection tokens. If
+        only one validator library is provided, it will be used by default for
+        any OAuth connections; otherwise, all
+        <link linkend="auth-oauth"><literal>oauth</literal> HBA entries</link>
+        must explicitly set a <literal>validator</literal> chosen from this
+        list. If set to an empty string (the default), OAuth connections will be
+        refused. This parameter can only be set in the
+        <filename>postgresql.conf</filename> file.
+       </para>
+       <para>
+        Validator modules must be implemented/obtained separately;
+        <productname>PostgreSQL</productname> does not ship with any default
+        implementations. For more information on implementing OAuth validators,
+        see <xref linkend="oauth-validators" />.
+       </para>
+      </listitem>
+     </varlistentry>
      </variablelist>
      </sect2>
 
@@ -8361,28 +8387,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         for auto-vacuums and auto-analyzes, when <xref
         linkend="guc-log-autovacuum-min-duration"/> is set and by
         <xref linkend="pgstatstatements"/>.
-        Only superusers and users with the appropriate <literal>SET</literal>
-        privilege can change this setting.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-track-wal-io-timing" xreflabel="track_wal_io_timing">
-      <term><varname>track_wal_io_timing</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>track_wal_io_timing</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Enables timing of WAL I/O calls. This parameter is off by default,
-        as it will repeatedly query the operating system for the current time,
-        which may cause significant overhead on some platforms.
-        You can use the <application>pg_test_timing</application> tool to
-        measure the overhead of timing on your system.
-        I/O timing information is
-        displayed in <link linkend="monitoring-pg-stat-wal-view">
-        <structname>pg_stat_wal</structname></link>.
         Only superusers and users with the appropriate <literal>SET</literal>
         privilege can change this setting.
        </para>
