@@ -580,19 +580,6 @@ retry:
 						name)));
 	}
 
-	/* Invalid slots can't be modified or used before accessing the WAL. */
-	if (error_if_invalid && s->data.invalidated != RS_INVAL_NONE)
-	{
-		LWLockRelease(ReplicationSlotControlLock);
-
-		ereport(ERROR,
-				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				errmsg("can no longer access replication slot \"%s\"",
-					   NameStr(s->data.name)),
-				errdetail("This replication slot has been invalidated due to \"%s\".",
-						  GetSlotInvalidationCauseName(s->data.invalidated)));
-	}
-
 	/*
 	 * This is the slot we want; check if it's active under some other
 	 * process.  In single user mode, we don't need this check.
@@ -650,11 +637,24 @@ retry:
 	else if (!nowait)
 		ConditionVariableCancelSleep(); /* no sleep needed after all */
 
-	/* Let everybody know we've modified this slot */
-	ConditionVariableBroadcast(&s->active_cv);
-
 	/* We made this slot active, so it's ours now. */
 	MyReplicationSlot = s;
+
+	/*
+	 * We need to check for invalidation after making the slot ours to avoid
+	 * the possible race condition with the checkpointer that can otherwise
+	 * invalidate the slot immediately after the check.
+	 */
+	if (error_if_invalid && s->data.invalidated != RS_INVAL_NONE)
+		ereport(ERROR,
+				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("can no longer access replication slot \"%s\"",
+					   NameStr(s->data.name)),
+				errdetail("This replication slot has been invalidated due to \"%s\".",
+						  GetSlotInvalidationCauseName(s->data.invalidated)));
+
+	/* Let everybody know we've modified this slot */
+	ConditionVariableBroadcast(&s->active_cv);
 
 	/*
 	 * The call to pgstat_acquire_replslot() protects against stats for a
@@ -2521,12 +2521,29 @@ RestoreSlotFromDisk(const char *name)
 	 * NB: Changing the requirements here also requires adapting
 	 * CheckSlotRequirements() and CheckLogicalDecodingRequirements().
 	 */
-	if (cp.slotdata.database != InvalidOid && wal_level < WAL_LEVEL_LOGICAL)
-		ereport(FATAL,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("logical replication slot \"%s\" exists, but \"wal_level\" < \"logical\"",
-						NameStr(cp.slotdata.name)),
-				 errhint("Change \"wal_level\" to be \"logical\" or higher.")));
+	if (cp.slotdata.database != InvalidOid)
+	{
+		if (wal_level < WAL_LEVEL_LOGICAL)
+			ereport(FATAL,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("logical replication slot \"%s\" exists, but \"wal_level\" < \"logical\"",
+							NameStr(cp.slotdata.name)),
+					 errhint("Change \"wal_level\" to be \"logical\" or higher.")));
+
+		/*
+		 * In standby mode, the hot standby must be enabled. This check is
+		 * necessary to ensure logical slots are invalidated when they become
+		 * incompatible due to insufficient wal_level. Otherwise, if the
+		 * primary reduces wal_level < logical while hot standby is disabled,
+		 * logical slots would remain valid even after promotion.
+		 */
+		if (StandbyMode && !EnableHotStandby)
+			ereport(FATAL,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("logical replication slot \"%s\" exists on the standby, but \"hot_standby\" = \"off\"",
+							NameStr(cp.slotdata.name)),
+					 errhint("Change \"hot_standby\" to be \"on\".")));
+	}
 	else if (wal_level < WAL_LEVEL_REPLICA)
 		ereport(FATAL,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),

@@ -501,6 +501,7 @@ ConvertRowtypeExpr
 CookedConstraint
 CopyDest
 CopyFormatOptions
+CopyFromRoutine
 CopyFromState
 CopyFromStateData
 CopyHeaderChoice
@@ -512,6 +513,7 @@ CopyMultiInsertInfo
 CopyOnErrorChoice
 CopySource
 CopyStmt
+CopyToRoutine
 CopyToState
 CopyToStateData
 Cost
@@ -1623,6 +1625,7 @@ Material
 MaterialPath
 MaterialState
 MdfdVec
+MdPathStr
 Memoize
 MemoizeEntry
 MemoizeInstrumentation
@@ -2188,6 +2191,7 @@ PgStat_SubXactStatus
 PgStat_TableCounts
 PgStat_TableStatus
 PgStat_TableXactStatus
+PgStat_WalCounters
 PgStat_WalStats
 PgXmlErrorContext
 PgXmlStrictness
@@ -2410,6 +2414,7 @@ RelMapFile
 RelMapping
 RelOptInfo
 RelOptKind
+RelPathStr
 RelStatsInfo
 RelToCheck
 RelToCluster

@@ -77,6 +77,7 @@
 #include "storage/large_object.h"
 #include "storage/pg_shmem.h"
 #include "storage/predicate.h"
+#include "storage/procnumber.h"
 #include "storage/standby.h"
 #include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
@@ -1497,6 +1498,15 @@ struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&track_io_timing,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"track_wal_io_timing", PGC_SUSET, STATS_CUMULATIVE,
+			gettext_noop("Collects timing statistics for WAL I/O activity."),
+			NULL
+		},
+		&track_wal_io_timing,
 		false,
 		NULL, NULL, NULL
 	},
