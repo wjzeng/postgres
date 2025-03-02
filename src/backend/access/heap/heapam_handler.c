@@ -405,7 +405,8 @@ tuple_lock_retry:
 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
 
 				tuple->t_self = *tid;
-				if (heap_fetch(relation, &SnapshotDirty, tuple, &buffer))
+				if (heap_fetch_extended(relation, &SnapshotDirty, tuple,
+										&buffer, true))
 				{
 					/*
 					 * If xmin isn't what we're expecting, the slot must have
@@ -426,7 +427,13 @@ tuple_lock_retry:
 
 					/* otherwise xmin should not be dirty... */
 					if (TransactionIdIsValid(SnapshotDirty.xmin))
-						elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
+						ereport(ERROR,
+								(errcode(ERRCODE_DATA_CORRUPTED),
+								 errmsg_internal("t_xmin %u is uncommitted in tuple (%u,%u) to be updated in table \"%s\"",
+												 SnapshotDirty.xmin,
+												 ItemPointerGetBlockNumber(&tuple->t_self),
+												 ItemPointerGetOffsetNumber(&tuple->t_self),
+												 RelationGetRelationName(relation))));
 
 					/*
 					 * If tuple is being updated by other transaction then we
@@ -498,6 +505,7 @@ tuple_lock_retry:
 				 */
 				if (tuple->t_data == NULL)
 				{
+					Assert(!BufferIsValid(buffer));
 					return TM_Deleted;
 				}
 
@@ -507,8 +515,7 @@ tuple_lock_retry:
 				if (!TransactionIdEquals(HeapTupleHeaderGetXmin(tuple->t_data),
 										 priorXmax))
 				{
-					if (BufferIsValid(buffer))
-						ReleaseBuffer(buffer);
+					ReleaseBuffer(buffer);
 					return TM_Deleted;
 				}
 
@@ -524,13 +531,12 @@ tuple_lock_retry:
 				 *
 				 * As above, it should be safe to examine xmax and t_ctid
 				 * without the buffer content lock, because they can't be
-				 * changing.
+				 * changing.  We'd better hold a buffer pin though.
 				 */
 				if (ItemPointerEquals(&tuple->t_self, &tuple->t_data->t_ctid))
 				{
 					/* deleted, so forget about it */
-					if (BufferIsValid(buffer))
-						ReleaseBuffer(buffer);
+					ReleaseBuffer(buffer);
 					return TM_Deleted;
 				}
 
@@ -538,8 +544,7 @@ tuple_lock_retry:
 				*tid = tuple->t_data->t_ctid;
 				/* updated row should have xmin matching this xmax */
 				priorXmax = HeapTupleHeaderGetUpdateXid(tuple->t_data);
-				if (BufferIsValid(buffer))
-					ReleaseBuffer(buffer);
+				ReleaseBuffer(buffer);
 				/* loop back to fetch next in chain */
 			}
 		}
@@ -638,7 +643,6 @@ heapam_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	SMgrRelation dstrel;
 
 	dstrel = smgropen(*newrnode, rel->rd_backend);
-	RelationOpenSmgr(rel);
 
 	/*
 	 * Since we copy the file directly without looking at the shared buffers,
@@ -658,14 +662,14 @@ heapam_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 	RelationCreateStorage(*newrnode, rel->rd_rel->relpersistence);
 
 	/* copy main fork */
-	RelationCopyStorage(rel->rd_smgr, dstrel, MAIN_FORKNUM,
+	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
 						rel->rd_rel->relpersistence);
 
 	/* copy those extra forks that exist */
 	for (ForkNumber forkNum = MAIN_FORKNUM + 1;
 		 forkNum <= MAX_FORKNUM; forkNum++)
 	{
-		if (smgrexists(rel->rd_smgr, forkNum))
+		if (smgrexists(RelationGetSmgr(rel), forkNum))
 		{
 			smgrcreate(dstrel, forkNum, false);
 
@@ -677,7 +681,7 @@ heapam_relation_copy_data(Relation rel, const RelFileNode *newrnode)
 				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
 				 forkNum == INIT_FORKNUM))
 				log_smgrcreate(newrnode, forkNum);
-			RelationCopyStorage(rel->rd_smgr, dstrel, forkNum,
+			RelationCopyStorage(RelationGetSmgr(rel), dstrel, forkNum,
 								rel->rd_rel->relpersistence);
 		}
 	}
@@ -2040,18 +2044,23 @@ static uint64
 heapam_relation_size(Relation rel, ForkNumber forkNumber)
 {
 	uint64		nblocks = 0;
+	SMgrRelation reln;
 
-	/* Open it at the smgr level if not already done */
-	RelationOpenSmgr(rel);
+	/*
+	 * Caution: re-using this smgr pointer could fail if the relcache entry
+	 * gets closed.  It's safe as long as we only do smgr-level operations
+	 * between here and the last use of the pointer.
+	 */
+	reln = RelationGetSmgr(rel);
 
 	/* InvalidForkNumber indicates returning the size for all forks */
 	if (forkNumber == InvalidForkNumber)
 	{
 		for (int i = 0; i < MAX_FORKNUM; i++)
-			nblocks += smgrnblocks(rel->rd_smgr, i);
+			nblocks += smgrnblocks(reln, i);
 	}
 	else
-		nblocks = smgrnblocks(rel->rd_smgr, forkNumber);
+		nblocks = smgrnblocks(reln, forkNumber);
 
 	return nblocks * BLCKSZ;
 }
@@ -2238,9 +2247,11 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 	 * Ignore any claimed entries past what we think is the end of the
 	 * relation. It may have been extended after the start of our scan (we
 	 * only hold an AccessShareLock, and it could be inserts from this
-	 * backend).
+	 * backend).  We don't take this optimization in SERIALIZABLE isolation
+	 * though, as we need to examine all invisible tuples reachable by the
+	 * index.
 	 */
-	if (page >= hscan->rs_nblocks)
+	if (!IsolationIsSerializable() && page >= hscan->rs_nblocks)
 		return false;
 
 	/*

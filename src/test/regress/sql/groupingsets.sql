@@ -188,6 +188,29 @@ select * from (
 ) ss
 where x = 1 and q1 = 123;
 
+-- check handling of pulled-up SubPlan in GROUPING() argument (bug #17479)
+explain (verbose, costs off)
+select grouping(ss.x)
+from int8_tbl i1
+cross join lateral (select (select i1.q1) as x) ss
+group by ss.x;
+
+select grouping(ss.x)
+from int8_tbl i1
+cross join lateral (select (select i1.q1) as x) ss
+group by ss.x;
+
+explain (verbose, costs off)
+select (select grouping(ss.x))
+from int8_tbl i1
+cross join lateral (select (select i1.q1) as x) ss
+group by ss.x;
+
+select (select grouping(ss.x))
+from int8_tbl i1
+cross join lateral (select (select i1.q1) as x) ss
+group by ss.x;
+
 -- simple rescan tests
 
 select a, b, sum(v.x)
@@ -456,5 +479,14 @@ select v||'a', case grouping(v||'a') when 1 then 1 else 0 end, count(*)
 select v||'a', case when grouping(v||'a') = 1 then 1 else 0 end, count(*)
   from unnest(array[1,1], array['a','b']) u(i,v)
  group by rollup(i, v||'a') order by 1,3;
+
+-- test handling of outer GroupingFunc within subqueries
+explain (costs off)
+select (select grouping(v1)) from (values ((select 1))) v(v1) group by cube(v1);
+select (select grouping(v1)) from (values ((select 1))) v(v1) group by cube(v1);
+
+explain (costs off)
+select (select grouping(v1)) from (values ((select 1))) v(v1) group by v1;
+select (select grouping(v1)) from (values ((select 1))) v(v1) group by v1;
 
 -- end

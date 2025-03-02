@@ -1117,6 +1117,8 @@ SELECT '52093.89'::money::numeric::float8;
     <type>char(<replaceable>n</replaceable>)</type> are aliases for <type>character
     varying(<replaceable>n</replaceable>)</type> and
     <type>character(<replaceable>n</replaceable>)</type>, respectively.
+    If specified, the length must be greater than zero and cannot exceed
+    10485760.
     <type>character</type> without length specifier is equivalent to
     <type>character(1)</type>. If <type>character varying</type> is used
     without length specifier, the type accepts strings of any size. The
@@ -1373,7 +1375,12 @@ SELECT b, char_length(b) FROM test2;
    <para>
     Example:
 <programlisting>
-SELECT '\xDEADBEEF';
+SET bytea_output = 'hex';
+
+SELECT '\xDEADBEEF'::bytea;
+   bytea
+------------
+ \xdeadbeef
 </programlisting>
    </para>
   </sect2>
@@ -1904,7 +1911,8 @@ MINUTE TO SECOND
       <literal>America/New_York</literal>. In this case specifying the date
       is required in order to determine whether standard or daylight-savings
       time applies.  The appropriate time zone offset is recorded in the
-      <type>time with time zone</type> value.
+      <type>time with time zone</type> value and is output as stored;
+      it is not adjusted to the active time zone.
      </para>
 
       <table id="datatype-datetime-time-table">
@@ -2714,7 +2722,7 @@ P <optional> <replaceable>years</replaceable>-<replaceable>months</replaceable>-
      weeks'</literal> or <literal>'01:02:03.45'</literal>.  However,
      because interval internally stores only three integer units (months,
      days, microseconds), fractional units must be spilled to smaller
-     units.  Fractional parts of units greater than months is truncated to
+     units.  Fractional parts of units greater than months are truncated to
      be an integer number of months, e.g. <literal>'1.5 years'</literal>
      becomes <literal>'1 year 6 mons'</literal>.  Fractional parts of
      weeks and days are computed to be an integer number of days and
@@ -3195,7 +3203,7 @@ SELECT person.name, holidays.num_weeks FROM person, holidays
        </row>
        <row>
         <entry><type>line</type></entry>
-        <entry>32 bytes</entry>
+        <entry>24 bytes</entry>
         <entry>Infinite line</entry>
         <entry>{A,B,C}</entry>
        </row>
@@ -3238,6 +3246,11 @@ SELECT person.name, holidays.num_weeks FROM person, holidays
       </tbody>
      </tgroup>
     </table>
+
+   <para>
+    In all these types, the individual coordinates are stored as
+    <type>double precision</type> (<type>float8</type>) numbers.
+   </para>
 
    <para>
     A rich set of functions and operators is available to perform various geometric
@@ -3428,8 +3441,17 @@ SELECT person.name, holidays.num_weeks FROM person, holidays
 
     <para>
      Polygons are represented by lists of points (the vertexes of the
-     polygon). Polygons are very similar to closed paths, but are
-     stored differently and have their own set of support routines.
+     polygon). Polygons are very similar to closed paths; the essential
+     semantic difference is that a polygon is considered to include the
+     area within it, while a path is not.
+    </para>
+
+    <para>
+     An important implementation difference between polygons and
+     paths is that the stored representation of a polygon includes its
+     smallest bounding box.  This speeds up certain search operations,
+     although computing the bounding box adds overhead while constructing
+     new polygons.
     </para>
 
     <para>
@@ -3764,13 +3786,13 @@ SELECT person.name, holidays.num_weeks FROM person, holidays
     </para>
 
     <para>
-     IEEE Std 802-2001 specifies the second shown form (with hyphens)
+     IEEE Standard 802-2001 specifies the second form shown (with hyphens)
      as the canonical form for MAC addresses, and specifies the first
-     form (with colons) as the bit-reversed notation, so that
-     08-00-2b-01-02-03 = 01:00:4D:08:04:0C.  This convention is widely
+     form (with colons) as used with bit-reversed, MSB-first notation, so that
+     08-00-2b-01-02-03 = 10:00:D4:80:40:C0.  This convention is widely
      ignored nowadays, and it is relevant only for obsolete network
      protocols (such as Token Ring).  PostgreSQL makes no provisions
-     for bit reversal, and all accepted formats use the canonical LSB
+     for bit reversal; all accepted formats use the canonical LSB
      order.
     </para>
 

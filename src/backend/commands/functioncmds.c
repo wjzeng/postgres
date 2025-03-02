@@ -54,6 +54,7 @@
 #include "executor/executor.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -69,6 +70,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
@@ -1351,6 +1353,8 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 
 		procForm->prosupport = newsupport;
 	}
+	if (parallel_item)
+		procForm->proparallel = interpret_func_parallel(parallel_item);
 	if (set_items)
 	{
 		Datum		datum;
@@ -1385,8 +1389,7 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 		tup = heap_modify_tuple(tup, RelationGetDescr(rel),
 								repl_val, repl_null, repl_repl);
 	}
-	if (parallel_item)
-		procForm->proparallel = interpret_func_parallel(parallel_item);
+	/* DO NOT put more touches of procForm below here; it's now dangling. */
 
 	/* Do the update */
 	CatalogTupleUpdate(rel, &tup->t_self, tup);
@@ -2390,6 +2393,16 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 	estate->es_param_list_info = params;
 	econtext = CreateExprContext(estate);
 
+	/*
+	 * If we're called in non-atomic context, we also have to ensure that the
+	 * argument expressions run with an up-to-date snapshot.  Our caller will
+	 * have provided a current snapshot in atomic contexts, but not in
+	 * non-atomic contexts, because the possibility of a COMMIT/ROLLBACK
+	 * destroying the snapshot makes higher-level management too complicated.
+	 */
+	if (!atomic)
+		PushActiveSnapshot(GetTransactionSnapshot());
+
 	i = 0;
 	foreach(lc, fexpr->args)
 	{
@@ -2407,20 +2420,23 @@ ExecuteCallStmt(CallStmt *stmt, ParamListInfo params, bool atomic, DestReceiver 
 		i++;
 	}
 
+	/* Get rid of temporary snapshot for arguments, if we made one */
+	if (!atomic)
+		PopActiveSnapshot();
+
+	/* Here we actually call the procedure */
 	pgstat_init_function_usage(fcinfo, &fcusage);
 	retval = FunctionCallInvoke(fcinfo);
 	pgstat_end_function_usage(&fcusage, true);
 
+	/* Handle the procedure's outputs */
 	if (fexpr->funcresulttype == VOIDOID)
 	{
 		/* do nothing */
 	}
 	else if (fexpr->funcresulttype == RECORDOID)
 	{
-		/*
-		 * send tuple to client
-		 */
-
+		/* send tuple to client */
 		HeapTupleHeader td;
 		Oid			tupType;
 		int32		tupTypmod;
@@ -2490,6 +2506,78 @@ CallStmtResultDesc(CallStmt *stmt)
 		elog(ERROR, "cache lookup failed for procedure %u", fexpr->funcid);
 
 	tupdesc = build_function_result_tupdesc_t(tuple);
+
+	/*
+	 * The result of build_function_result_tupdesc_t has the right column
+	 * names, but it just has the declared output argument types, which is the
+	 * wrong thing in polymorphic cases.  Get the correct types by examining
+	 * the procedure's resolved argument expressions.  We intentionally keep
+	 * the atttypmod as -1 and the attcollation as the type's default, since
+	 * that's always the appropriate thing for function outputs; there's no
+	 * point in considering any additional info available from outargs.  Note
+	 * that tupdesc is null if there are no outargs.
+	 */
+	if (tupdesc)
+	{
+		Datum		proargmodes;
+		bool		isnull;
+		ArrayType  *arr;
+		char	   *argmodes;
+		int			nargs,
+					noutargs;
+		ListCell   *lc;
+
+		/*
+		 * Expand named arguments, defaults, etc.  We do not want to scribble
+		 * on the passed-in CallStmt parse tree, so first flat-copy fexpr,
+		 * allowing us to replace its args field.  (Note that
+		 * expand_function_arguments will not modify any of the passed-in data
+		 * structure.)
+		 */
+		{
+			FuncExpr   *nexpr = makeNode(FuncExpr);
+
+			memcpy(nexpr, fexpr, sizeof(FuncExpr));
+			fexpr = nexpr;
+		}
+
+		fexpr->args = expand_function_arguments(fexpr->args,
+												fexpr->funcresulttype,
+												tuple);
+
+		/*
+		 * If we're here, build_function_result_tupdesc_t already validated
+		 * that the procedure has non-null proargmodes that is the right kind
+		 * of array, so it seems unnecessary to check again.
+		 */
+		proargmodes = SysCacheGetAttr(PROCOID, tuple,
+									  Anum_pg_proc_proargmodes,
+									  &isnull);
+		Assert(!isnull);
+		arr = DatumGetArrayTypeP(proargmodes);	/* ensure not toasted */
+		argmodes = (char *) ARR_DATA_PTR(arr);
+
+		nargs = noutargs = 0;
+		foreach(lc, fexpr->args)
+		{
+			Node	   *arg = (Node *) lfirst(lc);
+			Form_pg_attribute att = TupleDescAttr(tupdesc, noutargs);
+			char		argmode = argmodes[nargs++];
+
+			/* ignore non-out arguments */
+			if (argmode == PROARGMODE_IN ||
+				argmode == PROARGMODE_VARIADIC)
+				continue;
+
+			TupleDescInitEntry(tupdesc,
+							   ++noutargs,
+							   NameStr(att->attname),
+							   exprType(arg),
+							   -1,
+							   0);
+		}
+		Assert(tupdesc->natts == noutargs);
+	}
 
 	ReleaseSysCache(tuple);
 

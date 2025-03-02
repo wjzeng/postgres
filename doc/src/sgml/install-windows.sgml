@@ -19,9 +19,9 @@
  <para>
   There are several different ways of building PostgreSQL on
   <productname>Windows</productname>. The simplest way to build with
-  Microsoft tools is to install <productname>Visual Studio 2019</productname>
+  Microsoft tools is to install <productname>Visual Studio 2022</productname>
   and use the included compiler. It is also possible to build with the full
-  <productname>Microsoft Visual C++ 2013 to 2019</productname>.
+  <productname>Microsoft Visual C++ 2013 to 2022</productname>.
   In some cases that requires the installation of the
   <productname>Windows SDK</productname> in addition to the compiler.
  </para>
@@ -69,7 +69,7 @@
   <productname>Microsoft Windows SDK</productname>. If you do not already have a
   <productname>Visual Studio</productname> environment set up, the easiest
   ways are to use the compilers from
-  <productname>Visual Studio 2019</productname> or those in the
+  <productname>Visual Studio 2022</productname> or those in the
   <productname>Windows SDK 10</productname>, which are both free downloads
   from Microsoft.
  </para>
@@ -78,7 +78,7 @@
   Both 32-bit and 64-bit builds are possible with the Microsoft Compiler suite.
   32-bit PostgreSQL builds are possible with
   <productname>Visual Studio 2013</productname> to
-  <productname>Visual Studio 2019</productname>,
+  <productname>Visual Studio 2022</productname>,
   as well as standalone Windows SDK releases 8.1a to 10.
   64-bit PostgreSQL builds are supported with
   <productname>Microsoft Windows SDK</productname> version 8.1a to 10 or
@@ -86,7 +86,7 @@
   is supported down to <productname>Windows 7</productname> and
   <productname>Windows Server 2008 R2 SP1</productname> when building with
   <productname>Visual Studio 2013</productname> to
-  <productname>Visual Studio 2019</productname>.
+  <productname>Visual Studio 2022</productname>.
    <!--
        For 2013 requirements:
        https://docs.microsoft.com/en-us/visualstudio/productinfo/vs2013-sysrequirements-vs
@@ -96,6 +96,8 @@
        https://docs.microsoft.com/en-us/visualstudio/productinfo/vs2017-system-requirements-vs
        For 2019 requirements:
        https://docs.microsoft.com/en-us/visualstudio/releases/2019/system-requirements
+       For 2022 requirements:
+       https://docs.microsoft.com/en-us/visualstudio/releases/2022/system-requirements
    -->
  </para>
 
@@ -126,7 +128,7 @@
  </para>
 
  <para>
-  Before you build, you may need to edit the file <filename>config.pl</filename>
+  Before you build, you can create the file <filename>config.pl</filename>
   to reflect any configuration options you want to change, or the paths to
   any third party libraries to use. The complete configuration is determined
   by first reading and parsing the file <filename>config_default.pl</filename>,
@@ -188,14 +190,12 @@ $ENV{MSBFLAGS}="/m";
     </varlistentry>
 
     <varlistentry>
-     <term><productname>ActiveState Perl</productname></term>
+     <term><productname>Strawberry Perl</productname></term>
      <listitem><para>
-      ActiveState Perl is required to run the build generation scripts. MinGW
+      Strawberry Perl is required to run the build generation scripts. MinGW
       or Cygwin Perl will not work. It must also be present in the PATH.
       Binaries can be downloaded from
-      <ulink url="https://www.activestate.com"></ulink>
-      (Note: version 5.8.3 or later is required,
-      the free Standard Distribution is sufficient).
+      <ulink url="https://strawberryperl.com"></ulink>.
      </para></listitem>
     </varlistentry>
 
@@ -209,10 +209,11 @@ $ENV{MSBFLAGS}="/m";
 
    <variablelist>
     <varlistentry>
-     <term><productname>ActiveState TCL</productname></term>
+     <term><productname>Magicsplat Tcl</productname></term>
      <listitem><para>
-      Required for building <application>PL/Tcl</application> (Note: version
-      8.4 is required, the free Standard Distribution is sufficient).
+      Required for building <application>PL/Tcl</application>.
+      Binaries can be downloaded from
+      <ulink url="https://www.magicsplat.com/tcl-installer/index.html"></ulink>.
      </para></listitem>
     </varlistentry>
 
@@ -458,6 +459,7 @@ $ENV{CONFIG}="Debug";
 <userinput>vcregress isolationcheck</userinput>
 <userinput>vcregress bincheck</userinput>
 <userinput>vcregress recoverycheck</userinput>
+<userinput>vcregress taptest</userinput>
 <userinput>vcregress upgradecheck</userinput>
 </screen>
 
@@ -467,14 +469,21 @@ $ENV{CONFIG}="Debug";
 <userinput>vcregress check serial</userinput>
 </screen>
 
+   <command>vcregress taptest</command> can be used to run the TAP tests
+   of a target directory, like:
+<screen>
+<userinput>vcregress taptest src\bin\initdb\</userinput>
+</screen>
+
    For more information about the regression tests, see
    <xref linkend="regress"/>.
   </para>
 
   <para>
-   Running the regression tests on client programs, with
-   <command>vcregress bincheck</command>, or on recovery tests, with
-   <command>vcregress recoverycheck</command>, requires an additional Perl module
+   Running the regression tests on client programs with
+   <command>vcregress bincheck</command>, on recovery tests with
+   <command>vcregress recoverycheck</command>, or TAP tests specified with
+   <command>vcregress taptest</command> requires an additional Perl module
    to be installed:
    <variablelist>
     <varlistentry>
@@ -491,6 +500,31 @@ $ENV{CONFIG}="Debug";
 <programlisting>
 $ENV{PERL5LIB}=$ENV{PERL5LIB} . ';c:\IPC-Run-0.94\lib';
 </programlisting>
+     </para></listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   Some of the TAP tests depend on a set of external commands that would
+   optionally trigger tests related to them. Each one of those variables
+   can be set or unset in <filename>buildenv.pl</filename>:
+   <variablelist>
+    <varlistentry>
+     <term><varname>GZIP_PROGRAM</varname></term>
+     <listitem><para>
+       Path to a <application>gzip</application> command. The default is
+       <literal>gzip</literal>, that would be the command found in
+      <varname>PATH</varname>.
+     </para></listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><varname>TAR</varname></term>
+     <listitem><para>
+      Path to a <application>tar</application> command. The default is
+      <literal>tar</literal>, that would be the command found in
+      <varname>PATH</varname>.
      </para></listitem>
     </varlistentry>
    </variablelist>

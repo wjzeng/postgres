@@ -42,7 +42,6 @@
 #include "catalog/pg_type.h"
 #include "commands/async.h"
 #include "commands/prepare.h"
-#include "executor/spi.h"
 #include "jit/jit.h"
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
@@ -78,6 +77,7 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "mb/pg_wchar.h"
+#include "utils/varlena.h"
 
 
 /* ----------------
@@ -101,6 +101,8 @@ int			max_stack_depth = 100;
 int			PostAuthDelay = 0;
 
 
+/* flags for non-system relation kinds to restrict use */
+int			restrict_nonsystem_relation_kind;
 
 /* ----------------
  *		private variables
@@ -1250,6 +1252,13 @@ exec_simple_query(const char *query_string)
 		else
 		{
 			/*
+			 * We had better not see XACT_FLAGS_NEEDIMMEDIATECOMMIT set if
+			 * we're not calling finish_xact_command().  (The implicit
+			 * transaction block should have prevented it from getting set.)
+			 */
+			Assert(!(MyXactFlags & XACT_FLAGS_NEEDIMMEDIATECOMMIT));
+
+			/*
 			 * We need a CommandCounterIncrement after every query, except
 			 * those that start or end a transaction block.
 			 */
@@ -1986,32 +1995,16 @@ exec_execute_message(const char *portal_name, long max_rows)
 
 	/*
 	 * We must copy the sourceText and prepStmtName into MessageContext in
-	 * case the portal is destroyed during finish_xact_command. Can avoid the
-	 * copy if it's not an xact command, though.
+	 * case the portal is destroyed during finish_xact_command.  We do not
+	 * make a copy of the portalParams though, preferring to just not print
+	 * them in that case.
 	 */
-	if (is_xact_command)
-	{
-		sourceText = pstrdup(portal->sourceText);
-		if (portal->prepStmtName)
-			prepStmtName = pstrdup(portal->prepStmtName);
-		else
-			prepStmtName = "<unnamed>";
-
-		/*
-		 * An xact command shouldn't have any parameters, which is a good
-		 * thing because they wouldn't be around after finish_xact_command.
-		 */
-		portalParams = NULL;
-	}
+	sourceText = pstrdup(portal->sourceText);
+	if (portal->prepStmtName)
+		prepStmtName = pstrdup(portal->prepStmtName);
 	else
-	{
-		sourceText = portal->sourceText;
-		if (portal->prepStmtName)
-			prepStmtName = portal->prepStmtName;
-		else
-			prepStmtName = "<unnamed>";
-		portalParams = portal->portalParams;
-	}
+		prepStmtName = "<unnamed>";
+	portalParams = portal->portalParams;
 
 	/*
 	 * Report query to various monitoring facilities.
@@ -2099,13 +2092,24 @@ exec_execute_message(const char *portal_name, long max_rows)
 
 	if (completed)
 	{
-		if (is_xact_command)
+		if (is_xact_command || (MyXactFlags & XACT_FLAGS_NEEDIMMEDIATECOMMIT))
 		{
 			/*
 			 * If this was a transaction control statement, commit it.  We
 			 * will start a new xact command for the next command (if any).
+			 * Likewise if the statement required immediate commit.  Without
+			 * this provision, we wouldn't force commit until Sync is
+			 * received, which creates a hazard if the client tries to
+			 * pipeline immediate-commit statements.
 			 */
 			finish_xact_command();
+
+			/*
+			 * These commands typically don't have any parameters, and even if
+			 * one did we couldn't print them now because the storage went
+			 * away during finish_xact_command.  So pretend there were none.
+			 */
+			portalParams = NULL;
 		}
 		else
 		{
@@ -2114,6 +2118,12 @@ exec_execute_message(const char *portal_name, long max_rows)
 			 * those that start or end a transaction block.
 			 */
 			CommandCounterIncrement();
+
+			/*
+			 * Set XACT_FLAGS_PIPELINING whenever we complete an Execute
+			 * message without immediately committing the transaction.
+			 */
+			MyXactFlags |= XACT_FLAGS_PIPELINING;
 
 			/* full command has been executed, reset timeout */
 			disable_statement_timeout();
@@ -2127,6 +2137,12 @@ exec_execute_message(const char *portal_name, long max_rows)
 		/* Portal run not complete, so send PortalSuspended */
 		if (whereToSendOutput == DestRemote)
 			pq_putemptymessage('s');
+
+		/*
+		 * Set XACT_FLAGS_PIPELINING whenever we suspend an Execute message,
+		 * too.
+		 */
+		MyXactFlags |= XACT_FLAGS_PIPELINING;
 	}
 
 	/*
@@ -3210,7 +3226,9 @@ ia64_get_bsp(void)
 pg_stack_base_t
 set_stack_base(void)
 {
+#ifndef HAVE__BUILTIN_FRAME_ADDRESS
 	char		stack_base;
+#endif
 	pg_stack_base_t old;
 
 #if defined(__ia64__) || defined(__ia64)
@@ -3220,8 +3238,16 @@ set_stack_base(void)
 	old = stack_base_ptr;
 #endif
 
-	/* Set up reference point for stack depth checking */
+	/*
+	 * Set up reference point for stack depth checking.  On recent gcc we use
+	 * __builtin_frame_address() to avoid a warning about storing a local
+	 * variable's address in a long-lived variable.
+	 */
+#ifdef HAVE__BUILTIN_FRAME_ADDRESS
+	stack_base_ptr = __builtin_frame_address(0);
+#else
 	stack_base_ptr = &stack_base;
+#endif
 #if defined(__ia64__) || defined(__ia64)
 	register_stack_base_ptr = ia64_get_bsp();
 #endif
@@ -3348,6 +3374,66 @@ assign_max_stack_depth(int newval, void *extra)
 	max_stack_depth_bytes = newval_bytes;
 }
 
+/*
+ * GUC check_hook for restrict_nonsystem_relation_kind
+ */
+bool
+check_restrict_nonsystem_relation_kind(char **newval, void **extra, GucSource source)
+{
+	char	   *rawstring;
+	List	   *elemlist;
+	ListCell   *l;
+	int			flags = 0;
+
+	/* Need a modifiable copy of string */
+	rawstring = pstrdup(*newval);
+
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		/* syntax error in list */
+		GUC_check_errdetail("List syntax is invalid.");
+		pfree(rawstring);
+		list_free(elemlist);
+		return false;
+	}
+
+	foreach(l, elemlist)
+	{
+		char	   *tok = (char *) lfirst(l);
+
+		if (pg_strcasecmp(tok, "view") == 0)
+			flags |= RESTRICT_RELKIND_VIEW;
+		else if (pg_strcasecmp(tok, "foreign-table") == 0)
+			flags |= RESTRICT_RELKIND_FOREIGN_TABLE;
+		else
+		{
+			GUC_check_errdetail("Unrecognized key word: \"%s\".", tok);
+			pfree(rawstring);
+			list_free(elemlist);
+			return false;
+		}
+	}
+
+	pfree(rawstring);
+	list_free(elemlist);
+
+	/* Save the flags in *extra, for use by the assign function */
+	*extra = malloc(sizeof(int));
+	*((int *) *extra) = flags;
+
+	return true;
+}
+
+/*
+ * GUC assign_hook for restrict_nonsystem_relation_kind
+ */
+void
+assign_restrict_nonsystem_relation_kind(const char *newval, void *extra)
+{
+	int		   *flags = (int *) extra;
+
+	restrict_nonsystem_relation_kind = *flags;
+}
 
 /*
  * set_debug_options --- apply "-d N" command line option
@@ -3730,11 +3816,11 @@ PostgresMain(int argc, char *argv[],
 			 const char *dbname,
 			 const char *username)
 {
-	int			firstchar;
-	StringInfoData input_message;
 	sigjmp_buf	local_sigjmp_buf;
+
+	/* these must be volatile to ensure state is preserved across longjmp: */
 	volatile bool send_ready_for_query = true;
-	bool		disable_idle_in_transaction_timeout = false;
+	volatile bool disable_idle_in_transaction_timeout = false;
 
 	/* Initialize startup process environment if necessary. */
 	if (!IsUnderPostmaster)
@@ -4019,9 +4105,10 @@ PostgresMain(int argc, char *argv[],
 		 * query cancels from being misreported as timeouts in case we're
 		 * forgetting a timeout cancel.
 		 */
-		disable_all_timeouts(false);
-		QueryCancelPending = false; /* second to avoid race condition */
+		disable_all_timeouts(false);	/* do first to avoid race condition */
+		QueryCancelPending = false;
 		stmt_timeout_active = false;
+		disable_idle_in_transaction_timeout = false;
 
 		/* Not reading from the client anymore. */
 		DoingCommandRead = false;
@@ -4047,7 +4134,6 @@ PostgresMain(int argc, char *argv[],
 			WalSndErrorCleanup();
 
 		PortalErrorCleanup();
-		SPICleanup();
 
 		/*
 		 * We can't release replication slots inside AbortTransaction() as we
@@ -4111,6 +4197,9 @@ PostgresMain(int argc, char *argv[],
 
 	for (;;)
 	{
+		int			firstchar;
+		StringInfoData input_message;
+
 		/*
 		 * At top of loop, reset extended-query-message flag, so that any
 		 * errors encountered in "idle" state don't provoke skip.

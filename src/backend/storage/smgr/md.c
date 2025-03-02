@@ -211,6 +211,9 @@ mdcreate(SMgrRelation reln, ForkNumber forkNum, bool isRedo)
 	mdfd = &reln->md_seg_fds[forkNum][0];
 	mdfd->mdfd_vfd = fd;
 	mdfd->mdfd_segno = 0;
+
+	if (!SmgrIsTemp(reln))
+		register_dirty_segment(reln, forkNum, mdfd);
 }
 
 /*
@@ -424,7 +427,8 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	/*
 	 * If a relation manages to grow to 2^32-1 blocks, refuse to extend it any
 	 * more --- we mustn't create a block whose number actually is
-	 * InvalidBlockNumber.
+	 * InvalidBlockNumber.  (Note that this failure should be unreachable
+	 * because of upstream checks in bufmgr.c.)
 	 */
 	if (blocknum == InvalidBlockNumber)
 		ereport(ERROR,

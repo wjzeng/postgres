@@ -570,6 +570,7 @@ _outIndexOnlyScan(StringInfo str, const IndexOnlyScan *node)
 
 	WRITE_OID_FIELD(indexid);
 	WRITE_NODE_FIELD(indexqual);
+	WRITE_NODE_FIELD(recheckqual);
 	WRITE_NODE_FIELD(indexorderby);
 	WRITE_NODE_FIELD(indextlist);
 	WRITE_ENUM_FIELD(indexorderdir, ScanDirection);
@@ -1323,6 +1324,7 @@ _outSubPlan(StringInfo str, const SubPlan *node)
 	WRITE_NODE_FIELD(args);
 	WRITE_FLOAT_FIELD(startup_cost, "%.2f");
 	WRITE_FLOAT_FIELD(per_call_cost, "%.2f");
+	WRITE_INT_FIELD(subLinkId);
 }
 
 static void
@@ -3468,8 +3470,7 @@ _outConstraint(StringInfo str, const Constraint *node)
 
 		case CONSTR_IDENTITY:
 			appendStringInfoString(str, "IDENTITY");
-			WRITE_NODE_FIELD(raw_expr);
-			WRITE_STRING_FIELD(cooked_expr);
+			WRITE_NODE_FIELD(options);
 			WRITE_CHAR_FIELD(generated_when);
 			break;
 
@@ -3485,6 +3486,8 @@ _outConstraint(StringInfo str, const Constraint *node)
 			WRITE_BOOL_FIELD(is_no_inherit);
 			WRITE_NODE_FIELD(raw_expr);
 			WRITE_STRING_FIELD(cooked_expr);
+			WRITE_BOOL_FIELD(skip_validation);
+			WRITE_BOOL_FIELD(initially_valid);
 			break;
 
 		case CONSTR_PRIMARY:

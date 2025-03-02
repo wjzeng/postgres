@@ -111,10 +111,12 @@ PostgreSQL documentation
       <term><option>--clean</option></term>
       <listitem>
        <para>
-        Clean (drop) database objects before recreating them.
-        (Unless <option>--if-exists</option> is used,
-        this might generate some harmless error messages, if any objects
-        were not present in the destination database.)
+        Before restoring database objects, issue commands
+        to <command>DROP</command> all the objects that will be restored.
+        This option is useful for overwriting an existing database.
+        If any of the objects do not exist in the destination database,
+        ignorable error messages will be reported,
+        unless <option>--if-exists</option> is also specified.
        </para>
       </listitem>
      </varlistentry>
@@ -533,9 +535,9 @@ PostgreSQL documentation
         This option is relevant only when performing a data-only restore.
         It instructs <application>pg_restore</application> to execute commands
         to temporarily disable triggers on the target tables while
-        the data is reloaded.  Use this if you have referential
+        the data is restored.  Use this if you have referential
         integrity checks or other triggers on the tables that you
-        do not want to invoke during data reload.
+        do not want to invoke during data restore.
        </para>
 
        <para>
@@ -575,9 +577,11 @@ PostgreSQL documentation
       <term><option>--if-exists</option></term>
       <listitem>
        <para>
-        Use conditional commands (i.e., add an <literal>IF EXISTS</literal>
-        clause) to drop database objects.  This option is not valid
-        unless <option>--clean</option> is also specified.
+        Use <literal>DROP ... IF EXISTS</literal> commands to drop objects
+        in <option>--clean</option> mode.  This suppresses <quote>does not
+        exist</quote> errors that might otherwise be reported.  This
+        option is not valid unless <option>--clean</option> is also
+        specified.
        </para>
       </listitem>
      </varlistentry>
@@ -953,7 +957,7 @@ CREATE DATABASE foo WITH TEMPLATE template0;
   </para>
 
   <para>
-   To reload the dump into a new database called <literal>newdb</literal>:
+   To restore the dump into a new database called <literal>newdb</literal>:
 
 <screen>
 <prompt>$</prompt> <userinput>createdb -T template0 newdb</userinput>

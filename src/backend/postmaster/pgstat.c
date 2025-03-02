@@ -3394,7 +3394,8 @@ pgstat_read_current_status(void)
 						   NAMEDATALEN * NumBackendStatSlots);
 	localactivity = (char *)
 		MemoryContextAllocHuge(pgStatLocalContext,
-							   pgstat_track_activity_query_size * NumBackendStatSlots);
+							   (Size) pgstat_track_activity_query_size *
+							   (Size) NumBackendStatSlots);
 #ifdef USE_SSL
 	localsslstatus = (PgBackendSSLStatus *)
 		MemoryContextAlloc(pgStatLocalContext,
@@ -3888,6 +3889,9 @@ pgstat_get_wait_timeout(WaitEventTimeout w)
 			break;
 		case WAIT_EVENT_RECOVERY_APPLY_DELAY:
 			event_name = "RecoveryApplyDelay";
+			break;
+		case WAIT_EVENT_REGISTER_SYNC_REQUEST:
+			event_name = "RegisterSyncRequest";
 			break;
 			/* no default case, so that compiler will warn */
 	}

@@ -81,12 +81,15 @@ typedef struct FixedParallelState
 	/* Fixed-size state that workers must restore. */
 	Oid			database_id;
 	Oid			authenticated_user_id;
-	Oid			current_user_id;
+	Oid			session_user_id;
 	Oid			outer_user_id;
+	Oid			current_user_id;
 	Oid			temp_namespace_id;
 	Oid			temp_toast_namespace_id;
 	int			sec_context;
-	bool		is_superuser;
+	bool		authenticated_user_is_superuser;
+	bool		session_user_is_superuser;
+	bool		role_is_superuser;
 	PGPROC	   *parallel_master_pgproc;
 	pid_t		parallel_master_pid;
 	BackendId	parallel_master_backend_id;
@@ -220,6 +223,15 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
 	/*
+	 * If we manage to reach here while non-interruptible, it's unsafe to
+	 * launch any workers: we would fail to process interrupts sent by them.
+	 * We can deal with that edge case by pretending no workers were
+	 * requested.
+	 */
+	if (!INTERRUPTS_CAN_BE_PROCESSED())
+		pcxt->nworkers = 0;
+
+	/*
 	 * Normally, the user will have requested at least one worker process, but
 	 * if by chance they have not, we can skip a bunch of things here.
 	 */
@@ -247,8 +259,11 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		shm_toc_estimate_chunk(&pcxt->estimator, guc_len);
 		combocidlen = EstimateComboCIDStateSpace();
 		shm_toc_estimate_chunk(&pcxt->estimator, combocidlen);
-		tsnaplen = EstimateSnapshotSpace(transaction_snapshot);
-		shm_toc_estimate_chunk(&pcxt->estimator, tsnaplen);
+		if (IsolationUsesXactSnapshot())
+		{
+			tsnaplen = EstimateSnapshotSpace(transaction_snapshot);
+			shm_toc_estimate_chunk(&pcxt->estimator, tsnaplen);
+		}
 		asnaplen = EstimateSnapshotSpace(active_snapshot);
 		shm_toc_estimate_chunk(&pcxt->estimator, asnaplen);
 		tstatelen = EstimateTransactionStateSpace();
@@ -309,9 +324,12 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		shm_toc_allocate(pcxt->toc, sizeof(FixedParallelState));
 	fps->database_id = MyDatabaseId;
 	fps->authenticated_user_id = GetAuthenticatedUserId();
+	fps->session_user_id = GetSessionUserId();
 	fps->outer_user_id = GetCurrentRoleId();
-	fps->is_superuser = session_auth_is_superuser;
 	GetUserIdAndSecContext(&fps->current_user_id, &fps->sec_context);
+	fps->authenticated_user_is_superuser = GetAuthenticatedUserIsSuperuser();
+	fps->session_user_is_superuser = GetSessionUserIsSuperuser();
+	fps->role_is_superuser = session_auth_is_superuser;
 	GetTempNamespaceState(&fps->temp_namespace_id,
 						  &fps->temp_toast_namespace_id);
 	fps->parallel_master_pgproc = MyProc;
@@ -356,11 +374,19 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		SerializeComboCIDState(combocidlen, combocidspace);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_COMBO_CID, combocidspace);
 
-		/* Serialize transaction snapshot and active snapshot. */
-		tsnapspace = shm_toc_allocate(pcxt->toc, tsnaplen);
-		SerializeSnapshot(transaction_snapshot, tsnapspace);
-		shm_toc_insert(pcxt->toc, PARALLEL_KEY_TRANSACTION_SNAPSHOT,
-					   tsnapspace);
+		/*
+		 * Serialize the transaction snapshot if the transaction
+		 * isolation-level uses a transaction snapshot.
+		 */
+		if (IsolationUsesXactSnapshot())
+		{
+			tsnapspace = shm_toc_allocate(pcxt->toc, tsnaplen);
+			SerializeSnapshot(transaction_snapshot, tsnapspace);
+			shm_toc_insert(pcxt->toc, PARALLEL_KEY_TRANSACTION_SNAPSHOT,
+						   tsnapspace);
+		}
+
+		/* Serialize the active snapshot. */
 		asnapspace = shm_toc_allocate(pcxt->toc, asnaplen);
 		SerializeSnapshot(active_snapshot, asnapspace);
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_ACTIVE_SNAPSHOT, asnapspace);
@@ -1226,6 +1252,8 @@ ParallelWorkerMain(Datum main_arg)
 	char	   *enumblacklistspace;
 	StringInfoData msgbuf;
 	char	   *session_dsm_handle_space;
+	Snapshot	tsnapshot;
+	Snapshot	asnapshot;
 
 	/* Set flag to indicate that we're initializing a parallel worker. */
 	InitializingParallelWorker = true;
@@ -1335,6 +1363,18 @@ ParallelWorkerMain(Datum main_arg)
 
 	entrypt = LookupParallelWorkerFunction(library_name, function_name);
 
+	/*
+	 * Restore current session authorization and role id.  No verification
+	 * happens here, we just blindly adopt the leader's state.  Note that this
+	 * has to happen before InitPostgres, since InitializeSessionUserId will
+	 * not set these variables.
+	 */
+	SetAuthenticatedUserId(fps->authenticated_user_id,
+						   fps->authenticated_user_is_superuser);
+	SetSessionAuthorization(fps->session_user_id,
+							fps->session_user_is_superuser);
+	SetCurrentRoleId(fps->outer_user_id, fps->role_is_superuser);
+
 	/* Restore database connection. */
 	BackgroundWorkerInitializeConnectionByOid(fps->database_id,
 											  fps->authenticated_user_id,
@@ -1373,14 +1413,25 @@ ParallelWorkerMain(Datum main_arg)
 		shm_toc_lookup(toc, PARALLEL_KEY_SESSION_DSM, false);
 	AttachSession(*(dsm_handle *) session_dsm_handle_space);
 
-	/* Restore transaction snapshot. */
-	tsnapspace = shm_toc_lookup(toc, PARALLEL_KEY_TRANSACTION_SNAPSHOT, false);
-	RestoreTransactionSnapshot(RestoreSnapshot(tsnapspace),
-							   fps->parallel_master_pgproc);
-
-	/* Restore active snapshot. */
+	/*
+	 * If the transaction isolation level is REPEATABLE READ or SERIALIZABLE,
+	 * the leader has serialized the transaction snapshot and we must restore
+	 * it. At lower isolation levels, there is no transaction-lifetime
+	 * snapshot, but we need TransactionXmin to get set to a value which is
+	 * less than or equal to the xmin of every snapshot that will be used by
+	 * this worker. The easiest way to accomplish that is to install the
+	 * active snapshot as the transaction snapshot. Code running in this
+	 * parallel worker might take new snapshots via GetTransactionSnapshot()
+	 * or GetLatestSnapshot(), but it shouldn't have any way of acquiring a
+	 * snapshot older than the active snapshot.
+	 */
 	asnapspace = shm_toc_lookup(toc, PARALLEL_KEY_ACTIVE_SNAPSHOT, false);
-	PushActiveSnapshot(RestoreSnapshot(asnapspace));
+	tsnapspace = shm_toc_lookup(toc, PARALLEL_KEY_TRANSACTION_SNAPSHOT, true);
+	asnapshot = RestoreSnapshot(asnapspace);
+	tsnapshot = tsnapspace ? RestoreSnapshot(tsnapspace) : asnapshot;
+	RestoreTransactionSnapshot(tsnapshot,
+							   fps->parallel_master_pgproc);
+	PushActiveSnapshot(asnapshot);
 
 	/*
 	 * We've changed which tuples we can see, and must therefore invalidate
@@ -1389,13 +1440,13 @@ ParallelWorkerMain(Datum main_arg)
 	InvalidateSystemCaches();
 
 	/*
-	 * Restore current role id.  Skip verifying whether session user is
-	 * allowed to become this role and blindly restore the leader's state for
-	 * current role.
+	 * Restore current user ID and security context.  No verification happens
+	 * here, we just blindly adopt the leader's state.  We can't do this till
+	 * after restoring GUCs, else we'll get complaints about restoring
+	 * session_authorization and role.  (In effect, we're assuming that all
+	 * the restored values are okay to set, even if we are now inside a
+	 * restricted context.)
 	 */
-	SetCurrentRoleId(fps->outer_user_id, fps->is_superuser);
-
-	/* Restore user ID and security context. */
 	SetUserIdAndSecContext(fps->current_user_id, fps->sec_context);
 
 	/* Restore temp-namespace state to ensure search path matches leader's. */

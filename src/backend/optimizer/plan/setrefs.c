@@ -990,8 +990,26 @@ set_indexonlyscan_references(PlannerInfo *root,
 							 int rtoffset)
 {
 	indexed_tlist *index_itlist;
+	List	   *stripped_indextlist;
+	ListCell   *lc;
 
-	index_itlist = build_tlist_index(plan->indextlist);
+	/*
+	 * Vars in the plan node's targetlist, qual, and recheckqual must only
+	 * reference columns that the index AM can actually return.  To ensure
+	 * this, remove non-returnable columns (which are marked as resjunk) from
+	 * the indexed tlist.  We can just drop them because the indexed_tlist
+	 * machinery pays attention to TLE resnos, not physical list position.
+	 */
+	stripped_indextlist = NIL;
+	foreach(lc, plan->indextlist)
+	{
+		TargetEntry *indextle = (TargetEntry *) lfirst(lc);
+
+		if (!indextle->resjunk)
+			stripped_indextlist = lappend(stripped_indextlist, indextle);
+	}
+
+	index_itlist = build_tlist_index(stripped_indextlist);
 
 	plan->scan.scanrelid += rtoffset;
 	plan->scan.plan.targetlist = (List *)
@@ -1003,6 +1021,12 @@ set_indexonlyscan_references(PlannerInfo *root,
 	plan->scan.plan.qual = (List *)
 		fix_upper_expr(root,
 					   (Node *) plan->scan.plan.qual,
+					   index_itlist,
+					   INDEX_VAR,
+					   rtoffset);
+	plan->recheckqual = (List *)
+		fix_upper_expr(root,
+					   (Node *) plan->recheckqual,
 					   index_itlist,
 					   INDEX_VAR,
 					   rtoffset);
@@ -1135,7 +1159,19 @@ trivial_subqueryscan(SubqueryScan *plan)
 static Plan *
 clean_up_removed_plan_level(Plan *parent, Plan *child)
 {
-	/* We have to be sure we don't lose any initplans */
+	/*
+	 * We have to be sure we don't lose any initplans, so move any that were
+	 * attached to the parent plan to the child.  If we do move any, the child
+	 * is no longer parallel-safe.
+	 */
+	if (parent->initPlan)
+		child->parallel_safe = false;
+
+	/*
+	 * Attach plans this way so that parent's initplans are processed before
+	 * any pre-existing initplans of the child.  Probably doesn't matter, but
+	 * let's preserve the ordering just in case.
+	 */
 	child->initPlan = list_concat(parent->initPlan,
 								  child->initPlan);
 
@@ -1326,8 +1362,16 @@ set_append_references(PlannerInfo *root,
 		lfirst(l) = set_plan_refs(root, (Plan *) lfirst(l), rtoffset);
 	}
 
-	/* Now, if there's just one, forget the Append and return that child */
-	if (list_length(aplan->appendplans) == 1)
+	/*
+	 * See if it's safe to get rid of the Append entirely.  For this to be
+	 * safe, there must be only one child plan and that child plan's parallel
+	 * awareness must match that of the Append's.  The reason for the latter
+	 * is that the if the Append is parallel aware and the child is not then
+	 * the calling plan may execute the non-parallel aware child multiple
+	 * times.
+	 */
+	if (list_length(aplan->appendplans) == 1 &&
+		((Plan *) linitial(aplan->appendplans))->parallel_aware == aplan->plan.parallel_aware)
 		return clean_up_removed_plan_level((Plan *) aplan,
 										   (Plan *) linitial(aplan->appendplans));
 
@@ -1388,8 +1432,16 @@ set_mergeappend_references(PlannerInfo *root,
 		lfirst(l) = set_plan_refs(root, (Plan *) lfirst(l), rtoffset);
 	}
 
-	/* Now, if there's just one, forget the MergeAppend and return that child */
-	if (list_length(mplan->mergeplans) == 1)
+	/*
+	 * See if it's safe to get rid of the MergeAppend entirely.  For this to
+	 * be safe, there must be only one child plan and that child plan's
+	 * parallel awareness must match that of the MergeAppend's.  The reason
+	 * for the latter is that the if the MergeAppend is parallel aware and the
+	 * child is not then the calling plan may execute the non-parallel aware
+	 * child multiple times.
+	 */
+	if (list_length(mplan->mergeplans) == 1 &&
+		((Plan *) linitial(mplan->mergeplans))->parallel_aware == mplan->plan.parallel_aware)
 		return clean_up_removed_plan_level((Plan *) mplan,
 										   (Plan *) linitial(mplan->mergeplans));
 
@@ -1661,22 +1713,14 @@ fix_scan_expr_mutator(Node *node, fix_scan_expr_context *context)
 	if (IsA(node, Aggref))
 	{
 		Aggref	   *aggref = (Aggref *) node;
+		Param	   *aggparam;
 
 		/* See if the Aggref should be replaced by a Param */
-		if (context->root->minmax_aggs != NIL &&
-			list_length(aggref->args) == 1)
+		aggparam = find_minmax_agg_replacement_param(context->root, aggref);
+		if (aggparam != NULL)
 		{
-			TargetEntry *curTarget = (TargetEntry *) linitial(aggref->args);
-			ListCell   *lc;
-
-			foreach(lc, context->root->minmax_aggs)
-			{
-				MinMaxAggInfo *mminfo = (MinMaxAggInfo *) lfirst(lc);
-
-				if (mminfo->aggfnoid == aggref->aggfnoid &&
-					equal(mminfo->target, curTarget->expr))
-					return (Node *) copyObject(mminfo->param);
-			}
+			/* Make a copy of the Param for paranoia's sake */
+			return (Node *) copyObject(aggparam);
 		}
 		/* If no match, just fall through to process it normally */
 	}
@@ -2571,22 +2615,14 @@ fix_upper_expr_mutator(Node *node, fix_upper_expr_context *context)
 	if (IsA(node, Aggref))
 	{
 		Aggref	   *aggref = (Aggref *) node;
+		Param	   *aggparam;
 
 		/* See if the Aggref should be replaced by a Param */
-		if (context->root->minmax_aggs != NIL &&
-			list_length(aggref->args) == 1)
+		aggparam = find_minmax_agg_replacement_param(context->root, aggref);
+		if (aggparam != NULL)
 		{
-			TargetEntry *curTarget = (TargetEntry *) linitial(aggref->args);
-			ListCell   *lc;
-
-			foreach(lc, context->root->minmax_aggs)
-			{
-				MinMaxAggInfo *mminfo = (MinMaxAggInfo *) lfirst(lc);
-
-				if (mminfo->aggfnoid == aggref->aggfnoid &&
-					equal(mminfo->target, curTarget->expr))
-					return (Node *) copyObject(mminfo->param);
-			}
+			/* Make a copy of the Param for paranoia's sake */
+			return (Node *) copyObject(aggparam);
 		}
 		/* If no match, just fall through to process it normally */
 	}
@@ -2659,6 +2695,38 @@ set_returning_clause_references(PlannerInfo *root,
 	pfree(itlist);
 
 	return rlist;
+}
+
+
+/*
+ * find_minmax_agg_replacement_param
+ *		If the given Aggref is one that we are optimizing into a subquery
+ *		(cf. planagg.c), then return the Param that should replace it.
+ *		Else return NULL.
+ *
+ * This is exported so that SS_finalize_plan can use it before setrefs.c runs.
+ * Note that it will not find anything until we have built a Plan from a
+ * MinMaxAggPath, as root->minmax_aggs will never be filled otherwise.
+ */
+Param *
+find_minmax_agg_replacement_param(PlannerInfo *root, Aggref *aggref)
+{
+	if (root->minmax_aggs != NIL &&
+		list_length(aggref->args) == 1)
+	{
+		TargetEntry *curTarget = (TargetEntry *) linitial(aggref->args);
+		ListCell   *lc;
+
+		foreach(lc, root->minmax_aggs)
+		{
+			MinMaxAggInfo *mminfo = (MinMaxAggInfo *) lfirst(lc);
+
+			if (mminfo->aggfnoid == aggref->aggfnoid &&
+				equal(mminfo->target, curTarget->expr))
+				return mminfo->param;
+		}
+	}
+	return NULL;
 }
 
 
@@ -2804,8 +2872,25 @@ extract_query_dependencies_walker(Node *node, PlannerInfo *context)
 		if (query->commandType == CMD_UTILITY)
 		{
 			/*
-			 * Ignore utility statements, except those (such as EXPLAIN) that
-			 * contain a parsed-but-not-planned query.
+			 * This logic must handle any utility command for which parse
+			 * analysis was nontrivial (cf. stmt_requires_parse_analysis).
+			 *
+			 * Notably, CALL requires its own processing.
+			 */
+			if (IsA(query->utilityStmt, CallStmt))
+			{
+				CallStmt   *callstmt = (CallStmt *) query->utilityStmt;
+
+				/* We need not examine funccall, just the transformed exprs */
+				(void) extract_query_dependencies_walker((Node *) callstmt->funcexpr,
+														 context);
+				return false;
+			}
+
+			/*
+			 * Ignore other utility statements, except those (such as EXPLAIN)
+			 * that contain a parsed-but-not-planned query.  For those, we
+			 * just need to transfer our attention to the contained query.
 			 */
 			query = UtilityContainsQuery(query->utilityStmt);
 			if (query == NULL)

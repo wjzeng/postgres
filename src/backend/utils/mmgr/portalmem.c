@@ -210,6 +210,7 @@ CreatePortal(const char *name, bool allowDup, bool dupSilent)
 	portal->cleanup = PortalCleanup;
 	portal->createSubid = GetCurrentSubTransactionId();
 	portal->activeSubid = portal->createSubid;
+	portal->createLevel = GetCurrentTransactionNestLevel();
 	portal->strategy = PORTAL_MULTI_QUERY;
 	portal->cursorOptions = CURSOR_OPT_NO_SCROLL;
 	portal->atStart = true;
@@ -655,6 +656,7 @@ HoldPortal(Portal portal)
 	 */
 	portal->createSubid = InvalidSubTransactionId;
 	portal->activeSubid = InvalidSubTransactionId;
+	portal->createLevel = 0;
 }
 
 /*
@@ -938,6 +940,7 @@ PortalErrorCleanup(void)
 void
 AtSubCommit_Portals(SubTransactionId mySubid,
 					SubTransactionId parentSubid,
+					int parentLevel,
 					ResourceOwner parentXactOwner)
 {
 	HASH_SEQ_STATUS status;
@@ -952,6 +955,7 @@ AtSubCommit_Portals(SubTransactionId mySubid,
 		if (portal->createSubid == mySubid)
 		{
 			portal->createSubid = parentSubid;
+			portal->createLevel = parentLevel;
 			if (portal->resowner)
 				ResourceOwnerNewParent(portal->resowner, parentXactOwner);
 		}
@@ -1186,6 +1190,9 @@ pg_cursor(PG_FUNCTION_ARGS)
 		/* report only "visible" entries */
 		if (!portal->visible)
 			continue;
+		/* also ignore it if PortalDefineQuery hasn't been called yet */
+		if (!portal->sourceText)
+			continue;
 
 		MemSet(nulls, 0, sizeof(nulls));
 
@@ -1270,7 +1277,7 @@ HoldPinnedPortals(void)
 			 */
 			if (portal->strategy != PORTAL_ONE_SELECT)
 				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
+						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 						 errmsg("cannot perform transaction commands inside a cursor loop that is not read-only")));
 
 			/* Verify it's in a suitable state to be held */

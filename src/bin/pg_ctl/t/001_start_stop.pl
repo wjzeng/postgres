@@ -43,16 +43,7 @@ my $ctlcmd = [
 	'pg_ctl', 'start', '-D', "$tempdir/data", '-l',
 	"$TestLib::log_path/001_start_stop_server.log"
 ];
-if ($Config{osname} ne 'msys')
-{
-	command_like($ctlcmd, qr/done.*server started/s, 'pg_ctl start');
-}
-else
-{
-
-	# use the version of command_like that doesn't hang on Msys here
-	command_like_safe($ctlcmd, qr/done.*server started/s, 'pg_ctl start');
-}
+command_like($ctlcmd, qr/done.*server started/s, 'pg_ctl start');
 
 # sleep here is because Windows builds can't check postmaster.pid exactly,
 # so they may mistake a pre-existing postmaster.pid for one created by the
@@ -87,7 +78,8 @@ $logFileName = "$tempdir/data/perm-test-640.log";
 
 SKIP:
 {
-	skip "group access not supported on Windows", 3 if ($windows_os);
+	skip "group access not supported on Windows", 3
+	  if ($windows_os || $Config::Config{osname} eq 'cygwin');
 
 	system_or_bail 'pg_ctl', 'stop', '-D', "$tempdir/data";
 

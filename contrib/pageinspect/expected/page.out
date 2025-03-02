@@ -113,3 +113,44 @@ select tuple_data_split('test8'::regclass, t_data, t_infomask, t_infomask2, t_bi
 (1 row)
 
 drop table test8;
+-- Failure with incorrect page size
+-- Suppress the DETAIL message, to allow the tests to work across various
+-- page sizes.
+\set VERBOSITY terse
+SELECT fsm_page_contents('aaa'::bytea);
+ERROR:  invalid page size
+SELECT page_checksum('bbb'::bytea, 0);
+ERROR:  invalid page size
+SELECT page_header('ccc'::bytea);
+ERROR:  invalid page size
+\set VERBOSITY default
+-- Tests with all-zero pages.
+SHOW block_size \gset
+SELECT fsm_page_contents(decode(repeat('00', :block_size), 'hex'));
+ fsm_page_contents 
+-------------------
+ 
+(1 row)
+
+SELECT page_header(decode(repeat('00', :block_size), 'hex'));
+      page_header      
+-----------------------
+ (0/0,0,0,0,0,0,0,0,0)
+(1 row)
+
+SELECT page_checksum(decode(repeat('00', :block_size), 'hex'), 1);
+ page_checksum 
+---------------
+              
+(1 row)
+
+-- tests for sequences
+create sequence test_sequence start 72057594037927937;
+select tuple_data_split('test_sequence'::regclass, t_data, t_infomask, t_infomask2, t_bits)
+  from heap_page_items(get_raw_page('test_sequence', 0));
+                   tuple_data_split                    
+-------------------------------------------------------
+ {"\\x0100000000000001","\\x0000000000000000","\\x00"}
+(1 row)
+
+drop sequence test_sequence;

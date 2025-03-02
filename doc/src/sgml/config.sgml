@@ -651,10 +651,15 @@ include_dir 'conf.d'
          <literal>::</literal> allows listening for all IPv6 addresses.
          If the list is empty, the server does not listen on any IP interface
          at all, in which case only Unix-domain sockets can be used to connect
-         to it.
+         to it.  If the list is not empty, the server will start if it
+         can listen on at least one TCP/IP address.  A warning will be
+         emitted for any TCP/IP address which cannot be opened.
          The default value is <systemitem class="systemname">localhost</systemitem>,
          which allows only local TCP/IP <quote>loopback</quote> connections to be
-         made.  While client authentication (<xref
+         made.
+       </para>
+       <para>
+         While client authentication (<xref
          linkend="client-authentication"/>) allows fine-grained control
          over who can access the server, <varname>listen_addresses</varname>
          controls which interfaces accept connection attempts, which
@@ -1192,7 +1197,7 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies the name of the file containing the SSL server certificate
+        Specifies the name of the file containing the SSL client certificate
         revocation list (CRL).
         Relative paths are relative to the data directory.
         This parameter can only be set in the <filename>postgresql.conf</filename>
@@ -1321,11 +1326,11 @@ include_dir 'conf.d'
        </para>
 
        <para>
-        Older PostgreSQL versions do not have this setting and always use the
-        client's preferences.  This setting is mainly for backward
-        compatibility with those versions.  Using the server's preferences is
-        usually better because it is more likely that the server is appropriately
-        configured.
+        <productname>PostgreSQL</productname> versions before 9.4 do not have
+        this setting and always use the client's preferences.  This setting is
+        mainly for backward compatibility with those versions.  Using the
+        server's preferences is usually better because it is more likely that
+        the server is appropriately configured.
        </para>
       </listitem>
      </varlistentry>
@@ -1573,7 +1578,9 @@ include_dir 'conf.d'
        <para>
         At present, this setting is supported only on Linux and Windows. The
         setting is ignored on other systems when set to
-        <literal>try</literal>.
+        <literal>try</literal>.  On Linux, it is only supported when
+        <varname>shared_memory_type</varname> is set to <literal>mmap</literal>
+        (the default).
        </para>
 
        <para>
@@ -1690,9 +1697,10 @@ include_dir 'conf.d'
         (such as a sort or hash table) before writing to temporary disk files.
         If this value is specified without units, it is taken as kilobytes.
         The default value is four megabytes (<literal>4MB</literal>).
-        Note that for a complex query, several sort or hash operations might be
-        running in parallel; each operation will be allowed to use as much memory
-        as this value specifies before it starts to write data into temporary
+        Note that a complex query might perform several sort and hash
+        operations at the same time, with each operation generally being
+        allowed to use as much memory as this value specifies before it
+        starts to write data into temporary
         files. Also, several running sessions could be doing such operations
         concurrently.  Therefore, the total memory used could be many
         times the value of <varname>work_mem</varname>; it is necessary to
@@ -4055,7 +4063,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       <listitem>
        <para>
         Specifies the number of transactions by which <command>VACUUM</command> and
-        <acronym>HOT</acronym> updates will defer cleanup of dead row versions. The
+        <link linkend="storage-hot"><acronym>HOT</acronym> updates</link>
+        will defer cleanup of dead row versions. The
         default is zero transactions, meaning that dead row versions can be
         removed as soon as possible, that is, as soon as they are no longer
         visible to any open transaction.  You may wish to set this to a
@@ -4606,8 +4615,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Enables or disables the query planner's use of index-scan plan
-        types. The default is <literal>on</literal>.
+        Enables or disables the query planner's use of index-scan and
+        index-only-scan plan types.  The default is <literal>on</literal>.
+        Also see <xref linkend="guc-enable-indexonlyscan"/>.
        </para>
       </listitem>
      </varlistentry>
@@ -4622,7 +4632,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of index-only-scan plan
         types (see <xref linkend="indexes-index-only-scans"/>).
-        The default is <literal>on</literal>.
+        The default is <literal>on</literal>.  The
+        <xref linkend="guc-enable-indexscan"/> setting must also be
+        enabled to have the query planner consider index-only-scans.
        </para>
       </listitem>
      </varlistentry>
@@ -4735,9 +4747,13 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         joining the matching partitions.  Partitionwise join currently applies
         only when the join conditions include all the partition keys, which
         must be of the same data type and have exactly matching sets of child
-        partitions.  Because partitionwise join planning can use significantly
-        more CPU time and memory during planning, the default is
-        <literal>off</literal>.
+        partitions.  With this setting enabled, the number of nodes whose
+        memory usage is restricted by <varname>work_mem</varname> appearing in
+        the final plan can increase linearly according to the number of
+        partitions being scanned.  This can result in a large increase in
+        overall memory consumption during the execution of the query.  Query
+        planning also becomes significantly more expensive in terms of memory
+        and CPU.  The default value is <literal>off</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -4751,13 +4767,18 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       <listitem>
        <para>
         Enables or disables the query planner's use of partitionwise grouping
-        or aggregation, which allows grouping or aggregation on a partitioned
-        tables performed separately for each partition.  If the <literal>GROUP
-        BY</literal> clause does not include the partition keys, only partial
-        aggregation can be performed on a per-partition basis, and
-        finalization must be performed later.  Because partitionwise grouping
-        or aggregation can use significantly more CPU time and memory during
-        planning, the default is <literal>off</literal>.
+        or aggregation, which allows grouping or aggregation on partitioned
+        tables to be performed separately for each partition.  If the
+        <literal>GROUP BY</literal> clause does not include the partition
+        keys, only partial aggregation can be performed on a per-partition
+        basis, and finalization must be performed later.  With this setting
+        enabled, the number of nodes whose memory usage is restricted by
+        <varname>work_mem</varname> appearing in the final plan can increase
+        linearly according to the number of partitions being scanned.  This
+        can result in a large increase in overall memory consumption during
+        the execution of the query.  Query planning also becomes significantly
+        more expensive in terms of memory and CPU.  The default value is
+        <literal>off</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -6240,6 +6261,13 @@ local0.*    /var/log/postgresql
      <sect2 id="runtime-config-logging-what">
      <title>What to Log</title>
 
+     <note>
+      <para>
+       What you choose to log can have security implications;  see
+       <xref linkend="logfile-maintenance"/>.
+      </para>
+     </note>
+
      <variablelist>
 
      <varlistentry id="guc-application-name" xreflabel="application_name">
@@ -6682,6 +6710,10 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
          planning).  Set <varname>log_min_error_statement</varname> to
          <literal>ERROR</literal> (or lower) to log such statements.
         </para>
+        <para>
+         Logged statements might reveal sensitive data and even contain
+         plaintext passwords.
+        </para>
        </note>
       </listitem>
      </varlistentry>
@@ -6961,9 +6993,10 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         executing command of each session, along with the time when
         that command began execution. This parameter is on by
         default. Note that even when enabled, this information is not
-        visible to all users, only to superusers and the user owning
-        the session being reported on, so it should not represent a
-        security risk.
+        visible to all users, only to superusers, roles with privileges of the
+        <literal>pg_read_all_stats</literal> role and the user owning the
+        sessions being reported on (including sessions belonging to a role they
+        have the privileges of), so it should not represent a security risk.
         Only superusers can change this setting.
        </para>
       </listitem>
@@ -7575,8 +7608,8 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         This parameter specifies the default table access method to use when
         creating tables or materialized views if the <command>CREATE</command>
         command does not explicitly specify an access method, or when
-        <command>SELECT ... INTO</command> is used, which does not allow to
-        specify a table access method. The default is <literal>heap</literal>.
+        <command>SELECT ... INTO</command> is used, which does not allow
+        specifying a table access method. The default is <literal>heap</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -8209,6 +8242,23 @@ SET XML OPTION { DOCUMENT | CONTENT };
          for more information.
        </para>
       </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-restrict-nonsystem-relation-kind" xreflabel="restrict_nonsystem_relation_kind">
+      <term><varname>restrict_nonsystem_relation_kind</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>restrict_nonsystem_relation_kind</varname></primary>
+       <secondary>configuration parameter</secondary>
+     </indexterm>
+     </term>
+     <listitem>
+      <para>
+       Set relation kinds for which access to non-system relations is prohibited.
+       The value takes the form of a comma-separated list of relation kinds.
+       Currently, the supported relation kinds are <literal>view</literal> and
+       <literal>foreign-table</literal>.
+      </para>
+     </listitem>
      </varlistentry>
 
      </variablelist>
@@ -9607,6 +9657,25 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
     </para>
 
     <variablelist>
+     <varlistentry id="guc-allow-in-place-tablespaces" xreflabel="allow_in_place_tablespaces">
+      <term><varname>allow_in_place_tablespaces</varname> (<type>boolean</type>)
+      <indexterm>
+        <primary><varname>allow_in_place_tablespaces</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Allows tablespaces to be created as directories inside
+        <filename>pg_tblspc</filename>, when an empty location string
+        is provided to the <command>CREATE TABLESPACE</command> command.  This
+        is intended to allow testing replication scenarios where primary and
+        standby servers are running on the same machine.  Such directories
+        are likely to confuse backup tools that expect to find only symbolic
+        links in that location.  Only superusers can change this setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-allow-system-table-mods" xreflabel="allow_system_table_mods">
       <term><varname>allow_system_table_mods</varname> (<type>boolean</type>)
       <indexterm>
@@ -9738,7 +9807,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-locks" xreflabel="trace_locks">
       <term><varname>trace_locks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>trace_locks</varname> configuration parameter</primary>
@@ -9779,7 +9848,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-lwlocks" xreflabel="trace_lwlocks">
       <term><varname>trace_lwlocks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>trace_lwlocks</varname> configuration parameter</primary>
@@ -9799,7 +9868,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-userlocks" xreflabel="trace_userlocks">
       <term><varname>trace_userlocks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>trace_userlocks</varname> configuration parameter</primary>
@@ -9818,7 +9887,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-lock-oidmin" xreflabel="trace_lock_oidmin">
       <term><varname>trace_lock_oidmin</varname> (<type>integer</type>)
       <indexterm>
        <primary><varname>trace_lock_oidmin</varname> configuration parameter</primary>
@@ -9837,7 +9906,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-lock-table" xreflabel="trace_lock_table">
       <term><varname>trace_lock_table</varname> (<type>integer</type>)
       <indexterm>
        <primary><varname>trace_lock_table</varname> configuration parameter</primary>
@@ -9855,7 +9924,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-debug-deadlocks" xreflabel="debug_deadlocks">
       <term><varname>debug_deadlocks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>debug_deadlocks</varname> configuration parameter</primary>
@@ -9874,7 +9943,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-log-btree-build-stats" xreflabel="log_btree_build_stats">
       <term><varname>log_btree_build_stats</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>log_btree_build_stats</varname> configuration parameter</primary>

@@ -1761,10 +1761,14 @@ PQisBusy(PGconn *conn)
 	parseInput(conn);
 
 	/*
-	 * PQgetResult will return immediately in all states except BUSY, or if we
-	 * had a write failure.
+	 * PQgetResult will return immediately in all states except BUSY.  Also,
+	 * if we've detected read EOF and dropped the connection, we can expect
+	 * that PQgetResult will fail immediately.  Note that we do *not* check
+	 * conn->write_failed here --- once that's become set, we know we have
+	 * trouble, but we need to keep trying to read until we have a complete
+	 * server message or detect read EOF.
 	 */
-	return conn->asyncStatus == PGASYNC_BUSY || conn->write_failed;
+	return conn->asyncStatus == PGASYNC_BUSY && conn->status != CONNECTION_BAD;
 }
 
 
@@ -3264,6 +3268,8 @@ PQsetnonblocking(PGconn *conn, int arg)
 int
 PQisnonblocking(const PGconn *conn)
 {
+	if (!conn || conn->status == CONNECTION_BAD)
+		return false;
 	return pqIsnonblocking(conn);
 }
 
@@ -3283,6 +3289,8 @@ PQisthreadsafe(void)
 int
 PQflush(PGconn *conn)
 {
+	if (!conn || conn->status == CONNECTION_BAD)
+		return -1;
 	return pqFlush(conn);
 }
 

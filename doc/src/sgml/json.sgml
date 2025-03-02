@@ -13,7 +13,7 @@
 
  <para>
   JSON data types are for storing JSON (JavaScript Object Notation)
-  data, as specified in <ulink url="https://tools.ietf.org/html/rfc7159">RFC
+  data, as specified in <ulink url="https://datatracker.ietf.org/doc/html/rfc7159">RFC
   7159</ulink>. Such data can also be stored as <type>text</type>, but
   the JSON data types have the advantage of enforcing that each
   stored value is valid according to the JSON rules.  There are also
@@ -413,9 +413,10 @@ SELECT doc-&gt;'site_name' FROM websites
   </para>
   <para>
     The default GIN operator class for <type>jsonb</type> supports queries with
-    top-level key-exists operators <literal>?</literal>, <literal>?&amp;</literal>
-    and <literal>?|</literal> operators and path/value-exists operator
-    <literal>@&gt;</literal>.
+    the key-exists operators <literal>?</literal>, <literal>?|</literal>
+    and <literal>?&amp;</literal>, the containment operator
+    <literal>@&gt;</literal>, and the <type>jsonpath</type> match
+    operators <literal>@?</literal> and <literal>@@</literal>.
     (For details of the semantics that these operators
     implement, see <xref linkend="functions-jsonb-op-table"/>.)
     An example of creating an index with this operator class is:
@@ -423,7 +424,8 @@ SELECT doc-&gt;'site_name' FROM websites
 CREATE INDEX idxgin ON api USING GIN (jdoc);
 </programlisting>
     The non-default GIN operator class <literal>jsonb_path_ops</literal>
-    supports indexing the <literal>@&gt;</literal> operator only.
+    does not support the key-exists operators, but it does support
+    <literal>@&gt;</literal>, <literal>@?</literal> and <literal>@@</literal>.
     An example of creating an index with this operator class is:
 <programlisting>
 CREATE INDEX idxginp ON api USING GIN (jdoc jsonb_path_ops);
@@ -480,22 +482,7 @@ CREATE INDEX idxgintags ON api USING GIN ((jdoc -&gt; 'tags'));
     (More information on expression indexes can be found in <xref
     linkend="indexes-expressional"/>.)
   </para>
-  <para>
-    Also, GIN index supports <literal>@@</literal> and <literal>@?</literal>
-    operators, which perform <literal>jsonpath</literal> matching.
-<programlisting>
-SELECT jdoc->'guid', jdoc->'name' FROM api WHERE jdoc @@ '$.tags[*] == "qui"';
-</programlisting>
-<programlisting>
-SELECT jdoc->'guid', jdoc->'name' FROM api WHERE jdoc @? '$.tags[*] ? (@ == "qui")';
-</programlisting>
-    GIN index extracts statements of following form out of
-    <literal>jsonpath</literal>: <replaceable>accessors_chain</replaceable> = <replaceable>const</replaceable>.
-    Accessors chain may consist of <literal>.key</literal>,
-    <literal>[*]</literal>, and <literal>[<replaceable>index</replaceable>]</literal> accessors.
-    <literal>jsonb_ops</literal> additionally supports <literal>.*</literal>
-    and <literal>.**</literal> accessors.
-  </para>
+
   <para>
     Another approach to querying is to exploit containment, for example:
 <programlisting>
@@ -513,9 +500,32 @@ SELECT jdoc-&gt;'guid', jdoc-&gt;'name' FROM api WHERE jdoc @&gt; '{"tags": ["qu
   </para>
 
   <para>
+    GIN indexes also support the <literal>@?</literal>
+    and <literal>@@</literal> operators, which
+    perform <type>jsonpath</type> matching.  Examples are
+<programlisting>
+SELECT jdoc->'guid', jdoc->'name' FROM api WHERE jdoc @? '$.tags[*] ? (@ == "qui")';
+</programlisting>
+<programlisting>
+SELECT jdoc->'guid', jdoc->'name' FROM api WHERE jdoc @@ '$.tags[*] == "qui"';
+</programlisting>
+    For these operators, a GIN index extracts clauses of the form
+    <literal><replaceable>accessors_chain</replaceable>
+    = <replaceable>constant</replaceable></literal> out of
+    the <type>jsonpath</type> pattern, and does the index search based on
+    the keys and values mentioned in these clauses.  The accessors chain
+    may include <literal>.<replaceable>key</replaceable></literal>,
+    <literal>[*]</literal>,
+    and <literal>[<replaceable>index</replaceable>]</literal> accessors.
+    The <literal>jsonb_ops</literal> operator class also
+    supports <literal>.*</literal> and <literal>.**</literal> accessors,
+    but the <literal>jsonb_path_ops</literal> operator class does not.
+  </para>
+
+  <para>
     Although the <literal>jsonb_path_ops</literal> operator class supports
-    only queries with the <literal>@&gt;</literal>, <literal>@@</literal>
-    and <literal>@?</literal> operators, it has notable
+    only queries with the <literal>@&gt;</literal>, <literal>@?</literal>
+    and <literal>@@</literal> operators, it has notable
     performance advantages over the default operator
     class <literal>jsonb_ops</literal>.  A <literal>jsonb_path_ops</literal>
     index is usually much smaller than a <literal>jsonb_ops</literal>
@@ -676,21 +686,20 @@ SELECT jdoc-&gt;'guid', jdoc-&gt;'name' FROM api WHERE jdoc @&gt; '{"tags": ["qu
    In particular, the way to write a double quote within an embedded string
    literal is <literal>\"</literal>, and to write a backslash itself, you
    must write <literal>\\</literal>.  Other special backslash sequences
-   include those recognized in JSON strings:
+   include those recognized in JavaScript strings:
    <literal>\b</literal>,
    <literal>\f</literal>,
    <literal>\n</literal>,
    <literal>\r</literal>,
    <literal>\t</literal>,
    <literal>\v</literal>
-   for various ASCII control characters, and
-   <literal>\u<replaceable>NNNN</replaceable></literal> for a Unicode
-   character identified by its 4-hex-digit code point.  The backslash
-   syntax also includes two cases not allowed by JSON:
+   for various ASCII control characters,
    <literal>\x<replaceable>NN</replaceable></literal> for a character code
-   written with only two hex digits, and
-   <literal>\u{<replaceable>N...</replaceable>}</literal> for a character
-   code written with 1 to 6 hex digits.
+   written with only two hex digits,
+   <literal>\u<replaceable>NNNN</replaceable></literal> for a Unicode
+   character identified by its 4-hex-digit code point, and
+   <literal>\u{<replaceable>N...</replaceable>}</literal> for a Unicode
+   character code point written with 1 to 6 hex digits.
   </para>
 
   <para>

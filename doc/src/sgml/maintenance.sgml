@@ -291,6 +291,15 @@
    </para>
 
    <para>
+    Tuples changed in partitions and inheritance children do not trigger
+    analyze on the parent table.  If the parent table is empty or rarely
+    changed, it may never be processed by autovacuum, and the statistics for
+    the inheritance tree as a whole won't be collected. It is necessary to
+    run <command>ANALYZE</command> on the parent table manually in order to
+    keep the statistics up to date.
+   </para>
+
+   <para>
     As with vacuuming for space recovery, frequent updates of statistics
     are more useful for heavily-updated tables than for seldom-updated
     ones. But even for a heavily-updated table, there might be no need for
@@ -346,6 +355,19 @@
      <command>ANALYZE</command> commands on those tables on a suitable schedule.
     </para>
    </tip>
+
+   <tip>
+    <para>
+     The autovacuum daemon does not issue <command>ANALYZE</command> commands
+     for partitioned tables.  Inheritance parents will only be analyzed if the
+     parent itself is changed - changes to child tables do not trigger
+     autoanalyze on the parent table.  If your queries require statistics on
+     parent tables for proper planning, it is necessary to periodically run
+     a manual <command>ANALYZE</command> on those tables to keep the statistics
+     up to date.
+    </para>
+   </tip>
+
   </sect2>
 
   <sect2 id="vacuum-for-visibility-map">
@@ -799,6 +821,18 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
    </para>
 
    <para>
+    Partitioned tables do not directly store tuples and consequently
+    are not processed by autovacuum.  (Autovacuum does process table
+    partitions just like other tables.)  Unfortunately, this means that
+    autovacuum does  not run <command>ANALYZE</command> on partitioned
+    tables, and this can cause suboptimal plans for queries that reference
+    partitioned table statistics.  You can work around this problem by
+    manually running <command>ANALYZE</command> on partitioned tables
+    when they are first populated, and again whenever the distribution
+    of data in their partitions changes significantly.
+   </para>
+
+   <para>
     Temporary tables cannot be accessed by autovacuum.  Therefore,
     appropriate vacuum and analyze operations should be performed via
     session SQL commands.
@@ -910,7 +944,25 @@ analyze threshold = analyze base threshold + analyze scale factor * number of tu
    It is a good idea to save the database server's log output
    somewhere, rather than just discarding it via <filename>/dev/null</filename>.
    The log output is invaluable when diagnosing
-   problems.  However, the log output tends to be voluminous
+   problems.
+  </para>
+
+  <note>
+   <para>
+    The server log can contain sensitive information and needs to be protected,
+    no matter how or where it is stored, or the destination to which it is routed.
+    For example, some DDL statements might contain plaintext passwords or other
+    authentication details. Logged statements at the <literal>ERROR</literal>
+    level might show the SQL source code for applications
+    and might also contain some parts of data rows. Recording data, events and
+    related information is the intended function of this facility, so this is
+    not a leakage or a bug. Please ensure the server logs are visible only to
+    appropriately authorized people.
+   </para>
+  </note>
+
+  <para>
+   Log output tends to be voluminous
    (especially at higher debug levels) so you won't want to save it
    indefinitely.  You need to <emphasis>rotate</emphasis> the log files so that
    new log files are started and old ones removed after a reasonable

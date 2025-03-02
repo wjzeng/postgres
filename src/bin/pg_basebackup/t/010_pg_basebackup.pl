@@ -36,7 +36,7 @@ if (open my $badchars, '>>', "$tempdir/pgdata/FOO\xe0\xe0\xe0BAR")
 }
 
 $node->set_replication_conf();
-system_or_bail 'pg_ctl', '-D', $pgdata, 'reload';
+$node->reload;
 
 $node->command_fails(
 	[ 'pg_basebackup', '-D', "$tempdir/backup" ],
@@ -196,23 +196,30 @@ $node->command_fails(
 	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-Tfoo" ],
 	'-T with invalid format fails');
 
-# Tar format doesn't support filenames longer than 100 bytes.
 my $superlongname = "superlongname_" . ("x" x 100);
-my $superlongpath = "$pgdata/$superlongname";
+# Tar format doesn't support filenames longer than 100 bytes.
+SKIP:
+{
+	my $superlongpath = "$pgdata/$superlongname";
 
-open my $file, '>', "$superlongpath"
-  or die "unable to create file $superlongpath";
-close $file;
-$node->command_fails(
-	[ 'pg_basebackup', '-D', "$tempdir/tarbackup_l1", '-Ft' ],
-	'pg_basebackup tar with long name fails');
-unlink "$pgdata/$superlongname";
+	skip "File path too long", 1
+	  if $windows_os && length($superlongpath) > 255;
+
+	open my $file, '>', "$superlongpath"
+	  or die "unable to create file $superlongpath";
+	close $file;
+	$node->command_fails(
+		[ 'pg_basebackup', '-D', "$tempdir/tarbackup_l1", '-Ft' ],
+		'pg_basebackup tar with long name fails');
+	unlink "$superlongpath";
+}
 
 # The following tests test symlinks. Windows doesn't have symlinks, so
 # skip on Windows.
 SKIP:
 {
-	skip "symlinks not supported on Windows", 18 if ($windows_os);
+	skip "symlinks not supported on Windows", 18
+	  if ($windows_os);
 
 	# Move pg_replslot out of $pgdata and create a symlink to it.
 	$node->stop;
@@ -298,9 +305,15 @@ SKIP:
 		"tablespace symlink was updated");
 	closedir $dh;
 
-	# Group access should be enabled on all backup files
-	ok(check_mode_recursive("$tempdir/backup1", 0750, 0640),
-		"check backup dir permissions");
+	SKIP:
+	{
+		skip "unix-style permissions not supported on Windows", 1
+		  if ($Config::Config{osname} eq 'cygwin');
+
+		# Group access should be enabled on all backup files
+		ok(check_mode_recursive("$tempdir/backup1", 0750, 0640),
+		   "check backup dir permissions");
+	}
 
 	# Unlogged relation forks other than init should not be copied
 	my ($tblspc1UnloggedBackupPath) =
@@ -491,17 +504,13 @@ my $file_corrupt2 = $node->safe_psql('postgres',
 	q{SELECT b INTO corrupt2 FROM generate_series(1,2) AS b; ALTER TABLE corrupt2 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt2')}
 );
 
-# set page header and block sizes
-my $pageheader_size = 24;
+# get block size for corruption steps
 my $block_size = $node->safe_psql('postgres', 'SHOW block_size;');
 
 # induce corruption
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
-open $file, '+<', "$pgdata/$file_corrupt1";
-seek($file, $pageheader_size, 0);
-syswrite($file, "\0\0\0\0\0\0\0\0\0");
-close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->stop;
+$node->corrupt_page_checksum($file_corrupt1, 0);
+$node->start;
 
 $node->command_checks_all(
 	[ 'pg_basebackup', '-D', "$tempdir/backup_corrupt" ],
@@ -512,16 +521,12 @@ $node->command_checks_all(
 rmtree("$tempdir/backup_corrupt");
 
 # induce further corruption in 5 more blocks
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
-open $file, '+<', "$pgdata/$file_corrupt1";
+$node->stop;
 for my $i (1 .. 5)
 {
-	my $offset = $pageheader_size + $i * $block_size;
-	seek($file, $offset, 0);
-	syswrite($file, "\0\0\0\0\0\0\0\0\0");
+	$node->corrupt_page_checksum($file_corrupt1, $i * $block_size);
 }
-close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->start;
 
 $node->command_checks_all(
 	[ 'pg_basebackup', '-D', "$tempdir/backup_corrupt2" ],
@@ -532,12 +537,9 @@ $node->command_checks_all(
 rmtree("$tempdir/backup_corrupt2");
 
 # induce corruption in a second file
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
-open $file, '+<', "$pgdata/$file_corrupt2";
-seek($file, $pageheader_size, 0);
-syswrite($file, "\0\0\0\0\0\0\0\0\0");
-close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->stop;
+$node->corrupt_page_checksum($file_corrupt2, 0);
+$node->start;
 
 $node->command_checks_all(
 	[ 'pg_basebackup', '-D', "$tempdir/backup_corrupt3" ],

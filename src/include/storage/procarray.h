@@ -74,6 +74,7 @@ extern void ExpireTreeKnownAssignedTransactionIds(TransactionId xid,
 												  TransactionId max_xid);
 extern void ExpireAllKnownAssignedTransactionIds(void);
 extern void ExpireOldKnownAssignedTransactionIds(TransactionId xid);
+extern void KnownAssignedTransactionIdsIdleMaintenance(void);
 
 extern int	GetMaxSnapshotXidCount(void);
 extern int	GetMaxSnapshotSubxidCount(void);
@@ -93,7 +94,11 @@ extern TransactionId GetOldestActiveTransactionId(void);
 extern TransactionId GetOldestSafeDecodingTransactionId(bool catalogOnly);
 
 extern VirtualTransactionId *GetVirtualXIDsDelayingChkpt(int *nvxids);
-extern bool HaveVirtualXIDsDelayingChkpt(VirtualTransactionId *vxids, int nvxids);
+extern VirtualTransactionId *GetVirtualXIDsDelayingChkptEnd(int *nvxids);
+extern bool HaveVirtualXIDsDelayingChkpt(VirtualTransactionId *vxids,
+										 int nvxids);
+extern bool HaveVirtualXIDsDelayingChkptEnd(VirtualTransactionId *vxids,
+											int nvxids);
 
 extern PGPROC *BackendPidGetProc(int pid);
 extern PGPROC *BackendPidGetProcWithLock(int pid);

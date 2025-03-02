@@ -40,7 +40,7 @@ PostgreSQL documentation
  <para>
   <application>pg_upgrade</application> (formerly called <application>pg_migrator</application>) allows data
   stored in <productname>PostgreSQL</productname> data files to be upgraded to a later <productname>PostgreSQL</productname>
-  major version without the data dump/reload typically required for
+  major version without the data dump/restore typically required for
   major version upgrades, e.g., from 9.5.8 to 9.6.4 or from 10.7 to 11.2.
   It is not required for minor version upgrades, e.g., from 9.6.2 to 9.6.3
   or from 10.1 to 10.2.
@@ -68,7 +68,7 @@ PostgreSQL documentation
  </para>
 
   <para>
-   pg_upgrade supports upgrades from 8.4.X and later to the current
+   pg_upgrade supports upgrades from 9.0.X and later to the current
    major release of <productname>PostgreSQL</productname>, including snapshot and beta releases.
   </para>
  </refsect1>
@@ -354,8 +354,8 @@ NET STOP postgresql-&majorversion;
     </para>
 
     <para>
-     Streaming replication and log-shipping standby servers can
-     remain running until a later step.
+     Streaming replication and log-shipping standby servers must be
+     running during this shutdown so they receive all changes.
     </para>
    </step>
 
@@ -368,8 +368,6 @@ NET STOP postgresql-&majorversion;
      servers are caught up by running <application>pg_controldata</application>
      against the old primary and standby clusters.  Verify that the
      <quote>Latest checkpoint location</quote> values match in all clusters.
-     (There will be a mismatch if old standby servers were shut down
-     before the old primary or if the old standby servers are still running.)
      Also, make sure <varname>wal_level</varname> is not set to 
      <literal>minimal</literal> in the <filename>postgresql.conf</filename> file on the
      new primary cluster.
@@ -404,7 +402,7 @@ NET STOP postgresql-&majorversion;
 
     <para>
      The <option>--jobs</option> option allows multiple CPU cores to be used
-     for copying/linking of files and to dump and reload database schemas
+     for copying/linking of files and to dump and restore database schemas
      in parallel;  a good place to start is the maximum of the number of
      CPU cores and tablespaces.  This option can dramatically reduce the
      time to upgrade a multi-database server running on a multiprocessor
@@ -603,7 +601,8 @@ rsync --archive --delete --hard-links --size-only --no-inc-recursive /vol1/pg_tb
        Configure the servers for log shipping.  (You do not need to run
        <function>pg_start_backup()</function> and <function>pg_stop_backup()</function>
        or take a file system backup as the standbys are still synchronized
-       with the primary.)
+       with the primary.)  Replication slots are not copied and must
+       be recreated.
       </para>
      </step>
 

@@ -45,6 +45,7 @@
 #include "replication/logical.h"
 #include "replication/logicallauncher.h"
 #include "replication/origin.h"
+#include "replication/snapbuild.h"
 #include "replication/syncrep.h"
 #include "replication/walsender.h"
 #include "storage/condition_variable.h"
@@ -1305,6 +1306,7 @@ RecordTransactionCommit(void)
 		 * This makes checkpoint's determination of which xacts are delayChkpt
 		 * a bit fuzzy, but it doesn't matter.
 		 */
+		Assert(!MyPgXact->delayChkpt);
 		START_CRIT_SECTION();
 		MyPgXact->delayChkpt = true;
 
@@ -2462,6 +2464,13 @@ PrepareTransaction(void)
 	XactLastRecEnd = 0;
 
 	/*
+	 * Transfer our locks to a dummy PGPROC.  This has to be done before
+	 * ProcArrayClearTransaction().  Otherwise, a GetLockConflicts() would
+	 * conclude "xact already committed or aborted" for our locks.
+	 */
+	PostPrepare_Locks(xid);
+
+	/*
 	 * Let others know about no transaction in progress by me.  This has to be
 	 * done *after* the prepared transaction has been marked valid, else
 	 * someone may think it is unlocked and recyclable.
@@ -2500,7 +2509,6 @@ PrepareTransaction(void)
 
 	PostPrepare_MultiXact(xid);
 
-	PostPrepare_Locks(xid);
 	PostPrepare_PredicateLocks(xid);
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -2650,6 +2658,9 @@ AbortTransaction(void)
 
 	/* Forget about any active REINDEX. */
 	ResetReindexState(s->nestingLevel);
+
+	/* Reset snapshot export state. */
+	SnapBuildResetExportedSnapshotState();
 
 	/* If in parallel mode, clean up workers and exit parallel mode. */
 	if (IsInParallelMode())
@@ -2902,8 +2913,8 @@ CommitTransactionCommand(void)
 {
 	TransactionState s = CurrentTransactionState;
 
-	if (s->chain)
-		SaveTransactionCharacteristics();
+	/* Must save in case we need to restore below */
+	SaveTransactionCharacteristics();
 
 	switch (s->blockState)
 	{
@@ -3327,10 +3338,17 @@ AbortCurrentTransaction(void)
  *	a transaction block, typically because they have non-rollback-able
  *	side effects or do internal commits.
  *
+ *	If this routine completes successfully, then the calling statement is
+ *	guaranteed that if it completes without error, its results will be
+ *	committed immediately.
+ *
  *	If we have already started a transaction block, issue an error; also issue
  *	an error if we appear to be running inside a user-defined function (which
  *	could issue more commands and possibly cause a failure after the statement
  *	completes).  Subtransactions are verboten too.
+ *
+ *	We must also set XACT_FLAGS_NEEDIMMEDIATECOMMIT in MyXactFlags, to ensure
+ *	that postgres.c follows through by committing after the statement is done.
  *
  *	isTopLevel: passed down from ProcessUtility to determine whether we are
  *	inside a function.  (We will always fail if this is false, but it's
@@ -3361,6 +3379,16 @@ PreventInTransactionBlock(bool isTopLevel, const char *stmtType)
 						stmtType)));
 
 	/*
+	 * inside a pipeline that has started an implicit transaction?
+	 */
+	if (MyXactFlags & XACT_FLAGS_PIPELINING)
+		ereport(ERROR,
+				(errcode(ERRCODE_ACTIVE_SQL_TRANSACTION),
+		/* translator: %s represents an SQL statement name */
+				 errmsg("%s cannot be executed within a pipeline",
+						stmtType)));
+
+	/*
 	 * inside a function call?
 	 */
 	if (!isTopLevel)
@@ -3373,7 +3401,9 @@ PreventInTransactionBlock(bool isTopLevel, const char *stmtType)
 	if (CurrentTransactionState->blockState != TBLOCK_DEFAULT &&
 		CurrentTransactionState->blockState != TBLOCK_STARTED)
 		elog(FATAL, "cannot prevent transaction chain");
-	/* all okay */
+
+	/* All okay.  Set the flag to make sure the right thing happens later. */
+	MyXactFlags |= XACT_FLAGS_NEEDIMMEDIATECOMMIT;
 }
 
 /*
@@ -3448,6 +3478,12 @@ CheckTransactionBlock(bool isTopLevel, bool throwError, const char *stmtType)
  *	a transaction block than when running as single commands.  ANALYZE is
  *	currently the only example.
  *
+ *	If this routine returns "false", then the calling statement is allowed
+ *	to perform internal transaction-commit-and-start cycles; there is not a
+ *	risk of messing up any transaction already in progress.  (Note that this
+ *	is not the identical guarantee provided by PreventInTransactionBlock,
+ *	since we will not force a post-statement commit.)
+ *
  *	isTopLevel: passed down from ProcessUtility to determine whether we are
  *	inside a function.
  */
@@ -3462,6 +3498,9 @@ IsInTransactionBlock(bool isTopLevel)
 		return true;
 
 	if (IsSubTransaction())
+		return true;
+
+	if (MyXactFlags & XACT_FLAGS_PIPELINING)
 		return true;
 
 	if (!isTopLevel)
@@ -4817,6 +4856,7 @@ CommitSubTransaction(void)
 	AfterTriggerEndSubXact(true);
 	AtSubCommit_Portals(s->subTransactionId,
 						s->parent->subTransactionId,
+						s->parent->nestingLevel,
 						s->parent->curTransactionOwner);
 	AtEOSubXact_LargeObject(true, s->subTransactionId,
 							s->parent->subTransactionId);
@@ -4960,6 +5000,11 @@ AbortSubTransaction(void)
 
 	/* Forget about any active REINDEX. */
 	ResetReindexState(s->nestingLevel);
+
+	/*
+	 * No need for SnapBuildResetExportedSnapshotState() here, snapshot
+	 * exports are not supported in subtransactions.
+	 */
 
 	/* Exit from parallel mode, if necessary. */
 	if (IsInParallelMode())
@@ -5110,6 +5155,7 @@ PushTransaction(void)
 	s->blockState = TBLOCK_SUBBEGIN;
 	GetUserIdAndSecContext(&s->prevUser, &s->prevSecContext);
 	s->prevXactReadOnly = XactReadOnly;
+	s->startedInRecovery = p->startedInRecovery;
 	s->parallelModeLevel = 0;
 
 	CurrentTransactionState = s;
@@ -5241,8 +5287,9 @@ SerializeTransactionState(Size maxsize, char *start_address)
 	{
 		if (FullTransactionIdIsValid(s->fullTransactionId))
 			workspace[i++] = XidFromFullTransactionId(s->fullTransactionId);
-		memcpy(&workspace[i], s->childXids,
-			   s->nChildXids * sizeof(TransactionId));
+		if (s->nChildXids > 0)
+			memcpy(&workspace[i], s->childXids,
+				   s->nChildXids * sizeof(TransactionId));
 		i += s->nChildXids;
 	}
 	Assert(i == nxids);

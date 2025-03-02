@@ -330,9 +330,26 @@ SELECT make_timestamptz(1910, 12, 24, 0, 0, 0, 'Nehwon/Lankhmar');
 -- abbreviations
 SELECT make_timestamptz(2008, 12, 10, 10, 10, 10, 'EST');
 SELECT make_timestamptz(2008, 12, 10, 10, 10, 10, 'EDT');
-SELECT make_timestamptz(2014, 12, 10, 10, 10, 10, 'PST8PDT');
+SELECT make_timestamptz(2014, 12, 10, 10, 10, 10, 'FOO8BAR');
+
+-- POSIX
+SELECT make_timestamptz(2014, 12, 10, 10, 10, 10, 'PST8PDT,M3.2.0,M11.1.0');
 
 RESET TimeZone;
+
+-- generate_series for timestamptz
+select * from generate_series('2020-01-01 00:00'::timestamptz,
+                              '2020-01-02 03:00'::timestamptz,
+                              '1 hour'::interval);
+-- the LIMIT should allow this to terminate in a reasonable amount of time
+-- (but that unfortunately doesn't work yet for SELECT * FROM ...)
+select generate_series('2022-01-01 00:00'::timestamptz,
+                       'infinity'::timestamptz,
+                       '1 month'::interval) limit 10;
+-- errors
+select * from generate_series('2020-01-01 00:00'::timestamptz,
+                              '2020-01-02 03:00'::timestamptz,
+                              '0 hour'::interval);
 
 --
 -- Test behavior with a dynamic (time-varying) timezone abbreviation.

@@ -290,6 +290,34 @@
 #endif
 #endif
 
+/*
+ * Does the compiler support #pragma GCC system_header? We optionally use it
+ * to avoid warnings that we can't fix (e.g. in the perl headers).
+ * See https://gcc.gnu.org/onlinedocs/cpp/System-Headers.html
+ *
+ * Headers for which we do not want to show compiler warnings can,
+ * conditionally, use #pragma GCC system_header to avoid warnings. Obviously
+ * this should only be used for external headers over which we do not have
+ * control.
+ *
+ * Support for the pragma is tested here, instead of during configure, as gcc
+ * also warns about the pragma being used in a .c file. It's surprisingly hard
+ * to get autoconf to use .h as the file-ending. Looks like gcc has
+ * implemented the pragma since the 2000, so this test should suffice.
+ *
+ *
+ * Alternatively, we could add the include paths for problematic headers with
+ * -isystem, but that is a larger hammer and is harder to search for.
+ *
+ * A more granular alternative would be to use #pragma GCC diagnostic
+ * push/ignored/pop, but gcc warns about unknown warnings being ignored, so
+ * every to-be-ignored-temporarily compiler warning would require its own
+ * pg_config.h symbol and #ifdef.
+ */
+#ifdef __GNUC__
+#define HAVE_PRAGMA_GCC_SYSTEM_HEADER	1
+#endif
+
 
 /* ----------------------------------------------------------------
  *				Section 2:	bool, true, false
@@ -300,7 +328,7 @@
  * bool
  *		Boolean value, either true or false.
  *
- * Use stdbool.h if available and its bool has size 1.  That's useful for
+ * We use stdbool.h if bool has size 1 after including it.  That's useful for
  * better compiler and debugger output and for compatibility with third-party
  * libraries.  But PostgreSQL currently cannot deal with bool of other sizes;
  * there are static assertions around the code to prevent that.
@@ -311,7 +339,7 @@
 
 #ifndef __cplusplus
 
-#if defined(HAVE_STDBOOL_H) && SIZEOF_BOOL == 1
+#if SIZEOF_BOOL == 1
 #include <stdbool.h>
 #define USE_STDBOOL 1
 #else

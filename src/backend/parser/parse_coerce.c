@@ -752,24 +752,40 @@ coerce_type_typmod(Node *node, Oid targetTypeId, int32 targetTypMod,
 	CoercionPathType pathtype;
 	Oid			funcId;
 
-	/*
-	 * A negative typmod is assumed to mean that no coercion is wanted. Also,
-	 * skip coercion if already done.
-	 */
-	if (targetTypMod < 0 || targetTypMod == exprTypmod(node))
+	/* Skip coercion if already done */
+	if (targetTypMod == exprTypmod(node))
 		return node;
 
-	pathtype = find_typmod_coercion_function(targetTypeId, &funcId);
+	/* Suppress display of nested coercion steps */
+	if (hideInputCoercion)
+		hide_coercion_node(node);
+
+	/*
+	 * A negative typmod means that no actual coercion is needed, but we still
+	 * want a RelabelType to ensure that the expression exposes the intended
+	 * typmod.
+	 */
+	if (targetTypMod < 0)
+		pathtype = COERCION_PATH_NONE;
+	else
+		pathtype = find_typmod_coercion_function(targetTypeId, &funcId);
 
 	if (pathtype != COERCION_PATH_NONE)
 	{
-		/* Suppress display of nested coercion steps */
-		if (hideInputCoercion)
-			hide_coercion_node(node);
-
 		node = build_coercion_expression(node, pathtype, funcId,
 										 targetTypeId, targetTypMod,
 										 ccontext, cformat, location);
+	}
+	else
+	{
+		/*
+		 * We don't need to perform any actual coercion step, but we should
+		 * apply a RelabelType to ensure that the expression exposes the
+		 * intended typmod.
+		 */
+		node = applyRelabelType(node, targetTypeId, targetTypMod,
+								exprCollation(node),
+								cformat, location, false);
 	}
 
 	return node;

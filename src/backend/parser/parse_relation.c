@@ -1559,8 +1559,16 @@ addRangeTableEntryForFunction(ParseState *pstate,
 
 			/*
 			 * Use the column definition list to construct a tupdesc and fill
-			 * in the RangeTblFunction's lists.
+			 * in the RangeTblFunction's lists.  Limit number of columns to
+			 * MaxHeapAttributeNumber, because CheckAttributeNamesTypes will.
 			 */
+			if (list_length(coldeflist) > MaxHeapAttributeNumber)
+				ereport(ERROR,
+						(errcode(ERRCODE_TOO_MANY_COLUMNS),
+						 errmsg("column definition lists can have at most %d entries",
+								MaxHeapAttributeNumber),
+						 parser_errposition(pstate,
+											exprLocation((Node *) coldeflist))));
 			tupdesc = CreateTemplateTupleDesc(list_length(coldeflist));
 			i = 1;
 			foreach(col, coldeflist)
@@ -1640,6 +1648,15 @@ addRangeTableEntryForFunction(ParseState *pstate,
 		if (rangefunc->ordinality)
 			totalatts++;
 
+		/* Disallow more columns than will fit in a tuple */
+		if (totalatts > MaxTupleAttributeNumber)
+			ereport(ERROR,
+					(errcode(ERRCODE_TOO_MANY_COLUMNS),
+					 errmsg("functions in FROM can return at most %d columns",
+							MaxTupleAttributeNumber),
+					 parser_errposition(pstate,
+										exprLocation((Node *) funcexprs))));
+
 		/* Merge the tuple descs of each function into a composite one */
 		tupdesc = CreateTemplateTupleDesc(totalatts);
 		natts = 0;
@@ -1714,6 +1731,18 @@ addRangeTableEntryForTableFunc(ParseState *pstate,
 
 	Assert(pstate != NULL);
 
+	/* Disallow more columns than will fit in a tuple */
+	if (list_length(tf->colnames) > MaxTupleAttributeNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_TOO_MANY_COLUMNS),
+				 errmsg("functions in FROM can return at most %d columns",
+						MaxTupleAttributeNumber),
+				 parser_errposition(pstate,
+									exprLocation((Node *) tf))));
+	Assert(list_length(tf->coltypes) == list_length(tf->colnames));
+	Assert(list_length(tf->coltypmods) == list_length(tf->colnames));
+	Assert(list_length(tf->colcollations) == list_length(tf->colnames));
+
 	rte->rtekind = RTE_TABLEFUNC;
 	rte->relid = InvalidOid;
 	rte->subquery = NULL;
@@ -1730,6 +1759,12 @@ addRangeTableEntryForTableFunc(ParseState *pstate,
 	if (numaliases < list_length(tf->colnames))
 		eref->colnames = list_concat(eref->colnames,
 									 list_copy_tail(tf->colnames, numaliases));
+
+	if (numaliases > list_length(tf->colnames))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+				 errmsg("%s function has %d columns available but %d columns specified",
+						"XMLTABLE", list_length(tf->colnames), numaliases)));
 
 	rte->eref = eref;
 
@@ -1881,6 +1916,12 @@ addRangeTableEntryForJoin(ParseState *pstate,
 	if (numaliases < list_length(colnames))
 		eref->colnames = list_concat(eref->colnames,
 									 list_copy_tail(colnames, numaliases));
+
+	if (numaliases > list_length(colnames))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+				 errmsg("join expression \"%s\" has %d columns available but %d columns specified",
+						eref->aliasname, list_length(colnames), numaliases)));
 
 	rte->eref = eref;
 
@@ -2256,12 +2297,17 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 					Assert(varattno == te->resno);
 
 					/*
-					 * In scenarios where columns have been added to a view
-					 * since the outer query was originally parsed, there can
-					 * be more items in the subquery tlist than the outer
-					 * query expects.  We should ignore such extra column(s)
-					 * --- compare the behavior for composite-returning
-					 * functions, in the RTE_FUNCTION case below.
+					 * In a just-parsed subquery RTE, rte->eref->colnames
+					 * should always have exactly as many entries as the
+					 * subquery has non-junk output columns.  However, if the
+					 * subquery RTE was created by expansion of a view,
+					 * perhaps the subquery tlist could now have more entries
+					 * than existed when the outer query was parsed.  Such
+					 * cases should now be prevented because ApplyRetrieveRule
+					 * will extend the colnames list to match.  But out of
+					 * caution, we'll keep the code like this in the back
+					 * branches: just ignore any columns that lack colnames
+					 * entries.
 					 */
 					if (!aliasp_item)
 						break;
@@ -2301,12 +2347,17 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 				{
 					RangeTblFunction *rtfunc = (RangeTblFunction *) lfirst(lc);
 					TypeFuncClass functypclass;
-					Oid			funcrettype;
-					TupleDesc	tupdesc;
+					Oid			funcrettype = InvalidOid;
+					TupleDesc	tupdesc = NULL;
 
-					functypclass = get_expr_result_type(rtfunc->funcexpr,
-														&funcrettype,
-														&tupdesc);
+					/* If it has a coldeflist, it returns RECORD */
+					if (rtfunc->funccolnames != NIL)
+						functypclass = TYPEFUNC_RECORD;
+					else
+						functypclass = get_expr_result_type(rtfunc->funcexpr,
+															&funcrettype,
+															&tupdesc);
+
 					if (functypclass == TYPEFUNC_COMPOSITE ||
 						functypclass == TYPEFUNC_COMPOSITE_DOMAIN)
 					{
@@ -2719,6 +2770,9 @@ expandRelAttrs(ParseState *pstate, RangeTblEntry *rte,
  *
  * "*" is returned if the given attnum is InvalidAttrNumber --- this case
  * occurs when a Var represents a whole tuple of a relation.
+ *
+ * It is caller's responsibility to not call this on a dropped attribute.
+ * (You will get some answer for such cases, but it might not be sensible.)
  */
 char *
 get_rte_attribute_name(RangeTblEntry *rte, AttrNumber attnum)
@@ -3042,6 +3096,10 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 						attnum <= atts_done + rtfunc->funccolcount)
 					{
 						TupleDesc	tupdesc;
+
+						/* If it has a coldeflist, it returns RECORD */
+						if (rtfunc->funccolnames != NIL)
+							return false;	/* can't have any dropped columns */
 
 						tupdesc = get_expr_result_tupdesc(rtfunc->funcexpr,
 														  true);

@@ -75,9 +75,6 @@
 /* Define to 1 if you have the `ASN1_STRING_get0_data' function. */
 /* #undef HAVE_ASN1_STRING_GET0_DATA */
 
-/* Define to 1 if you have the `BIO_get_data' function. */
-/* #undef HAVE_BIO_GET_DATA */
-
 /* Define to 1 if you have the `BIO_meth_new' function. */
 /* #undef HAVE_BIO_METH_NEW */
 
@@ -392,13 +389,11 @@
 /* Define to 1 if you have the `SSL_clear_options' function. */
 #define HAVE_SSL_CLEAR_OPTIONS 1
 
+/* Define to 1 if you have the `SSL_CTX_set_num_tickets' function. */
+/* #undef HAVE_SSL_CTX_SET_NUM_TICKETS */
+
 /* Define to 1 if you have the `SSL_get_current_compression' function. */
 #define HAVE_SSL_GET_CURRENT_COMPRESSION 1
-
-/* Define to 1 if stdbool.h conforms to C99. */
-#if (_MSC_VER >= 1800)
-#define HAVE_STDBOOL_H 1
-#endif
 
 /* Define to 1 if you have the <stdint.h> header file. */
 /* #undef HAVE_STDINT_H */
@@ -581,9 +576,6 @@
 /* Define to 1 if the assembler supports X86_64's POPCNTQ instruction. */
 /* #undef HAVE_X86_64_POPCNTQ */
 
-/* Define to 1 if the system has the type `_Bool'. */
-/* #undef HAVE__BOOL */
-
 /* Define to 1 if your compiler understands __builtin_bswap16. */
 /* #undef HAVE__BUILTIN_BSWAP16 */
 
@@ -641,6 +633,10 @@
 /* Define bytes to use libc memset(). */
 #define MEMSET_LOOP_LIMIT 1024
 
+/* Define to the OpenSSL API version in use. This avoids deprecation warnings
+   from newer OpenSSL versions. */
+#define OPENSSL_API_COMPAT 0x00908000L
+
 /* Define to the address where bug reports for this package should be sent. */
 #define PACKAGE_BUGREPORT "pgsql-bugs@lists.postgresql.org"
 
@@ -648,10 +644,10 @@
 #define PACKAGE_NAME "PostgreSQL"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "PostgreSQL 12.8"
+#define PACKAGE_STRING "PostgreSQL 12.22"
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "12.8"
+#define PACKAGE_VERSION "12.22"
 
 /* Define to the name of a signed 128-bit integer type. */
 #undef PG_INT128_TYPE
@@ -660,10 +656,10 @@
 #define PG_INT64_TYPE long long int
 
 /* PostgreSQL version as a string */
-#define PG_VERSION "12.8"
+#define PG_VERSION "12.22"
 
 /* PostgreSQL version as a number */
-#define PG_VERSION_NUM 120008
+#define PG_VERSION_NUM 120022
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "postgresql"

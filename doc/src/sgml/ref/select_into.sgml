@@ -23,7 +23,7 @@ PostgreSQL documentation
 <synopsis>
 [ WITH [ RECURSIVE ] <replaceable class="parameter">with_query</replaceable> [, ...] ]
 SELECT [ ALL | DISTINCT [ ON ( <replaceable class="parameter">expression</replaceable> [, ...] ) ] ]
-    * | <replaceable class="parameter">expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] [, ...]
+    [ { * | <replaceable class="parameter">expression</replaceable> [ [ AS ] <replaceable class="parameter">output_name</replaceable> ] } [, ...] ]
     INTO [ TEMPORARY | TEMP | UNLOGGED ] [ TABLE ] <replaceable class="parameter">new_table</replaceable>
     [ FROM <replaceable class="parameter">from_item</replaceable> [, ...] ]
     [ WHERE <replaceable class="parameter">condition</replaceable> ]
@@ -107,7 +107,7 @@ SELECT [ ALL | DISTINCT [ ON ( <replaceable class="parameter">expression</replac
 
   <para>
    In contrast to <command>CREATE TABLE AS</command>, <command>SELECT
-   INTO</command> does not allow to specify properties like a table's access
+   INTO</command> does not allow specifying properties like a table's access
    method with <xref linkend="sql-createtable-method" /> or the table's
    tablespace with <xref linkend="sql-createtable-tablespace" />. Use <xref
    linkend="sql-createtableas"/> if necessary.  Therefore, the default table

@@ -33,10 +33,12 @@ our @EXPORT = qw(
   check_mode_recursive
   chmod_recursive
   check_pg_config
+  scan_server_header
   system_or_bail
   system_log
   run_log
   run_command
+  pump_until
 
   command_ok
   command_fails
@@ -52,7 +54,7 @@ our @EXPORT = qw(
   $windows_os
 );
 
-our ($windows_os, $tmp_check, $log_path, $test_logfile);
+our ($windows_os, $timeout_default, $tmp_check, $log_path, $test_logfile);
 
 BEGIN
 {
@@ -99,8 +101,12 @@ BEGIN
 	if ($windows_os)
 	{
 		require Win32API::File;
-		Win32API::File->import(qw(createFile OsFHandleOpen CloseHandle setFilePointer));
+		Win32API::File->import(qw(createFile OsFHandleOpen CloseHandle));
 	}
+
+	$timeout_default = $ENV{PG_TEST_TIMEOUT_DEFAULT};
+	$timeout_default = 180
+	  if not defined $timeout_default or $timeout_default eq '';
 }
 
 INIT
@@ -182,7 +188,7 @@ sub tempdir
 	return File::Temp::tempdir(
 		$prefix . '_XXXX',
 		DIR     => $tmp_check,
-		CLEANUP => 1);
+		CLEANUP => not defined $ENV{'PG_TEST_NOCLEAN'});
 }
 
 sub tempdir_short
@@ -190,34 +196,31 @@ sub tempdir_short
 
 	# Use a separate temp dir outside the build tree for the
 	# Unix-domain socket, to avoid file name length issues.
-	return File::Temp::tempdir(CLEANUP => 1);
+	return File::Temp::tempdir(
+		CLEANUP => not defined $ENV{'PG_TEST_NOCLEAN'});
 }
 
-# Translate a Perl file name to a host file name.  Currently, this is a no-op
-# except for the case of Perl=msys and host=mingw32.  The subject need not
-# exist, but its parent directory must exist.
-sub perl2host
-{
-	my ($subject) = @_;
-	return $subject unless $Config{osname} eq 'msys';
-	my $here = cwd;
-	my $leaf;
-	if (chdir $subject)
-	{
-		$leaf = '';
-	}
-	else
-	{
-		$leaf = '/' . basename $subject;
-		my $parent = dirname $subject;
-		chdir $parent or die "could not chdir \"$parent\": $!";
-	}
+=pod
 
-	# this odd way of calling 'pwd -W' is the only way that seems to work.
-	my $dir = qx{sh -c "pwd -W"};
-	chomp $dir;
-	chdir $here;
-	return $dir . $leaf;
+=item has_wal_read_bug()
+
+Returns true if $tmp_check is subject to a sparc64+ext4 bug that causes WAL
+readers to see zeros if another process simultaneously wrote the same offsets.
+Consult this in tests that fail frequently on affected configurations.  The
+bug has made streaming standbys fail to advance, reporting corrupt WAL.  It
+has made COMMIT PREPARED fail with "could not read two-phase state from WAL".
+Non-WAL PostgreSQL reads haven't been affected, likely because those readers
+and writers have buffering systems in common.  See
+https://postgr.es/m/20220116210241.GC756210@rfd.leadboat.com for details.
+
+=cut
+
+sub has_wal_read_bug
+{
+	return
+	     $Config{osname} eq 'linux'
+	  && $Config{archname} =~ /^sparc/
+	  && !run_log([ qw(df -x ext4), $tmp_check ], '>', '/dev/null', '2>&1');
 }
 
 sub system_log
@@ -251,6 +254,36 @@ sub run_command
 	return ($stdout, $stderr);
 }
 
+=pod
+
+=item pump_until(proc, timeout, stream, until)
+
+Pump until string is matched on the specified stream, or timeout occurs.
+
+=cut
+
+sub pump_until
+{
+	my ($proc, $timeout, $stream, $until) = @_;
+	$proc->pump_nb();
+	while (1)
+	{
+		last if $$stream =~ /$until/;
+		if ($timeout->is_expired)
+		{
+			diag("pump_until: timeout expired when searching for \"$until\" with stream: \"$$stream\"");
+			return 0;
+		}
+		if (not $proc->pumpable())
+		{
+			diag("pump_until: process terminated unexpectedly when searching for \"$until\" with stream: \"$$stream\"");
+			return 0;
+		}
+		$proc->pump();
+	}
+	return 1;
+}
+
 # Generate a string made of the given range of ASCII characters
 sub generate_ascii_string
 {
@@ -279,34 +312,33 @@ sub slurp_file
 	my ($filename, $offset) = @_;
 	local $/;
 	my $contents;
+	my $fh;
+
+	# On windows open file using win32 APIs, to allow us to set the
+	# FILE_SHARE_DELETE flag ("d" below), otherwise other accesses to the file
+	# may fail.
 	if ($Config{osname} ne 'MSWin32')
 	{
-		open(my $in, '<', $filename)
+		open($fh, '<', $filename)
 		  or die "could not read \"$filename\": $!";
-		if (defined($offset))
-		{
-			seek($in, $offset, SEEK_SET)
-			  or die "could not seek \"$filename\": $!";
-		}
-		$contents = <$in>;
-		close $in;
 	}
 	else
 	{
 		my $fHandle = createFile($filename, "r", "rwd")
 		  or die "could not open \"$filename\": $^E";
-		OsFHandleOpen(my $fh = IO::Handle->new(), $fHandle, 'r')
+		OsFHandleOpen($fh = IO::Handle->new(), $fHandle, 'r')
 		  or die "could not read \"$filename\": $^E\n";
-		if (defined($offset))
-		{
-			setFilePointer($fh, $offset, qw(FILE_BEGIN))
-			  or die "could not seek \"$filename\": $^E\n";
-		}
-		$contents = <$fh>;
-		CloseHandle($fHandle)
-		  or die "could not close \"$filename\": $^E\n";
 	}
-	$contents =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
+
+	if (defined($offset))
+	{
+		seek($fh, $offset, SEEK_SET)
+		  or die "could not seek \"$filename\": $!";
+	}
+
+	$contents = <$fh>;
+	close $fh;
+
 	return $contents;
 }
 
@@ -428,6 +460,39 @@ sub chmod_recursive
 	return;
 }
 
+# Returns an array that stores all the matches of the given regular expression
+# within the PostgreSQL installation's C<header_path>.  This can be used to
+# retrieve specific value patterns from the installation's header files.
+sub scan_server_header
+{
+	my ($header_path, $regexp) = @_;
+
+	my ($stdout, $stderr);
+	my $result = IPC::Run::run [ 'pg_config', '--includedir-server' ], '>',
+	  \$stdout, '2>', \$stderr
+	  or die "could not execute pg_config";
+	chomp($stdout);
+	$stdout =~ s/\r$//;
+
+	open my $header_h, '<', "$stdout/$header_path" or die "$!";
+
+	my @match = undef;
+	while (<$header_h>)
+	{
+		my $line = $_;
+
+		if (@match = $line =~ /^$regexp/)
+		{
+			last;
+		}
+	}
+
+	close $header_h;
+	die "could not find match in header $header_path\n"
+	  unless @match;
+	return @match;
+}
+
 # Check presence of a given regexp within pg_config.h for the installation
 # where tests are running, returning a match status result depending on
 # that.
@@ -476,15 +541,11 @@ sub command_exit_is
 	my $h = IPC::Run::start $cmd;
 	$h->finish();
 
-	# On Windows, the exit status of the process is returned directly as the
-	# process's exit code, while on Unix, it's returned in the high bits
-	# of the exit code (see WEXITSTATUS macro in the standard <sys/wait.h>
-	# header file). IPC::Run's result function always returns exit code >> 8,
-	# assuming the Unix convention, which will always return 0 on Windows as
-	# long as the process was not terminated by an exception. To work around
-	# that, use $h->full_result on Windows instead.
+	# Normally, if the child called exit(N), IPC::Run::result() returns N.  On
+	# Windows, with IPC::Run v20220807.0 and earlier, full_results() is the
+	# method that returns N (https://github.com/toddr/IPC-Run/issues/161).
 	my $result =
-	    ($Config{osname} eq "MSWin32")
+	  ($Config{osname} eq "MSWin32" && $IPC::Run::VERSION <= 20220807.0)
 	  ? ($h->full_results)[0]
 	  : $h->result(0);
 	is($result, $expected, $test_name);

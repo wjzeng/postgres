@@ -1171,6 +1171,9 @@
    subsequent <function>random()</function> calls in the current session are
    repeatable by re-issuing <function>setseed()</function> with the same
    argument.
+   Without any prior <function>setseed()</function> call in the same
+   session, the first <function>random()</function> call obtains a seed
+   from a platform-dependent source of random bits.
   </para>
 
   <para>
@@ -6710,11 +6713,11 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
        use some non-digit character or template after <literal>YYYY</literal>,
        otherwise the year is always interpreted as 4 digits. For example
        (with the year 20000):
-       <literal>to_date('200001131', 'YYYYMMDD')</literal> will be
+       <literal>to_date('200001130', 'YYYYMMDD')</literal> will be
        interpreted as a 4-digit year; instead use a non-digit
        separator after the year, like
-       <literal>to_date('20000-1131', 'YYYY-MMDD')</literal> or
-       <literal>to_date('20000Nov31', 'YYYYMonDD')</literal>.
+       <literal>to_date('20000-1130', 'YYYY-MMDD')</literal> or
+       <literal>to_date('20000Nov30', 'YYYYMonDD')</literal>.
       </para>
      </listitem>
 
@@ -6927,6 +6930,14 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
        be replaced by a space, while if it is a trailing zero and fill mode
        is specified then it will be deleted.  (For <function>to_number()</function>,
        these two pattern characters are equivalent.)
+      </para>
+     </listitem>
+
+     <listitem>
+      <para>
+       If the format provides fewer fractional digits than the number being
+       formatted, <function>to_char()</function> will round the number to
+       the specified number of fractional digits.
       </para>
      </listitem>
 
@@ -11859,6 +11870,12 @@ table2-mapping
    <type>jsonb</type>, but not for <type>json</type>. They follow the
    ordering rules for B-tree operations outlined at <xref
    linkend="json-indexing"/>.
+   See also <xref linkend="functions-aggregate"/> for the aggregate
+   function <function>json_agg</function> which aggregates record
+   values as JSON, the aggregate function
+   <function>json_object_agg</function> which aggregates pairs of values
+   into a JSON object, and their <type>jsonb</type> equivalents,
+   <function>jsonb_agg</function> and <function>jsonb_object_agg</function>.
   </para>
   <para>
    Some further operators also exist only for <type>jsonb</type>, as shown
@@ -12857,15 +12874,6 @@ table2-mapping
    </para>
   </note>
 
-  <para>
-    See also <xref linkend="functions-aggregate"/> for the aggregate
-    function <function>json_agg</function> which aggregates record
-    values as JSON, and the aggregate function
-    <function>json_object_agg</function> which aggregates pairs of values
-    into a JSON object, and their <type>jsonb</type> equivalents,
-    <function>jsonb_agg</function> and <function>jsonb_object_agg</function>.
-  </para>
-
  </sect2>
 
  <sect2 id="functions-sqljson-path">
@@ -13678,24 +13686,6 @@ nextval('foo'::text)      <lineannotation><literal>foo</literal> is looked up at
         see its command reference page for more information.
        </para>
 
-       <important>
-        <para>
-         To avoid blocking concurrent transactions that obtain numbers from
-         the same sequence, a <function>nextval</function> operation is never
-         rolled back; that is, once a value has been fetched it is considered
-         used and will not be returned again.  This is true even if the
-         surrounding transaction later aborts, or if the calling query ends
-         up not using the value.  For example an <command>INSERT</command> with
-         an <literal>ON CONFLICT</literal> clause will compute the to-be-inserted
-         tuple, including doing any required <function>nextval</function>
-         calls, before detecting any conflict that would cause it to follow
-         the <literal>ON CONFLICT</literal> rule instead.  Such cases will leave
-         unused <quote>holes</quote> in the sequence of assigned values.
-         Thus, <productname>PostgreSQL</productname> sequence objects <emphasis>cannot
-         be used to obtain <quote>gapless</quote> sequences</emphasis>.
-        </para>
-       </important>
-
        <para>
         This function requires <literal>USAGE</literal>
         or <literal>UPDATE</literal> privilege on the sequence.
@@ -13772,13 +13762,6 @@ SELECT setval('foo', 42, false);    <lineannotation>Next <function>nextval</func
         The result returned by <function>setval</function> is just the value of its
         second argument.
        </para>
-       <important>
-        <para>
-         Because sequences are non-transactional, changes made by
-         <function>setval</function> are not undone if the transaction rolls
-         back.
-        </para>
-       </important>
 
        <para>
         This function requires <literal>UPDATE</literal> privilege on the
@@ -13789,6 +13772,42 @@ SELECT setval('foo', 42, false);    <lineannotation>Next <function>nextval</func
     </variablelist>
   </para>
 
+  <caution>
+   <para>
+    To avoid blocking concurrent transactions that obtain numbers from
+    the same sequence, the value obtained by <function>nextval</function>
+    is not reclaimed for re-use if the calling transaction later aborts.
+    This means that transaction aborts or database crashes can result in
+    gaps in the sequence of assigned values.  That can happen without a
+    transaction abort, too.  For example an <command>INSERT</command> with
+    an <literal>ON CONFLICT</literal> clause will compute the to-be-inserted
+    tuple, including doing any required <function>nextval</function>
+    calls, before detecting any conflict that would cause it to follow
+    the <literal>ON CONFLICT</literal> rule instead.
+    Thus, <productname>PostgreSQL</productname> sequence
+    objects <emphasis>cannot be used to obtain <quote>gapless</quote>
+    sequences</emphasis>.
+   </para>
+
+   <para>
+    Likewise, sequence state changes made by <function>setval</function>
+    are immediately visible to other transactions, and are not undone if
+    the calling transaction rolls back.
+   </para>
+
+   <para>
+    If the database cluster crashes before committing a transaction
+    containing a <function>nextval</function>
+    or <function>setval</function> call, the sequence state change might
+    not have made its way to persistent storage, so that it is uncertain
+    whether the sequence will have its original or updated state after the
+    cluster restarts.  This is harmless for usage of the sequence within
+    the database, since other effects of uncommitted transactions will not
+    be visible either.  However, if you wish to use a sequence value for
+    persistent outside-the-database purposes, make sure that the
+    <function>nextval</function> call has been committed before doing so.
+   </para>
+  </caution>
  </sect1>
 
 
@@ -16847,7 +16866,7 @@ WHERE EXISTS (SELECT 1 FROM tab2 WHERE col2 = tab1.col2);
 
   <para>
    The right-hand side is a parenthesized list
-   of scalar expressions.  The result is <quote>true</quote> if the left-hand expression's
+   of expressions.  The result is <quote>true</quote> if the left-hand expression's
    result is equal to any of the right-hand expressions.  This is a shorthand
    notation for
 
@@ -16878,7 +16897,7 @@ OR
 
   <para>
    The right-hand side is a parenthesized list
-   of scalar expressions.  The result is <quote>true</quote> if the left-hand expression's
+   of expressions.  The result is <quote>true</quote> if the left-hand expression's
    result is unequal to all of the right-hand expressions.  This is a shorthand
    notation for
 
@@ -16989,25 +17008,23 @@ AND
   <para>
    Each side is a row constructor,
    as described in <xref linkend="sql-syntax-row-constructors"/>.
-   The two row values must have the same number of fields.
-   Each side is evaluated and they are compared row-wise.  Row constructor
-   comparisons are allowed when the <replaceable>operator</replaceable> is
+   The two row constructors must have the same number of fields.
+   The given <replaceable>operator</replaceable> is applied to each pair
+   of corresponding fields.  (Since the fields could be of different
+   types, this means that a different specific operator could be selected
+   for each pair.)
+   All the selected operators must be members of some B-tree operator
+   class, or be the negator of an <literal>=</literal> member of a B-tree
+   operator class, meaning that row constructor comparison is only
+   possible when the <replaceable>operator</replaceable> is
    <literal>=</literal>,
    <literal>&lt;&gt;</literal>,
    <literal>&lt;</literal>,
    <literal>&lt;=</literal>,
-   <literal>&gt;</literal> or
-   <literal>&gt;=</literal>.
-   Every row element must be of a type which has a default B-tree operator
-   class or the attempted comparison may generate an error.
+   <literal>&gt;</literal>, or
+   <literal>&gt;=</literal>,
+   or has semantics similar to one of these.
   </para>
-
-  <note>
-   <para>
-    Errors related to the number or types of elements might not occur if
-    the comparison is resolved using earlier columns.
-   </para>
-  </note>
 
   <para>
    The <literal>=</literal> and <literal>&lt;&gt;</literal> cases work slightly differently
@@ -17406,7 +17423,7 @@ SELECT * FROM pg_ls_dir('.') WITH ORDINALITY AS t(ls,n);
   <para>
    In addition to the functions listed in this section, there are a number of
    functions related to the statistics system that also provide system
-   information. See <xref linkend="monitoring-stats-views"/> for more
+   information. See <xref linkend="monitoring-stats-functions"/> for more
    information.
   </para>
 
@@ -18318,6 +18335,10 @@ SELECT has_function_privilege('joeuser', 'myfunc(int, text)', 'execute');
     the role (that is, the right to do <command>SET ROLE</command>), while
     <literal>USAGE</literal> denotes whether the privileges of the role
     are immediately available without doing <command>SET ROLE</command>.
+    <literal>WITH ADMIN OPTION</literal> or <literal>WITH GRANT
+    OPTION</literal> can be added to either of these privilege types to
+    test whether the <literal>ADMIN</literal> privilege is held (all
+    four spellings test the same thing).
    </para>
 
    <para>
@@ -21084,8 +21105,9 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         <type>oid</type>
        </entry>
        <entry>
-        Lookup a replication origin by name and return the internal id. If no
-        corresponding replication origin is found an error is thrown.
+        Lookup a replication origin by name and return the internal ID. If
+        no such replication origin is found, <literal>NULL</literal> is
+        returned.
        </entry>
       </row>
 

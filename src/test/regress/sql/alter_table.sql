@@ -227,6 +227,37 @@ SET ROLE regress_alter_table_user1;
 ALTER INDEX onek_unique1 RENAME TO fail;  -- permission denied
 RESET ROLE;
 
+-- rename statements with mismatching statement and object types
+CREATE TABLE alter_idx_rename_test (a INT);
+CREATE INDEX alter_idx_rename_test_idx ON alter_idx_rename_test (a);
+CREATE TABLE alter_idx_rename_test_parted (a INT) PARTITION BY LIST (a);
+CREATE INDEX alter_idx_rename_test_parted_idx ON alter_idx_rename_test_parted (a);
+BEGIN;
+ALTER INDEX alter_idx_rename_test RENAME TO alter_idx_rename_test_2;
+ALTER INDEX alter_idx_rename_test_parted RENAME TO alter_idx_rename_test_parted_2;
+SELECT relation::regclass, mode FROM pg_locks
+WHERE pid = pg_backend_pid() AND locktype = 'relation'
+  AND relation::regclass::text LIKE 'alter\_idx%'
+ORDER BY relation::regclass::text COLLATE "C";
+COMMIT;
+BEGIN;
+ALTER INDEX alter_idx_rename_test_idx RENAME TO alter_idx_rename_test_idx_2;
+ALTER INDEX alter_idx_rename_test_parted_idx RENAME TO alter_idx_rename_test_parted_idx_2;
+SELECT relation::regclass, mode FROM pg_locks
+WHERE pid = pg_backend_pid() AND locktype = 'relation'
+  AND relation::regclass::text LIKE 'alter\_idx%'
+ORDER BY relation::regclass::text COLLATE "C";
+COMMIT;
+BEGIN;
+ALTER TABLE alter_idx_rename_test_idx_2 RENAME TO alter_idx_rename_test_idx_3;
+ALTER TABLE alter_idx_rename_test_parted_idx_2 RENAME TO alter_idx_rename_test_parted_idx_3;
+SELECT relation::regclass, mode FROM pg_locks
+WHERE pid = pg_backend_pid() AND locktype = 'relation'
+  AND relation::regclass::text LIKE 'alter\_idx%'
+ORDER BY relation::regclass::text COLLATE "C";
+COMMIT;
+DROP TABLE alter_idx_rename_test_2;
+
 -- renaming views
 CREATE VIEW attmp_view (unique1) AS SELECT unique1 FROM tenk1;
 ALTER TABLE attmp_view RENAME TO attmp_view_new;
@@ -1380,10 +1411,21 @@ select * from another;
 
 drop table another;
 
--- table's row type
-create table tab1 (a int, b text);
-create table tab2 (x int, y tab1);
-alter table tab1 alter column b type varchar; -- fails
+-- We disallow changing table's row type if it's used for storage
+create table at_tab1 (a int, b text);
+create table at_tab2 (x int, y at_tab1);
+alter table at_tab1 alter column b type varchar; -- fails
+drop table at_tab2;
+-- Use of row type in an expression is defended differently
+create table at_tab2 (x int, y text, check((x,y)::at_tab1 = (1,'42')::at_tab1));
+alter table at_tab1 alter column b type varchar; -- allowed, but ...
+insert into at_tab2 values(1,'42'); -- ... this will fail
+drop table at_tab1, at_tab2;
+-- Check it for a partitioned table, too
+create table at_tab1 (a int, b text) partition by list(a);
+create table at_tab2 (x int, y at_tab1);
+alter table at_tab1 alter column b type varchar; -- fails
+drop table at_tab1, at_tab2;
 
 -- Alter column type that's part of a partitioned index
 create table at_partitioned (a int, b text) partition by range (a);
@@ -1477,13 +1519,16 @@ alter table recur1 alter column f2 type recur2; -- fails
 
 -- SET STORAGE may need to add a TOAST table
 create table test_storage (a text);
-alter table test_storage alter a set storage plain;
-alter table test_storage add b int default 0; -- rewrite table to remove its TOAST table
-alter table test_storage alter a set storage extended; -- re-add TOAST table
-
 select reltoastrelid <> 0 as has_toast_table
-from pg_class
-where oid = 'test_storage'::regclass;
+  from pg_class where oid = 'test_storage'::regclass;
+alter table test_storage alter a set storage plain;
+-- rewrite table to remove its TOAST table; need a non-constant column default
+alter table test_storage add b int default random()::int;
+select reltoastrelid <> 0 as has_toast_table
+  from pg_class where oid = 'test_storage'::regclass;
+alter table test_storage alter a set storage extended; -- re-add TOAST table
+select reltoastrelid <> 0 as has_toast_table
+  from pg_class where oid = 'test_storage'::regclass;
 
 -- test that SET STORAGE propagates to index correctly
 create index test_storage_idx on test_storage (b, a);
@@ -1578,7 +1623,25 @@ drop view at_view_2;
 drop view at_view_1;
 drop table at_base_table;
 
--- check adding a column not iself requiring a rewrite, together with
+-- related case (bug #17811)
+begin;
+create temp table t1 as select * from int8_tbl;
+create temp view v1 as select 1::int8 as q1;
+create temp view v2 as select * from v1;
+create or replace temp view v1 with (security_barrier = true)
+  as select * from t1;
+
+create temp table log (q1 int8, q2 int8);
+create rule v1_upd_rule as on update to v1
+  do also insert into log values (new.*);
+
+update v2 set q1 = q1 + 1 where q1 = 123;
+
+select * from t1;
+select * from log;
+rollback;
+
+-- check adding a column not itself requiring a rewrite, together with
 -- a column requiring a default (bug #16038)
 
 -- ensure that rewrites aren't silently optimized away, removing the
@@ -1908,6 +1971,14 @@ CREATE TYPE test_type1 AS (a int, b text);
 CREATE TABLE test_tbl1 (x int, y test_type1);
 ALTER TYPE test_type1 ALTER ATTRIBUTE b TYPE varchar; -- fails
 
+DROP TABLE test_tbl1;
+CREATE TABLE test_tbl1 (x int, y text);
+CREATE INDEX test_tbl1_idx ON test_tbl1((row(x,y)::test_type1));
+ALTER TYPE test_type1 ALTER ATTRIBUTE b TYPE varchar; -- fails
+
+DROP TABLE test_tbl1;
+DROP TYPE test_type1;
+
 CREATE TYPE test_type2 AS (a int, b text);
 CREATE TABLE test_tbl2 OF test_type2;
 CREATE TABLE test_tbl2_subclass () INHERITS (test_tbl2);
@@ -1935,7 +2006,8 @@ ALTER TYPE test_type2 RENAME ATTRIBUTE a TO aa CASCADE;
 \d test_tbl2
 \d test_tbl2_subclass
 
-DROP TABLE test_tbl2_subclass;
+DROP TABLE test_tbl2_subclass, test_tbl2;
+DROP TYPE test_type2;
 
 CREATE TYPE test_typex AS (a int, b text);
 CREATE TABLE test_tblx (x int, y test_typex check ((y).a > 0));
@@ -2290,6 +2362,13 @@ CREATE TABLE parent (LIKE list_parted);
 CREATE TABLE child () INHERITS (parent);
 ALTER TABLE list_parted ATTACH PARTITION child FOR VALUES IN (1);
 ALTER TABLE list_parted ATTACH PARTITION parent FOR VALUES IN (1);
+DROP TABLE child;
+-- now it should work, with a little tweak
+ALTER TABLE parent ADD CONSTRAINT check_a CHECK (a > 0);
+ALTER TABLE list_parted ATTACH PARTITION parent FOR VALUES IN (1);
+-- test insert/update, per bug #18550
+INSERT INTO parent VALUES (1);
+UPDATE parent SET a = 2 WHERE a = 1;
 DROP TABLE parent CASCADE;
 
 -- check any TEMP-ness
@@ -2872,3 +2951,22 @@ select indexrelid::regclass, indisclustered from pg_index
   where indrelid = 'alttype_cluster'::regclass
   order by indexrelid::regclass::text;
 drop table alttype_cluster;
+
+--
+-- Check that attaching or detaching a partitioned partition correctly leads
+-- to its partitions' constraint being updated to reflect the parent's
+-- newly added/removed constraint
+create table target_parted (a int, b int) partition by list (a);
+create table attach_parted (a int, b int) partition by list (b);
+create table attach_parted_part1 partition of attach_parted for values in (1);
+-- insert a row directly into the leaf partition so that its partition
+-- constraint is built and stored in the relcache
+insert into attach_parted_part1 values (1, 1);
+-- the following better invalidate the partition constraint of the leaf
+-- partition too...
+alter table target_parted attach partition attach_parted for values in (1);
+-- ...such that the following insert fails
+insert into attach_parted_part1 values (2, 1);
+-- ...and doesn't when the partition is detached along with its own partition
+alter table target_parted detach partition attach_parted;
+insert into attach_parted_part1 values (2, 1);

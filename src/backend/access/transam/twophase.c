@@ -462,19 +462,30 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	proc->pgprocno = gxact->pgprocno;
 	SHMQueueElemInit(&(proc->links));
 	proc->waitStatus = STATUS_OK;
-	/* We set up the gxact's VXID as InvalidBackendId/XID */
-	proc->lxid = (LocalTransactionId) xid;
+	if (LocalTransactionIdIsValid(MyProc->lxid))
+	{
+		/* clone VXID, for TwoPhaseGetXidByVirtualXID() to find */
+		proc->lxid = MyProc->lxid;
+		proc->backendId = MyBackendId;
+	}
+	else
+	{
+		Assert(AmStartupProcess() || !IsPostmasterEnvironment);
+		/* GetLockConflicts() uses this to specify a wait on the XID */
+		proc->lxid = xid;
+		proc->backendId = InvalidBackendId;
+	}
 	pgxact->xid = xid;
 	pgxact->xmin = InvalidTransactionId;
 	pgxact->delayChkpt = false;
 	pgxact->vacuumFlags = 0;
+	proc->delayChkptEnd = false;
 	proc->pid = 0;
-	proc->backendId = InvalidBackendId;
 	proc->databaseId = databaseid;
 	proc->roleId = owner;
 	proc->tempNamespaceId = InvalidOid;
 	proc->isBackgroundWorker = false;
-	proc->lwWaiting = false;
+	proc->lwWaiting = LW_WS_NOT_WAITING;
 	proc->lwWaitMode = 0;
 	proc->waitLock = NULL;
 	proc->waitProcLock = NULL;
@@ -852,6 +863,53 @@ TwoPhaseGetGXact(TransactionId xid, bool lock_held)
 }
 
 /*
+ * TwoPhaseGetXidByVirtualXID
+ *		Lookup VXID among xacts prepared since last startup.
+ *
+ * (This won't find recovered xacts.)  If more than one matches, return any
+ * and set "have_more" to true.  To witness multiple matches, a single
+ * BackendId must consume 2^32 LXIDs, with no intervening database restart.
+ */
+TransactionId
+TwoPhaseGetXidByVirtualXID(VirtualTransactionId vxid,
+						   bool *have_more)
+{
+	int			i;
+	TransactionId result = InvalidTransactionId;
+
+	Assert(VirtualTransactionIdIsValid(vxid));
+	LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
+
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		GlobalTransaction gxact = TwoPhaseState->prepXacts[i];
+		PGPROC	   *proc;
+		VirtualTransactionId proc_vxid;
+
+		if (!gxact->valid)
+			continue;
+		proc = &ProcGlobal->allProcs[gxact->pgprocno];
+		GET_VXID_FROM_PGPROC(proc_vxid, *proc);
+		if (VirtualTransactionIdEquals(vxid, proc_vxid))
+		{
+			/* Startup process sets proc->backendId to InvalidBackendId. */
+			Assert(!gxact->inredo);
+
+			if (result != InvalidTransactionId)
+			{
+				*have_more = true;
+				break;
+			}
+			result = gxact->xid;
+		}
+	}
+
+	LWLockRelease(TwoPhaseStateLock);
+
+	return result;
+}
+
+/*
  * TwoPhaseGetDummyBackendId
  *		Get the dummy backend ID for prepared transaction specified by XID
  *
@@ -1094,7 +1152,6 @@ EndPrepare(GlobalTransaction gxact)
 
 	if (replorigin)
 	{
-		Assert(replorigin_session_origin_lsn != InvalidXLogRecPtr);
 		hdr->origin_lsn = replorigin_session_origin_lsn;
 		hdr->origin_timestamp = replorigin_session_origin_timestamp;
 	}
@@ -1131,6 +1188,7 @@ EndPrepare(GlobalTransaction gxact)
 
 	START_CRIT_SECTION();
 
+	Assert(!MyPgXact->delayChkpt);
 	MyPgXact->delayChkpt = true;
 
 	XLogBeginInsert();
@@ -1408,11 +1466,21 @@ XlogReadTwoPhaseData(XLogRecPtr lsn, char **buf, int *len)
 	ThisTimeLineID = save_currtli;
 
 	if (record == NULL)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not read two-phase state from WAL at %X/%X",
-						(uint32) (lsn >> 32),
-						(uint32) lsn)));
+	{
+		if (errormsg)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read two-phase state from WAL at %X/%X: %s",
+							(uint32) (lsn >> 32),
+							(uint32) lsn,
+							errormsg)));
+		else
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read two-phase state from WAL at %X/%X",
+							(uint32) (lsn >> 32),
+							(uint32) lsn)));
+	}
 
 	if (XLogRecGetRmid(xlogreader) != RM_XACT_ID ||
 		(XLogRecGetInfo(xlogreader) & XLOG_XACT_OPMASK) != XLOG_XACT_PREPARE)
@@ -1470,6 +1538,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	PGPROC	   *proc;
 	PGXACT	   *pgxact;
 	TransactionId xid;
+	bool		ondisk;
 	char	   *buf;
 	char	   *bufptr;
 	TwoPhaseFileHeader *hdr;
@@ -1604,6 +1673,12 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 
 	PredicateLockTwoPhaseFinish(xid, isCommit);
 
+	/*
+	 * Read this value while holding the two-phase lock, as the on-disk 2PC
+	 * file is physically removed after the lock is released.
+	 */
+	ondisk = gxact->ondisk;
+
 	/* Clear shared memory state */
 	RemoveGXact(gxact);
 
@@ -1619,7 +1694,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	/*
 	 * And now we can clean up any files we may have left.
 	 */
-	if (gxact->ondisk)
+	if (ondisk)
 		RemoveTwoPhaseFile(xid, true);
 
 	MyLockedGxact = NULL;
@@ -1980,9 +2055,8 @@ PrescanPreparedTransactions(TransactionId **xids_p, int *nxids_p)
  * This is never called at the end of recovery - we use
  * RecoverPreparedTransactions() at that point.
  *
- * The lack of calls to SubTransSetParent() calls here is by design;
- * those calls are made by RecoverPreparedTransactions() at the end of recovery
- * for those xacts that need this.
+ * This updates pg_subtrans, so that any subtransactions will be correctly
+ * seen as in-progress in snapshots taken during recovery.
  */
 void
 StandbyRecoverPreparedTransactions(void)
@@ -2002,7 +2076,7 @@ StandbyRecoverPreparedTransactions(void)
 
 		buf = ProcessTwoPhaseBuffer(xid,
 									gxact->prepare_start_lsn,
-									gxact->ondisk, false, false);
+									gxact->ondisk, true, false);
 		if (buf != NULL)
 			pfree(buf);
 	}
@@ -2271,6 +2345,7 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	START_CRIT_SECTION();
 
 	/* See notes in RecordTransactionCommit */
+	Assert(!MyPgXact->delayChkpt);
 	MyPgXact->delayChkpt = true;
 
 	/*
@@ -2424,6 +2499,39 @@ PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 	 * The gxact also gets marked with gxact->inredo set to true to indicate
 	 * that it got added in the redo phase
 	 */
+
+	/*
+	 * In the event of a crash while a checkpoint was running, it may be
+	 * possible that some two-phase data found its way to disk while its
+	 * corresponding record needs to be replayed in the follow-up recovery. As
+	 * the 2PC data was on disk, it has already been restored at the beginning
+	 * of recovery with restoreTwoPhaseData(), so skip this record to avoid
+	 * duplicates in TwoPhaseState.  If a consistent state has been reached,
+	 * the record is added to TwoPhaseState and it should have no
+	 * corresponding file in pg_twophase.
+	 */
+	if (!XLogRecPtrIsInvalid(start_lsn))
+	{
+		char		path[MAXPGPATH];
+
+		TwoPhaseFilePath(path, hdr->xid);
+
+		if (access(path, F_OK) == 0)
+		{
+			ereport(reachedConsistency ? ERROR : WARNING,
+					(errmsg("could not recover two-phase state file for transaction %u",
+							hdr->xid),
+					 errdetail("Two-phase state file has been found in WAL record %X/%X, but this transaction has already been restored from disk.",
+							   (uint32) (start_lsn >> 32),
+							   (uint32) start_lsn)));
+			return;
+		}
+
+		if (errno != ENOENT)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not access file \"%s\": %m", path)));
+	}
 
 	/* Get a free gxact from the freelist */
 	if (TwoPhaseState->freeGXacts == NULL)

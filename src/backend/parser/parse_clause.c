@@ -1066,6 +1066,9 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 						RangeTblEntry **top_rte, int *top_rti,
 						List **namespace)
 {
+	/* Guard against stack overflow due to overly deep subtree */
+	check_stack_depth();
+
 	if (IsA(n, RangeVar))
 	{
 		/* Plain relation reference, or perhaps a CTE reference */
@@ -1425,21 +1428,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		res_colvars = list_concat(res_colvars, l_colvars);
 		res_colnames = list_concat(res_colnames, r_colnames);
 		res_colvars = list_concat(res_colvars, r_colvars);
-
-		/*
-		 * Check alias (AS clause), if any.
-		 */
-		if (j->alias)
-		{
-			if (j->alias->colnames != NIL)
-			{
-				if (list_length(j->alias->colnames) > list_length(res_colnames))
-					ereport(ERROR,
-							(errcode(ERRCODE_SYNTAX_ERROR),
-							 errmsg("column alias list for \"%s\" has too many entries",
-									j->alias->aliasname)));
-			}
-		}
 
 		/*
 		 * Now build an RTE for the result of the join

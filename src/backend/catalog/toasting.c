@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/heapam.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
@@ -31,6 +32,7 @@
 #include "nodes/makefuncs.h"
 #include "storage/lock.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
@@ -38,9 +40,11 @@
 Oid			binary_upgrade_next_toast_pg_type_oid = InvalidOid;
 
 static void CheckAndCreateToastTable(Oid relOid, Datum reloptions,
-									 LOCKMODE lockmode, bool check);
+									 LOCKMODE lockmode, bool check,
+									 Oid OIDOldToast);
 static bool create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
-							   Datum reloptions, LOCKMODE lockmode, bool check);
+							   Datum reloptions, LOCKMODE lockmode, bool check,
+							   Oid OIDOldToast);
 static bool needs_toast_table(Relation rel);
 
 
@@ -59,30 +63,34 @@ static bool needs_toast_table(Relation rel);
 void
 AlterTableCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode)
 {
-	CheckAndCreateToastTable(relOid, reloptions, lockmode, true);
+	CheckAndCreateToastTable(relOid, reloptions, lockmode, true, InvalidOid);
 }
 
 void
-NewHeapCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode)
+NewHeapCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
+						Oid OIDOldToast)
 {
-	CheckAndCreateToastTable(relOid, reloptions, lockmode, false);
+	CheckAndCreateToastTable(relOid, reloptions, lockmode, false, OIDOldToast);
 }
 
 void
 NewRelationCreateToastTable(Oid relOid, Datum reloptions)
 {
-	CheckAndCreateToastTable(relOid, reloptions, AccessExclusiveLock, false);
+	CheckAndCreateToastTable(relOid, reloptions, AccessExclusiveLock, false,
+							 InvalidOid);
 }
 
 static void
-CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode, bool check)
+CheckAndCreateToastTable(Oid relOid, Datum reloptions, LOCKMODE lockmode,
+						 bool check, Oid OIDOldToast)
 {
 	Relation	rel;
 
 	rel = table_open(relOid, lockmode);
 
 	/* create_toast_table does all the work */
-	(void) create_toast_table(rel, InvalidOid, InvalidOid, reloptions, lockmode, check);
+	(void) create_toast_table(rel, InvalidOid, InvalidOid, reloptions, lockmode,
+							  check, OIDOldToast);
 
 	table_close(rel, NoLock);
 }
@@ -108,7 +116,7 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 
 	/* create_toast_table does all the work */
 	if (!create_toast_table(rel, toastOid, toastIndexOid, (Datum) 0,
-							AccessExclusiveLock, false))
+							AccessExclusiveLock, false, InvalidOid))
 		elog(ERROR, "\"%s\" does not require a toast table",
 			 relName);
 
@@ -125,7 +133,8 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
  */
 static bool
 create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
-				   Datum reloptions, LOCKMODE lockmode, bool check)
+				   Datum reloptions, LOCKMODE lockmode, bool check,
+				   Oid OIDOldToast)
 {
 	Oid			relOid = RelationGetRelid(rel);
 	HeapTuple	reltup;
@@ -270,7 +279,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 										   false,
 										   true,
 										   true,
-										   InvalidOid,
+										   OIDOldToast,
 										   NULL);
 	Assert(toast_relid != InvalidOid);
 
@@ -338,21 +347,36 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 	 */
 	class_rel = table_open(RelationRelationId, RowExclusiveLock);
 
-	reltup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relOid));
-	if (!HeapTupleIsValid(reltup))
-		elog(ERROR, "cache lookup failed for relation %u", relOid);
-
-	((Form_pg_class) GETSTRUCT(reltup))->reltoastrelid = toast_relid;
-
 	if (!IsBootstrapProcessingMode())
 	{
 		/* normal case, use a transactional update */
+		reltup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relOid));
+		if (!HeapTupleIsValid(reltup))
+			elog(ERROR, "cache lookup failed for relation %u", relOid);
+
+		((Form_pg_class) GETSTRUCT(reltup))->reltoastrelid = toast_relid;
+
 		CatalogTupleUpdate(class_rel, &reltup->t_self, reltup);
 	}
 	else
 	{
 		/* While bootstrapping, we cannot UPDATE, so overwrite in-place */
-		heap_inplace_update(class_rel, reltup);
+
+		ScanKeyData key[1];
+		void	   *state;
+
+		ScanKeyInit(&key[0],
+					Anum_pg_class_oid,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(relOid));
+		systable_inplace_update_begin(class_rel, ClassOidIndexId, true,
+									  NULL, 1, key, &reltup, &state);
+		if (!HeapTupleIsValid(reltup))
+			elog(ERROR, "cache lookup failed for relation %u", relOid);
+
+		((Form_pg_class) GETSTRUCT(reltup))->reltoastrelid = toast_relid;
+
+		systable_inplace_update_finish(state, reltup);
 	}
 
 	heap_freetuple(reltup);

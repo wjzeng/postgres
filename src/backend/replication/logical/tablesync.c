@@ -464,15 +464,25 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 					/* Now safe to release the LWLock */
 					LWLockRelease(LogicalRepWorkerLock);
 
+					if (started_tx)
+					{
+						/*
+						 * We must commit the existing transaction to release
+						 * the existing locks before entering a busy loop.
+						 * This is required to avoid any undetected deadlocks
+						 * due to any existing lock as deadlock detector won't
+						 * be able to detect the waits on the latch.
+						 */
+						CommitTransactionCommand();
+						pgstat_report_stat(false);
+					}
+
 					/*
 					 * Enter busy loop and wait for synchronization worker to
 					 * reach expected state (or die trying).
 					 */
-					if (!started_tx)
-					{
-						StartTransactionCommand();
-						started_tx = true;
-					}
+					StartTransactionCommand();
+					started_tx = true;
 
 					wait_for_relation_state_change(rstate->relid,
 												   SUBREL_STATE_SYNCDONE);
@@ -646,9 +656,10 @@ fetch_remote_table_info(char *nspname, char *relname,
 	WalRcvExecResult *res;
 	StringInfoData cmd;
 	TupleTableSlot *slot;
-	Oid			tableRow[2] = {OIDOID, CHAROID};
+	Oid			tableRow[3] = {OIDOID, CHAROID, CHAROID};
 	Oid			attrRow[4] = {TEXTOID, OIDOID, INT4OID, BOOLOID};
 	bool		isnull;
+	char		relkind;
 	int			natt;
 
 	lrel->nspname = nspname;
@@ -656,13 +667,12 @@ fetch_remote_table_info(char *nspname, char *relname,
 
 	/* First fetch Oid and replica identity. */
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "SELECT c.oid, c.relreplident"
+	appendStringInfo(&cmd, "SELECT c.oid, c.relreplident, c.relkind"
 					 "  FROM pg_catalog.pg_class c"
 					 "  INNER JOIN pg_catalog.pg_namespace n"
 					 "        ON (c.relnamespace = n.oid)"
 					 " WHERE n.nspname = %s"
-					 "   AND c.relname = %s"
-					 "   AND c.relkind = 'r'",
+					 "   AND c.relname = %s",
 					 quote_literal_cstr(nspname),
 					 quote_literal_cstr(relname));
 	res = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
@@ -683,6 +693,19 @@ fetch_remote_table_info(char *nspname, char *relname,
 	Assert(!isnull);
 	lrel->replident = DatumGetChar(slot_getattr(slot, 2, &isnull));
 	Assert(!isnull);
+	relkind = DatumGetChar(slot_getattr(slot, 3, &isnull));
+	Assert(!isnull);
+
+	/*
+	 * Newer PG versions allow things that aren't plain tables to appear in
+	 * publications.  We don't handle that in this version, but try to provide
+	 * a useful error message.
+	 */
+	if (relkind != RELKIND_RELATION)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("logical replication source relation \"%s.%s\" is not a table",
+						nspname, relname)));
 
 	ExecDropSingleTupleTableSlot(slot);
 	walrcv_clear_result(res);

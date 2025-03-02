@@ -73,6 +73,7 @@
 #include "commands/sequence.h"
 #include "commands/trigger.h"
 #include "commands/typecmds.h"
+#include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteRemove.h"
@@ -508,6 +509,12 @@ findDependentObjects(const ObjectAddress *object,
 	 */
 	if (stack_address_present_add_flags(object, objflags, stack))
 		return;
+
+	/*
+	 * since this function recurses, it could be driven to stack overflow,
+	 * because of the deep dependency tree, not only due to dependency loops.
+	 */
+	check_stack_depth();
 
 	/*
 	 * It's also possible that the target object has already been completely
@@ -1108,6 +1115,10 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 
 		objDesc = getObjectDescription(obj);
 
+		/* An object being dropped concurrently doesn't need to be reported */
+		if (objDesc == NULL)
+			continue;
+
 		/*
 		 * If, at any stage of the recursive search, we reached the object via
 		 * an AUTO, INTERNAL, PARTITION, or EXTENSION dependency, then it's
@@ -1132,23 +1143,28 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 		{
 			char	   *otherDesc = getObjectDescription(&extra->dependee);
 
-			if (numReportedClient < MAX_REPORTED_DEPS)
+			if (otherDesc)
 			{
+				if (numReportedClient < MAX_REPORTED_DEPS)
+				{
+					/* separate entries with a newline */
+					if (clientdetail.len != 0)
+						appendStringInfoChar(&clientdetail, '\n');
+					appendStringInfo(&clientdetail, _("%s depends on %s"),
+									 objDesc, otherDesc);
+					numReportedClient++;
+				}
+				else
+					numNotReportedClient++;
 				/* separate entries with a newline */
-				if (clientdetail.len != 0)
-					appendStringInfoChar(&clientdetail, '\n');
-				appendStringInfo(&clientdetail, _("%s depends on %s"),
+				if (logdetail.len != 0)
+					appendStringInfoChar(&logdetail, '\n');
+				appendStringInfo(&logdetail, _("%s depends on %s"),
 								 objDesc, otherDesc);
-				numReportedClient++;
+				pfree(otherDesc);
 			}
 			else
 				numNotReportedClient++;
-			/* separate entries with a newline */
-			if (logdetail.len != 0)
-				appendStringInfoChar(&logdetail, '\n');
-			appendStringInfo(&logdetail, _("%s depends on %s"),
-							 objDesc, otherDesc);
-			pfree(otherDesc);
 			ok = false;
 		}
 		else
@@ -1189,14 +1205,14 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 					(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
 					 errmsg("cannot drop %s because other objects depend on it",
 							getObjectDescription(origObject)),
-					 errdetail("%s", clientdetail.data),
+					 errdetail_internal("%s", clientdetail.data),
 					 errdetail_log("%s", logdetail.data),
 					 errhint("Use DROP ... CASCADE to drop the dependent objects too.")));
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST),
 					 errmsg("cannot drop desired object(s) because other objects depend on them"),
-					 errdetail("%s", clientdetail.data),
+					 errdetail_internal("%s", clientdetail.data),
 					 errdetail_log("%s", logdetail.data),
 					 errhint("Use DROP ... CASCADE to drop the dependent objects too.")));
 	}
@@ -1208,7 +1224,7 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 							   "drop cascades to %d other objects",
 							   numReportedClient + numNotReportedClient,
 							   numReportedClient + numNotReportedClient),
-				 errdetail("%s", clientdetail.data),
+				 errdetail_internal("%s", clientdetail.data),
 				 errdetail_log("%s", logdetail.data)));
 	}
 	else if (numReportedClient == 1)
@@ -1311,7 +1327,9 @@ deleteOneObject(const ObjectAddress *object, Relation *depRel, int flags)
 	/*
 	 * Delete any comments, security labels, or initial privileges associated
 	 * with this object.  (This is a convenient place to do these things,
-	 * rather than having every object type know to do it.)
+	 * rather than having every object type know to do it.)  As above, all
+	 * these functions must remove records for sub-objects too if the subid is
+	 * zero.
 	 */
 	DeleteComments(object->objectId, object->classId, object->objectSubId);
 	DeleteSecurityLabel(object);
@@ -2851,6 +2869,7 @@ DeleteInitPrivs(const ObjectAddress *object)
 {
 	Relation	relation;
 	ScanKeyData key[3];
+	int			nkeys;
 	SysScanDesc scan;
 	HeapTuple	oldtuple;
 
@@ -2864,13 +2883,19 @@ DeleteInitPrivs(const ObjectAddress *object)
 				Anum_pg_init_privs_classoid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(object->classId));
-	ScanKeyInit(&key[2],
-				Anum_pg_init_privs_objsubid,
-				BTEqualStrategyNumber, F_INT4EQ,
-				Int32GetDatum(object->objectSubId));
+	if (object->objectSubId != 0)
+	{
+		ScanKeyInit(&key[2],
+					Anum_pg_init_privs_objsubid,
+					BTEqualStrategyNumber, F_INT4EQ,
+					Int32GetDatum(object->objectSubId));
+		nkeys = 3;
+	}
+	else
+		nkeys = 2;
 
 	scan = systable_beginscan(relation, InitPrivsObjIndexId, true,
-							  NULL, 3, key);
+							  NULL, nkeys, key);
 
 	while (HeapTupleIsValid(oldtuple = systable_getnext(scan)))
 		CatalogTupleDelete(relation, &oldtuple->t_self);

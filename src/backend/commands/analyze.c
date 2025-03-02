@@ -513,6 +513,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	{
 		MemoryContext col_context,
 					old_context;
+		bool		build_ext_stats;
 
 		col_context = AllocSetContextCreate(anl_context,
 											"Analyze Column",
@@ -574,12 +575,27 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 		}
 
 		/*
+		 * Should we build extended statistics for this relation?
+		 *
+		 * The extended statistics catalog does not include an inheritance
+		 * flag, so we can't store statistics built both with and without
+		 * data from child relations. We can store just one set of statistics
+		 * per relation. For plain relations that's fine, but for inheritance
+		 * trees we have to pick whether to store statistics for just the
+		 * one relation or the whole tree. For plain inheritance we store
+		 * the (!inh) version, mostly for backwards compatibility reasons.
+		 * For partitioned tables that's pointless (the non-leaf tables are
+		 * always empty), so we store stats representing the whole tree.
+		 */
+		build_ext_stats = (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE) ? inh : (!inh);
+
+		/*
 		 * Build extended statistics (if there are any).
 		 *
 		 * For now we only build extended statistics on individual relations,
 		 * not for relations representing inheritance trees.
 		 */
-		if (!inh)
+		if (build_ext_stats)
 			BuildRelationExtStatistics(onerel, totalrows, numrows, rows,
 									   attr_cnt, vacattrstats);
 	}
@@ -1190,6 +1206,10 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	ListCell   *lc;
 	bool		has_child;
 
+	/* Initialize output parameters to zero now, in case we exit early */
+	*totalrows = 0;
+	*totaldeadrows = 0;
+
 	/*
 	 * Find all members of inheritance set.  We only need AccessShareLock on
 	 * the children.
@@ -1321,8 +1341,6 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 	 * clear that it's worth working harder.)
 	 */
 	numrows = 0;
-	*totalrows = 0;
-	*totaldeadrows = 0;
 	for (i = 0; i < nrels; i++)
 	{
 		Relation	childrel = rels[i];

@@ -53,8 +53,8 @@
 #endif
 
 
-#define MAX_TOKEN	256
-#define MAX_LINE	8192
+#define MAX_TOKEN	10240
+#define MAX_LINE	20480
 
 /* callback data for check_network_callback */
 typedef struct check_network_data
@@ -1632,7 +1632,11 @@ parse_hba_line(TokenizedLine *tok_line, int elevel)
 	 */
 	if (parsedline->auth_method == uaCert)
 	{
-		parsedline->clientcert = clientCertCA;
+		/*
+		 * For auth method cert, client certificate validation is mandatory, and it implies
+		 * the level of verify-full.
+		 */
+		parsedline->clientcert = clientCertFull;
 	}
 
 	return parsedline;

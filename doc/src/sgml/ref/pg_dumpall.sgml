@@ -90,9 +90,12 @@ PostgreSQL documentation
       <term><option>--clean</option></term>
       <listitem>
        <para>
-        Include SQL commands to clean (drop) databases before
-        recreating them.  <command>DROP</command> commands for roles and
-        tablespaces are added as well.
+        Emit SQL commands to <command>DROP</command> all the dumped
+        databases, roles, and tablespaces before recreating them.
+        This option is useful when the restore is to overwrite an existing
+        cluster.  If any of the objects do not exist in the destination
+        cluster, ignorable error messages will be reported during
+        restore, unless <option>--if-exists</option> is also specified.
        </para>
       </listitem>
      </varlistentry>
@@ -273,9 +276,9 @@ PostgreSQL documentation
         This option is relevant only when creating a data-only dump.
         It instructs <application>pg_dumpall</application> to include commands
         to temporarily disable triggers on the target tables while
-        the data is reloaded.  Use this if you have referential
+        the data is restored.  Use this if you have referential
         integrity checks or other triggers on the tables that you
-        do not want to invoke during data reload.
+        do not want to invoke during data restore.
        </para>
 
        <para>
@@ -323,9 +326,11 @@ PostgreSQL documentation
       <term><option>--if-exists</option></term>
       <listitem>
        <para>
-        Use conditional commands (i.e., add an <literal>IF EXISTS</literal>
-        clause) to drop databases and other objects.  This option is not valid
-        unless <option>--clean</option> is also specified.
+        Use <literal>DROP ... IF EXISTS</literal> commands to drop objects
+        in <option>--clean</option> mode.  This suppresses <quote>does not
+        exist</quote> errors that might otherwise be reported.  This
+        option is not valid unless <option>--clean</option> is also
+        specified.
        </para>
       </listitem>
      </varlistentry>
@@ -354,16 +359,12 @@ PostgreSQL documentation
         target the root of the partitioning hierarchy that contains it, rather
         than the partition itself.  This causes the appropriate partition to
         be re-determined for each row when the data is loaded.  This may be
-        useful when reloading data on a server where rows do not always fall
+        useful when restoring data on a server where rows do not always fall
         into the same partitions as they did on the original server.  That
         could happen, for example, if the partitioning column is of type text
         and the two systems have different definitions of the collation used
         to sort the partitioning column.
        </para>
-
-       <!-- Currently, we don't need pg_dump's warning about parallelism here,
-        since parallel restore from a pg_dumpall script is impossible.
-       -->
       </listitem>
      </varlistentry>
 
@@ -509,7 +510,7 @@ PostgreSQL documentation
         Dump data as <command>INSERT</command> commands (rather than
         <command>COPY</command>).  Controls the maximum number of rows per
         <command>INSERT</command> command. The value specified must be a
-        number greater than zero.  Any error during reloading will cause only
+        number greater than zero.  Any error during restoring will cause only
         rows that are part of the problematic <command>INSERT</command> to be
         lost, rather than the entire table contents.
        </para>
@@ -778,7 +779,7 @@ PostgreSQL documentation
   </para>
 
   <para>
-   To reload database(s) from this file, you can use:
+   To restore database(s) from this file, you can use:
 <screen>
 <prompt>$</prompt> <userinput>psql -f db.out postgres</userinput>
 </screen>

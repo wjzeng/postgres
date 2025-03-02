@@ -1803,6 +1803,7 @@ _readIndexOnlyScan(void)
 
 	READ_OID_FIELD(indexid);
 	READ_NODE_FIELD(indexqual);
+	READ_NODE_FIELD(recheckqual);
 	READ_NODE_FIELD(indexorderby);
 	READ_NODE_FIELD(indextlist);
 	READ_ENUM_FIELD(indexorderdir, ScanDirection);
@@ -2468,6 +2469,7 @@ _readSubPlan(void)
 	READ_NODE_FIELD(args);
 	READ_FLOAT_FIELD(startup_cost);
 	READ_FLOAT_FIELD(per_call_cost);
+	READ_INT_FIELD(subLinkId);
 
 	READ_DONE();
 }

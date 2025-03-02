@@ -69,6 +69,7 @@ extern void SnapBuildSnapDecRefcount(Snapshot snap);
 extern Snapshot SnapBuildInitialSnapshot(SnapBuild *builder);
 extern const char *SnapBuildExportSnapshot(SnapBuild *snapstate);
 extern void SnapBuildClearExportedSnapshot(void);
+extern void SnapBuildResetExportedSnapshotState(void);
 
 extern SnapBuildState SnapBuildCurrentState(SnapBuild *snapstate);
 extern Snapshot SnapBuildGetOrBuildSnapshot(SnapBuild *builder,
@@ -87,4 +88,7 @@ extern void SnapBuildProcessRunningXacts(SnapBuild *builder, XLogRecPtr lsn,
 										 struct xl_running_xacts *running);
 extern void SnapBuildSerializationPoint(SnapBuild *builder, XLogRecPtr lsn);
 
+extern void SnapBuildXidSetCatalogChanges(SnapBuild *builder, TransactionId xid,
+										  int subxcnt, TransactionId *subxacts,
+										  XLogRecPtr lsn);
 #endif							/* SNAPBUILD_H */

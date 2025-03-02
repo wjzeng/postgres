@@ -263,7 +263,7 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("\"%s\" is a partitioned table",
 								RelationGetRelationName(rel)),
-						 errdetail("Triggers on partitioned tables cannot have transition tables.")));
+						 errdetail("ROW triggers with transition tables are not supported on partitioned tables.")));
 		}
 	}
 	else if (rel->rd_rel->relkind == RELKIND_VIEW)
@@ -1806,14 +1806,16 @@ renametrig(RenameStmt *stmt)
  *			   enablement/disablement, this also defines when the trigger
  *			   should be fired in session replication roles.
  * skip_system: if true, skip "system" triggers (constraint triggers)
+ * recurse: if true, recurse to partitions
  *
  * Caller should have checked permissions for the table; here we also
  * enforce that superuser privilege is required to alter the state of
  * system triggers
  */
 void
-EnableDisableTrigger(Relation rel, const char *tgname,
-					 char fires_when, bool skip_system, LOCKMODE lockmode)
+EnableDisableTriggerNew(Relation rel, const char *tgname,
+						char fires_when, bool skip_system, bool recurse,
+						LOCKMODE lockmode)
 {
 	Relation	tgrel;
 	int			nkeys;
@@ -1879,6 +1881,34 @@ EnableDisableTrigger(Relation rel, const char *tgname,
 			changed = true;
 		}
 
+		/*
+		 * When altering FOR EACH ROW triggers on a partitioned table, do the
+		 * same on the partitions as well, unless ONLY is specified.
+		 *
+		 * Note that we recurse even if we didn't change the trigger above,
+		 * because the partitions' copy of the trigger may have a different
+		 * value of tgenabled than the parent's trigger and thus might need to
+		 * be changed.
+		 */
+		if (recurse &&
+			rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE &&
+			(TRIGGER_FOR_ROW(oldtrig->tgtype)))
+		{
+			PartitionDesc partdesc = RelationGetPartitionDesc(rel);
+			int			i;
+
+			for (i = 0; i < partdesc->nparts; i++)
+			{
+				Relation	part;
+
+				part = relation_open(partdesc->oids[i], lockmode);
+				EnableDisableTriggerNew(part, NameStr(oldtrig->tgname),
+										fires_when, skip_system, recurse,
+										lockmode);
+				table_close(part, NoLock);	/* keep lock till commit */
+			}
+		}
+
 		InvokeObjectPostAlterHook(TriggerRelationId,
 								  oldtrig->oid, 0);
 	}
@@ -1900,6 +1930,19 @@ EnableDisableTrigger(Relation rel, const char *tgname,
 	 */
 	if (changed)
 		CacheInvalidateRelcache(rel);
+}
+
+/*
+ * ABI-compatible wrapper for the above.  To keep as close possible to the old
+ * behavior, this never recurses.  Do not call this function in new code.
+ */
+void
+EnableDisableTrigger(Relation rel, const char *tgname,
+					 char fires_when, bool skip_system,
+					 LOCKMODE lockmode)
+{
+	EnableDisableTriggerNew(rel, tgname, fires_when, skip_system,
+							true, lockmode);
 }
 
 
@@ -4196,13 +4239,17 @@ AfterTriggerExecute(EState *estate,
 	bool		should_free_trig = false;
 	bool		should_free_new = false;
 
-	/*
-	 * Locate trigger in trigdesc.
-	 */
 	LocTriggerData.tg_trigger = NULL;
 	LocTriggerData.tg_trigslot = NULL;
 	LocTriggerData.tg_newslot = NULL;
 
+	/*
+	 * Locate trigger in trigdesc.  It might not be present, and in fact the
+	 * trigdesc could be NULL, if the trigger was dropped since the event was
+	 * queued.  In that case, silently do nothing.
+	 */
+	if (trigdesc == NULL)
+		return;
 	for (tgindx = 0; tgindx < trigdesc->numtriggers; tgindx++)
 	{
 		if (trigdesc->triggers[tgindx].tgoid == tgoid)
@@ -4212,7 +4259,7 @@ AfterTriggerExecute(EState *estate,
 		}
 	}
 	if (LocTriggerData.tg_trigger == NULL)
-		elog(ERROR, "could not find trigger %u", tgoid);
+		return;
 
 	/*
 	 * If doing EXPLAIN ANALYZE, start charging time to this trigger. We want
@@ -4532,6 +4579,7 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 					rInfo = ExecGetTriggerResultRel(estate, evtshared->ats_relid);
 					rel = rInfo->ri_RelationDesc;
 					trigdesc = rInfo->ri_TrigDesc;
+					/* caution: trigdesc could be NULL here */
 					finfo = rInfo->ri_TrigFunctions;
 					instr = rInfo->ri_TrigInstrument;
 					if (slot1 != NULL)
@@ -4547,9 +4595,6 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 						slot2 = MakeSingleTupleTableSlot(rel->rd_att,
 														 &TTSOpsMinimalTuple);
 					}
-					if (trigdesc == NULL)	/* should not happen */
-						elog(ERROR, "relation %u has no triggers",
-							 evtshared->ats_relid);
 				}
 
 				/*
@@ -4668,11 +4713,13 @@ GetAfterTriggersStoreSlot(AfterTriggersTableData *table,
 		MemoryContext	oldcxt;
 
 		/*
-		 * We only need this slot only until AfterTriggerEndQuery, but making
-		 * it last till end-of-subxact is good enough.  It'll be freed by
-		 * AfterTriggerFreeQuery().
+		 * We need this slot only until AfterTriggerEndQuery, but making it
+		 * last till end-of-subxact is good enough.  It'll be freed by
+		 * AfterTriggerFreeQuery().  However, the passed-in tupdesc might have
+		 * a different lifespan, so we'd better make a copy of that.
 		 */
 		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		tupdesc = CreateTupleDescCopy(tupdesc);
 		table->storeslot = MakeSingleTupleTableSlot(tupdesc, &TTSOpsVirtual);
 		MemoryContextSwitchTo(oldcxt);
 	}
@@ -4968,7 +5015,12 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		if (ts)
 			tuplestore_end(ts);
 		if (table->storeslot)
-			ExecDropSingleTupleTableSlot(table->storeslot);
+		{
+			TupleTableSlot *slot = table->storeslot;
+
+			table->storeslot = NULL;
+			ExecDropSingleTupleTableSlot(slot);
+		}
 	}
 
 	/*

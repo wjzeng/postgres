@@ -798,7 +798,7 @@ PGPing PQping(const char *conninfo);
     connection parameters.  There are two accepted formats for these strings:
     plain keyword/value strings
     and URIs.  URIs generally follow
-    <ulink url="https://tools.ietf.org/html/rfc3986">RFC
+    <ulink url="https://datatracker.ietf.org/doc/html/rfc3986">RFC
     3986</ulink>, except that multi-host connection strings are allowed
     as further described below.
    </para>
@@ -1600,7 +1600,7 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <term><literal>sslcrl</literal></term>
       <listitem>
        <para>
-        This parameter specifies the file name of the SSL certificate
+        This parameter specifies the file name of the SSL server certificate
         revocation list (CRL).  Certificates listed in this file, if it
         exists, will be rejected while attempting to authenticate the
         server's certificate.  The default is
@@ -2374,9 +2374,7 @@ const char *PQsslAttribute(const PGconn *conn, const char *attribute_name);
          <term><literal>compression</literal></term>
           <listitem>
            <para>
-            If SSL compression is in use, returns the name of the compression
-            algorithm, or "on" if compression is used but the algorithm is
-            not known. If compression is not in use, returns "off".
+            Returns "on" if SSL compression is in use, else it returns "off".
            </para>
           </listitem>
          </varlistentry>
@@ -4943,11 +4941,12 @@ int PQsetnonblocking(PGconn *conn, int arg);
       </para>
 
       <para>
-       In the nonblocking state, calls to
+       In the nonblocking state, successful calls to
        <function>PQsendQuery</function>, <function>PQputline</function>,
        <function>PQputnbytes</function>, <function>PQputCopyData</function>,
-       and <function>PQendcopy</function> will not block but instead return
-       an error if they need to be called again.
+       and <function>PQendcopy</function> will not block;  their changes
+       are stored in the local output buffer until they are flushed.
+       Unsuccessful calls will return an error and must be retried.
       </para>
 
       <para>
@@ -7454,9 +7453,11 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
        <primary><envar>PGSERVICEFILE</envar></primary>
       </indexterm>
       <envar>PGSERVICEFILE</envar> specifies the name of the per-user
-      connection service file.  If not set, it defaults
-      to <filename>~/.pg_service.conf</filename>
+      connection service file
       (see <xref linkend="libpq-pgservice"/>).
+      Defaults to <filename>~/.pg_service.conf</filename>, or
+      <filename>%APPDATA%\postgresql\.pg_service.conf</filename> on
+      Microsoft Windows.
      </para>
     </listitem>
 
@@ -7716,11 +7717,11 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
    The file <filename>.pgpass</filename> in a user's home directory can
    contain passwords to
    be used if the connection requires a password (and no password has been
-   specified  otherwise). On Microsoft Windows the file is named
+   specified otherwise). On Microsoft Windows the file is named
    <filename>%APPDATA%\postgresql\pgpass.conf</filename> (where
    <filename>%APPDATA%</filename> refers to the Application Data subdirectory in
    the user's profile).
-   Alternatively, a password file can be specified
+   Alternatively, the password file to use can be specified
    using the connection parameter <xref linkend="libpq-connect-passfile"/>
    or the environment variable <envar>PGPASSFILE</envar>.
   </para>
@@ -7779,26 +7780,34 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
   <para>
    The connection service file allows libpq connection parameters to be
    associated with a single service name. That service name can then be
-   specified by a libpq connection, and the associated settings will be
+   specified in a libpq connection string, and the associated settings will be
    used. This allows connection parameters to be modified without requiring
-   a recompile of the libpq application. The service name can also be
+   a recompile of the libpq-using application. The service name can also be
    specified using the <envar>PGSERVICE</envar> environment variable.
   </para>
 
   <para>
-   The connection service file can be a per-user service file
-   at <filename>~/.pg_service.conf</filename> or the location
-   specified by the environment variable <envar>PGSERVICEFILE</envar>,
-   or it can be a system-wide file
-   at <filename>`pg_config --sysconfdir`/pg_service.conf</filename> or in the directory
-   specified by the environment variable
-   <envar>PGSYSCONFDIR</envar>.  If service definitions with the same
-   name exist in the user and the system file, the user file takes
-   precedence.
+   Service names can be defined in either a per-user service file or a
+   system-wide file.  If the same service name exists in both the user
+   and the system file, the user file takes precedence.
+   By default, the per-user service file is named
+   <filename>~/.pg_service.conf</filename>.
+   On Microsoft Windows, it is named
+   <filename>%APPDATA%\postgresql\.pg_service.conf</filename> (where
+   <filename>%APPDATA%</filename> refers to the Application Data subdirectory
+   in the user's profile).  A different file name can be specified by
+   setting the environment variable <envar>PGSERVICEFILE</envar>.
+   The system-wide file is named <filename>pg_service.conf</filename>.
+   By default it is sought in the <filename>etc</filename> directory
+   of the <productname>PostgreSQL</productname> installation
+   (use <literal>pg_config --sysconfdir</literal> to identify this
+   directory precisely).  Another directory, but not a different file
+   name, can be specified by setting the environment variable
+   <envar>PGSYSCONFDIR</envar>.
   </para>
 
   <para>
-   The file uses an <quote>INI file</quote> format where the section
+   Either service file uses an <quote>INI file</quote> format where the section
    name is the service name and the parameters are connection
    parameters; see <xref linkend="libpq-paramkeywords"/> for a list.  For
    example:
@@ -7809,8 +7818,21 @@ host=somehost
 port=5433
 user=admin
 </programlisting>
-   An example file is provided at
+   An example file is provided in
+   the <productname>PostgreSQL</productname> installation at
    <filename>share/pg_service.conf.sample</filename>.
+  </para>
+
+  <para>
+   Connection parameters obtained from a service file are combined with
+   parameters obtained from other sources.  A service file setting
+   overrides the corresponding environment variable, and in turn can be
+   overridden by a value given directly in the connection string.
+   For example, using the above service file, a connection string
+   <literal>service=mydb port=5434</literal> will use
+   host <literal>somehost</literal>, port <literal>5434</literal>,
+   user <literal>admin</literal>, and other parameters as set by
+   environment variables or built-in defaults.
   </para>
  </sect1>
 
@@ -8016,21 +8038,33 @@ ldap://ldap.acme.com/cn=dbserver,cn=hosts?pgconnectinfo?base?(objectclass=*)
   <para>
    If the server attempts to verify the identity of the
    client by requesting the client's leaf certificate,
-   <application>libpq</application> will send the certificates stored in
+   <application>libpq</application> will send the certificate(s) stored in
    file <filename>~/.postgresql/postgresql.crt</filename> in the user's home
    directory.  The certificates must chain to the root certificate trusted
    by the server.  A matching
    private key file <filename>~/.postgresql/postgresql.key</filename> must also
-   be present. The private
-   key file must not allow any access to world or group; achieve this by the
-   command <command>chmod 0600 ~/.postgresql/postgresql.key</command>.
+   be present.
    On Microsoft Windows these files are named
    <filename>%APPDATA%\postgresql\postgresql.crt</filename> and
-   <filename>%APPDATA%\postgresql\postgresql.key</filename>, and there
-   is no special permissions check since the directory is presumed secure.
+   <filename>%APPDATA%\postgresql\postgresql.key</filename>.
    The location of the certificate and key files can be overridden by the
-   connection parameters <literal>sslcert</literal> and <literal>sslkey</literal> or the
+   connection parameters <literal>sslcert</literal>
+   and <literal>sslkey</literal>, or by the
    environment variables <envar>PGSSLCERT</envar> and <envar>PGSSLKEY</envar>.
+  </para>
+
+  <para>
+   On Unix systems, the permissions on the private key file must disallow
+   any access to world or group; achieve this by a command such as
+   <command>chmod 0600 ~/.postgresql/postgresql.key</command>.
+   Alternatively, the file can be owned by root and have group read access
+   (that is, <literal>0640</literal> permissions).  That setup is intended
+   for installations where certificate and key files are managed by the
+   operating system.  The user of <application>libpq</application> should
+   then be made a member of the group that has access to those certificate
+   and key files.  (On Microsoft Windows, there is no file permissions
+   check, since the <filename>%APPDATA%\postgresql</filename> directory is
+   presumed secure.)
   </para>
 
   <para>
@@ -8279,6 +8313,8 @@ ldap://ldap.acme.com/cn=dbserver,cn=hosts?pgconnectinfo?base?(objectclass=*)
    that the <literal>libssl</literal> and/or <literal>libcrypto</literal> libraries
    have been initialized by your application, so that
    <application>libpq</application> will not also initialize those libraries.
+   However, this is unnecessary when using <productname>OpenSSL</productname>
+   version 1.1.0 or later, as duplicate initializations are no longer problematic.
   </para>
 
   <para>

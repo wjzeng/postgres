@@ -10,8 +10,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: plpython (PostgreSQL) 12\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@lists.postgresql.org\n"
-"POT-Creation-Date: 2020-05-16 09:50+0000\n"
-"PO-Revision-Date: 2019-06-06 17:26-0400\n"
+"POT-Creation-Date: 2024-11-09 06:56+0000\n"
+"PO-Revision-Date: 2024-11-09 10:06+0100\n"
 "Last-Translator: Carlos Chapi <carlos.chapi@2ndquadrant.com>\n"
 "Language-Team: PgSQL-es-Ayuda <pgsql-es-ayuda@lists.postgresql.org>\n"
 "Language: es\n"
@@ -68,7 +68,7 @@ msgstr "el resultado de la consulta tiene demasiados registros y no entran en un
 msgid "closing a cursor in an aborted subtransaction"
 msgstr "cerrando un cursor en una subtransacción abortada"
 
-#: plpy_elog.c:129 plpy_elog.c:130 plpy_plpymodule.c:553
+#: plpy_elog.c:126 plpy_elog.c:127 plpy_plpymodule.c:551
 #, c-format
 msgid "%s"
 msgstr "%s"
@@ -108,83 +108,83 @@ msgstr "procedimiento PL/Python no returnó None"
 msgid "PL/Python function with return type \"void\" did not return None"
 msgstr "función PL/Python con tipo de retorno «void» no retorna None"
 
-#: plpy_exec.c:375 plpy_exec.c:401
-#, c-format
-msgid "unexpected return value from trigger procedure"
-msgstr "valor de retorno no esperado desde el procedimiento disparador"
-
-#: plpy_exec.c:376
-#, c-format
-msgid "Expected None or a string."
-msgstr "Se esperaba None o una cadena."
-
-#: plpy_exec.c:391
-#, c-format
-msgid "PL/Python trigger function returned \"MODIFY\" in a DELETE trigger -- ignored"
-msgstr "función de disparador de PL/Python retorno «MODIFY» en un disparador de tipo DELETE -- ignorado"
-
-#: plpy_exec.c:402
-#, c-format
-msgid "Expected None, \"OK\", \"SKIP\", or \"MODIFY\"."
-msgstr "Se esperaba None, «OK», «SKIP» o «MODIFY»."
-
-#: plpy_exec.c:452
-#, c-format
-msgid "PyList_SetItem() failed, while setting up arguments"
-msgstr "PyList_SetItem() falló, mientras se inicializaban los argumentos"
-
-#: plpy_exec.c:456
-#, c-format
-msgid "PyDict_SetItemString() failed, while setting up arguments"
-msgstr "PyDict_SetItemString() falló, mientras se inicializaban los argumentos"
-
-#: plpy_exec.c:468
+#: plpy_exec.c:250
 #, c-format
 msgid "function returning record called in context that cannot accept type record"
 msgstr "se llamó una función que retorna un registro en un contexto que no puede aceptarlo"
 
-#: plpy_exec.c:685
+#: plpy_exec.c:398 plpy_exec.c:424
+#, c-format
+msgid "unexpected return value from trigger procedure"
+msgstr "valor de retorno no esperado desde el procedimiento disparador"
+
+#: plpy_exec.c:399
+#, c-format
+msgid "Expected None or a string."
+msgstr "Se esperaba None o una cadena."
+
+#: plpy_exec.c:414
+#, c-format
+msgid "PL/Python trigger function returned \"MODIFY\" in a DELETE trigger -- ignored"
+msgstr "función de disparador de PL/Python retorno «MODIFY» en un disparador de tipo DELETE -- ignorado"
+
+#: plpy_exec.c:425
+#, c-format
+msgid "Expected None, \"OK\", \"SKIP\", or \"MODIFY\"."
+msgstr "Se esperaba None, «OK», «SKIP» o «MODIFY»."
+
+#: plpy_exec.c:482
+#, c-format
+msgid "PyList_SetItem() failed, while setting up arguments"
+msgstr "PyList_SetItem() falló, mientras se inicializaban los argumentos"
+
+#: plpy_exec.c:486
+#, c-format
+msgid "PyDict_SetItemString() failed, while setting up arguments"
+msgstr "PyDict_SetItemString() falló, mientras se inicializaban los argumentos"
+
+#: plpy_exec.c:715
 #, c-format
 msgid "while creating return value"
 msgstr "mientras se creaba el valor de retorno"
 
-#: plpy_exec.c:919
+#: plpy_exec.c:966
 #, c-format
 msgid "TD[\"new\"] deleted, cannot modify row"
 msgstr "TD[\"new\"] borrado, no se puede modicar el registro"
 
-#: plpy_exec.c:924
+#: plpy_exec.c:971
 #, c-format
 msgid "TD[\"new\"] is not a dictionary"
 msgstr "TD[\"new\"] no es un diccionario"
 
-#: plpy_exec.c:951
+#: plpy_exec.c:998
 #, c-format
 msgid "TD[\"new\"] dictionary key at ordinal position %d is not a string"
 msgstr "el nombre del atributo de TD[\"new\"] en la posición %d no es una cadena"
 
-#: plpy_exec.c:958
+#: plpy_exec.c:1005
 #, c-format
 msgid "key \"%s\" found in TD[\"new\"] does not exist as a column in the triggering row"
 msgstr "la llave «%s» en TD[\"new\"] no existe como columna en la fila disparadora"
 
-#: plpy_exec.c:963
+#: plpy_exec.c:1010
 #, c-format
 msgid "cannot set system attribute \"%s\""
 msgstr "no se puede definir el atributo de sistema «%s»"
 
-#: plpy_exec.c:968
+#: plpy_exec.c:1015
 #, c-format
 msgid "cannot set generated column \"%s\""
 msgstr "no se puede definir el atributo generado «%s»"
 
-#: plpy_exec.c:1026
+#: plpy_exec.c:1073
 #, c-format
 msgid "while modifying trigger row"
 msgstr "mientras se modificaba la fila de disparador"
 
 # FIXME not very happy with this
-#: plpy_exec.c:1087
+#: plpy_exec.c:1134
 #, c-format
 msgid "forcibly aborting a subtransaction that has not been exited"
 msgstr "abortando una subtransacción que no se ha cerrado"
@@ -229,71 +229,71 @@ msgstr "función PL/Python «%s»"
 msgid "PL/Python anonymous code block"
 msgstr "bloque de código anónimo de PL/Python"
 
-#: plpy_plpymodule.c:186 plpy_plpymodule.c:189
+#: plpy_plpymodule.c:184 plpy_plpymodule.c:187
 #, c-format
 msgid "could not import \"plpy\" module"
 msgstr "no se pudo importar el módulo «plpy»"
 
-#: plpy_plpymodule.c:204
+#: plpy_plpymodule.c:202
 #, c-format
 msgid "could not create the spiexceptions module"
 msgstr "no se pudo crear el módulo spiexceptions"
 
-#: plpy_plpymodule.c:212
+#: plpy_plpymodule.c:210
 #, c-format
 msgid "could not add the spiexceptions module"
 msgstr "no se pudo importar el módulo spiexceptions"
 
-#: plpy_plpymodule.c:280
+#: plpy_plpymodule.c:278
 #, c-format
 msgid "could not generate SPI exceptions"
 msgstr "no se pudo generar excepciones SPI"
 
-#: plpy_plpymodule.c:448
+#: plpy_plpymodule.c:446
 #, c-format
 msgid "could not unpack arguments in plpy.elog"
 msgstr "no se pudo desempaquetar los argumentos de plpy.elog"
 
-#: plpy_plpymodule.c:457
+#: plpy_plpymodule.c:455
 msgid "could not parse error message in plpy.elog"
 msgstr "no se pudo analizar el mensaje de error de plpy.elog"
 
-#: plpy_plpymodule.c:474
+#: plpy_plpymodule.c:472
 #, c-format
 msgid "argument 'message' given by name and position"
 msgstr "el argumento 'message' fue pasado por nombre y posición"
 
-#: plpy_plpymodule.c:501
+#: plpy_plpymodule.c:499
 #, c-format
 msgid "'%s' is an invalid keyword argument for this function"
 msgstr "«%s» no es un argumento válido para esta función"
 
-#: plpy_plpymodule.c:512 plpy_plpymodule.c:518
+#: plpy_plpymodule.c:510 plpy_plpymodule.c:516
 #, c-format
 msgid "invalid SQLSTATE code"
 msgstr "código SQLSTATE no válido"
 
-#: plpy_procedure.c:230
+#: plpy_procedure.c:231
 #, c-format
 msgid "trigger functions can only be called as triggers"
 msgstr "las funciones disparadoras sólo pueden ser llamadas como disparadores"
 
-#: plpy_procedure.c:234
+#: plpy_procedure.c:235
 #, c-format
 msgid "PL/Python functions cannot return type %s"
 msgstr "las funciones PL/Python no pueden retornar el tipo %s"
 
-#: plpy_procedure.c:312
+#: plpy_procedure.c:313
 #, c-format
 msgid "PL/Python functions cannot accept type %s"
 msgstr "la funciones PL/Python no pueden aceptar el tipo %s"
 
-#: plpy_procedure.c:402
+#: plpy_procedure.c:403
 #, c-format
 msgid "could not compile PL/Python function \"%s\""
 msgstr "no se pudo compilar la función PL/Python «%s»"
 
-#: plpy_procedure.c:405
+#: plpy_procedure.c:406
 #, c-format
 msgid "could not compile anonymous PL/Python code block"
 msgstr "no se pudo compilar el bloque anónimo PL/Python"
@@ -353,65 +353,55 @@ msgstr "no se ha entrado en esta subtransacción"
 msgid "there is no subtransaction to exit from"
 msgstr "no hay una subtransacción de la cual salir"
 
-#: plpy_typeio.c:591
+#: plpy_typeio.c:592
 #, c-format
 msgid "could not import a module for Decimal constructor"
 msgstr "no se pudo importar un módulo para el constructor Decimal"
 
-#: plpy_typeio.c:595
+#: plpy_typeio.c:596
 #, c-format
 msgid "no Decimal attribute in module"
 msgstr "no se encontró atributo Decimal en el módulo"
 
-#: plpy_typeio.c:601
+#: plpy_typeio.c:602
 #, c-format
 msgid "conversion from numeric to Decimal failed"
 msgstr "falló la conversión de numeric a Decimal"
 
-#: plpy_typeio.c:915
+#: plpy_typeio.c:916
 #, c-format
 msgid "could not create bytes representation of Python object"
 msgstr "no se pudo crear la representación de cadena de bytes de Python"
 
-#: plpy_typeio.c:1063
+#: plpy_typeio.c:1064
 #, c-format
 msgid "could not create string representation of Python object"
 msgstr "no se pudo crear la representación de cadena de texto del objeto de Python"
 
-#: plpy_typeio.c:1074
+#: plpy_typeio.c:1075
 #, c-format
 msgid "could not convert Python object into cstring: Python string representation appears to contain null bytes"
 msgstr "no se pudo convertir el objeto Python a un cstring: la representación de cadena Python parece tener bytes nulos (\\0)"
 
-#: plpy_typeio.c:1183
-#, c-format
-msgid "number of array dimensions exceeds the maximum allowed (%d)"
-msgstr "el número de dimensiones del array excede el máximo permitido (%d)"
-
-#: plpy_typeio.c:1187
-#, c-format
-msgid "could not determine sequence length for function return value"
-msgstr "no se pudo determinar el largo de secuencia del retorno de valor de la función"
-
-#: plpy_typeio.c:1190 plpy_typeio.c:1194
-#, c-format
-msgid "array size exceeds the maximum allowed"
-msgstr "el tamaño del array excede el máximo permitido"
-
-#: plpy_typeio.c:1220
+#: plpy_typeio.c:1172
 #, c-format
 msgid "return value of function with array return type is not a Python sequence"
 msgstr "el valor de retorno de la función con tipo de retorno array no es una secuencia Python"
 
-#: plpy_typeio.c:1266
+#: plpy_typeio.c:1217
 #, c-format
-msgid "wrong length of inner sequence: has length %d, but %d was expected"
-msgstr "largo incorrecto de secuencia interna: tiene largo %d, pero se esperaba %d"
+msgid "could not determine sequence length for function return value"
+msgstr "no se pudo determinar el largo de secuencia del retorno de valor de la función"
 
-#: plpy_typeio.c:1268
+#: plpy_typeio.c:1237 plpy_typeio.c:1252 plpy_typeio.c:1268
 #, c-format
-msgid "To construct a multidimensional array, the inner sequences must all have the same length."
-msgstr "Para construir un array multidimensional, las secuencias internas deben tener todas el mismo largo."
+msgid "multidimensional arrays must have array expressions with matching dimensions"
+msgstr "los arrays multidimensionales deben tener expresiones de arrays con dimensiones coincidentes"
+
+#: plpy_typeio.c:1242
+#, c-format
+msgid "number of array dimensions exceeds the maximum allowed (%d)"
+msgstr "el número de dimensiones del array excede el máximo permitido (%d)"
 
 #: plpy_typeio.c:1347
 #, c-format

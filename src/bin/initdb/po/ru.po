@@ -6,21 +6,21 @@
 # Sergey Burladyan <eshkinkot@gmail.com>, 2009.
 # Andrey Sudnik <sudnikand@yandex.ru>, 2010.
 # Dmitriy Olshevskiy <olshevskiy87@bk.ru>, 2014.
-# Alexander Lakhin <exclusion@gmail.com>, 2012-2017, 2018, 2019, 2020.
+# Alexander Lakhin <exclusion@gmail.com>, 2012-2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024.
 msgid ""
 msgstr ""
 "Project-Id-Version: initdb (PostgreSQL current)\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@lists.postgresql.org\n"
-"POT-Creation-Date: 2020-05-02 06:52+0300\n"
-"PO-Revision-Date: 2020-10-29 15:03+0300\n"
+"POT-Creation-Date: 2023-05-03 05:57+0300\n"
+"PO-Revision-Date: 2024-09-07 06:49+0300\n"
 "Last-Translator: Alexander Lakhin <exclusion@gmail.com>\n"
 "Language-Team: Russian <pgsql-ru-general@postgresql.org>\n"
 "Language: ru\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n"
-"%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
 
 #: ../../../src/common/logging.c:236
 #, c-format
@@ -37,42 +37,42 @@ msgstr "ошибка: "
 msgid "warning: "
 msgstr "предупреждение: "
 
-#: ../../common/exec.c:138 ../../common/exec.c:255 ../../common/exec.c:301
+#: ../../common/exec.c:151 ../../common/exec.c:268 ../../common/exec.c:314
 #, c-format
 msgid "could not identify current directory: %m"
 msgstr "не удалось определить текущий каталог: %m"
 
-#: ../../common/exec.c:157
+#: ../../common/exec.c:170
 #, c-format
 msgid "invalid binary \"%s\""
 msgstr "неверный исполняемый файл \"%s\""
 
-#: ../../common/exec.c:207
+#: ../../common/exec.c:220
 #, c-format
 msgid "could not read binary \"%s\""
 msgstr "не удалось прочитать исполняемый файл \"%s\""
 
-#: ../../common/exec.c:215
+#: ../../common/exec.c:228
 #, c-format
 msgid "could not find a \"%s\" to execute"
 msgstr "не удалось найти запускаемый файл \"%s\""
 
-#: ../../common/exec.c:271 ../../common/exec.c:310
+#: ../../common/exec.c:284 ../../common/exec.c:323
 #, c-format
 msgid "could not change directory to \"%s\": %m"
 msgstr "не удалось перейти в каталог \"%s\": %m"
 
-#: ../../common/exec.c:288
+#: ../../common/exec.c:301
 #, c-format
 msgid "could not read symbolic link \"%s\": %m"
 msgstr "не удалось прочитать символическую ссылку \"%s\": %m"
 
-#: ../../common/exec.c:541
+#: ../../common/exec.c:554
 #, c-format
 msgid "pclose failed: %m"
 msgstr "ошибка pclose: %m"
 
-#: ../../common/exec.c:670 ../../common/exec.c:715 ../../common/exec.c:807
+#: ../../common/exec.c:708 ../../common/exec.c:753 ../../common/exec.c:845
 #: initdb.c:339
 #, c-format
 msgid "out of memory"
@@ -212,7 +212,7 @@ msgstr "дочерний процесс завершён по сигналу %d:
 #: ../../common/wait_error.c:72
 #, c-format
 msgid "child process exited with unrecognized status %d"
-msgstr "дочерний процесс завершился с нераспознанным состоянием %d"
+msgstr "дочерний процесс завершился с нераспознанным кодом состояния %d"
 
 #: ../../port/dirmod.c:221
 #, c-format
@@ -330,7 +330,7 @@ msgstr ""
 #: initdb.c:824
 #, c-format
 msgid "could not access file \"%s\": %m"
-msgstr "нет доступа к файлу \"%s\": %m"
+msgstr "ошибка при обращении к файлу \"%s\": %m"
 
 #: initdb.c:833
 #, c-format
@@ -870,7 +870,7 @@ msgstr ""
 #: initdb.c:2781 initdb.c:2863 initdb.c:3232
 #, c-format
 msgid "could not access directory \"%s\": %m"
-msgstr "нет доступа к каталогу \"%s\": %m"
+msgstr "ошибка при обращении к каталогу \"%s\": %m"
 
 #: initdb.c:2804
 #, c-format
@@ -902,13 +902,13 @@ msgid ""
 "It contains a dot-prefixed/invisible file, perhaps due to it being a mount "
 "point.\n"
 msgstr ""
-"Он содержит файл с точкой (невидимый), возможно это точка монтирования.\n"
+"Он содержит файл с точкой (невидимый), возможно, это точка монтирования.\n"
 
 #: initdb.c:2902
 #, c-format
 msgid ""
 "It contains a lost+found directory, perhaps due to it being a mount point.\n"
-msgstr "Он содержит подкаталог lost+found, возможно это точка монтирования.\n"
+msgstr "Он содержит подкаталог lost+found, возможно, это точка монтирования.\n"
 
 #: initdb.c:2905
 #, c-format
@@ -1021,11 +1021,11 @@ msgstr ""
 "--auth-local или --auth-host при следующем выполнении initdb.\n"
 
 #. translator: This is a placeholder in a shell command.
-#: initdb.c:3362
+#: initdb.c:3365
 msgid "logfile"
 msgstr "файл_журнала"
 
-#: initdb.c:3364
+#: initdb.c:3367
 #, c-format
 msgid ""
 "\n"
