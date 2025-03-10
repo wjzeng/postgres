@@ -389,9 +389,10 @@ static void AlterIndexNamespaces(Relation classRel, Relation rel,
 static void AlterSeqNamespaces(Relation classRel, Relation rel,
 							   Oid oldNspOid, Oid newNspOid, ObjectAddresses *objsMoved,
 							   LOCKMODE lockmode);
-static ObjectAddress ATExecAlterConstraint(Relation rel, ATAlterConstraint *cmdcon,
+static ObjectAddress ATExecAlterConstraint(List **wqueue, Relation rel,
+										   ATAlterConstraint *cmdcon,
 										   bool recurse, LOCKMODE lockmode);
-static bool ATExecAlterConstraintInternal(ATAlterConstraint *cmdcon, Relation conrel,
+static bool ATExecAlterConstraintInternal(List **wqueue, ATAlterConstraint *cmdcon, Relation conrel,
 										  Relation tgrel, Relation rel, HeapTuple contuple,
 										  bool recurse, List **otherrelids, LOCKMODE lockmode);
 static void AlterConstrTriggerDeferrability(Oid conoid, Relation tgrel, Relation rel,
@@ -941,10 +942,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * while raw defaults go into a list of RawColumnDefault structs that will
 	 * be processed by AddRelationNewConstraints.  (We can't deal with raw
 	 * expressions until we can do transformExpr.)
-	 *
-	 * We can set the atthasdef flags now in the tuple descriptor; this just
-	 * saves StoreAttrDefault from having to do an immediate update of the
-	 * pg_attribute rows.
 	 */
 	rawDefaults = NIL;
 	cookedDefaults = NIL;
@@ -953,11 +950,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	foreach(listptr, stmt->tableElts)
 	{
 		ColumnDef  *colDef = lfirst(listptr);
-		Form_pg_attribute attr;
 
 		attnum++;
-		attr = TupleDescAttr(descriptor, attnum - 1);
-
 		if (colDef->raw_default != NULL)
 		{
 			RawColumnDefault *rawEnt;
@@ -967,10 +961,8 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 			rawEnt->attnum = attnum;
 			rawEnt->raw_default = colDef->raw_default;
-			rawEnt->missingMode = false;
 			rawEnt->generated = colDef->generated;
 			rawDefaults = lappend(rawDefaults, rawEnt);
-			attr->atthasdef = true;
 		}
 		else if (colDef->cooked_default != NULL)
 		{
@@ -988,10 +980,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			cooked->inhcount = 0;	/* ditto */
 			cooked->is_no_inherit = false;
 			cookedDefaults = lappend(cookedDefaults, cooked);
-			attr->atthasdef = true;
 		}
-
-		populate_compact_attribute(descriptor, attnum - 1);
 	}
 
 	/*
@@ -5449,8 +5438,8 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab,
 											   lockmode);
 			break;
 		case AT_AlterConstraint:	/* ALTER CONSTRAINT */
-			address = ATExecAlterConstraint(rel, castNode(ATAlterConstraint,
-														  cmd->def),
+			address = ATExecAlterConstraint(wqueue, rel,
+											castNode(ATAlterConstraint, cmd->def),
 											cmd->recurse, lockmode);
 			break;
 		case AT_ValidateConstraint: /* VALIDATE CONSTRAINT */
@@ -6149,7 +6138,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap)
 		{
 			case CONSTR_CHECK:
 				needscan = true;
-				con->qualstate = ExecPrepareExpr((Expr *) expand_generated_columns_in_expr(con->qual, newrel ? newrel : oldrel, 1), estate);
+				con->qualstate = ExecPrepareExpr((Expr *) expand_generated_columns_in_expr(con->qual, oldrel, 1), estate);
 				break;
 			case CONSTR_FOREIGN:
 				/* Nothing to do here */
@@ -7321,14 +7310,6 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 		rawEnt->attnum = attribute->attnum;
 		rawEnt->raw_default = copyObject(colDef->raw_default);
-
-		/*
-		 * Attempt to skip a complete table rewrite by storing the specified
-		 * DEFAULT value outside of the heap.  This may be disabled inside
-		 * AddRelationNewConstraints if the optimization cannot be applied.
-		 */
-		rawEnt->missingMode = (colDef->generated != ATTRIBUTE_GENERATED_STORED);
-
 		rawEnt->generated = colDef->generated;
 
 		/*
@@ -7340,13 +7321,6 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 
 		/* Make the additional catalog changes visible */
 		CommandCounterIncrement();
-
-		/*
-		 * Did the request for a missing value work? If not we'll have to do a
-		 * rewrite
-		 */
-		if (!rawEnt->missingMode)
-			tab->rewrite |= AT_REWRITE_DEFAULT_VAL;
 	}
 
 	/*
@@ -7363,9 +7337,9 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	 * rejects nulls.  If there are any domain constraints then we construct
 	 * an explicit NULL default value that will be passed through
 	 * CoerceToDomain processing.  (This is a tad inefficient, since it causes
-	 * rewriting the table which we really don't have to do, but the present
-	 * design of domain processing doesn't offer any simple way of checking
-	 * the constraints more directly.)
+	 * rewriting the table which we really wouldn't have to do; but we do it
+	 * to preserve the historical behavior that such a failure will be raised
+	 * only if the table currently contains some rows.)
 	 *
 	 * Note: we use build_column_default, and not just the cooked default
 	 * returned by AddRelationNewConstraints, so that the right thing happens
@@ -7379,11 +7353,13 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	 * and the later subcommands had been issued in new ALTER TABLE commands.
 	 *
 	 * We can skip this entirely for relations without storage, since Phase 3
-	 * is certainly not going to touch them.  System attributes don't have
-	 * interesting defaults, either.
+	 * is certainly not going to touch them.
 	 */
 	if (RELKIND_HAS_STORAGE(relkind))
 	{
+		bool		has_domain_constraints;
+		bool		has_missing = false;
+
 		/*
 		 * For an identity column, we can't use build_column_default(),
 		 * because the sequence ownership isn't set yet.  So do it manually.
@@ -7396,14 +7372,13 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			nve->typeId = attribute->atttypid;
 
 			defval = (Expr *) nve;
-
-			/* must do a rewrite for identity columns */
-			tab->rewrite |= AT_REWRITE_DEFAULT_VAL;
 		}
 		else
 			defval = (Expr *) build_column_default(rel, attribute->attnum);
 
-		if (!defval && DomainHasConstraints(attribute->atttypid))
+		/* Build CoerceToDomain(NULL) expression if needed */
+		has_domain_constraints = DomainHasConstraints(attribute->atttypid);
+		if (!defval && has_domain_constraints)
 		{
 			Oid			baseTypeId;
 			int32		baseTypeMod;
@@ -7429,18 +7404,63 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		{
 			NewColumnValue *newval;
 
+			/* Prepare defval for execution, either here or in Phase 3 */
+			defval = expression_planner(defval);
+
+			/* Add the new default to the newvals list */
 			newval = (NewColumnValue *) palloc0(sizeof(NewColumnValue));
 			newval->attnum = attribute->attnum;
-			newval->expr = expression_planner(defval);
+			newval->expr = defval;
 			newval->is_generated = (colDef->generated != '\0');
 
 			tab->newvals = lappend(tab->newvals, newval);
+
+			/*
+			 * Attempt to skip a complete table rewrite by storing the
+			 * specified DEFAULT value outside of the heap.  This is only
+			 * allowed for plain relations and non-generated columns, and the
+			 * default expression can't be volatile (stable is OK).  Note that
+			 * contain_volatile_functions deems CoerceToDomain immutable, but
+			 * here we consider that coercion to a domain with constraints is
+			 * volatile; else it might fail even when the table is empty.
+			 */
+			if (rel->rd_rel->relkind == RELKIND_RELATION &&
+				!colDef->generated &&
+				!has_domain_constraints &&
+				!contain_volatile_functions((Node *) defval))
+			{
+				EState	   *estate;
+				ExprState  *exprState;
+				Datum		missingval;
+				bool		missingIsNull;
+
+				/* Evaluate the default expression */
+				estate = CreateExecutorState();
+				exprState = ExecPrepareExpr(defval, estate);
+				missingval = ExecEvalExpr(exprState,
+										  GetPerTupleExprContext(estate),
+										  &missingIsNull);
+				/* If it turns out NULL, nothing to do; else store it */
+				if (!missingIsNull)
+				{
+					StoreAttrMissingVal(rel, attribute->attnum, missingval);
+					has_missing = true;
+				}
+				FreeExecutorState(estate);
+			}
+			else
+			{
+				/*
+				 * Failed to use missing mode.  We have to do a table rewrite
+				 * to install the value --- unless it's a virtual generated
+				 * column.
+				 */
+				if (colDef->generated != ATTRIBUTE_GENERATED_VIRTUAL)
+					tab->rewrite |= AT_REWRITE_DEFAULT_VAL;
+			}
 		}
 
-		if (DomainHasConstraints(attribute->atttypid))
-			tab->rewrite |= AT_REWRITE_DEFAULT_VAL;
-
-		if (!TupleDescAttr(rel->rd_att, attribute->attnum - 1)->atthasmissing)
+		if (!has_missing)
 		{
 			/*
 			 * If the new column is NOT NULL, and there is no missing value,
@@ -8044,7 +8064,6 @@ ATExecColumnDefault(Relation rel, const char *colName,
 		rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 		rawEnt->attnum = attnum;
 		rawEnt->raw_default = newDefault;
-		rawEnt->missingMode = false;
 		rawEnt->generated = '\0';
 
 		/*
@@ -8082,7 +8101,7 @@ ATExecCookedColumnDefault(Relation rel, AttrNumber attnum,
 	RemoveAttrDefault(RelationGetRelid(rel), attnum, DROP_RESTRICT, false,
 					  true);
 
-	(void) StoreAttrDefault(rel, attnum, newDefault, true, false);
+	(void) StoreAttrDefault(rel, attnum, newDefault, true);
 
 	ObjectAddressSubSet(address, RelationRelationId,
 						RelationGetRelid(rel), attnum);
@@ -8545,7 +8564,6 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 	rawEnt = (RawColumnDefault *) palloc(sizeof(RawColumnDefault));
 	rawEnt->attnum = attnum;
 	rawEnt->raw_default = newExpr;
-	rawEnt->missingMode = false;
 	rawEnt->generated = attgenerated;
 
 	/* Store the generated expression */
@@ -10034,7 +10052,8 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	 */
 	if (fkconstraint->fk_with_period)
 	{
-		if (fkconstraint->fk_upd_action == FKCONSTR_ACTION_CASCADE ||
+		if (fkconstraint->fk_upd_action == FKCONSTR_ACTION_RESTRICT ||
+			fkconstraint->fk_upd_action == FKCONSTR_ACTION_CASCADE ||
 			fkconstraint->fk_upd_action == FKCONSTR_ACTION_SETNULL ||
 			fkconstraint->fk_upd_action == FKCONSTR_ACTION_SETDEFAULT)
 			ereport(ERROR,
@@ -10042,7 +10061,8 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 					errmsg("unsupported %s action for foreign key constraint using PERIOD",
 						   "ON UPDATE"));
 
-		if (fkconstraint->fk_del_action == FKCONSTR_ACTION_CASCADE ||
+		if (fkconstraint->fk_del_action == FKCONSTR_ACTION_RESTRICT ||
+			fkconstraint->fk_del_action == FKCONSTR_ACTION_CASCADE ||
 			fkconstraint->fk_del_action == FKCONSTR_ACTION_SETNULL ||
 			fkconstraint->fk_del_action == FKCONSTR_ACTION_SETDEFAULT)
 			ereport(ERROR,
@@ -11796,14 +11816,14 @@ GetForeignKeyCheckTriggers(Relation trigrel,
  *
  * Update the attributes of a constraint.
  *
- * Currently only works for Foreign Key constraints.
+ * Currently only works for Foreign Key and not null constraints.
  *
  * If the constraint is modified, returns its address; otherwise, return
  * InvalidObjectAddress.
  */
 static ObjectAddress
-ATExecAlterConstraint(Relation rel, ATAlterConstraint *cmdcon, bool recurse,
-					  LOCKMODE lockmode)
+ATExecAlterConstraint(List **wqueue, Relation rel, ATAlterConstraint *cmdcon,
+					  bool recurse, LOCKMODE lockmode)
 {
 	Relation	conrel;
 	Relation	tgrel;
@@ -11854,11 +11874,26 @@ ATExecAlterConstraint(Relation rel, ATAlterConstraint *cmdcon, bool recurse,
 						cmdcon->conname, RelationGetRelationName(rel))));
 
 	currcon = (Form_pg_constraint) GETSTRUCT(contuple);
-	if (currcon->contype != CONSTRAINT_FOREIGN)
+	if (cmdcon->alterDeferrability && currcon->contype != CONSTRAINT_FOREIGN)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("constraint \"%s\" of relation \"%s\" is not a foreign key constraint",
 						cmdcon->conname, RelationGetRelationName(rel))));
+	if (cmdcon->alterInheritability &&
+		currcon->contype != CONSTRAINT_NOTNULL)
+		ereport(ERROR,
+				errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				errmsg("constraint \"%s\" of relation \"%s\" is not a not-null constraint",
+					   cmdcon->conname, RelationGetRelationName(rel)));
+
+	/* Refuse to modify inheritability of inherited constraints */
+	if (cmdcon->alterInheritability &&
+		cmdcon->noinherit && currcon->coninhcount > 0)
+		ereport(ERROR,
+				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("cannot alter inherited constraint \"%s\" on relation \"%s\"",
+					   NameStr(currcon->conname),
+					   RelationGetRelationName(rel)));
 
 	/*
 	 * If it's not the topmost constraint, raise an error.
@@ -11909,8 +11944,8 @@ ATExecAlterConstraint(Relation rel, ATAlterConstraint *cmdcon, bool recurse,
 	/*
 	 * Do the actual catalog work, and recurse if necessary.
 	 */
-	if (ATExecAlterConstraintInternal(cmdcon, conrel, tgrel, rel, contuple,
-									  recurse, &otherrelids, lockmode))
+	if (ATExecAlterConstraintInternal(wqueue, cmdcon, conrel, tgrel, rel,
+									  contuple, recurse, &otherrelids, lockmode))
 		ObjectAddressSet(address, ConstraintRelationId, currcon->oid);
 
 	/*
@@ -11941,9 +11976,10 @@ ATExecAlterConstraint(Relation rel, ATAlterConstraint *cmdcon, bool recurse,
  * but existing releases don't do that.)
  */
 static bool
-ATExecAlterConstraintInternal(ATAlterConstraint *cmdcon, Relation conrel,
-							  Relation tgrel, Relation rel, HeapTuple contuple,
-							  bool recurse, List **otherrelids, LOCKMODE lockmode)
+ATExecAlterConstraintInternal(List **wqueue, ATAlterConstraint *cmdcon,
+							  Relation conrel, Relation tgrel, Relation rel,
+							  HeapTuple contuple, bool recurse,
+							  List **otherrelids, LOCKMODE lockmode)
 {
 	Form_pg_constraint currcon;
 	Oid			refrelid = InvalidOid;
@@ -12023,12 +12059,80 @@ ATExecAlterConstraintInternal(ATAlterConstraint *cmdcon, Relation conrel,
 			Relation	childrel;
 
 			childrel = table_open(childcon->conrelid, lockmode);
-			ATExecAlterConstraintInternal(cmdcon, conrel, tgrel, childrel, childtup,
-										  recurse, otherrelids, lockmode);
+			ATExecAlterConstraintInternal(wqueue, cmdcon, conrel, tgrel, childrel,
+										  childtup, recurse, otherrelids, lockmode);
 			table_close(childrel, NoLock);
 		}
 
 		systable_endscan(pscan);
+	}
+
+	/*
+	 * Update the catalog for inheritability.  No work if the constraint is
+	 * already in the requested state.
+	 */
+	if (cmdcon->alterInheritability &&
+		(cmdcon->noinherit != currcon->connoinherit))
+	{
+		AttrNumber	colNum;
+		char	   *colName;
+		List	   *children;
+		HeapTuple	copyTuple;
+		Form_pg_constraint copy_con;
+
+		/* The current implementation only works for NOT NULL constraints */
+		Assert(currcon->contype == CONSTRAINT_NOTNULL);
+
+		copyTuple = heap_copytuple(contuple);
+		copy_con = (Form_pg_constraint) GETSTRUCT(copyTuple);
+		copy_con->connoinherit = cmdcon->noinherit;
+
+		CatalogTupleUpdate(conrel, &copyTuple->t_self, copyTuple);
+		CommandCounterIncrement();
+		heap_freetuple(copyTuple);
+		changed = true;
+
+		/* Fetch the column number and name */
+		colNum = extractNotNullColumn(contuple);
+		colName = get_attname(currcon->conrelid, colNum, false);
+
+		/*
+		 * Propagate the change to children.  For SET NO INHERIT, we don't
+		 * recursively affect children, just the immediate level.
+		 */
+		children = find_inheritance_children(RelationGetRelid(rel),
+											 lockmode);
+		foreach_oid(childoid, children)
+		{
+			ObjectAddress addr;
+
+			if (cmdcon->noinherit)
+			{
+				HeapTuple	childtup;
+				Form_pg_constraint childcon;
+
+				childtup = findNotNullConstraint(childoid, colName);
+				if (!childtup)
+					elog(ERROR, "cache lookup failed for not-null constraint on column \"%s\" of relation %u",
+						 colName, childoid);
+				childcon = (Form_pg_constraint) GETSTRUCT(childtup);
+				Assert(childcon->coninhcount > 0);
+				childcon->coninhcount--;
+				childcon->conislocal = true;
+				CatalogTupleUpdate(conrel, &childtup->t_self, childtup);
+				heap_freetuple(childtup);
+			}
+			else
+			{
+				Relation	childrel = table_open(childoid, NoLock);
+
+				addr = ATExecSetNotNull(wqueue, childrel, NameStr(currcon->conname),
+										colName, true, true, lockmode);
+				if (OidIsValid(addr.objectId))
+					CommandCounterIncrement();
+				table_close(childrel, NoLock);
+			}
+		}
 	}
 
 	return changed;
@@ -14097,7 +14201,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 		RemoveAttrDefault(RelationGetRelid(rel), attnum, DROP_RESTRICT, true,
 						  true);
 
-		StoreAttrDefault(rel, attnum, defaultexpr, true, false);
+		(void) StoreAttrDefault(rel, attnum, defaultexpr, true);
 	}
 
 	ObjectAddressSubSet(address, RelationRelationId,

@@ -2663,10 +2663,38 @@ alter_table_cmd:
 					n->def = (Node *) c;
 					c->conname = $3;
 					c->alterDeferrability = true;
-					processCASbits($4, @4, "ALTER CONSTRAINT statement",
+					processCASbits($4, @4, "FOREIGN KEY",
 									&c->deferrable,
 									&c->initdeferred,
 									NULL, NULL, NULL, yyscanner);
+					$$ = (Node *) n;
+				}
+			/* ALTER TABLE <name> ALTER CONSTRAINT SET INHERIT */
+			| ALTER CONSTRAINT name SET INHERIT
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					ATAlterConstraint *c = makeNode(ATAlterConstraint);
+
+					n->subtype = AT_AlterConstraint;
+					n->def = (Node *) c;
+					c->conname = $3;
+					c->alterInheritability = true;
+					c->noinherit = false;
+
+					$$ = (Node *) n;
+				}
+			/* ALTER TABLE <name> ALTER CONSTRAINT SET NO INHERIT */
+			| ALTER CONSTRAINT name SET NO INHERIT
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					ATAlterConstraint *c = makeNode(ATAlterConstraint);
+
+					n->subtype = AT_AlterConstraint;
+					n->def = (Node *) c;
+					c->conname = $3;
+					c->alterInheritability = true;
+					c->noinherit = true;
+
 					$$ = (Node *) n;
 				}
 			/* ALTER TABLE <name> VALIDATE CONSTRAINT ... */

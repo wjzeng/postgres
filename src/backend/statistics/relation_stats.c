@@ -36,6 +36,7 @@ enum relation_stats_argnum
 	RELPAGES_ARG,
 	RELTUPLES_ARG,
 	RELALLVISIBLE_ARG,
+	RELALLFROZEN_ARG,
 	NUM_RELATION_STATS_ARGS
 };
 
@@ -45,6 +46,7 @@ static struct StatsArgInfo relarginfo[] =
 	[RELPAGES_ARG] = {"relpages", INT4OID},
 	[RELTUPLES_ARG] = {"reltuples", FLOAT4OID},
 	[RELALLVISIBLE_ARG] = {"relallvisible", INT4OID},
+	[RELALLFROZEN_ARG] = {"relallfrozen", INT4OID},
 	[NUM_RELATION_STATS_ARGS] = {0}
 };
 
@@ -65,11 +67,13 @@ relation_statistics_update(FunctionCallInfo fcinfo)
 	bool		update_reltuples = false;
 	BlockNumber relallvisible = 0;
 	bool		update_relallvisible = false;
+	BlockNumber relallfrozen = 0;
+	bool		update_relallfrozen = false;
 	HeapTuple	ctup;
 	Form_pg_class pgcform;
-	int			replaces[3] = {0};
-	Datum		values[3] = {0};
-	bool		nulls[3] = {0};
+	int			replaces[4] = {0};
+	Datum		values[4] = {0};
+	bool		nulls[4] = {0};
 	int			nreplaces = 0;
 
 	if (!PG_ARGISNULL(RELPAGES_ARG))
@@ -98,6 +102,12 @@ relation_statistics_update(FunctionCallInfo fcinfo)
 		update_relallvisible = true;
 	}
 
+	if (!PG_ARGISNULL(RELALLFROZEN_ARG))
+	{
+		relallfrozen = PG_GETARG_UINT32(RELALLFROZEN_ARG);
+		update_relallfrozen = true;
+	}
+
 	stats_check_required_arg(fcinfo, relarginfo, RELATION_ARG);
 	reloid = PG_GETARG_OID(RELATION_ARG);
 
@@ -117,13 +127,7 @@ relation_statistics_update(FunctionCallInfo fcinfo)
 
 	ctup = SearchSysCache1(RELOID, ObjectIdGetDatum(reloid));
 	if (!HeapTupleIsValid(ctup))
-	{
-		ereport(WARNING,
-				(errcode(ERRCODE_OBJECT_IN_USE),
-				 errmsg("pg_class entry for relid %u not found", reloid)));
-		table_close(crel, RowExclusiveLock);
-		return false;
-	}
+		elog(ERROR, "pg_class entry for relid %u not found", reloid);
 
 	pgcform = (Form_pg_class) GETSTRUCT(ctup);
 
@@ -145,6 +149,13 @@ relation_statistics_update(FunctionCallInfo fcinfo)
 	{
 		replaces[nreplaces] = Anum_pg_class_relallvisible;
 		values[nreplaces] = UInt32GetDatum(relallvisible);
+		nreplaces++;
+	}
+
+	if (update_relallfrozen && relallfrozen != pgcform->relallfrozen)
+	{
+		replaces[nreplaces] = Anum_pg_class_relallfrozen;
+		values[nreplaces] = UInt32GetDatum(relallfrozen);
 		nreplaces++;
 	}
 
@@ -176,9 +187,9 @@ relation_statistics_update(FunctionCallInfo fcinfo)
 Datum
 pg_clear_relation_stats(PG_FUNCTION_ARGS)
 {
-	LOCAL_FCINFO(newfcinfo, 4);
+	LOCAL_FCINFO(newfcinfo, 5);
 
-	InitFunctionCallInfoData(*newfcinfo, NULL, 4, InvalidOid, NULL, NULL);
+	InitFunctionCallInfoData(*newfcinfo, NULL, 5, InvalidOid, NULL, NULL);
 
 	newfcinfo->args[0].value = PG_GETARG_OID(0);
 	newfcinfo->args[0].isnull = PG_ARGISNULL(0);
@@ -188,6 +199,8 @@ pg_clear_relation_stats(PG_FUNCTION_ARGS)
 	newfcinfo->args[2].isnull = false;
 	newfcinfo->args[3].value = UInt32GetDatum(0);
 	newfcinfo->args[3].isnull = false;
+	newfcinfo->args[4].value = UInt32GetDatum(0);
+	newfcinfo->args[4].isnull = false;
 
 	relation_statistics_update(newfcinfo);
 	PG_RETURN_VOID();
