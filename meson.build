@@ -909,9 +909,7 @@ if not libcurlopt.disabled()
       cdata.set('HAVE_THREADSAFE_CURL_GLOBAL_INIT', 1)
     endif
 
-    # Warn if a thread-friendly DNS resolver isn't built.
-    libcurl_async_dns = false
-
+    # Fail if a thread-friendly DNS resolver isn't built.
     if not meson.is_cross_build()
       r = cc.run('''
         #include <curl/curl.h>
@@ -931,16 +929,12 @@ if not libcurlopt.disabled()
       )
 
       assert(r.compiled())
-      if r.returncode() == 0
-        libcurl_async_dns = true
-      endif
-    endif
-
-    if not libcurl_async_dns
-      warning('''
+      if r.returncode() != 0
+        error('''
 *** The installed version of libcurl does not support asynchronous DNS
-*** lookups. Connection timeouts will not be honored during DNS resolution,
-*** which may lead to hangs in client programs.''')
+*** lookups. Rebuild libcurl with the AsynchDNS feature enabled in order
+*** to use it with libpq.''')
+      endif
     endif
   endif
 
@@ -1092,6 +1086,7 @@ endif
 
 perlopt = get_option('plperl')
 perl_dep = not_found_dep
+perlversion = ''
 if not perlopt.disabled()
   perl_may_work = true
 
@@ -1109,7 +1104,7 @@ if not perlopt.disabled()
   # Then inquire perl about its configuration
   if perl_may_work
     perl_conf_cmd = [perl, '-MConfig', '-e', 'print $Config{$ARGV[0]}']
-    perlversion = run_command(perl_conf_cmd, 'api_versionstring', check: true).stdout()
+    perlversion = run_command(perl_conf_cmd, 'version', check: true).stdout()
     archlibexp = run_command(perl_conf_cmd, 'archlibexp', check: true).stdout()
     privlibexp = run_command(perl_conf_cmd, 'privlibexp', check: true).stdout()
     useshrplib = run_command(perl_conf_cmd, 'useshrplib', check: true).stdout()
@@ -2265,17 +2260,17 @@ if host_cpu == 'x86_64'
   prog = '''
 #include <immintrin.h>
 #include <stdint.h>
+char buf[sizeof(__m512i)];
 
 #if defined(__has_attribute) && __has_attribute (target)
 __attribute__((target("avx512vpopcntdq,avx512bw")))
 #endif
 int main(void)
 {
-    const char buf[sizeof(__m512i)];
     int64_t popcnt = 0;
     __m512i accum = _mm512_setzero_si512();
-    const __m512i val = _mm512_maskz_loadu_epi8((__mmask64) 0xf0f0f0f0f0f0f0f0, (const __m512i *) buf);
-    const __m512i cnt = _mm512_popcnt_epi64(val);
+    __m512i val = _mm512_maskz_loadu_epi8((__mmask64) 0xf0f0f0f0f0f0f0f0, (const __m512i *) buf);
+    __m512i cnt = _mm512_popcnt_epi64(val);
     accum = _mm512_add_epi64(accum, cnt);
     popcnt = _mm512_reduce_add_epi64(accum);
     /* return computed value, to prevent the above being optimized away */
@@ -2323,13 +2318,13 @@ if host_cpu == 'x86' or host_cpu == 'x86_64'
 
     prog = '''
 #include <nmmintrin.h>
+unsigned int crc;
 
 #if defined(__has_attribute) && __has_attribute (target)
 __attribute__((target("sse4.2")))
 #endif
 int main(void)
 {
-    unsigned int crc = 0;
     crc = _mm_crc32_u8(crc, 0);
     crc = _mm_crc32_u32(crc, 0);
     /* return computed value, to prevent the above being optimized away */
@@ -2358,10 +2353,10 @@ elif host_cpu == 'arm' or host_cpu == 'aarch64'
 
   prog = '''
 #include <arm_acle.h>
+unsigned int crc;
 
 int main(void)
 {
-    unsigned int crc = 0;
     crc = __crc32cb(crc, 0);
     crc = __crc32ch(crc, 0);
     crc = __crc32cw(crc, 0);
@@ -2396,9 +2391,10 @@ int main(void)
 elif host_cpu == 'loongarch64'
 
   prog = '''
+unsigned int crc;
+
 int main(void)
 {
-    unsigned int crc = 0;
     crc = __builtin_loongarch_crcc_w_b_w(0, crc);
     crc = __builtin_loongarch_crcc_w_h_w(0, crc);
     crc = __builtin_loongarch_crcc_w_w_w(0, crc);
@@ -3830,7 +3826,7 @@ if meson.version().version_compare('>=0.57')
       'nls': libintl,
       'openssl': ssl,
       'pam': pam,
-      'plperl': perl_dep,
+      'plperl': [perl_dep, perlversion],
       'plpython': python3_dep,
       'pltcl': tcl_dep,
       'readline': readline,
@@ -3841,6 +3837,7 @@ if meson.version().version_compare('>=0.57')
       'zstd': zstd,
     },
     section: 'External libraries',
+    list_sep: ' ',
   )
 
 endif

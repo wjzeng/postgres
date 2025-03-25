@@ -4706,6 +4706,7 @@ invalid command \lo
 	\q
 	\reset
 	\s arg1
+	\sendpipeline
 	\set arg1 arg2 arg3 arg4 arg5 arg6 arg7
 	\setenv arg1 arg2
 	\sf whole_line
@@ -6459,9 +6460,9 @@ List of schemas
 (0 rows)
 
 \dx "no.such.installed.extension"
-     List of installed extensions
- Name | Version | Schema | Description 
-------+---------+--------+-------------
+              List of installed extensions
+ Name | Version | Default version | Schema | Description 
+------+---------+-----------------+--------+-------------
 (0 rows)
 
 \dX "no.such.extended.statistics"

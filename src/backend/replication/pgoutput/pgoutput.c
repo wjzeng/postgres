@@ -531,6 +531,8 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 			CacheRegisterSyscacheCallback(PUBLICATIONOID,
 										  publication_invalidation_cb,
 										  (Datum) 0);
+			CacheRegisterRelSyncCallback(rel_sync_cache_relation_cb,
+										 (Datum) 0);
 			publication_callback_registered = true;
 		}
 
@@ -1762,6 +1764,11 @@ pgoutput_shutdown(LogicalDecodingContext *ctx)
 
 /*
  * Load publications from the list of publication names.
+ *
+ * Here, we skip the publications that don't exist yet. This will allow us
+ * to silently continue the replication in the absence of a missing publication.
+ * This is required because we allow the users to create publications after they
+ * have specified the required publications at the time of replication start.
  */
 static List *
 LoadPublications(List *pubnames)
@@ -1772,9 +1779,16 @@ LoadPublications(List *pubnames)
 	foreach(lc, pubnames)
 	{
 		char	   *pubname = (char *) lfirst(lc);
-		Publication *pub = GetPublicationByName(pubname, false);
+		Publication *pub = GetPublicationByName(pubname, true);
 
-		result = lappend(result, pub);
+		if (pub)
+			result = lappend(result, pub);
+		else
+			ereport(WARNING,
+					errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					errmsg("skipped loading publication: %s", pubname),
+					errdetail("The publication does not exist at this point in the WAL."),
+					errhint("Create the publication if it does not exist."));
 	}
 
 	return result;
@@ -1789,12 +1803,6 @@ static void
 publication_invalidation_cb(Datum arg, int cacheid, uint32 hashvalue)
 {
 	publications_valid = false;
-
-	/*
-	 * Also invalidate per-relation cache so that next time the filtering info
-	 * is checked it will be updated with the new publication settings.
-	 */
-	rel_sync_cache_publication_cb(arg, cacheid, hashvalue);
 }
 
 /*
@@ -2392,7 +2400,7 @@ rel_sync_cache_relation_cb(Datum arg, Oid relid)
 /*
  * Publication relation/schema map syscache invalidation callback
  *
- * Called for invalidations on pg_publication and pg_namespace.
+ * Called for invalidations on pg_namespace.
  */
 static void
 rel_sync_cache_publication_cb(Datum arg, int cacheid, uint32 hashvalue)

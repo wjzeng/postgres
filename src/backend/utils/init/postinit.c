@@ -43,6 +43,7 @@
 #include "replication/slot.h"
 #include "replication/slotsync.h"
 #include "replication/walsender.h"
+#include "storage/aio_subsys.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -54,6 +55,7 @@
 #include "storage/sinvaladt.h"
 #include "storage/smgr.h"
 #include "storage/sync.h"
+#include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -234,6 +236,9 @@ PerformAuthentication(Port *port)
 	}
 #endif
 
+	/* Capture authentication start time for logging */
+	conn_timing.auth_start = GetCurrentTimestamp();
+
 	/*
 	 * Set up a timeout in case a buggy or malicious client fails to respond
 	 * during authentication.  Since we're inside a transaction and might do
@@ -252,7 +257,10 @@ PerformAuthentication(Port *port)
 	 */
 	disable_timeout(STATEMENT_TIMEOUT, false);
 
-	if (Log_connections)
+	/* Capture authentication end time for logging */
+	conn_timing.auth_end = GetCurrentTimestamp();
+
+	if (log_connections & LOG_CONNECTION_AUTHORIZATION)
 	{
 		StringInfoData logmsg;
 
@@ -627,6 +635,12 @@ BaseInit(void)
 	 * can).
 	 */
 	pgstat_initialize();
+
+	/*
+	 * Initialize AIO before infrastructure that might need to actually
+	 * execute AIO.
+	 */
+	pgaio_init_backend();
 
 	/* Do local initialization of storage and buffer managers */
 	InitSync();

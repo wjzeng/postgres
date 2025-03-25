@@ -1520,7 +1520,7 @@ include_dir 'conf.d'
         It does not need to be the same curve used by the server's Elliptic
         Curve key.  This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
-        The default is <literal>prime256v1</literal>.
+        The default is <literal>X25519:prime256v1</literal>.
        </para>
 
        <para>
@@ -2378,8 +2378,12 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Sets the maximum number of simultaneously open files allowed to each
-        server subprocess. The default is one thousand files. If the kernel is enforcing
+        Sets the maximum number of open files each server subprocess is
+        allowed to open simultaneously, in addition to the files already open
+        in postmaster. The default is one thousand files.
+       </para>
+       <para>
+        If the kernel is enforcing
         a safe per-process limit, you don't need to worry about this setting.
         But on some platforms (notably, most BSD systems), the kernel will
         allow individual processes to open many more files than the system
@@ -2574,39 +2578,33 @@ include_dir 'conf.d'
        </term>
        <listitem>
         <para>
-         Sets the number of concurrent disk I/O operations that
+         Sets the number of concurrent storage I/O operations that
          <productname>PostgreSQL</productname> expects can be executed
          simultaneously.  Raising this value will increase the number of I/O
-         operations that any individual <productname>PostgreSQL</productname> session
-         attempts to initiate in parallel.  The allowed range is 1 to 1000,
-         or zero to disable issuance of asynchronous I/O requests. Currently,
-         this setting only affects bitmap heap scans.
+         operations that any individual <productname>PostgreSQL</productname>
+         session attempts to initiate in parallel.  The allowed range is
+         <literal>1</literal> to <literal>1000</literal>, or
+         <literal>0</literal> to disable issuance of asynchronous I/O requests.
+         The default is <literal>16</literal> on supported systems, otherwise
+         <literal>0</literal>.
         </para>
 
         <para>
-         For magnetic drives, a good starting point for this setting is the
-         number of separate
-         drives comprising a RAID 0 stripe or RAID 1 mirror being used for the
-         database.  (For RAID 5 the parity drive should not be counted.)
-         However, if the database is often busy with multiple queries issued in
-         concurrent sessions, lower values may be sufficient to keep the disk
-         array busy.  A value higher than needed to keep the disks busy will
-         only result in extra CPU overhead.
-         SSDs and other memory-based storage can often process many
-         concurrent requests, so the best value might be in the hundreds.
+         Higher values will have the most impact on higher latency storage
+         where queries otherwise experience noticeable I/O stalls and on
+         devices with high IOPs. Unnecessarily high values may increase I/O
+         latency for all queries on the system
         </para>
 
         <para>
-         Asynchronous I/O requires that the operating system supports issuing
-         read-ahead advice.  If there is no operating system support then
-         setting this parameter to anything but zero will result in an error.
+         On systems without prefetch advice support, attempting to configure
+         any value other than <literal>0</literal> will error out.
         </para>
 
         <para>
-         The default is 1 on supported systems, otherwise 0.  This value can
-         be overridden for tables in a particular tablespace by setting the
-         tablespace parameter of the same name (see
-         <xref linkend="sql-altertablespace"/>).
+         This value can be overridden for tables in a particular tablespace by
+         setting the tablespace parameter of the same name (see <xref
+         linkend="sql-altertablespace"/>).
         </para>
        </listitem>
       </varlistentry>
@@ -2623,10 +2621,30 @@ include_dir 'conf.d'
          for maintenance work that is done on behalf of many client sessions.
         </para>
         <para>
-         The default is 10 on supported systems, otherwise 0.  This value can
-         be overridden for tables in a particular tablespace by setting the
-         tablespace parameter of the same name (see
-         <xref linkend="sql-altertablespace"/>).
+         The default is <literal>16</literal> on supported systems, otherwise
+         <literal>0</literal>.  This value can be overridden for tables in a
+         particular tablespace by setting the tablespace parameter of the same
+         name (see <xref linkend="sql-altertablespace"/>).
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-io-max-combine-limit" xreflabel="io_max_combine_limit">
+       <term><varname>io_max_combine_limit</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>io_max_combine_limit</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Controls the largest I/O size in operations that combine I/O, and silently
+         limits the user-settable parameter <varname>io_combine_limit</varname>.
+         This parameter can only be set in
+         the <filename>postgresql.conf</filename> file or on the server
+         command line.
+         The maximum possible size depends on the operating system and block
+         size, but is typically 1MB on Unix and 128kB on Windows.
+         The default is 128kB.
         </para>
        </listitem>
       </varlistentry>
@@ -2639,8 +2657,88 @@ include_dir 'conf.d'
        </term>
        <listitem>
         <para>
-         Controls the largest I/O size in operations that combine I/O.
+         Controls the largest I/O size in operations that combine I/O.  If set
+         higher than the <varname>io_max_combine_limit</varname> parameter, the
+         lower value will silently be used instead, so both may need to be raised
+         to increase the I/O size.
+         The maximum possible size depends on the operating system and block
+         size, but is typically 1MB on Unix and 128kB on Windows.
          The default is 128kB.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-io-max-concurrency" xreflabel="io_max_concurrency">
+       <term><varname>io_max_concurrency</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>io_max_concurrency</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Controls the maximum number of I/O operations that one process can
+         execute simultaneously.
+        </para>
+        <para>
+         The default setting of <literal>-1</literal> selects a number based
+         on <xref linkend="guc-shared-buffers"/> and the maximum number of
+         processes (<xref linkend="guc-max-connections"/>, <xref
+         linkend="guc-autovacuum-worker-slots"/>, <xref
+         linkend="guc-max-worker-processes"/> and <xref
+         linkend="guc-max-wal-senders"/>), but not more than
+         <literal>64</literal>.
+        </para>
+        <para>
+         This parameter can only be set at server start.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-io-method" xreflabel="io_method">
+       <term><varname>io_method</varname> (<type>enum</type>)
+       <indexterm>
+        <primary><varname>io_method</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Selects the method for executing asynchronous I/O.
+         Possible values are:
+         <itemizedlist>
+          <listitem>
+           <para>
+            <literal>worker</literal> (execute asynchronous I/O using worker processes)
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <literal>sync</literal> (execute asynchronous-eligible I/O synchronously)
+           </para>
+          </listitem>
+         </itemizedlist>
+        </para>
+        <para>
+         This parameter can only be set at server start.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-io-workers" xreflabel="io_workers">
+       <term><varname>io_workers</varname> (<type>int</type>)
+       <indexterm>
+        <primary><varname>io_workers</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Selects the number of I/O worker processes to use. The default is
+         3. This parameter can only be set in the
+         <filename>postgresql.conf</filename> file or on the server command
+         line.
+        </para>
+        <para>
+         Only has an effect if <xref linkend="guc-io-method"/> is set to
+         <literal>worker</literal>.
         </para>
        </listitem>
       </varlistentry>
@@ -4382,13 +4480,6 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
          to <literal>replica</literal> or higher to allow replication slots to
          be used.
         </para>
-
-        <para>
-         Note that this parameter also applies on the subscriber side, but with
-         a different meaning. See <xref linkend="guc-max-replication-slots-subscriber"/>
-         in <xref linkend="runtime-config-replication-subscriber"/> for more
-         details.
-        </para>
        </listitem>
       </varlistentry>
 
@@ -5134,10 +5225,10 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
 
      <variablelist>
 
-     <varlistentry id="guc-max-replication-slots-subscriber" xreflabel="max_replication_slots">
-      <term><varname>max_replication_slots</varname> (<type>integer</type>)
+     <varlistentry id="guc-max-active-replication-origins" xreflabel="max_active_replication_origins">
+      <term><varname>max_active_replication_origins</varname> (<type>integer</type>)
        <indexterm>
-        <primary><varname>max_replication_slots</varname> configuration parameter</primary>
+        <primary><varname>max_active_replication_origins</varname> configuration parameter</primary>
         <secondary>in a subscriber</secondary>
        </indexterm>
       </term>
@@ -5149,17 +5240,12 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         be created on the server. Setting it to a lower value than the current
         number of tracked replication origins (reflected in
         <link linkend="view-pg-replication-origin-status">pg_replication_origin_status</link>)
-        will prevent the server from starting.
-        <literal>max_replication_slots</literal> must be set to at least the
+        will prevent the server from starting. It defaults to 10. This parameter
+        can only be set at server start.
+
+        <literal>max_active_replication_origins</literal> must be set to at least the
         number of subscriptions that will be added to the subscriber, plus some
         reserve for table synchronization.
-       </para>
-
-       <para>
-        Note that this parameter also applies on a sending server, but with
-        a different meaning. See <xref linkend="guc-max-replication-slots"/>
-        in <xref linkend="runtime-config-replication-sender"/> for more
-        details.
        </para>
       </listitem>
      </varlistentry>
@@ -7315,20 +7401,105 @@ local0.*    /var/log/postgresql
      </varlistentry>
 
      <varlistentry id="guc-log-connections" xreflabel="log_connections">
-      <term><varname>log_connections</varname> (<type>boolean</type>)
+      <term><varname>log_connections</varname> (<type>string</type>)
       <indexterm>
        <primary><varname>log_connections</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
        <para>
-        Causes each attempted connection to the server to be logged,
-        as well as successful completion of both client authentication (if
-        necessary) and authorization.
+        Causes aspects of each connection to the server to be logged.
+        The default is the empty string, <literal>''</literal>, which
+        disables all connection logging. The following options may be
+        specified alone or in a comma-separated list:
+       </para>
+
+       <table id="log-connections-options">
+        <title>Log Connection Options</title>
+        <tgroup cols="2">
+         <colspec colname="col1" colwidth="1*"/>
+         <colspec colname="col2" colwidth="2*"/>
+         <thead>
+          <row>
+           <entry>Name</entry>
+           <entry>Description</entry>
+          </row>
+         </thead>
+         <tbody>
+          <row>
+           <entry><literal>receipt</literal></entry>
+           <entry>Logs receipt of a connection.</entry>
+          </row>
+
+          <row>
+           <entry><literal>authentication</literal></entry>
+           <entry>
+            Logs the original identity used by an authentication method
+            to identify a user. In most cases, the identity string
+            matches the <productname>PostgreSQL</productname> username,
+            but some third-party authentication methods may alter the
+            original user identifier before the server stores it. Failed
+            authentication is always logged regardless of the value of
+            this setting.
+           </entry>
+          </row>
+
+          <row>
+           <entry><literal>authorization</literal></entry>
+           <entry>
+            Logs successful completion of authorization. At this point
+            the connection has been established but the backend is not
+            yet fully set up. The log message includes the authorized
+            username as well as the database name and application name,
+            if applicable.
+           </entry>
+          </row>
+
+          <row>
+           <entry><literal>setup_durations</literal></entry>
+           <entry>
+            Logs the time spent establishing the connection and setting up the
+            backend at the time the connection is ready to execute its first
+            query. The log message includes the total setup duration, starting
+            from the postmaster accepting the incoming connection and ending
+            when the connection is ready for query. It also includes the time
+            it took to fork the new backend and the time it took to
+            authenticate the user.
+           </entry>
+          </row>
+
+          <row>
+           <entry><literal>all</literal></entry>
+           <entry>
+            A convenience alias equivalent to specifying all options. If
+            <literal>all</literal> is specified in a list of other
+            options, all connection aspects will be logged.
+           </entry>
+          </row>
+
+         </tbody>
+        </tgroup>
+       </table>
+
+       <para>
+        Disconnection logging is separately controlled by <xref
+        linkend="guc-log-disconnections"/>.
+       </para>
+
+       <para>
+        For the purposes of backwards compatibility, <literal>on</literal>,
+        <literal>off</literal>, <literal>true</literal>,
+        <literal>false</literal>, <literal>yes</literal>,
+        <literal>no</literal>, <literal>1</literal>, and <literal>0</literal>
+        are still supported. The positive values are equivalent to specifying
+        the <literal>receipt</literal>, <literal>authentication</literal>, and
+        <literal>authorization</literal> options.
+       </para>
+
+       <para>
         Only superusers and users with the appropriate <literal>SET</literal>
         privilege can change this parameter at session start,
         and it cannot be changed at all within a session.
-        The default is <literal>off</literal>.
        </para>
 
        <note>
@@ -7677,6 +7848,26 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
        </para>
       </listitem>
      </varlistentry>
+
+     <varlistentry id="guc-log-lock-failure" xreflabel="log_lock_failure">
+      <term><varname>log_lock_failure</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>log_lock_failure</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Controls whether a detailed log message is produced
+        when a lock acquisition fails.  This is useful for analyzing
+        the causes of lock failures.  Currently, only lock failures
+        due to <literal>SELECT NOWAIT</literal> is supported.
+        The default is <literal>off</literal>.  Only superusers and
+        users with the appropriate <literal>SET</literal> privilege
+        can change this setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
 
      <varlistentry id="guc-log-recovery-conflict-waits" xreflabel="log_recovery_conflict_waits">
       <term><varname>log_recovery_conflict_waits</varname> (<type>boolean</type>)
@@ -8527,6 +8718,36 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-query-id-squash-values" xreflabel="query_id_squash_values">
+      <term><varname>query_id_squash_values</varname> (<type>bool</type>)
+      <indexterm>
+       <primary><varname>query_id_squash_values</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies how a list of constants (e.g., for an <literal>IN</literal>
+        clause) contributes to the query identifier computation.
+        Normally, every element of such a list contributes to the query
+        identifier separately, which means that two queries that only differ
+        in the number of elements in such a list would get different query
+        identifiers.
+        If this parameter is on, a list of constants will not contribute
+        to the query identifier. This means that two queries whose only
+        difference is the number of constants in such a list are going to get the
+        same query identifier.
+       </para>
+       <para>
+        Only constants are affected; bind parameters do not benefit from this
+        functionality. The default value is <literal>off</literal>.
+       </para>
+       <para>
+        This parameter also affects how <xref linkend="pgstatstatements"/>
+        generates normalized query texts.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-log-statement-stats">
       <term><varname>log_statement_stats</varname> (<type>boolean</type>)
       <indexterm>
@@ -9080,6 +9301,35 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <varname>vacuum_cost_delay</varname> * 4.
       </para>
      </note>
+    </sect2>
+
+    <sect2 id="runtime-config-vacuum-default">
+     <title>Default Behavior</title>
+
+     <variablelist>
+      <varlistentry id="guc-vacuum-truncate" xreflabel="vacuum_truncate">
+       <term><varname>vacuum_truncate</varname> (<type>boolean</type>)
+       <indexterm>
+        <primary><varname>vacuum_truncate</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Enables or disables vacuum to try to truncate off any empty pages at
+         the end of the table.  The default value is <literal>true</literal>.
+         If <literal>true</literal>, <command>VACUUM</command> and autovacuum
+         do the truncation and the disk space for the truncated pages is
+         returned to the operating system.  Note that the truncation requires
+         an <literal>ACCESS EXCLUSIVE</literal> lock on the table.  The
+         <literal>TRUNCATE</literal> parameter of
+         <link linkend="sql-vacuum"><command>VACUUM</command></link>, if
+         specified, overrides the value of this parameter.  The setting can
+         also be overridden for individual tables by changing table storage
+         parameters.
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
     </sect2>
 
     <sect2 id="runtime-config-vacuum-freezing">
@@ -10721,6 +10971,74 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         development purposes. The recommended way to set this parameter
         is in the <filename>postgresql.conf</filename> configuration
         file.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-extension-control-path" xreflabel="extension_control_path">
+      <term><varname>extension_control_path</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>extension_control_path</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        A path to search for extensions, specifically extension control files
+        (<filename><replaceable>name</replaceable>.control</filename>).  The
+        remaining extension script and secondary control files are then loaded
+        from the same directory where the primary control file was found.
+        See <xref linkend="extend-extensions-files"/> for details.
+       </para>
+
+       <para>
+        The value for <varname>extension_control_path</varname> must be a
+        list of absolute directory paths separated by colons (or semi-colons
+        on Windows).  If a list element starts
+        with the special string <literal>$system</literal>, the
+        compiled-in <productname>PostgreSQL</productname> extension
+        directory is substituted for <literal>$system</literal>; this
+        is where the extensions provided by the standard
+        <productname>PostgreSQL</productname> distribution are installed.
+        (Use <literal>pg_config --sharedir</literal> to find out the name of
+        this directory.) For example:
+<programlisting>
+extension_control_path = '/usr/local/share/postgresql/extension:/home/my_project/share/extension:$system'
+</programlisting>
+        or, in a Windows environment:
+<programlisting>
+extension_control_path = 'C:\tools\postgresql\extension;H:\my_project\share\extension;$system'
+</programlisting>
+        Note that the path elements should typically end in
+        <literal>extension</literal> if the normal installation layouts are
+        followed.  (The value for <literal>$system</literal> already includes
+        the <literal>extension</literal> suffix.)
+       </para>
+
+       <para>
+        The default value for this parameter is
+        <literal>'$system'</literal>. If the value is set to an empty
+        string, the default <literal>'$system'</literal> is also assumed.
+       </para>
+
+       <para>
+        This parameter can be changed at run time by superusers and users
+        with the appropriate <literal>SET</literal> privilege, but a
+        setting done that way will only persist until the end of the
+        client connection, so this method should be reserved for
+        development purposes. The recommended way to set this parameter
+        is in the <filename>postgresql.conf</filename> configuration
+        file.
+       </para>
+
+       <para>
+        Note that if you set this parameter to be able to load extensions from
+        nonstandard locations, you will most likely also need to set <xref
+        linkend="guc-dynamic-library-path"/> to a correspondent location, for
+        example,
+<programlisting>
+extension_control_path = '/usr/local/share/postgresql/extension:$system'
+dynamic_library_path = '/usr/local/lib/postgresql:$libdir'
+</programlisting>
        </para>
       </listitem>
      </varlistentry>

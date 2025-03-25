@@ -490,10 +490,13 @@ typedef struct PLpgSQL_stmt
  */
 typedef struct PLpgSQL_condition
 {
-	int			sqlerrstate;	/* SQLSTATE code */
+	int			sqlerrstate;	/* SQLSTATE code, or PLPGSQL_OTHERS */
 	char	   *condname;		/* condition name (for debugging) */
 	struct PLpgSQL_condition *next;
 } PLpgSQL_condition;
+
+/* This value mustn't match any possible output of MAKE_SQLSTATE() */
+#define PLPGSQL_OTHERS (-1)
 
 /*
  * EXCEPTION block
@@ -1354,7 +1357,7 @@ extern int	plpgsql_peek(yyscan_t yyscanner);
 extern void plpgsql_peek2(int *tok1_p, int *tok2_p, int *tok1_loc,
 						  int *tok2_loc, yyscan_t yyscanner);
 extern int	plpgsql_scanner_errposition(int location, yyscan_t yyscanner);
-extern void plpgsql_yyerror(YYLTYPE *yyllocp, PLpgSQL_stmt_block **plpgsql_parse_result_p, yyscan_t yyscanner, const char *message) pg_attribute_noreturn();
+pg_noreturn extern void plpgsql_yyerror(YYLTYPE *yyllocp, PLpgSQL_stmt_block **plpgsql_parse_result_p, yyscan_t yyscanner, const char *message);
 extern int	plpgsql_location_to_lineno(int location, yyscan_t yyscanner);
 extern int	plpgsql_latest_lineno(yyscan_t yyscanner);
 extern yyscan_t plpgsql_scanner_init(const char *str);

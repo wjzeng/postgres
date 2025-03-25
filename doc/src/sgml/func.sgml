@@ -4663,6 +4663,23 @@ SELECT format('Testing %3$s, %2$s, %s', 'one', 'two', 'three');
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>reverse</primary>
+        </indexterm>
+        <function>reverse</function> ( <type>bytea</type> )
+        <returnvalue>bytea</returnvalue>
+       </para>
+       <para>
+        Reverses the order of the bytes in the binary string.
+       </para>
+       <para>
+        <literal>reverse('\xabcd'::bytea)</literal>
+        <returnvalue>\xcdab</returnvalue>
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>set_bit</primary>
         </indexterm>
         <function>set_bit</function> ( <parameter>bytes</parameter> <type>bytea</type>,
@@ -14461,7 +14478,7 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
         UUID.
        </para>
        <para>
-        <literal>uuid_extract_timestamp('019535d9-3df7-79fb-b466-fa907fa17f9e'::uuid)</literal>
+        <literal>uuid_extract_timestamp('019535d9-3df7-79fb-b466-&zwsp;fa907fa17f9e'::uuid)</literal>
          <returnvalue>2025-02-23 21:46:24.503-05</returnvalue>
        </para>
       </entry>
@@ -14481,11 +14498,11 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
         return 4.
        </para>
        <para>
-        <literal>uuid_extract_version('41db1265-8bc1-4ab3-992f-885799a4af1d'::uuid)</literal>
+        <literal>uuid_extract_version('41db1265-8bc1-4ab3-992f-&zwsp;885799a4af1d'::uuid)</literal>
         <returnvalue>4</returnvalue>
        </para>
        <para>
-        <literal>uuid_extract_version('019535d9-3df7-79fb-b466-fa907fa17f9e'::uuid)</literal>
+        <literal>uuid_extract_version('019535d9-3df7-79fb-b466-&zwsp;fa907fa17f9e'::uuid)</literal>
         <returnvalue>7</returnvalue>
        </para>
       </entry>
@@ -29435,8 +29452,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
        <para>
         Drops the physical or logical replication slot
         named <parameter>slot_name</parameter>. Same as replication protocol
-        command <literal>DROP_REPLICATION_SLOT</literal>. For logical slots, this must
-        be called while connected to the same database the slot was created on.
+        command <literal>DROP_REPLICATION_SLOT</literal>.
        </para></entry>
       </row>
 

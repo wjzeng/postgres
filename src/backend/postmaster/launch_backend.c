@@ -48,6 +48,7 @@
 #include "replication/slotsync.h"
 #include "replication/walreceiver.h"
 #include "storage/dsm.h"
+#include "storage/io_worker.h"
 #include "storage/pg_shmem.h"
 #include "tcop/backend_startup.h"
 #include "utils/memutils.h"
@@ -115,6 +116,7 @@ typedef struct
 	bool		redirection_done;
 	bool		IsBinaryUpgrade;
 	bool		query_id_enabled;
+	bool		query_id_squash_values;
 	int			max_safe_fds;
 	int			MaxBackends;
 	int			num_pmchild_slots;
@@ -171,7 +173,7 @@ static pid_t internal_forkexec(const char *child_kind, int child_slot,
 typedef struct
 {
 	const char *name;
-	void		(*main_fn) (const void *startup_data, size_t startup_data_len) pg_attribute_noreturn();
+	void		(*main_fn) (const void *startup_data, size_t startup_data_len);
 	bool		shmem_attach;
 } child_process_kind;
 
@@ -197,6 +199,7 @@ static child_process_kind child_process_kinds[] = {
 	[B_ARCHIVER] = {"archiver", PgArchiverMain, true},
 	[B_BG_WRITER] = {"bgwriter", BackgroundWriterMain, true},
 	[B_CHECKPOINTER] = {"checkpointer", CheckpointerMain, true},
+	[B_IO_WORKER] = {"io_worker", IoWorkerMain, true},
 	[B_STARTUP] = {"startup", StartupProcessMain, true},
 	[B_WAL_RECEIVER] = {"wal_receiver", WalReceiverMain, true},
 	[B_WAL_SUMMARIZER] = {"wal_summarizer", WalSummarizerMain, true},
@@ -232,6 +235,10 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 
 	Assert(IsPostmasterEnvironment && !IsUnderPostmaster);
 
+	/* Capture time Postmaster initiates process creation for logging */
+	if (IsExternalConnectionBackend(child_type))
+		((BackendStartupData *) startup_data)->fork_started = GetCurrentTimestamp();
+
 #ifdef EXEC_BACKEND
 	pid = internal_forkexec(child_process_kinds[child_type].name, child_slot,
 							startup_data, startup_data_len, client_sock);
@@ -240,6 +247,16 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 	pid = fork_process();
 	if (pid == 0)				/* child */
 	{
+		/* Capture and transfer timings that may be needed for logging */
+		if (IsExternalConnectionBackend(child_type))
+		{
+			conn_timing.socket_create =
+				((BackendStartupData *) startup_data)->socket_created;
+			conn_timing.fork_start =
+				((BackendStartupData *) startup_data)->fork_started;
+			conn_timing.fork_end = GetCurrentTimestamp();
+		}
+
 		/* Close the postmaster's sockets */
 		ClosePostmasterPorts(child_type == B_LOGGER);
 
@@ -586,10 +603,17 @@ SubPostmasterMain(int argc, char *argv[])
 	char	   *child_kind;
 	BackendType child_type;
 	bool		found = false;
+	TimestampTz fork_end;
 
 	/* In EXEC_BACKEND case we will not have inherited these settings */
 	IsPostmasterEnvironment = true;
 	whereToSendOutput = DestNone;
+
+	/*
+	 * Capture the end of process creation for logging. We don't include the
+	 * time spent copying data from shared memory and setting up the backend.
+	 */
+	fork_end = GetCurrentTimestamp();
 
 	/* Setup essential subsystems (to ensure elog() behaves sanely) */
 	InitializeGUCOptions();
@@ -647,6 +671,16 @@ SubPostmasterMain(int argc, char *argv[])
 
 	/* Read in remaining GUC variables */
 	read_nondefault_variables();
+
+	/* Capture and transfer timings that may be needed for log_connections */
+	if (IsExternalConnectionBackend(child_type))
+	{
+		conn_timing.socket_create =
+			((BackendStartupData *) startup_data)->socket_created;
+		conn_timing.fork_start =
+			((BackendStartupData *) startup_data)->fork_started;
+		conn_timing.fork_end = fork_end;
+	}
 
 	/*
 	 * Check that the data directory looks valid, which will also check the
@@ -744,6 +778,7 @@ save_backend_variables(BackendParameters *param,
 	param->redirection_done = redirection_done;
 	param->IsBinaryUpgrade = IsBinaryUpgrade;
 	param->query_id_enabled = query_id_enabled;
+	param->query_id_squash_values = query_id_squash_values;
 	param->max_safe_fds = max_safe_fds;
 
 	param->MaxBackends = MaxBackends;
@@ -1004,6 +1039,7 @@ restore_backend_variables(BackendParameters *param)
 	redirection_done = param->redirection_done;
 	IsBinaryUpgrade = param->IsBinaryUpgrade;
 	query_id_enabled = param->query_id_enabled;
+	query_id_squash_values = param->query_id_squash_values;
 	max_safe_fds = param->max_safe_fds;
 
 	MaxBackends = param->MaxBackends;

@@ -2252,6 +2252,18 @@ description | Waiting for a newly initialized WAL file to reach durable storage
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>confl_multiple_unique_conflicts</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of times a row insertion or an updated row values violated multiple
+       <literal>NOT DEFERRABLE</literal> unique constraints during the
+       application of changes. See <xref linkend="conflict-multiple-unique-conflicts"/>
+       for details about this conflict.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>stats_reset</structfield> <type>timestamp with time zone</type>
       </para>
       <para>
@@ -4234,16 +4246,32 @@ description | Waiting for a newly initialized WAL file to reach durable storage
 
   <note>
    <para>
-    Queries that use certain <acronym>SQL</acronym> constructs to search for
-    rows matching any value out of a list or array of multiple scalar values
-    (see <xref linkend="functions-comparisons"/>) perform multiple
-    <quote>primitive</quote> index scans (up to one primitive scan per scalar
-    value) during query execution.  Each internal primitive index scan
-    increments <structname>pg_stat_all_indexes</structname>.<structfield>idx_scan</structfield>,
+    Index scans may sometimes perform multiple index searches per execution.
+    Each index search increments <structname>pg_stat_all_indexes</structname>.<structfield>idx_scan</structfield>,
     so it's possible for the count of index scans to significantly exceed the
     total number of index scan executor node executions.
    </para>
+   <para>
+    This can happen with queries that use certain <acronym>SQL</acronym>
+    constructs to search for rows matching any value out of a list or array of
+    multiple scalar values (see <xref linkend="functions-comparisons"/>).  It
+    can also happen to queries with a
+    <literal><replaceable>column_name</replaceable> =
+     <replaceable>value1</replaceable> OR
+     <replaceable>column_name</replaceable> =
+     <replaceable>value2</replaceable> ...</literal> construct, though only
+    when the optimizer transforms the construct into an equivalent
+    multi-valued array representation.
+   </para>
   </note>
+  <tip>
+   <para>
+    <command>EXPLAIN ANALYZE</command> outputs the total number of index
+    searches performed by each index scan node.  See
+    <xref linkend="using-explain-analyze"/> for an example demonstrating how
+    this works.
+   </para>
+  </tip>
 
  </sect2>
 
@@ -4863,6 +4891,25 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         process ID, or one record for each active backend in the system
         if <literal>NULL</literal> is specified.  The fields returned are a
         subset of those in the <structname>pg_stat_activity</structname> view.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry id="pg-stat-get-backend-wal" role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_stat_get_backend_wal</primary>
+        </indexterm>
+        <function>pg_stat_get_backend_wal</function> ( <type>integer</type> )
+        <returnvalue>record</returnvalue>
+       </para>
+       <para>
+        Returns WAL statistics about the backend with the specified
+        process ID. The output fields are exactly the same as the ones in the
+        <structname>pg_stat_wal</structname> view.
+       </para>
+       <para>
+        The function does not return WAL statistics for the checkpointer,
+        the background writer, the startup process and the autovacuum launcher.
        </para></entry>
       </row>
 

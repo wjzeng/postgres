@@ -24,8 +24,8 @@ my $node = PostgreSQL::Test::Cluster->new('primary');
 # Make sure pg_hba.conf is set up to allow connections from backupuser.
 # This is only needed on Windows machines that don't use UNIX sockets.
 $node->init(
-	'allows_streaming' => 1,
-	'auth_extra' => [ '--create-role' => 'backupuser' ]);
+	allows_streaming => 1,
+	auth_extra => [ '--create-role' => 'backupuser' ]);
 
 $node->append_conf('postgresql.conf',
 	"shared_preload_libraries = 'basebackup_to_shell'");
@@ -131,8 +131,10 @@ sub verify_backup
 
 		# Untar.
 		my $extract_path = PostgreSQL::Test::Utils::tempdir;
-		system_or_bail($tar, 'xf', $backup_dir . '/' . $prefix . 'base.tar',
-			'-C', $extract_path);
+		system_or_bail(
+			$tar,
+			'xf' => $backup_dir . '/' . $prefix . 'base.tar',
+			'-C' => $extract_path);
 
 		# Verify.
 		$node->command_ok(

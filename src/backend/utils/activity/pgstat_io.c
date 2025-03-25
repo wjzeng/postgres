@@ -376,6 +376,7 @@ pgstat_tracks_io_bktype(BackendType bktype)
 		case B_BG_WORKER:
 		case B_BG_WRITER:
 		case B_CHECKPOINTER:
+		case B_IO_WORKER:
 		case B_SLOTSYNC_WORKER:
 		case B_STANDALONE_BACKEND:
 		case B_STARTUP:
@@ -511,7 +512,7 @@ pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 	 */
 	if (io_object == IOOBJECT_WAL && io_op == IOOP_READ &&
 		(bktype == B_WAL_RECEIVER || bktype == B_BG_WRITER ||
-		 bktype == B_AUTOVAC_WORKER || bktype == B_AUTOVAC_WORKER ||
+		 bktype == B_AUTOVAC_LAUNCHER || bktype == B_AUTOVAC_WORKER ||
 		 bktype == B_WAL_WRITER))
 		return false;
 

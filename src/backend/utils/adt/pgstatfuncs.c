@@ -1609,8 +1609,8 @@ pg_stat_get_backend_io(PG_FUNCTION_ARGS)
 /*
  * pg_stat_wal_build_tuple
  *
- * Helper routine for pg_stat_get_wal() returning one tuple based on the
- * contents of wal_counters.
+ * Helper routine for pg_stat_get_wal() and pg_stat_get_backend_wal()
+ * returning one tuple based on the contents of wal_counters.
  */
 static Datum
 pg_stat_wal_build_tuple(PgStat_WalCounters wal_counters,
@@ -1657,6 +1657,28 @@ pg_stat_wal_build_tuple(PgStat_WalCounters wal_counters,
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/*
+ * Returns WAL statistics for a backend with given PID.
+ */
+Datum
+pg_stat_get_backend_wal(PG_FUNCTION_ARGS)
+{
+	int			pid;
+	PgStat_Backend *backend_stats;
+	PgStat_WalCounters bktype_stats;
+
+	pid = PG_GETARG_INT32(0);
+	backend_stats = pgstat_fetch_stat_backend_by_pid(pid, NULL);
+
+	if (!backend_stats)
+		PG_RETURN_NULL();
+
+	bktype_stats = backend_stats->wal_counters;
+
+	/* save tuples with data from this PgStat_WalCounters */
+	return (pg_stat_wal_build_tuple(bktype_stats, backend_stats->stat_reset_timestamp));
 }
 
 /*
@@ -2149,7 +2171,7 @@ pg_stat_get_replication_slot(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_subscription_stats(PG_FUNCTION_ARGS)
 {
-#define PG_STAT_GET_SUBSCRIPTION_STATS_COLS	10
+#define PG_STAT_GET_SUBSCRIPTION_STATS_COLS	11
 	Oid			subid = PG_GETARG_OID(0);
 	TupleDesc	tupdesc;
 	Datum		values[PG_STAT_GET_SUBSCRIPTION_STATS_COLS] = {0};
@@ -2181,7 +2203,9 @@ pg_stat_get_subscription_stats(PG_FUNCTION_ARGS)
 					   INT8OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 9, "confl_delete_missing",
 					   INT8OID, -1, 0);
-	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "stats_reset",
+	TupleDescInitEntry(tupdesc, (AttrNumber) 10, "confl_multiple_unique_conflicts",
+					   INT8OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 11, "stats_reset",
 					   TIMESTAMPTZOID, -1, 0);
 	BlessTupleDesc(tupdesc);
 

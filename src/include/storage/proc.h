@@ -449,7 +449,9 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
  * 2 slots, but WAL writer is launched only after startup has exited, so we
  * only need 6 slots.
  */
-#define NUM_AUXILIARY_PROCS		6
+#define MAX_IO_WORKERS          32
+#define NUM_AUXILIARY_PROCS		(6 + MAX_IO_WORKERS)
+
 
 /* configurable options */
 extern PGDLLIMPORT int DeadlockTimeout;
@@ -489,6 +491,10 @@ extern void ProcWakeup(PGPROC *proc, ProcWaitStatus waitStatus);
 extern void ProcLockWakeup(LockMethod lockMethodTable, LOCK *lock);
 extern void CheckDeadLockAlert(void);
 extern void LockErrorCleanup(void);
+extern void GetLockHoldersAndWaiters(LOCALLOCK *locallock,
+									 StringInfo lock_holders_sbuf,
+									 StringInfo lock_waiters_sbuf,
+									 int *lockHoldersNum);
 
 extern void ProcWaitForSignal(uint32 wait_event_info);
 extern void ProcSendSignal(ProcNumber procNumber);

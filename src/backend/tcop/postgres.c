@@ -66,6 +66,7 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
+#include "tcop/backend_startup.h"
 #include "tcop/fastpath.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
@@ -1106,6 +1107,7 @@ exec_simple_query(const char *query_string)
 		size_t		cmdtaglen;
 
 		pgstat_report_query_id(0, true);
+		pgstat_report_plan_id(0, true);
 
 		/*
 		 * Get the command name for use in status display (it also becomes the
@@ -2029,6 +2031,18 @@ exec_bind_message(StringInfo input_message)
 					  cplan,
 					  psrc);
 
+	/* Portal is defined, set the plan ID based on its contents. */
+	foreach(lc, portal->stmts)
+	{
+		PlannedStmt *plan = lfirst_node(PlannedStmt, lc);
+
+		if (plan->planId != UINT64CONST(0))
+		{
+			pgstat_report_plan_id(plan->planId, false);
+			break;
+		}
+	}
+
 	/* Done with the snapshot used for parameter I/O and parsing/planning */
 	if (snapshot_set)
 		PopActiveSnapshot();
@@ -2165,6 +2179,17 @@ exec_execute_message(const char *portal_name, long max_rows)
 		if (stmt->queryId != UINT64CONST(0))
 		{
 			pgstat_report_query_id(stmt->queryId, false);
+			break;
+		}
+	}
+
+	foreach(lc, portal->stmts)
+	{
+		PlannedStmt *stmt = lfirst_node(PlannedStmt, lc);
+
+		if (stmt->planId != UINT64CONST(0))
+		{
+			pgstat_report_plan_id(stmt->planId, false);
 			break;
 		}
 	}
@@ -3315,6 +3340,13 @@ ProcessInterrupts(void)
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
 					 errmsg("terminating background worker \"%s\" due to administrator command",
 							MyBgworkerEntry->bgw_type)));
+		else if (AmIoWorkerProcess())
+		{
+			ereport(DEBUG1,
+					(errmsg_internal("io worker shutting down due to administrator command")));
+
+			proc_exit(0);
+		}
 		else
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
@@ -4606,6 +4638,38 @@ PostgresMain(const char *dbname, const char *username)
 
 			/* Report any recently-changed GUC options */
 			ReportChangedGUCOptions();
+
+			/*
+			 * The first time this backend is ready for query, log the
+			 * durations of the different components of connection
+			 * establishment and setup.
+			 */
+			if (conn_timing.ready_for_use == TIMESTAMP_MINUS_INFINITY &&
+				(log_connections & LOG_CONNECTION_SETUP_DURATIONS) &&
+				IsExternalConnectionBackend(MyBackendType))
+			{
+				uint64		total_duration,
+							fork_duration,
+							auth_duration;
+
+				conn_timing.ready_for_use = GetCurrentTimestamp();
+
+				total_duration =
+					TimestampDifferenceMicroseconds(conn_timing.socket_create,
+													conn_timing.ready_for_use);
+				fork_duration =
+					TimestampDifferenceMicroseconds(conn_timing.fork_start,
+													conn_timing.fork_end);
+				auth_duration =
+					TimestampDifferenceMicroseconds(conn_timing.auth_start,
+													conn_timing.auth_end);
+
+				ereport(LOG,
+						errmsg("connection ready: setup total=%.3f ms, fork=%.3f ms, authentication=%.3f ms",
+							   (double) total_duration / NS_PER_US,
+							   (double) fork_duration / NS_PER_US,
+							   (double) auth_duration / NS_PER_US));
+			}
 
 			ReadyForQuery(whereToSendOutput);
 			send_ready_for_query = false;

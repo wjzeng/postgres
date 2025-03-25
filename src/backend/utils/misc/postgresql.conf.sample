@@ -21,7 +21,7 @@
 # require a server shutdown and restart to take effect.
 #
 # Any parameter can also be given as a command-line option to the server, e.g.,
-# "postgres -c log_connections=on".  Some parameters can be changed at run time
+# "postgres -c log_connections=all".  Some parameters can be changed at run time
 # with the "SET" SQL command.
 #
 # Memory units:  B  = bytes            Time units:  us  = microseconds
@@ -114,7 +114,7 @@
 #ssl_ciphers = 'HIGH:MEDIUM:+3DES:!aNULL'	# allowed TLSv1.2 ciphers
 #ssl_tls13_ciphers = ''	# allowed TLSv1.3 cipher suites, blank for default
 #ssl_prefer_server_ciphers = on
-#ssl_groups = 'prime256v1'
+#ssl_groups = 'X25519:prime256v1'
 #ssl_min_protocol_version = 'TLSv1.2'
 #ssl_max_protocol_version = ''
 #ssl_dh_params_file = ''
@@ -198,9 +198,18 @@
 # - I/O -
 
 #backend_flush_after = 0		# measured in pages, 0 disables
-#effective_io_concurrency = 1		# 1-1000; 0 disables prefetching
-#maintenance_io_concurrency = 10	# 1-1000; 0 disables prefetching
-#io_combine_limit = 128kB		# usually 1-32 blocks (depends on OS)
+#effective_io_concurrency = 16		# 1-1000; 0 disables prefetching
+#maintenance_io_concurrency = 16	# 1-1000; 0 disables prefetching
+#io_max_combine_limit = 128kB		# usually 1-128 blocks (depends on OS)
+					# (change requires restart)
+#io_combine_limit = 128kB		# usually 1-128 blocks (depends on OS)
+
+#io_method = worker			# worker, sync (change requires restart)
+#io_max_concurrency = -1		# Max number of IOs that one process
+					# can execute simultaneously
+					# -1 sets based on shared_buffers
+					# (change requires restart)
+#io_workers = 3				# 1-32;
 
 # - Worker Processes -
 
@@ -380,6 +389,8 @@
 
 # These settings are ignored on a publisher.
 
+#max_active_replication_origins = 10	# max number of active replication origins
+					# (change requires restart)
 #max_logical_replication_workers = 4	# taken from max_worker_processes
 					# (change requires restart)
 #max_sync_workers_per_subscription = 2	# taken from max_logical_replication_workers
@@ -578,9 +589,11 @@
 					# actions running at least this number
 					# of milliseconds.
 #log_checkpoints = on
-#log_connections = off
+#log_connections = '' # log aspects of connection setup
+          # options include receipt, authentication, authorization,
+          # setup_durations, and all to log all of these aspects
 #log_disconnections = off
-#log_duration = off
+#log_duration = off # log statement duration
 #log_error_verbosity = default		# terse, default, or verbose messages
 #log_hostname = off
 #log_line_prefix = '%m [%p] '		# special values:
@@ -608,6 +621,7 @@
 					#   %% = '%'
 					# e.g. '<%u%%%d> '
 #log_lock_waits = off			# log lock waits >= deadlock_timeout
+#log_lock_failure = off		# log lock failures
 #log_recovery_conflict_waits = off	# log standby recovery conflict waits
 					# >= deadlock_timeout
 #log_parameter_max_length = -1		# when logging statements, limit logged
@@ -649,6 +663,7 @@
 # - Monitoring -
 
 #compute_query_id = auto
+#query_id_squash_values = off
 #log_statement_stats = off
 #log_parser_stats = off
 #log_planner_stats = off
@@ -700,6 +715,10 @@ autovacuum_worker_slots = 16	# autovacuum worker slots to allocate
 #vacuum_cost_page_miss = 2		# 0-10000 credits
 #vacuum_cost_page_dirty = 20		# 0-10000 credits
 #vacuum_cost_limit = 200		# 1-10000 credits
+
+# - Default Behavior -
+
+#vacuum_truncate = on			# enable truncation after vacuum
 
 # - Freezing -
 
@@ -791,6 +810,7 @@ autovacuum_worker_slots = 16	# autovacuum worker slots to allocate
 # - Other Defaults -
 
 #dynamic_library_path = '$libdir'
+#extension_control_path = '$system'
 #gin_fuzzy_search_limit = 0
 
 

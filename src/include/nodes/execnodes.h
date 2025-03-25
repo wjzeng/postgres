@@ -840,7 +840,6 @@ typedef struct TupleHashTableData *TupleHashTable;
 typedef struct TupleHashEntryData
 {
 	MinimalTuple firstTuple;	/* copy of first tuple in this group */
-	void	   *additional;		/* user data */
 	uint32		status;			/* hash status */
 	uint32		hash;			/* hash value (cached) */
 } TupleHashEntryData;
@@ -863,6 +862,7 @@ typedef struct TupleHashTableData
 	Oid		   *tab_collations; /* collations for hash and comparison */
 	MemoryContext tablecxt;		/* memory context containing table */
 	MemoryContext tempcxt;		/* context for function evaluations */
+	Size		additionalsize; /* size of additional data */
 	TupleTableSlot *tableslot;	/* slot for referencing table entries */
 	/* The following fields are set transiently for each table search: */
 	TupleTableSlot *inputslot;	/* current input tuple's slot */
@@ -1680,6 +1680,8 @@ typedef struct
  *		RuntimeContext	   expr context for evaling runtime Skeys
  *		RelationDesc	   index relation descriptor
  *		ScanDesc		   index scan descriptor
+ *		Instrument		   local index scan instrumentation
+ *		SharedInfo		   parallel worker instrumentation (no leader entry)
  *
  *		ReorderQueue	   tuples that need reordering due to re-check
  *		ReachedEnd		   have we fetched all tuples from index already?
@@ -1706,6 +1708,8 @@ typedef struct IndexScanState
 	ExprContext *iss_RuntimeContext;
 	Relation	iss_RelationDesc;
 	struct IndexScanDescData *iss_ScanDesc;
+	IndexScanInstrumentation iss_Instrument;
+	SharedIndexScanInstrumentation *iss_SharedInfo;
 
 	/* These are needed for re-checking ORDER BY expr ordering */
 	pairingheap *iss_ReorderQueue;
@@ -1732,6 +1736,8 @@ typedef struct IndexScanState
  *		RuntimeContext	   expr context for evaling runtime Skeys
  *		RelationDesc	   index relation descriptor
  *		ScanDesc		   index scan descriptor
+ *		Instrument		   local index scan instrumentation
+ *		SharedInfo		   parallel worker instrumentation (no leader entry)
  *		TableSlot		   slot for holding tuples fetched from the table
  *		VMBuffer		   buffer in use for visibility map testing, if any
  *		PscanLen		   size of parallel index-only scan descriptor
@@ -1753,6 +1759,8 @@ typedef struct IndexOnlyScanState
 	ExprContext *ioss_RuntimeContext;
 	Relation	ioss_RelationDesc;
 	struct IndexScanDescData *ioss_ScanDesc;
+	IndexScanInstrumentation ioss_Instrument;
+	SharedIndexScanInstrumentation *ioss_SharedInfo;
 	TupleTableSlot *ioss_TableSlot;
 	Buffer		ioss_VMBuffer;
 	Size		ioss_PscanLen;
@@ -1774,6 +1782,8 @@ typedef struct IndexOnlyScanState
  *		RuntimeContext	   expr context for evaling runtime Skeys
  *		RelationDesc	   index relation descriptor
  *		ScanDesc		   index scan descriptor
+ *		Instrument		   local index scan instrumentation
+ *		SharedInfo		   parallel worker instrumentation (no leader entry)
  * ----------------
  */
 typedef struct BitmapIndexScanState
@@ -1790,6 +1800,8 @@ typedef struct BitmapIndexScanState
 	ExprContext *biss_RuntimeContext;
 	Relation	biss_RelationDesc;
 	struct IndexScanDescData *biss_ScanDesc;
+	IndexScanInstrumentation biss_Instrument;
+	SharedIndexScanInstrumentation *biss_SharedInfo;
 } BitmapIndexScanState;
 
 /* ----------------
@@ -1828,11 +1840,7 @@ typedef enum
 /* ----------------
  *	 ParallelBitmapHeapState information
  *		tbmiterator				iterator for scanning current pages
- *		prefetch_iterator		iterator for prefetching ahead of current page
- *		mutex					mutual exclusion for the prefetching variable
- *								and state
- *		prefetch_pages			# pages prefetch iterator is ahead of current
- *		prefetch_target			current target prefetch distance
+ *		mutex					mutual exclusion for state
  *		state					current state of the TIDBitmap
  *		cv						conditional wait variable
  * ----------------
@@ -1840,10 +1848,7 @@ typedef enum
 typedef struct ParallelBitmapHeapState
 {
 	dsa_pointer tbmiterator;
-	dsa_pointer prefetch_iterator;
 	slock_t		mutex;
-	int			prefetch_pages;
-	int			prefetch_target;
 	SharedBitmapState state;
 	ConditionVariable cv;
 } ParallelBitmapHeapState;
@@ -1867,18 +1872,11 @@ typedef struct SharedBitmapHeapInstrumentation
  *
  *		bitmapqualorig	   execution state for bitmapqualorig expressions
  *		tbm				   bitmap obtained from child index scan(s)
- *		pvmbuffer		   buffer for visibility-map lookups of prefetched pages
  *		stats			   execution statistics
- *		prefetch_iterator  iterator for prefetching ahead of current page
- *		prefetch_pages	   # pages prefetch iterator is ahead of current
- *		prefetch_target    current target prefetch distance
- *		prefetch_maximum   maximum value for prefetch_target
  *		initialized		   is node is ready to iterate
  *		pstate			   shared state for parallel bitmap scan
  *		sinstrument		   statistics for parallel workers
  *		recheck			   do current page's tuples need recheck
- *		blockno			   used to validate pf and current block stay in sync
- *		prefetch_blockno   used to validate pf stays ahead of current block
  * ----------------
  */
 typedef struct BitmapHeapScanState
@@ -1886,18 +1884,11 @@ typedef struct BitmapHeapScanState
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprState  *bitmapqualorig;
 	TIDBitmap  *tbm;
-	Buffer		pvmbuffer;
 	BitmapHeapScanInstrumentation stats;
-	TBMIterator prefetch_iterator;
-	int			prefetch_pages;
-	int			prefetch_target;
-	int			prefetch_maximum;
 	bool		initialized;
 	ParallelBitmapHeapState *pstate;
 	SharedBitmapHeapInstrumentation *sinstrument;
 	bool		recheck;
-	BlockNumber blockno;
-	BlockNumber prefetch_blockno;
 } BitmapHeapScanState;
 
 /* ----------------
@@ -2569,7 +2560,8 @@ typedef struct AggState
 	/* these fields are used in AGG_HASHED and AGG_MIXED modes: */
 	bool		table_filled;	/* hash table filled yet? */
 	int			num_hashes;
-	MemoryContext hash_metacxt; /* memory for hash table itself */
+	MemoryContext hash_metacxt; /* memory for hash table bucket array */
+	MemoryContext hash_tablecxt;	/* memory for hash table entries */
 	struct LogicalTapeSet *hash_tapeset;	/* tape set for hash spill tapes */
 	struct HashAggSpill *hash_spills;	/* HashAggSpill for each grouping set,
 										 * exists only during first pass */
@@ -2595,7 +2587,7 @@ typedef struct AggState
 										 * per-group pointers */
 
 	/* support for evaluation of agg input expressions: */
-#define FIELDNO_AGGSTATE_ALL_PERGROUPS 53
+#define FIELDNO_AGGSTATE_ALL_PERGROUPS 54
 	AggStatePerGroup *all_pergroups;	/* array of first ->pergroups, than
 										 * ->hash_pergroup */
 	SharedAggInfo *shared_info; /* one entry per worker */

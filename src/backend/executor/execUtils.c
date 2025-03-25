@@ -322,19 +322,18 @@ CreateExprContext(EState *estate)
 ExprContext *
 CreateWorkExprContext(EState *estate)
 {
-	Size		minContextSize = ALLOCSET_DEFAULT_MINSIZE;
-	Size		initBlockSize = ALLOCSET_DEFAULT_INITSIZE;
 	Size		maxBlockSize = ALLOCSET_DEFAULT_MAXSIZE;
 
-	/* choose the maxBlockSize to be no larger than 1/16 of work_mem */
-	while (maxBlockSize > work_mem * (Size) 1024 / 16)
-		maxBlockSize >>= 1;
+	maxBlockSize = pg_prevpower2_size_t(work_mem * (Size) 1024 / 16);
 
-	if (maxBlockSize < ALLOCSET_DEFAULT_INITSIZE)
-		maxBlockSize = ALLOCSET_DEFAULT_INITSIZE;
+	/* But no bigger than ALLOCSET_DEFAULT_MAXSIZE */
+	maxBlockSize = Min(maxBlockSize, ALLOCSET_DEFAULT_MAXSIZE);
 
-	return CreateExprContextInternal(estate, minContextSize,
-									 initBlockSize, maxBlockSize);
+	/* and no smaller than ALLOCSET_DEFAULT_INITSIZE */
+	maxBlockSize = Max(maxBlockSize, ALLOCSET_DEFAULT_INITSIZE);
+
+	return CreateExprContextInternal(estate, ALLOCSET_DEFAULT_MINSIZE,
+									 ALLOCSET_DEFAULT_INITSIZE, maxBlockSize);
 }
 
 /* ----------------
@@ -746,7 +745,7 @@ ExecOpenScanRelation(EState *estate, Index scanrelid, int eflags)
 	Relation	rel;
 
 	/* Open the relation. */
-	rel = ExecGetRangeTableRelation(estate, scanrelid);
+	rel = ExecGetRangeTableRelation(estate, scanrelid, false);
 
 	/*
 	 * Complain if we're attempting a scan of an unscannable relation, except
@@ -815,18 +814,22 @@ ExecInitRangeTable(EState *estate, List *rangeTable, List *permInfos,
  *
  * The Relations will be closed in ExecEndPlan().
  *
- * Note: The caller must ensure that 'rti' refers to an unpruned relation
- * (i.e., it is a member of estate->es_unpruned_relids) before calling this
- * function. Attempting to open a pruned relation will result in an error.
+ * If isResultRel is true, the relation is being used as a result relation.
+ * Such a relation might have been pruned, which is OK for result relations,
+ * but not for scan relations; see the details in ExecInitModifyTable(). If
+ * isResultRel is false, the caller must ensure that 'rti' refers to an
+ * unpruned relation (i.e., it is a member of estate->es_unpruned_relids)
+ * before calling this function. Attempting to open a pruned relation for
+ * scanning will result in an error.
  */
 Relation
-ExecGetRangeTableRelation(EState *estate, Index rti)
+ExecGetRangeTableRelation(EState *estate, Index rti, bool isResultRel)
 {
 	Relation	rel;
 
 	Assert(rti > 0 && rti <= estate->es_range_table_size);
 
-	if (!bms_is_member(rti, estate->es_unpruned_relids))
+	if (!isResultRel && !bms_is_member(rti, estate->es_unpruned_relids))
 		elog(ERROR, "trying to open a pruned relation");
 
 	rel = estate->es_relations[rti - 1];
@@ -880,7 +883,7 @@ ExecInitResultRelation(EState *estate, ResultRelInfo *resultRelInfo,
 {
 	Relation	resultRelationDesc;
 
-	resultRelationDesc = ExecGetRangeTableRelation(estate, rti);
+	resultRelationDesc = ExecGetRangeTableRelation(estate, rti, true);
 	InitResultRelInfo(resultRelInfo,
 					  resultRelationDesc,
 					  rti,

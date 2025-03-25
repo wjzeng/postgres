@@ -88,6 +88,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
+#include "storage/aio_subsys.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
@@ -317,7 +318,7 @@ int			AutovacuumLauncherPid = 0;
 
 static Oid	do_start_worker(void);
 static void ProcessAutoVacLauncherInterrupts(void);
-static void AutoVacLauncherShutdown(void) pg_attribute_noreturn();
+pg_noreturn static void AutoVacLauncherShutdown(void);
 static void launcher_determine_sleep(bool canlaunch, bool recursing,
 									 struct timeval *nap);
 static void launch_worker(TimestampTz now);
@@ -465,6 +466,7 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 		 */
 		LWLockReleaseAll();
 		pgstat_report_wait_end();
+		pgaio_error_cleanup();
 		UnlockBuffers();
 		/* this is probably dead code, but let's be safe: */
 		if (AuxProcessResourceOwner)

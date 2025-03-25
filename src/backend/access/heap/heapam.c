@@ -98,7 +98,8 @@ static void MultiXactIdWait(MultiXactId multi, MultiXactStatus status, uint16 in
 							Relation rel, ItemPointer ctid, XLTW_Oper oper,
 							int *remaining);
 static bool ConditionalMultiXactIdWait(MultiXactId multi, MultiXactStatus status,
-									   uint16 infomask, Relation rel, int *remaining);
+									   uint16 infomask, Relation rel, int *remaining,
+									   bool logLockFailure);
 static void index_delete_sort(TM_IndexDeleteOp *delstate);
 static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
@@ -162,8 +163,8 @@ static const struct
 	LockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
 #define UnlockTupleTuplock(rel, tup, mode) \
 	UnlockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
-#define ConditionalLockTupleTuplock(rel, tup, mode) \
-	ConditionalLockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock)
+#define ConditionalLockTupleTuplock(rel, tup, mode, log) \
+	ConditionalLockTuple((rel), (tup), tupleLockExtraInfo[mode].hwlock, (log))
 
 #ifdef USE_PREFETCH
 /*
@@ -277,6 +278,72 @@ heap_scan_stream_read_next_serial(ReadStream *stream,
 														   scan->rs_dir);
 
 	return scan->rs_prefetch_block;
+}
+
+/*
+ * Read stream API callback for bitmap heap scans.
+ * Returns the next block the caller wants from the read stream or
+ * InvalidBlockNumber when done.
+ */
+static BlockNumber
+bitmapheap_stream_read_next(ReadStream *pgsr, void *private_data,
+							void *per_buffer_data)
+{
+	TBMIterateResult *tbmres = per_buffer_data;
+	BitmapHeapScanDesc bscan = (BitmapHeapScanDesc) private_data;
+	HeapScanDesc hscan = (HeapScanDesc) bscan;
+	TableScanDesc sscan = &hscan->rs_base;
+
+	for (;;)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		/* no more entries in the bitmap */
+		if (!tbm_iterate(&sscan->st.rs_tbmiterator, tbmres))
+			return InvalidBlockNumber;
+
+		/*
+		 * Ignore any claimed entries past what we think is the end of the
+		 * relation. It may have been extended after the start of our scan (we
+		 * only hold an AccessShareLock, and it could be inserts from this
+		 * backend).  We don't take this optimization in SERIALIZABLE
+		 * isolation though, as we need to examine all invisible tuples
+		 * reachable by the index.
+		 */
+		if (!IsolationIsSerializable() &&
+			tbmres->blockno >= hscan->rs_nblocks)
+			continue;
+
+		/*
+		 * We can skip fetching the heap page if we don't need any fields from
+		 * the heap, the bitmap entries don't need rechecking, and all tuples
+		 * on the page are visible to our transaction.
+		 */
+		if (!(sscan->rs_flags & SO_NEED_TUPLES) &&
+			!tbmres->recheck &&
+			VM_ALL_VISIBLE(sscan->rs_rd, tbmres->blockno, &bscan->rs_vmbuffer))
+		{
+			OffsetNumber offsets[TBM_MAX_TUPLES_PER_PAGE];
+			int			noffsets;
+
+			/* can't be lossy in the skip_fetch case */
+			Assert(!tbmres->lossy);
+			Assert(bscan->rs_empty_tuples_pending >= 0);
+
+			/*
+			 * We throw away the offsets, but this is the easiest way to get a
+			 * count of tuples.
+			 */
+			noffsets = tbm_extract_page_tuple(tbmres, offsets, TBM_MAX_TUPLES_PER_PAGE);
+			bscan->rs_empty_tuples_pending += noffsets;
+			continue;
+		}
+
+		return tbmres->blockno;
+	}
+
+	/* not reachable */
+	Assert(false);
 }
 
 /* ----------------
@@ -1067,6 +1134,7 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	scan->rs_base.rs_flags = flags;
 	scan->rs_base.rs_parallel = parallel_scan;
 	scan->rs_strategy = NULL;	/* set in initscan */
+	scan->rs_cbuf = InvalidBuffer;
 
 	/*
 	 * Disable page-at-a-time mode if it's not a MVCC-safe snapshot.
@@ -1146,6 +1214,16 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 														  scan,
 														  0);
 	}
+	else if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
+	{
+		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_DEFAULT,
+														  scan->rs_strategy,
+														  scan->rs_base.rs_rd,
+														  MAIN_FORKNUM,
+														  bitmapheap_stream_read_next,
+														  scan,
+														  sizeof(TBMIterateResult));
+	}
 
 
 	return (TableScanDesc) scan;
@@ -1180,7 +1258,10 @@ heap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 	 * unpin scan buffers
 	 */
 	if (BufferIsValid(scan->rs_cbuf))
+	{
 		ReleaseBuffer(scan->rs_cbuf);
+		scan->rs_cbuf = InvalidBuffer;
+	}
 
 	if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
 	{
@@ -4894,7 +4975,7 @@ l3:
 					case LockWaitSkip:
 						if (!ConditionalMultiXactIdWait((MultiXactId) xwait,
 														status, infomask, relation,
-														NULL))
+														NULL, false))
 						{
 							result = TM_WouldBlock;
 							/* recovery code expects to have buffer lock held */
@@ -4905,7 +4986,7 @@ l3:
 					case LockWaitError:
 						if (!ConditionalMultiXactIdWait((MultiXactId) xwait,
 														status, infomask, relation,
-														NULL))
+														NULL, log_lock_failure))
 							ereport(ERROR,
 									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 									 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -4934,7 +5015,7 @@ l3:
 										  XLTW_Lock);
 						break;
 					case LockWaitSkip:
-						if (!ConditionalXactLockTableWait(xwait))
+						if (!ConditionalXactLockTableWait(xwait, false))
 						{
 							result = TM_WouldBlock;
 							/* recovery code expects to have buffer lock held */
@@ -4943,7 +5024,7 @@ l3:
 						}
 						break;
 					case LockWaitError:
-						if (!ConditionalXactLockTableWait(xwait))
+						if (!ConditionalXactLockTableWait(xwait, log_lock_failure))
 							ereport(ERROR,
 									(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 									 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -5203,12 +5284,12 @@ heap_acquire_tuplock(Relation relation, ItemPointer tid, LockTupleMode mode,
 			break;
 
 		case LockWaitSkip:
-			if (!ConditionalLockTupleTuplock(relation, tid, mode))
+			if (!ConditionalLockTupleTuplock(relation, tid, mode, false))
 				return false;
 			break;
 
 		case LockWaitError:
-			if (!ConditionalLockTupleTuplock(relation, tid, mode))
+			if (!ConditionalLockTupleTuplock(relation, tid, mode, log_lock_failure))
 				ereport(ERROR,
 						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
 						 errmsg("could not obtain lock on row in relation \"%s\"",
@@ -7581,7 +7662,8 @@ DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
  * fail if lock is unavailable.  'rel', 'ctid' and 'oper' are used to set up
  * context information for error messages.  'remaining', if not NULL, receives
  * the number of members that are still running, including any (non-aborted)
- * subtransactions of our own transaction.
+ * subtransactions of our own transaction.  'logLockFailure' indicates whether
+ * to log details when a lock acquisition fails with 'nowait' enabled.
  *
  * We do this by sleeping on each member using XactLockTableWait.  Any
  * members that belong to the current backend are *not* waited for, however;
@@ -7602,7 +7684,7 @@ static bool
 Do_MultiXactIdWait(MultiXactId multi, MultiXactStatus status,
 				   uint16 infomask, bool nowait,
 				   Relation rel, ItemPointer ctid, XLTW_Oper oper,
-				   int *remaining)
+				   int *remaining, bool logLockFailure)
 {
 	bool		result = true;
 	MultiXactMember *members;
@@ -7649,7 +7731,7 @@ Do_MultiXactIdWait(MultiXactId multi, MultiXactStatus status,
 			 */
 			if (nowait)
 			{
-				result = ConditionalXactLockTableWait(memxid);
+				result = ConditionalXactLockTableWait(memxid, logLockFailure);
 				if (!result)
 					break;
 			}
@@ -7682,7 +7764,7 @@ MultiXactIdWait(MultiXactId multi, MultiXactStatus status, uint16 infomask,
 				int *remaining)
 {
 	(void) Do_MultiXactIdWait(multi, status, infomask, false,
-							  rel, ctid, oper, remaining);
+							  rel, ctid, oper, remaining, false);
 }
 
 /*
@@ -7700,10 +7782,11 @@ MultiXactIdWait(MultiXactId multi, MultiXactStatus status, uint16 infomask,
  */
 static bool
 ConditionalMultiXactIdWait(MultiXactId multi, MultiXactStatus status,
-						   uint16 infomask, Relation rel, int *remaining)
+						   uint16 infomask, Relation rel, int *remaining,
+						   bool logLockFailure)
 {
 	return Do_MultiXactIdWait(multi, status, infomask, true,
-							  rel, NULL, XLTW_None, remaining);
+							  rel, NULL, XLTW_None, remaining, logLockFailure);
 }
 
 /*

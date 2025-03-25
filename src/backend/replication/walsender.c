@@ -79,6 +79,7 @@
 #include "replication/walsender.h"
 #include "replication/walsender_private.h"
 #include "storage/condition_variable.h"
+#include "storage/aio_subsys.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
@@ -237,7 +238,7 @@ typedef void (*WalSndSendDataCallback) (void);
 static void WalSndLoop(WalSndSendDataCallback send_data);
 static void InitWalSenderSlot(void);
 static void WalSndKill(int code, Datum arg);
-static void WalSndShutdown(void) pg_attribute_noreturn();
+pg_noreturn static void WalSndShutdown(void);
 static void XLogSendPhysical(void);
 static void XLogSendLogical(void);
 static void WalSndDone(WalSndSendDataCallback send_data);
@@ -327,6 +328,7 @@ WalSndErrorCleanup(void)
 	LWLockReleaseAll();
 	ConditionVariableCancelSleep();
 	pgstat_report_wait_end();
+	pgaio_error_cleanup();
 
 	if (xlogreader != NULL && xlogreader->seg.ws_file >= 0)
 		wal_segment_close(xlogreader);

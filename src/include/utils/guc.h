@@ -318,6 +318,7 @@ extern PGDLLIMPORT bool optimize_bounded_sort;
  */
 extern PGDLLIMPORT const struct config_enum_entry archive_mode_options[];
 extern PGDLLIMPORT const struct config_enum_entry dynamic_shared_memory_options[];
+extern PGDLLIMPORT const struct config_enum_entry io_method_options[];
 extern PGDLLIMPORT const struct config_enum_entry recovery_target_action_options[];
 extern PGDLLIMPORT const struct config_enum_entry wal_level_options[];
 extern PGDLLIMPORT const struct config_enum_entry wal_sync_method_options[];
@@ -444,7 +445,7 @@ extern ArrayType *GUCArrayDelete(ArrayType *array, const char *name);
 extern ArrayType *GUCArrayReset(ArrayType *array);
 
 extern void *guc_malloc(int elevel, size_t size);
-extern pg_nodiscard void *guc_realloc(int elevel, void *old, size_t size);
+pg_nodiscard extern void *guc_realloc(int elevel, void *old, size_t size);
 extern char *guc_strdup(int elevel, const char *src);
 extern void guc_free(void *ptr);
 

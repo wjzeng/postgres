@@ -77,6 +77,10 @@ SELECT E'De\123dBeEf'::bytea;
 SELECT E'De\\123dBeEf'::bytea;
 SELECT E'De\\678dBeEf'::bytea;
 
+SELECT reverse(''::bytea);
+SELECT reverse('\xaa'::bytea);
+SELECT reverse('\xabcd'::bytea);
+
 SET bytea_output TO escape;
 SELECT E'\\xDeAdBeEf'::bytea;
 SELECT E'\\x De Ad Be Ef '::bytea;
@@ -362,6 +366,12 @@ SELECT regexp_split_to_array('thE QUick bROWn FOx jUMPs ovEr The lazy dOG', 'e',
 SELECT POSITION('4' IN '1234567890') = '4' AS "4";
 
 SELECT POSITION('5' IN '1234567890') = '5' AS "5";
+
+SELECT POSITION('\x11'::bytea IN ''::bytea) = 0 AS "0";
+SELECT POSITION('\x33'::bytea IN '\x1122'::bytea) = 0 AS "0";
+SELECT POSITION(''::bytea IN '\x1122'::bytea) = 1 AS "1";
+SELECT POSITION('\x22'::bytea IN '\x1122'::bytea) = 2 AS "2";
+SELECT POSITION('\x5678'::bytea IN '\x1234567890'::bytea) = 3 AS "3";
 
 -- T312 character overlay function
 SELECT OVERLAY('abcdef' PLACING '45' FROM 4) AS "abc45f";

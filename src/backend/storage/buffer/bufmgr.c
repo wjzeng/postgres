@@ -160,9 +160,12 @@ int			maintenance_io_concurrency = DEFAULT_MAINTENANCE_IO_CONCURRENCY;
 /*
  * Limit on how many blocks should be handled in single I/O operations.
  * StartReadBuffers() callers should respect it, as should other operations
- * that call smgr APIs directly.
+ * that call smgr APIs directly.  It is computed as the minimum of underlying
+ * GUCs io_combine_limit_guc and io_max_combine_limit.
  */
 int			io_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
+int			io_combine_limit_guc = DEFAULT_IO_COMBINE_LIMIT;
+int			io_max_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
 
 /*
  * GUC variables about triggering kernel writeback for buffers written; OS
@@ -210,6 +213,8 @@ static HTAB *PrivateRefCountHash = NULL;
 static int32 PrivateRefCountOverflowed = 0;
 static uint32 PrivateRefCountClock = 0;
 static PrivateRefCountEntry *ReservedRefCountEntry = NULL;
+
+static uint32 MaxProportionalPins;
 
 static void ReservePrivateRefCountEntry(void);
 static PrivateRefCountEntry *NewPrivateRefCountEntry(Buffer buffer);
@@ -1036,7 +1041,7 @@ ZeroAndLockBuffer(Buffer buffer, ReadBufferMode mode, bool already_valid)
 	{
 		/* Simple case for non-shared buffers. */
 		bufHdr = GetLocalBufferDescriptor(-buffer - 1);
-		need_to_zero = (pg_atomic_read_u32(&bufHdr->state) & BM_VALID) == 0;
+		need_to_zero = StartLocalBufferIO(bufHdr, true);
 	}
 	else
 	{
@@ -1070,19 +1075,11 @@ ZeroAndLockBuffer(Buffer buffer, ReadBufferMode mode, bool already_valid)
 		if (!isLocalBuf)
 			LWLockAcquire(BufferDescriptorGetContentLock(bufHdr), LW_EXCLUSIVE);
 
+		/* Set BM_VALID, terminate IO, and wake up any waiters */
 		if (isLocalBuf)
-		{
-			/* Only need to adjust flags */
-			uint32		buf_state = pg_atomic_read_u32(&bufHdr->state);
-
-			buf_state |= BM_VALID;
-			pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
-		}
+			TerminateLocalBufferIO(bufHdr, false, BM_VALID);
 		else
-		{
-			/* Set BM_VALID, terminate IO, and wake up any waiters */
 			TerminateBufferIO(bufHdr, false, BM_VALID, true);
-		}
 	}
 	else if (!isLocalBuf)
 	{
@@ -1255,12 +1252,13 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 					 Buffer *buffers,
 					 BlockNumber blockNum,
 					 int *nblocks,
-					 int flags)
+					 int flags,
+					 bool allow_forwarding)
 {
 	int			actual_nblocks = *nblocks;
-	int			io_buffers_len = 0;
 	int			maxcombine = 0;
 
+	Assert(*nblocks == 1 || allow_forwarding);
 	Assert(*nblocks > 0);
 	Assert(*nblocks <= MAX_IO_COMBINE_LIMIT);
 
@@ -1268,30 +1266,81 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 	{
 		bool		found;
 
-		buffers[i] = PinBufferForBlock(operation->rel,
-									   operation->smgr,
-									   operation->persistence,
-									   operation->forknum,
-									   blockNum + i,
-									   operation->strategy,
-									   &found);
+		if (allow_forwarding && buffers[i] != InvalidBuffer)
+		{
+			BufferDesc *bufHdr;
+
+			/*
+			 * This is a buffer that was pinned by an earlier call to
+			 * StartReadBuffers(), but couldn't be handled in one operation at
+			 * that time.  The operation was split, and the caller has passed
+			 * an already pinned buffer back to us to handle the rest of the
+			 * operation.  It must continue at the expected block number.
+			 */
+			Assert(BufferGetBlockNumber(buffers[i]) == blockNum + i);
+
+			/*
+			 * It might be an already valid buffer (a hit) that followed the
+			 * final contiguous block of an earlier I/O (a miss) marking the
+			 * end of it, or a buffer that some other backend has since made
+			 * valid by performing the I/O for us, in which case we can handle
+			 * it as a hit now.  It is safe to check for a BM_VALID flag with
+			 * a relaxed load, because we got a fresh view of it while pinning
+			 * it in the previous call.
+			 *
+			 * On the other hand if we don't see BM_VALID yet, it must be an
+			 * I/O that was split by the previous call and we need to try to
+			 * start a new I/O from this block.  We're also racing against any
+			 * other backend that might start the I/O or even manage to mark
+			 * it BM_VALID after this check, but StartBufferIO() will handle
+			 * those cases.
+			 */
+			if (BufferIsLocal(buffers[i]))
+				bufHdr = GetLocalBufferDescriptor(-buffers[i] - 1);
+			else
+				bufHdr = GetBufferDescriptor(buffers[i] - 1);
+			Assert(pg_atomic_read_u32(&bufHdr->state) & BM_TAG_VALID);
+			found = pg_atomic_read_u32(&bufHdr->state) & BM_VALID;
+		}
+		else
+		{
+			buffers[i] = PinBufferForBlock(operation->rel,
+										   operation->smgr,
+										   operation->persistence,
+										   operation->forknum,
+										   blockNum + i,
+										   operation->strategy,
+										   &found);
+		}
 
 		if (found)
 		{
 			/*
-			 * Terminate the read as soon as we get a hit.  It could be a
-			 * single buffer hit, or it could be a hit that follows a readable
-			 * range.  We don't want to create more than one readable range,
-			 * so we stop here.
+			 * We have a hit.  If it's the first block in the requested range,
+			 * we can return it immediately and report that WaitReadBuffers()
+			 * does not need to be called.  If the initial value of *nblocks
+			 * was larger, the caller will have to call again for the rest.
 			 */
-			actual_nblocks = i + 1;
+			if (i == 0)
+			{
+				*nblocks = 1;
+				return false;
+			}
+
+			/*
+			 * Otherwise we already have an I/O to perform, but this block
+			 * can't be included as it is already valid.  Split the I/O here.
+			 * There may or may not be more blocks requiring I/O after this
+			 * one, we haven't checked, but they can't be contiguous with this
+			 * one in the way.  We'll leave this buffer pinned, forwarding it
+			 * to the next call, avoiding the need to unpin it here and re-pin
+			 * it in the next call.
+			 */
+			actual_nblocks = i;
 			break;
 		}
 		else
 		{
-			/* Extend the readable range to cover this block. */
-			io_buffers_len++;
-
 			/*
 			 * Check how many blocks we can cover with the same IO. The smgr
 			 * implementation might e.g. be limited due to a segment boundary.
@@ -1312,15 +1361,11 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 	}
 	*nblocks = actual_nblocks;
 
-	if (likely(io_buffers_len == 0))
-		return false;
-
 	/* Populate information needed for I/O. */
 	operation->buffers = buffers;
 	operation->blocknum = blockNum;
 	operation->flags = flags;
 	operation->nblocks = actual_nblocks;
-	operation->io_buffers_len = io_buffers_len;
 
 	if (flags & READ_BUFFERS_ISSUE_ADVICE)
 	{
@@ -1335,7 +1380,7 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 		smgrprefetch(operation->smgr,
 					 operation->forknum,
 					 blockNum,
-					 operation->io_buffers_len);
+					 actual_nblocks);
 	}
 
 	/* Indicate that WaitReadBuffers() should be called. */
@@ -1344,16 +1389,26 @@ StartReadBuffersImpl(ReadBuffersOperation *operation,
 
 /*
  * Begin reading a range of blocks beginning at blockNum and extending for
- * *nblocks.  On return, up to *nblocks pinned buffers holding those blocks
- * are written into the buffers array, and *nblocks is updated to contain the
- * actual number, which may be fewer than requested.  Caller sets some of the
- * members of operation; see struct definition.
+ * *nblocks.  *nblocks and the buffers array are in/out parameters.  On entry,
+ * the buffers elements covered by *nblocks must hold either InvalidBuffer or
+ * buffers forwarded by an earlier call to StartReadBuffers() that was split
+ * and is now being continued.  On return, *nblocks holds the number of blocks
+ * accepted by this operation.  If it is less than the original number then
+ * this operation has been split, but buffer elements up to the original
+ * requested size may hold forwarded buffers to be used for a continuing
+ * operation.  The caller must either start a new I/O beginning at the block
+ * immediately following the blocks accepted by this call and pass those
+ * buffers back in, or release them if it chooses not to.  It shouldn't make
+ * any other use of or assumptions about forwarded buffers.
  *
- * If false is returned, no I/O is necessary.  If true is returned, one I/O
- * has been started, and WaitReadBuffers() must be called with the same
- * operation object before the buffers are accessed.  Along with the operation
- * object, the caller-supplied array of buffers must remain valid until
- * WaitReadBuffers() is called.
+ * If false is returned, no I/O is necessary and the buffers covered by
+ * *nblocks on exit are valid and ready to be accessed.  If true is returned,
+ * an I/O has been started, and WaitReadBuffers() must be called with the same
+ * operation object before the buffers covered by *nblocks on exit can be
+ * accessed.  Along with the operation object, the caller-supplied array of
+ * buffers must remain valid until WaitReadBuffers() is called, and any
+ * forwarded buffers must also be preserved for a continuing call unless
+ * they are explicitly released.
  *
  * Currently the I/O is only started with optional operating system advice if
  * requested by the caller with READ_BUFFERS_ISSUE_ADVICE, and the real I/O
@@ -1367,13 +1422,17 @@ StartReadBuffers(ReadBuffersOperation *operation,
 				 int *nblocks,
 				 int flags)
 {
-	return StartReadBuffersImpl(operation, buffers, blockNum, nblocks, flags);
+	return StartReadBuffersImpl(operation, buffers, blockNum, nblocks, flags,
+								true /* expect forwarded buffers */ );
 }
 
 /*
  * Single block version of the StartReadBuffers().  This might save a few
  * instructions when called from another translation unit, because it is
  * specialized for nblocks == 1.
+ *
+ * This version does not support "forwarded" buffers: they cannot be created
+ * by reading only one block and *buffer is ignored on entry.
  */
 bool
 StartReadBuffer(ReadBuffersOperation *operation,
@@ -1384,7 +1443,8 @@ StartReadBuffer(ReadBuffersOperation *operation,
 	int			nblocks = 1;
 	bool		result;
 
-	result = StartReadBuffersImpl(operation, buffer, blocknum, &nblocks, flags);
+	result = StartReadBuffersImpl(operation, buffer, blocknum, &nblocks, flags,
+								  false /* single block, no forwarding */ );
 	Assert(nblocks == 1);		/* single block can't be short */
 
 	return result;
@@ -1394,11 +1454,7 @@ static inline bool
 WaitReadBuffersCanStartIO(Buffer buffer, bool nowait)
 {
 	if (BufferIsLocal(buffer))
-	{
-		BufferDesc *bufHdr = GetLocalBufferDescriptor(-buffer - 1);
-
-		return (pg_atomic_read_u32(&bufHdr->state) & BM_VALID) == 0;
-	}
+		return StartLocalBufferIO(GetLocalBufferDescriptor(-buffer - 1), true);
 	else
 		return StartBufferIO(GetBufferDescriptor(buffer - 1), true, nowait);
 }
@@ -1414,23 +1470,15 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 	IOObject	io_object;
 	char		persistence;
 
-	/*
-	 * Currently operations are only allowed to include a read of some range,
-	 * with an optional extra buffer that is already pinned at the end.  So
-	 * nblocks can be at most one more than io_buffers_len.
-	 */
-	Assert((operation->nblocks == operation->io_buffers_len) ||
-		   (operation->nblocks == operation->io_buffers_len + 1));
-
 	/* Find the range of the physical read we need to perform. */
-	nblocks = operation->io_buffers_len;
-	if (nblocks == 0)
-		return;					/* nothing to do */
-
+	nblocks = operation->nblocks;
 	buffers = &operation->buffers[0];
 	blocknum = operation->blocknum;
 	forknum = operation->forknum;
 	persistence = operation->persistence;
+
+	Assert(nblocks > 0);
+	Assert(nblocks <= MAX_IO_COMBINE_LIMIT);
 
 	if (persistence == RELPERSISTENCE_TEMP)
 	{
@@ -1442,19 +1490,6 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 		io_context = IOContextForStrategy(operation->strategy);
 		io_object = IOOBJECT_RELATION;
 	}
-
-	/*
-	 * We count all these blocks as read by this backend.  This is traditional
-	 * behavior, but might turn out to be not true if we find that someone
-	 * else has beaten us and completed the read of some of these blocks.  In
-	 * that case the system globally double-counts, but we traditionally don't
-	 * count this as a "hit", and we don't have a separate counter for "miss,
-	 * but another backend completed the read".
-	 */
-	if (persistence == RELPERSISTENCE_TEMP)
-		pgBufferUsage.local_blks_read += nblocks;
-	else
-		pgBufferUsage.shared_blks_read += nblocks;
 
 	for (int i = 0; i < nblocks; ++i)
 	{
@@ -1473,8 +1508,9 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 		if (!WaitReadBuffersCanStartIO(buffers[i], false))
 		{
 			/*
-			 * Report this as a 'hit' for this backend, even though it must
-			 * have started out as a miss in PinBufferForBlock().
+			 * Report and track this as a 'hit' for this backend, even though
+			 * it must have started out as a miss in PinBufferForBlock(). The
+			 * other backend will track this as a 'read'.
 			 */
 			TRACE_POSTGRESQL_BUFFER_READ_DONE(forknum, blocknum + i,
 											  operation->smgr->smgr_rlocator.locator.spcOid,
@@ -1482,6 +1518,20 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 											  operation->smgr->smgr_rlocator.locator.relNumber,
 											  operation->smgr->smgr_rlocator.backend,
 											  true);
+
+			if (persistence == RELPERSISTENCE_TEMP)
+				pgBufferUsage.local_blks_hit += 1;
+			else
+				pgBufferUsage.shared_blks_hit += 1;
+
+			if (operation->rel)
+				pgstat_count_buffer_hit(operation->rel);
+
+			pgstat_count_io_op(io_object, io_context, IOOP_HIT, 1, 0);
+
+			if (VacuumCostActive)
+				VacuumCostBalance += VacuumCostPageHit;
+
 			continue;
 		}
 
@@ -1552,19 +1602,11 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 									relpath(operation->smgr->smgr_rlocator, forknum).str)));
 			}
 
-			/* Terminate I/O and set BM_VALID. */
+			/* Set BM_VALID, terminate IO, and wake up any waiters */
 			if (persistence == RELPERSISTENCE_TEMP)
-			{
-				uint32		buf_state = pg_atomic_read_u32(&bufHdr->state);
-
-				buf_state |= BM_VALID;
-				pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
-			}
+				TerminateLocalBufferIO(bufHdr, false, BM_VALID);
 			else
-			{
-				/* Set BM_VALID, terminate IO, and wake up any waiters */
 				TerminateBufferIO(bufHdr, false, BM_VALID, true);
-			}
 
 			/* Report I/Os as completing individually. */
 			TRACE_POSTGRESQL_BUFFER_READ_DONE(forknum, io_first_block + j,
@@ -1574,6 +1616,11 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 											  operation->smgr->smgr_rlocator.backend,
 											  false);
 		}
+
+		if (persistence == RELPERSISTENCE_TEMP)
+			pgBufferUsage.local_blks_read += io_buffers_len;
+		else
+			pgBufferUsage.shared_blks_read += io_buffers_len;
 
 		if (VacuumCostActive)
 			VacuumCostBalance += VacuumCostPageMiss * io_buffers_len;
@@ -2098,42 +2145,61 @@ again:
 }
 
 /*
+ * Return the maximum number of buffers that a backend should try to pin once,
+ * to avoid exceeding its fair share.  This is the highest value that
+ * GetAdditionalPinLimit() could ever return.  Note that it may be zero on a
+ * system with a very small buffer pool relative to max_connections.
+ */
+uint32
+GetPinLimit(void)
+{
+	return MaxProportionalPins;
+}
+
+/*
+ * Return the maximum number of additional buffers that this backend should
+ * pin if it wants to stay under the per-backend limit, considering the number
+ * of buffers it has already pinned.  Unlike LimitAdditionalPins(), the limit
+ * return by this function can be zero.
+ */
+uint32
+GetAdditionalPinLimit(void)
+{
+	uint32		estimated_pins_held;
+
+	/*
+	 * We get the number of "overflowed" pins for free, but don't know the
+	 * number of pins in PrivateRefCountArray.  The cost of calculating that
+	 * exactly doesn't seem worth it, so just assume the max.
+	 */
+	estimated_pins_held = PrivateRefCountOverflowed + REFCOUNT_ARRAY_ENTRIES;
+
+	/* Is this backend already holding more than its fair share? */
+	if (estimated_pins_held > MaxProportionalPins)
+		return 0;
+
+	return MaxProportionalPins - estimated_pins_held;
+}
+
+/*
  * Limit the number of pins a batch operation may additionally acquire, to
  * avoid running out of pinnable buffers.
  *
- * One additional pin is always allowed, as otherwise the operation likely
- * cannot be performed at all.
- *
- * The number of allowed pins for a backend is computed based on
- * shared_buffers and the maximum number of connections possible. That's very
- * pessimistic, but outside of toy-sized shared_buffers it should allow
- * sufficient pins.
+ * One additional pin is always allowed, on the assumption that the operation
+ * requires at least one to make progress.
  */
 void
 LimitAdditionalPins(uint32 *additional_pins)
 {
-	uint32		max_backends;
-	int			max_proportional_pins;
+	uint32		limit;
 
 	if (*additional_pins <= 1)
 		return;
 
-	max_backends = MaxBackends + NUM_AUXILIARY_PROCS;
-	max_proportional_pins = NBuffers / max_backends;
-
-	/*
-	 * Subtract the approximate number of buffers already pinned by this
-	 * backend. We get the number of "overflowed" pins for free, but don't
-	 * know the number of pins in PrivateRefCountArray. The cost of
-	 * calculating that exactly doesn't seem worth it, so just assume the max.
-	 */
-	max_proportional_pins -= PrivateRefCountOverflowed + REFCOUNT_ARRAY_ENTRIES;
-
-	if (max_proportional_pins <= 0)
-		max_proportional_pins = 1;
-
-	if (*additional_pins > max_proportional_pins)
-		*additional_pins = max_proportional_pins;
+	limit = GetAdditionalPinLimit();
+	limit = Max(limit, 1);
+	if (limit < *additional_pins)
+		*additional_pins = limit;
 }
 
 /*
@@ -3575,6 +3641,15 @@ InitBufferManagerAccess(void)
 {
 	HASHCTL		hash_ctl;
 
+	/*
+	 * An advisory limit on the number of pins each backend should hold, based
+	 * on shared_buffers and the maximum number of connections possible.
+	 * That's very pessimistic, but outside toy-sized shared_buffers it should
+	 * allow plenty of pins.  LimitAdditionalPins() and
+	 * GetAdditionalPinLimit() can be used to check the remaining balance.
+	 */
+	MaxProportionalPins = NBuffers / (MaxBackends + NUM_AUXILIARY_PROCS);
+
 	memset(&PrivateRefCountArray, 0, sizeof(PrivateRefCountArray));
 
 	hash_ctl.keysize = sizeof(int32);
@@ -4439,7 +4514,6 @@ FlushRelationBuffers(Relation rel)
 		for (i = 0; i < NLocBuffer; i++)
 		{
 			uint32		buf_state;
-			instr_time	io_start;
 
 			bufHdr = GetLocalBufferDescriptor(i);
 			if (BufTagMatchesRelFileLocator(&bufHdr->tag, &rel->rd_locator) &&
@@ -4447,9 +4521,6 @@ FlushRelationBuffers(Relation rel)
 				 (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
 			{
 				ErrorContextCallback errcallback;
-				Page		localpage;
-
-				localpage = (char *) LocalBufHdrGetBlock(bufHdr);
 
 				/* Setup error traceback support for ereport() */
 				errcallback.callback = local_buffer_write_error_callback;
@@ -4457,24 +4528,7 @@ FlushRelationBuffers(Relation rel)
 				errcallback.previous = error_context_stack;
 				error_context_stack = &errcallback;
 
-				PageSetChecksumInplace(localpage, bufHdr->tag.blockNum);
-
-				io_start = pgstat_prepare_io_time(track_io_timing);
-
-				smgrwrite(srel,
-						  BufTagGetForkNum(&bufHdr->tag),
-						  bufHdr->tag.blockNum,
-						  localpage,
-						  false);
-
-				pgstat_count_io_op_time(IOOBJECT_TEMP_RELATION,
-										IOCONTEXT_NORMAL, IOOP_WRITE,
-										io_start, 1, BLCKSZ);
-
-				buf_state &= ~(BM_DIRTY | BM_JUST_DIRTIED);
-				pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
-
-				pgBufferUsage.local_blks_written++;
+				FlushLocalBuffer(bufHdr, srel);
 
 				/* Pop the error context stack */
 				error_context_stack = errcallback.previous;
@@ -5559,8 +5613,11 @@ TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint32 set_flag_bits,
 	buf_state = LockBufHdr(buf);
 
 	Assert(buf_state & BM_IO_IN_PROGRESS);
+	buf_state &= ~BM_IO_IN_PROGRESS;
 
-	buf_state &= ~(BM_IO_IN_PROGRESS | BM_IO_ERROR);
+	/* Clear earlier errors, if this IO failed, it'll be marked again */
+	buf_state &= ~BM_IO_ERROR;
+
 	if (clear_dirty && !(buf_state & BM_JUST_DIRTIED))
 		buf_state &= ~(BM_DIRTY | BM_CHECKPOINT_NEEDED);
 
