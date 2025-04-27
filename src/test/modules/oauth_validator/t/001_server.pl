@@ -26,9 +26,11 @@ if (!$ENV{PG_TEST_EXTRA} || $ENV{PG_TEST_EXTRA} !~ /\boauth\b/)
 	  'Potentially unsafe test oauth not enabled in PG_TEST_EXTRA';
 }
 
-if ($windows_os)
+unless (check_pg_config("#define HAVE_SYS_EVENT_H 1")
+	or check_pg_config("#define HAVE_SYS_EPOLL_H 1"))
 {
-	plan skip_all => 'OAuth server-side tests are not supported on Windows';
+	plan skip_all =>
+	  'OAuth server-side tests are not supported on this platform';
 }
 
 if ($ENV{with_libcurl} ne 'yes')
@@ -46,6 +48,8 @@ $node->init;
 $node->append_conf('postgresql.conf', "log_connections = on\n");
 $node->append_conf('postgresql.conf',
 	"oauth_validator_libraries = 'validator'\n");
+# Needed to allow connect_fails to inspect postmaster log:
+$node->append_conf('postgresql.conf', "log_min_messages = debug2");
 $node->start;
 
 $node->safe_psql('postgres', 'CREATE USER test;');

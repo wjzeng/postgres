@@ -47,8 +47,7 @@ local all test oauth issuer="$issuer" scope="$scope"
 });
 $node->reload;
 
-my ($log_start, $log_end);
-$log_start = $node->wait_for_log(qr/reloading configuration files/);
+my $log_start = $node->wait_for_log(qr/reloading configuration files/);
 
 $ENV{PGOAUTHDEBUG} = "UNSAFE";
 
@@ -121,6 +120,9 @@ test(
 	"connect_timeout interrupts hung client flow",
 	flags => ["--hang-forever"],
 	expected_stderr => qr/failed: timeout expired/);
+
+# Remove the timeout for later tests.
+$common_connstr = "$base_connstr oauth_issuer=$issuer oauth_client_id=myID";
 
 # Test various misbehaviors of the client hook.
 my @cases = (

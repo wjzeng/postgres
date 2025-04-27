@@ -369,6 +369,7 @@ typedef struct _tableInfo
 	bool	   *notnull_islocal;	/* true if NOT NULL has local definition */
 	struct _attrDefInfo **attrdefs; /* DEFAULT expressions */
 	struct _constraintInfo *checkexprs; /* CHECK constraints */
+	struct _relStatsInfo *stats;	/* only set for matviews */
 	bool		needs_override; /* has GENERATED ALWAYS AS IDENTITY */
 	char	   *amname;			/* relation access method */
 
@@ -441,6 +442,7 @@ typedef struct _relStatsInfo
 	int32		relpages;
 	char	   *reltuples;
 	int32		relallvisible;
+	int32		relallfrozen;
 	char		relkind;		/* 'r', 'm', 'i', etc */
 
 	/*
@@ -449,7 +451,7 @@ typedef struct _relStatsInfo
 	 */
 	char	  **indAttNames;	/* attnames of the index, in order */
 	int32		nindAttNames;	/* number of attnames stored (can be 0) */
-	bool		postponed_def;	/* stats must be postponed into post-data */
+	teSection	section;		/* stats may appear in data or post-data */
 } RelStatsInfo;
 
 typedef struct _statsExtInfo
@@ -495,6 +497,8 @@ typedef struct _evttriggerInfo
  * struct ConstraintInfo is used for all constraint types.  However we
  * use a different objType for foreign key constraints, to make it easier
  * to sort them the way we want.
+ *
+ * Not-null constraints don't need this, unless they are NOT VALID.
  *
  * Note: condeferrable and condeferred are currently only valid for
  * unique/primary-key constraints.  Otherwise that info is in condef.

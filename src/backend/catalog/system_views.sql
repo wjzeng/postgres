@@ -658,6 +658,14 @@ GRANT SELECT ON pg_shmem_allocations TO pg_read_all_stats;
 REVOKE EXECUTE ON FUNCTION pg_get_shmem_allocations() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pg_get_shmem_allocations() TO pg_read_all_stats;
 
+CREATE VIEW pg_shmem_allocations_numa AS
+    SELECT * FROM pg_get_shmem_allocations_numa();
+
+REVOKE ALL ON pg_shmem_allocations_numa FROM PUBLIC;
+GRANT SELECT ON pg_shmem_allocations_numa TO pg_read_all_stats;
+REVOKE EXECUTE ON FUNCTION pg_get_shmem_allocations_numa() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION pg_get_shmem_allocations_numa() TO pg_read_all_stats;
+
 CREATE VIEW pg_backend_memory_contexts AS
     SELECT * FROM pg_get_backend_memory_contexts();
 
@@ -665,6 +673,11 @@ REVOKE ALL ON pg_backend_memory_contexts FROM PUBLIC;
 GRANT SELECT ON pg_backend_memory_contexts TO pg_read_all_stats;
 REVOKE EXECUTE ON FUNCTION pg_get_backend_memory_contexts() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pg_get_backend_memory_contexts() TO pg_read_all_stats;
+
+REVOKE EXECUTE ON FUNCTION
+	pg_get_process_memory_contexts(integer, boolean, float) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION
+	pg_get_process_memory_contexts(integer, boolean, float) TO pg_read_all_stats;
 
 -- Statistics views
 
@@ -1025,6 +1038,7 @@ CREATE VIEW pg_replication_slots AS
             L.wal_status,
             L.safe_wal_size,
             L.two_phase,
+            L.two_phase_at,
             L.inactive_since,
             L.conflicting,
             L.invalidation_reason,
@@ -1391,3 +1405,10 @@ CREATE VIEW pg_stat_subscription_stats AS
 
 CREATE VIEW pg_wait_events AS
     SELECT * FROM pg_get_wait_events();
+
+CREATE VIEW pg_aios AS
+    SELECT * FROM pg_get_aios();
+REVOKE ALL ON pg_aios FROM PUBLIC;
+GRANT SELECT ON pg_aios TO pg_read_all_stats;
+REVOKE EXECUTE ON FUNCTION pg_get_aios() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION pg_get_aios() TO pg_read_all_stats;

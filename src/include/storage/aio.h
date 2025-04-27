@@ -22,12 +22,20 @@
 #include "storage/procnumber.h"
 
 
+/* io_uring is incompatible with EXEC_BACKEND */
+#if defined(USE_LIBURING) && !defined(EXEC_BACKEND)
+#define IOMETHOD_IO_URING_ENABLED
+#endif
+
 
 /* Enum for io_method GUC. */
 typedef enum IoMethod
 {
 	IOMETHOD_SYNC = 0,
 	IOMETHOD_WORKER,
+#ifdef IOMETHOD_IO_URING_ENABLED
+	IOMETHOD_IO_URING,
+#endif
 } IoMethod;
 
 /* We'll default to worker based execution. */
@@ -72,7 +80,7 @@ typedef enum PgAioHandleFlags
 /*
  * The IO operations supported by the AIO subsystem.
  *
- * This could be in aio_internal.h, as it is not pubicly referenced, but
+ * This could be in aio_internal.h, as it is not publicly referenced, but
  * PgAioOpData currently *does* need to be public, therefore keeping this
  * public seems to make sense.
  */
@@ -109,9 +117,10 @@ typedef enum PgAioTargetID
 {
 	/* intentionally the zero value, to help catch zeroed memory etc */
 	PGAIO_TID_INVALID = 0,
+	PGAIO_TID_SMGR,
 } PgAioTargetID;
 
-#define PGAIO_TID_COUNT (PGAIO_TID_INVALID + 1)
+#define PGAIO_TID_COUNT (PGAIO_TID_SMGR + 1)
 
 
 /*
@@ -150,7 +159,7 @@ struct PgAioTargetInfo
 {
 	/*
 	 * To support executing using worker processes, the file descriptor for an
-	 * IO may need to be be reopened in a different process.
+	 * IO may need to be reopened in a different process.
 	 */
 	void		(*reopen) (PgAioHandle *ioh);
 
@@ -182,8 +191,18 @@ struct PgAioTargetInfo
  */
 typedef enum PgAioHandleCallbackID
 {
-	PGAIO_HCB_INVALID,
+	PGAIO_HCB_INVALID = 0,
+
+	PGAIO_HCB_MD_READV,
+
+	PGAIO_HCB_SHARED_BUFFER_READV,
+
+	PGAIO_HCB_LOCAL_BUFFER_READV,
 } PgAioHandleCallbackID;
+
+#define PGAIO_HCB_MAX	PGAIO_HCB_LOCAL_BUFFER_READV
+StaticAssertDecl(PGAIO_HCB_MAX <= (1 << PGAIO_RESULT_ID_BITS),
+				 "PGAIO_HCB_MAX is too big for PGAIO_RESULT_ID_BITS");
 
 
 typedef void (*PgAioHandleCallbackStage) (PgAioHandle *ioh, uint8 cb_flags);
@@ -277,10 +296,10 @@ extern int	pgaio_io_get_iovec(PgAioHandle *ioh, struct iovec **iov);
 extern PgAioOp pgaio_io_get_op(PgAioHandle *ioh);
 extern PgAioOpData *pgaio_io_get_op_data(PgAioHandle *ioh);
 
-extern void pgaio_io_prep_readv(PgAioHandle *ioh,
-								int fd, int iovcnt, uint64 offset);
-extern void pgaio_io_prep_writev(PgAioHandle *ioh,
+extern void pgaio_io_start_readv(PgAioHandle *ioh,
 								 int fd, int iovcnt, uint64 offset);
+extern void pgaio_io_start_writev(PgAioHandle *ioh,
+								  int fd, int iovcnt, uint64 offset);
 
 /* functions in aio_target.c */
 extern void pgaio_io_set_target(PgAioHandle *ioh, PgAioTargetID targetid);

@@ -90,6 +90,7 @@
 #endif
 
 #include "access/xlog.h"
+#include "access/xlog_internal.h"
 #include "access/xlogrecovery.h"
 #include "common/file_perm.h"
 #include "common/pg_prng.h"
@@ -1516,7 +1517,7 @@ checkControlFile(void)
 	char		path[MAXPGPATH];
 	FILE	   *fp;
 
-	snprintf(path, sizeof(path), "%s/global/pg_control", DataDir);
+	snprintf(path, sizeof(path), "%s/%s", DataDir, XLOG_CONTROL_FILE);
 
 	fp = AllocateFile(path, PG_BINARY_R);
 	if (fp == NULL)
@@ -1825,8 +1826,7 @@ canAcceptConnections(BackendType backend_type)
 		else if (!FatalError && pmState == PM_STARTUP)
 			return CAC_STARTUP; /* normal startup */
 		else if (!FatalError && pmState == PM_RECOVERY)
-			return CAC_NOTCONSISTENT;	/* not yet at consistent recovery
-										 * state */
+			return CAC_NOTHOTSTANDBY;	/* not yet ready for hot standby */
 		else
 			return CAC_RECOVERY;	/* else must be crash recovery */
 	}
@@ -2718,7 +2718,7 @@ HandleFatalError(QuitSignalReason reason, bool consider_sigabrt)
 	/*
 	 * Choose the appropriate new state to react to the fatal error. Unless we
 	 * were already in the process of shutting down, we go through
-	 * PM_WAIT_BACKEND. For errors during the shutdown sequence, we directly
+	 * PM_WAIT_BACKENDS. For errors during the shutdown sequence, we directly
 	 * switch to PM_WAIT_DEAD_END.
 	 */
 	switch (pmState)
@@ -3001,7 +3001,7 @@ PostmasterStateMachine(void)
 				/*
 				 * Stop any dead-end children and stop creating new ones.
 				 *
-				 * NB: Similar code exists in HandleFatalErrors(), when the
+				 * NB: Similar code exists in HandleFatalError(), when the
 				 * error happens in pmState > PM_WAIT_BACKENDS.
 				 */
 				UpdatePMState(PM_WAIT_DEAD_END);
@@ -3082,7 +3082,7 @@ PostmasterStateMachine(void)
 	{
 		/*
 		 * PM_WAIT_IO_WORKERS state ends when there's only checkpointer and
-		 * dead_end children left.
+		 * dead-end children left.
 		 */
 		if (io_worker_count == 0)
 		{
@@ -3699,6 +3699,7 @@ process_pm_pmsignal(void)
 		/* WAL redo has started. We're out of reinitialization. */
 		FatalError = false;
 		AbortStartTime = 0;
+		reachedConsistency = false;
 
 		/*
 		 * Start the archiver if we're responsible for (re-)archiving received
@@ -3724,8 +3725,14 @@ process_pm_pmsignal(void)
 		UpdatePMState(PM_RECOVERY);
 	}
 
-	if (CheckPostmasterSignal(PMSIGNAL_BEGIN_HOT_STANDBY) &&
+	if (CheckPostmasterSignal(PMSIGNAL_RECOVERY_CONSISTENT) &&
 		pmState == PM_RECOVERY && Shutdown == NoShutdown)
+	{
+		reachedConsistency = true;
+	}
+
+	if (CheckPostmasterSignal(PMSIGNAL_BEGIN_HOT_STANDBY) &&
+		(pmState == PM_RECOVERY && Shutdown == NoShutdown))
 	{
 		ereport(LOG,
 				(errmsg("database system is ready to accept read-only connections")));
@@ -4401,7 +4408,7 @@ maybe_adjust_io_workers(void)
 			++io_worker_count;
 		}
 		else
-			break;				/* XXX try again soon? */
+			break;				/* try again next time */
 	}
 
 	/* Too many running? */

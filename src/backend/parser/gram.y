@@ -752,7 +752,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	NOT NOTHING NOTIFY NOTNULL NOWAIT NULL_P NULLIF
 	NULLS_P NUMERIC
 
-	OBJECT_P OF OFF OFFSET OIDS OLD OMIT ON ONLY OPERATOR OPTION OPTIONS OR
+	OBJECT_P OBJECTS_P OF OFF OFFSET OIDS OLD OMIT ON ONLY OPERATOR OPTION OPTIONS OR
 	ORDER ORDINALITY OTHERS OUT_P OUTER_P
 	OVER OVERLAPS OVERLAY OVERRIDING OWNED OWNER
 
@@ -2662,15 +2662,24 @@ alter_table_cmd:
 					n->subtype = AT_AlterConstraint;
 					n->def = (Node *) c;
 					c->conname = $3;
-					c->alterDeferrability = true;
+					if ($4 & (CAS_NOT_ENFORCED | CAS_ENFORCED))
+						c->alterEnforceability = true;
+					if ($4 & (CAS_DEFERRABLE | CAS_NOT_DEFERRABLE |
+							  CAS_INITIALLY_DEFERRED | CAS_INITIALLY_IMMEDIATE))
+						c->alterDeferrability = true;
+					if ($4 & CAS_NO_INHERIT)
+						c->alterInheritability = true;
 					processCASbits($4, @4, "FOREIGN KEY",
 									&c->deferrable,
 									&c->initdeferred,
-									NULL, NULL, NULL, yyscanner);
+									&c->is_enforced,
+									NULL,
+									&c->noinherit,
+									yyscanner);
 					$$ = (Node *) n;
 				}
-			/* ALTER TABLE <name> ALTER CONSTRAINT SET INHERIT */
-			| ALTER CONSTRAINT name SET INHERIT
+			/* ALTER TABLE <name> ALTER CONSTRAINT INHERIT */
+			| ALTER CONSTRAINT name INHERIT
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					ATAlterConstraint *c = makeNode(ATAlterConstraint);
@@ -2680,20 +2689,6 @@ alter_table_cmd:
 					c->conname = $3;
 					c->alterInheritability = true;
 					c->noinherit = false;
-
-					$$ = (Node *) n;
-				}
-			/* ALTER TABLE <name> ALTER CONSTRAINT SET NO INHERIT */
-			| ALTER CONSTRAINT name SET NO INHERIT
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					ATAlterConstraint *c = makeNode(ATAlterConstraint);
-
-					n->subtype = AT_AlterConstraint;
-					n->def = (Node *) c;
-					c->conname = $3;
-					c->alterInheritability = true;
-					c->noinherit = true;
 
 					$$ = (Node *) n;
 				}
@@ -4222,11 +4217,10 @@ ConstraintElem:
 					n->contype = CONSTR_NOTNULL;
 					n->location = @1;
 					n->keys = list_make1(makeString($3));
-					/* no NOT VALID support yet */
 					processCASbits($4, @4, "NOT NULL",
-								   NULL, NULL, NULL, NULL,
+								   NULL, NULL, NULL, &n->skip_validation,
 								   &n->is_no_inherit, yyscanner);
-					n->initially_valid = true;
+					n->initially_valid = !n->skip_validation;
 					$$ = (Node *) n;
 				}
 			| UNIQUE opt_unique_null_treatment '(' columnList opt_without_overlaps ')' opt_c_include opt_definition OptConsTableSpace
@@ -4344,7 +4338,7 @@ ConstraintElem:
 					n->fk_del_set_cols = ($11)->deleteAction->cols;
 					processCASbits($12, @12, "FOREIGN KEY",
 								   &n->deferrable, &n->initdeferred,
-								   NULL, &n->skip_validation, NULL,
+								   &n->is_enforced, &n->skip_validation, NULL,
 								   yyscanner);
 					n->initially_valid = !n->skip_validation;
 					$$ = (Node *) n;
@@ -8182,6 +8176,7 @@ defacl_privilege_target:
 			| SEQUENCES		{ $$ = OBJECT_SEQUENCE; }
 			| TYPES_P		{ $$ = OBJECT_TYPE; }
 			| SCHEMAS		{ $$ = OBJECT_SCHEMA; }
+			| LARGE_P OBJECTS_P	{ $$ = OBJECT_LARGEOBJECT; }
 		;
 
 
@@ -17887,6 +17882,7 @@ unreserved_keyword:
 			| NOWAIT
 			| NULLS_P
 			| OBJECT_P
+			| OBJECTS_P
 			| OF
 			| OFF
 			| OIDS
@@ -18509,6 +18505,7 @@ bare_label_keyword:
 			| NULLS_P
 			| NUMERIC
 			| OBJECT_P
+			| OBJECTS_P
 			| OF
 			| OFF
 			| OIDS

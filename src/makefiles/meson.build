@@ -199,6 +199,10 @@ pgxs_empty = [
   'PTHREAD_CFLAGS', 'PTHREAD_LIBS',
 
   'ICU_LIBS',
+
+  'LIBNUMA_CFLAGS', 'LIBNUMA_LIBS',
+
+  'LIBURING_CFLAGS', 'LIBURING_LIBS',
 ]
 
 if host_system == 'windows' and cc.get_argument_syntax() != 'msvc'
@@ -230,6 +234,8 @@ pgxs_deps = {
   'icu': icu,
   'ldap': ldap,
   'libcurl': libcurl,
+  'libnuma': libnuma,
+  'liburing': liburing,
   'libxml': libxml,
   'libxslt': libxslt,
   'llvm': llvm,

@@ -42,6 +42,7 @@
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/memdebug.h"
 #include "utils/ps_status.h"
 #include "utils/wait_event.h"
 
@@ -320,7 +321,7 @@ pgaio_worker_die(int code, Datum arg)
 }
 
 /*
- * Register the worker in shared memory, assign MyWorkerId and register a
+ * Register the worker in shared memory, assign MyIoWorkerId and register a
  * shutdown callback to release registration.
  */
 static void
@@ -357,11 +358,33 @@ pgaio_worker_register(void)
 	on_shmem_exit(pgaio_worker_die, 0);
 }
 
+static void
+pgaio_worker_error_callback(void *arg)
+{
+	ProcNumber	owner;
+	PGPROC	   *owner_proc;
+	int32		owner_pid;
+	PgAioHandle *ioh = arg;
+
+	if (!ioh)
+		return;
+
+	Assert(ioh->owner_procno != MyProcNumber);
+	Assert(MyBackendType == B_IO_WORKER);
+
+	owner = ioh->owner_procno;
+	owner_proc = GetPGProcByNumber(owner);
+	owner_pid = owner_proc->pid;
+
+	errcontext("I/O worker executing I/O on behalf of process %d", owner_pid);
+}
+
 void
 IoWorkerMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
 	PgAioHandle *volatile error_ioh = NULL;
+	ErrorContextCallback errcallback = {0};
 	volatile int error_errno = 0;
 	char		cmd[128];
 
@@ -387,6 +410,10 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 
 	sprintf(cmd, "%d", MyIoWorkerId);
 	set_ps_display(cmd);
+
+	errcallback.callback = pgaio_worker_error_callback;
+	errcallback.previous = error_context_stack;
+	error_context_stack = &errcallback;
 
 	/* see PostgresMain() */
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
@@ -471,10 +498,18 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 
 			ioh = &pgaio_ctl->io_handles[io_index];
 			error_ioh = ioh;
+			errcallback.arg = ioh;
 
 			pgaio_debug_io(DEBUG4, ioh,
 						   "worker %d processing IO",
 						   MyIoWorkerId);
+
+			/*
+			 * Prevent interrupts between pgaio_io_reopen() and
+			 * pgaio_io_perform_synchronously() that otherwise could lead to
+			 * the FD getting closed in that window.
+			 */
+			HOLD_INTERRUPTS();
 
 			/*
 			 * It's very unlikely, but possible, that reopen fails. E.g. due
@@ -490,10 +525,28 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			 * To be able to exercise the reopen-fails path, allow injection
 			 * points to trigger a failure at this point.
 			 */
-			pgaio_io_call_inj(ioh, "AIO_WORKER_AFTER_REOPEN");
+			pgaio_io_call_inj(ioh, "aio-worker-after-reopen");
 
 			error_errno = 0;
 			error_ioh = NULL;
+
+			/*
+			 * As part of IO completion the buffer will be marked as NOACCESS,
+			 * until the buffer is pinned again - which never happens in io
+			 * workers. Therefore the next time there is IO for the same
+			 * buffer, the memory will be considered inaccessible. To avoid
+			 * that, explicitly allow access to the memory before reading data
+			 * into it.
+			 */
+#ifdef USE_VALGRIND
+			{
+				struct iovec *iov;
+				uint16		iov_length = pgaio_io_get_iovec_length(ioh, &iov);
+
+				for (int i = 0; i < iov_length; i++)
+					VALGRIND_MAKE_MEM_UNDEFINED(iov[i].iov_base, iov[i].iov_len);
+			}
+#endif
 
 			/*
 			 * We don't expect this to ever fail with ERROR or FATAL, no need
@@ -502,6 +555,9 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			 * ensure we don't accidentally fail.
 			 */
 			pgaio_io_perform_synchronously(ioh);
+
+			RESUME_INTERRUPTS();
+			errcallback.arg = NULL;
 		}
 		else
 		{
@@ -513,6 +569,7 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 		CHECK_FOR_INTERRUPTS();
 	}
 
+	error_context_stack = errcallback.previous;
 	proc_exit(0);
 }
 

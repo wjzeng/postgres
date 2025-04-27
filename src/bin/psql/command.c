@@ -1922,7 +1922,7 @@ exec_command_getresults(PsqlScanState scan_state, bool active_branch)
 			if (num_results < 0)
 			{
 				pg_log_error("\\getresults: invalid number of requested results");
-				return PSQL_CMD_SKIP_LINE;
+				return PSQL_CMD_ERROR;
 			}
 			pset.requested_results = num_results;
 		}
@@ -3278,7 +3278,7 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 		bool		have_sleep = false;
 		bool		have_iter = false;
 		bool		have_min_rows = false;
-		double		sleep = 2;
+		double		sleep = pset.watch_interval;
 		int			iter = 0;
 		int			min_rows = 0;
 
@@ -3292,7 +3292,9 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 		/*
 		 * Parse arguments.  We allow either an unlabeled interval or
 		 * "name=value", where name is from the set ('i', 'interval', 'c',
-		 * 'count', 'm', 'min_rows').
+		 * 'count', 'm', 'min_rows').  The parsing of interval value should be
+		 * kept in sync with ParseVariableDouble which is used for setting the
+		 * default interval value.
 		 */
 		while (success)
 		{

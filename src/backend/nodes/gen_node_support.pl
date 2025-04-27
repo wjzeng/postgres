@@ -195,6 +195,7 @@ my $next_input_file = 0;
 foreach my $infile (@ARGV)
 {
 	my $in_struct;
+	my $in_struct_lineno;
 	my $subline;
 	my $is_node_struct;
 	my $supertype;
@@ -543,6 +544,7 @@ foreach my $infile (@ARGV)
 			if ($line =~ /^(?:typedef )?struct (\w+)$/ && $1 ne 'Node')
 			{
 				$in_struct = $1;
+				$in_struct_lineno = $lineno;
 				$subline = 0;
 			}
 			# one node type typedef'ed directly from another
@@ -570,7 +572,8 @@ foreach my $infile (@ARGV)
 
 	if ($in_struct)
 	{
-		die "runaway \"$in_struct\" in file \"$infile\"\n";
+		die
+		  "$infile:$in_struct_lineno: could not find closing brace for struct \"$in_struct\"\n";
 	}
 
 	close $ifh;
@@ -1309,16 +1312,16 @@ _jumble${n}(JumbleState *jstate, Node *node)
 			}
 		}
 
-		# node type
 		if ($query_jumble_custom)
 		{
 			# Custom function that applies to one field of a node.
-			print $jff "\tJUMBLE_CUSTOM($n, $f);\n";
+			print $jff "\tJUMBLE_CUSTOM($n, $f);\n"
+			  unless $query_jumble_ignore;
 		}
 		elsif (($t =~ /^(\w+)\*$/ or $t =~ /^struct\s+(\w+)\*$/)
 			and elem $1, @node_types)
 		{
-			# Squash constants if requested.
+			# Node type.  Squash constants if requested.
 			if ($query_jumble_squash)
 			{
 				print $jff "\tJUMBLE_ELEMENTS($f);\n"

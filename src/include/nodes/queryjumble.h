@@ -54,6 +54,18 @@ typedef struct JumbleState
 
 	/* highest Param id we've seen, in order to start normalization correctly */
 	int			highest_extern_param_id;
+
+	/*
+	 * Count of the number of NULL nodes seen since last appending a value.
+	 * These are flushed out to the jumble buffer before subsequent appends
+	 * and before performing the final jumble hash.
+	 */
+	unsigned int pending_nulls;
+
+#ifdef USE_ASSERT_CHECKING
+	/* The total number of bytes added to the jumble buffer */
+	Size		total_jumble_len;
+#endif
 } JumbleState;
 
 /* Values for the compute_query_id GUC */
@@ -74,7 +86,6 @@ extern JumbleState *JumbleQuery(Query *query);
 extern void EnableQueryId(void);
 
 extern PGDLLIMPORT bool query_id_enabled;
-extern PGDLLIMPORT bool query_id_squash_values;
 
 /*
  * Returns whether query identifier computation has been enabled, either

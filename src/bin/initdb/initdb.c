@@ -168,6 +168,7 @@ static bool data_checksums = true;
 static char *xlog_dir = NULL;
 static int	wal_segment_size_mb = (DEFAULT_XLOG_SEG_SIZE) / (1024 * 1024);
 static DataDirSyncMethod sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
+static bool sync_data_files = true;
 
 
 /* internal vars */
@@ -1401,11 +1402,6 @@ setup_config(void)
 								  repltok, true);
 #endif
 
-#ifndef USE_PREFETCH
-	conflines = replace_guc_value(conflines, "effective_io_concurrency",
-								  "0", true);
-#endif
-
 #ifdef WIN32
 	conflines = replace_guc_value(conflines, "update_process_title",
 								  "off", true);
@@ -1624,9 +1620,9 @@ bootstrap_template1(void)
 	printfPQExpBuffer(&cmd, "\"%s\" --boot %s %s", backend_exec, boot_options, extra_options);
 	appendPQExpBuffer(&cmd, " -X %d", wal_segment_size_mb * (1024 * 1024));
 	if (data_checksums)
-		appendPQExpBuffer(&cmd, " -k");
+		appendPQExpBufferStr(&cmd, " -k");
 	if (debug)
-		appendPQExpBuffer(&cmd, " -d 5");
+		appendPQExpBufferStr(&cmd, " -d 5");
 
 
 	PG_CMD_OPEN(cmd.data);
@@ -2566,6 +2562,7 @@ usage(const char *progname)
 	printf(_("  -L DIRECTORY              where to find the input files\n"));
 	printf(_("  -n, --no-clean            do not clean up after errors\n"));
 	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
+	printf(_("      --no-sync-data-files  do not sync files within database directories\n"));
 	printf(_("      --no-instructions     do not print instructions for next steps\n"));
 	printf(_("  -s, --show                show internal settings, then exit\n"));
 	printf(_("      --sync-method=METHOD  set method for syncing files to disk\n"));
@@ -3208,6 +3205,7 @@ main(int argc, char *argv[])
 		{"icu-rules", required_argument, NULL, 18},
 		{"sync-method", required_argument, NULL, 19},
 		{"no-data-checksums", no_argument, NULL, 20},
+		{"no-sync-data-files", no_argument, NULL, 21},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3402,6 +3400,9 @@ main(int argc, char *argv[])
 			case 20:
 				data_checksums = false;
 				break;
+			case 21:
+				sync_data_files = false;
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -3453,7 +3454,7 @@ main(int argc, char *argv[])
 
 		fputs(_("syncing data to disk ... "), stdout);
 		fflush(stdout);
-		sync_pgdata(pg_data, PG_VERSION_NUM, sync_method);
+		sync_pgdata(pg_data, PG_VERSION_NUM, sync_method, sync_data_files);
 		check_ok();
 		return 0;
 	}
@@ -3516,7 +3517,7 @@ main(int argc, char *argv[])
 	{
 		fputs(_("syncing data to disk ... "), stdout);
 		fflush(stdout);
-		sync_pgdata(pg_data, PG_VERSION_NUM, sync_method);
+		sync_pgdata(pg_data, PG_VERSION_NUM, sync_method, sync_data_files);
 		check_ok();
 	}
 	else

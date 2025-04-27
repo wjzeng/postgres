@@ -581,6 +581,43 @@ fi
 undefine([Ac_cachevar])dnl
 ])# PGAC_SSE42_CRC32_INTRINSICS
 
+# PGAC_AVX512_PCLMUL_INTRINSICS
+# ---------------------------
+# Check if the compiler supports AVX-512 carryless multiplication
+# and three-way exclusive-or instructions used for computing CRC.
+# AVX-512F is assumed to be supported if the above are.
+#
+# If the intrinsics are supported, sets pgac_avx512_pclmul_intrinsics.
+AC_DEFUN([PGAC_AVX512_PCLMUL_INTRINSICS],
+[define([Ac_cachevar], [AS_TR_SH([pgac_cv_avx512_pclmul_intrinsics])])dnl
+AC_CACHE_CHECK([for _mm512_clmulepi64_epi128], [Ac_cachevar],
+[AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <immintrin.h>
+    __m512i x;
+    __m512i y;
+
+    #if defined(__has_attribute) && __has_attribute (target)
+    __attribute__((target("vpclmulqdq,avx512vl")))
+    #endif
+    static int avx512_pclmul_test(void)
+    {
+      __m128i z;
+
+      y = _mm512_clmulepi64_epi128(x, y, 0);
+      z = _mm_ternarylogic_epi64(
+                _mm512_castsi512_si128(y),
+                _mm512_extracti32x4_epi32(y, 1),
+                _mm512_extracti32x4_epi32(y, 2),
+                0x96);
+      return _mm_crc32_u64(0, _mm_extract_epi64(z, 0));
+    }],
+  [return avx512_pclmul_test();])],
+  [Ac_cachevar=yes],
+  [Ac_cachevar=no])])
+if test x"$Ac_cachevar" = x"yes"; then
+  pgac_avx512_pclmul_intrinsics=yes
+fi
+undefine([Ac_cachevar])dnl
+])# PGAC_AVX512_PCLMUL_INTRINSICS
 
 # PGAC_ARMV8_CRC32C_INTRINSICS
 # ----------------------------
@@ -708,3 +745,55 @@ if test x"$Ac_cachevar" = x"yes"; then
 fi
 undefine([Ac_cachevar])dnl
 ])# PGAC_AVX512_POPCNT_INTRINSICS
+
+# PGAC_SVE_POPCNT_INTRINSICS
+# --------------------------
+# Check if the compiler supports the SVE popcount instructions using the
+# svptrue_b64, svdup_u64, svcntb, svld1_u64, svld1_u8, svadd_u64_x,
+# svcnt_u64_x, svcnt_u8_x, svaddv_u64, svaddv_u8, svwhilelt_b8_s32,
+# svand_n_u64_x, and svand_n_u8_x intrinsic functions.
+#
+# If the intrinsics are supported, sets pgac_sve_popcnt_intrinsics.
+AC_DEFUN([PGAC_SVE_POPCNT_INTRINSICS],
+[define([Ac_cachevar], [AS_TR_SH([pgac_cv_sve_popcnt_intrinsics])])dnl
+AC_CACHE_CHECK([for svcnt_x], [Ac_cachevar],
+[AC_LINK_IFELSE([AC_LANG_PROGRAM([[#include <arm_sve.h>
+
+	char buf[128];
+
+	#if defined(__has_attribute) && __has_attribute (target)
+	__attribute__((target("arch=armv8-a+sve")))
+	#endif
+	static int popcount_test(void)
+	{
+		svbool_t	pred = svptrue_b64();
+		svuint8_t	vec8;
+		svuint64_t	accum1 = svdup_u64(0),
+					accum2 = svdup_u64(0),
+					vec64;
+		char	   *p = buf;
+		uint64_t	popcnt,
+					mask = 0x5555555555555555;
+
+		vec64 = svand_n_u64_x(pred, svld1_u64(pred, (const uint64_t *) p), mask);
+		accum1 = svadd_u64_x(pred, accum1, svcnt_u64_x(pred, vec64));
+		p += svcntb();
+
+		vec64 = svand_n_u64_x(pred, svld1_u64(pred, (const uint64_t *) p), mask);
+		accum2 = svadd_u64_x(pred, accum2, svcnt_u64_x(pred, vec64));
+		p += svcntb();
+
+		popcnt = svaddv_u64(pred, svadd_u64_x(pred, accum1, accum2));
+
+		pred = svwhilelt_b8_s32(0, sizeof(buf));
+		vec8 = svand_n_u8_x(pred, svld1_u8(pred, (const uint8_t *) p), 0x55);
+		return (int) (popcnt + svaddv_u8(pred, svcnt_u8_x(pred, vec8)));
+	}]],
+  [return popcount_test();])],
+  [Ac_cachevar=yes],
+  [Ac_cachevar=no])])
+if test x"$Ac_cachevar" = x"yes"; then
+  pgac_sve_popcnt_intrinsics=yes
+fi
+undefine([Ac_cachevar])dnl
+])# PGAC_SVE_POPCNT_INTRINSICS

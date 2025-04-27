@@ -34,11 +34,13 @@ sub psql_fails_like
 {
 	local $Test::Builder::Level = $Test::Builder::Level + 1;
 
-	my ($node, $sql, $expected_stderr, $test_name) = @_;
+	my ($node, $sql, $expected_stderr, $test_name, $replication) = @_;
 
-	# Use the context of a WAL sender, some of the tests rely on that.
+	# Use the context of a WAL sender, if requested by the caller.
+	$replication = '' unless defined($replication);
+
 	my ($ret, $stdout, $stderr) =
-	  $node->psql('postgres', $sql, replication => 'database');
+	  $node->psql('postgres', $sql, replication => $replication);
 
 	isnt($ret, 0, "$test_name: exit code not 0");
 	like($stderr, $expected_stderr, "$test_name: matches");
@@ -79,7 +81,7 @@ psql_fails_like(
 	$node,
 	'START_REPLICATION 0/0',
 	qr/unexpected PQresultStatus: 8$/,
-	'handling of unexpected PQresultStatus');
+	'handling of unexpected PQresultStatus', 'database');
 
 # test \timing
 psql_like(
@@ -375,6 +377,12 @@ psql_like(
 	$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.0001),
 	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.0001');
 
+# Test zero interval
+psql_like(
+	$node, '\set WATCH_INTERVAL 0
+SELECT 1 \watch c=3',
+	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0');
+
 # Check \watch minimum row count
 psql_fails_like(
 	$node,
@@ -426,6 +434,24 @@ psql_fails_like(
 	qr/iteration count is specified more than once/,
 	'\watch, iteration count is specified more than once');
 
+# Check WATCH_INTERVAL
+psql_like(
+	$node,
+	'\echo :WATCH_INTERVAL
+\set WATCH_INTERVAL 10
+\echo :WATCH_INTERVAL
+\unset WATCH_INTERVAL
+\echo :WATCH_INTERVAL',
+	qr/^2$
+^10$
+^2$/m,
+	'WATCH_INTERVAL variable is set and updated');
+psql_fails_like(
+	$node,
+	'\set WATCH_INTERVAL 1e500',
+	qr/is out of range/,
+	'WATCH_INTERVAL variable is out of range');
+
 # Test \g output piped into a program.
 # The program is perl -pe '' to simply copy the input to the output.
 my $g_file = "$tempdir/g_file_1.out";
@@ -456,5 +482,46 @@ psql_like($node, "copy (values ('foo'),('bar')) to stdout \\g | $pipe_cmd",
 	qr//, "copy output passed to \\g pipe");
 my $c4 = slurp_file($g_file);
 like($c4, qr/foo.*bar/s);
+
+# Tests with pipelines.  These trigger FATAL failures in the backend,
+# so they cannot be tested via SQL.
+$node->safe_psql('postgres', 'CREATE TABLE psql_pipeline()');
+my $log_location = -s $node->logfile;
+psql_fails_like(
+	$node,
+	qq{\\startpipeline
+COPY psql_pipeline FROM STDIN;
+SELECT 'val1';
+\\syncpipeline
+\\getresults
+\\endpipeline},
+	qr/server closed the connection unexpectedly/,
+	'protocol sync loss in pipeline: direct COPY, SELECT, sync and getresult'
+);
+$node->wait_for_log(
+	qr/FATAL: .*terminating connection because protocol synchronization was lost/,
+	$log_location);
+
+psql_fails_like(
+	$node,
+	qq{\\startpipeline
+COPY psql_pipeline FROM STDIN \\bind \\sendpipeline
+SELECT 'val1' \\bind \\sendpipeline
+\\syncpipeline
+\\getresults
+\\endpipeline},
+	qr/server closed the connection unexpectedly/,
+	'protocol sync loss in pipeline: bind COPY, SELECT, sync and getresult');
+
+# This time, test without the \getresults.
+psql_fails_like(
+	$node,
+	qq{\\startpipeline
+COPY psql_pipeline FROM STDIN;
+SELECT 'val1';
+\\syncpipeline
+\\endpipeline},
+	qr/server closed the connection unexpectedly/,
+	'protocol sync loss in pipeline: COPY, SELECT and sync');
 
 done_testing();

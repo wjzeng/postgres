@@ -33,10 +33,8 @@
 #include "optimizer/paths.h"
 #include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
-#include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
-#include "utils/syscache.h"
 
 
 /* XXX see PartCollMatchesExprColl */
@@ -1189,6 +1187,8 @@ typedef struct
 	Oid			inputcollid;	/* OID of the OpClause input collation */
 	int			argindex;		/* index of the clause in the list of
 								 * arguments */
+	int			groupindex;		/* value of argindex for the fist clause in
+								 * the group of similar clauses */
 } OrArgIndexMatch;
 
 /*
@@ -1219,6 +1219,29 @@ or_arg_index_match_cmp(const void *a, const void *b)
 	if (match_a->inputcollid < match_b->inputcollid)
 		return -1;
 	else if (match_a->inputcollid > match_b->inputcollid)
+		return 1;
+
+	if (match_a->argindex < match_b->argindex)
+		return -1;
+	else if (match_a->argindex > match_b->argindex)
+		return 1;
+
+	return 0;
+}
+
+/*
+ * Another comparison function for OrArgIndexMatch.  It sorts groups together
+ * using groupindex.  The group items are then sorted by argindex.
+ */
+static int
+or_arg_index_match_cmp_group(const void *a, const void *b)
+{
+	const OrArgIndexMatch *match_a = (const OrArgIndexMatch *) a;
+	const OrArgIndexMatch *match_b = (const OrArgIndexMatch *) b;
+
+	if (match_a->groupindex < match_b->groupindex)
+		return -1;
+	else if (match_a->groupindex > match_b->groupindex)
 		return 1;
 
 	if (match_a->argindex < match_b->argindex)
@@ -1282,6 +1305,7 @@ group_similar_or_args(PlannerInfo *root, RelOptInfo *rel, RestrictInfo *rinfo)
 
 		i++;
 		matches[i].argindex = i;
+		matches[i].groupindex = i;
 		matches[i].indexnum = -1;
 		matches[i].colnum = -1;
 		matches[i].opno = InvalidOid;
@@ -1400,8 +1424,39 @@ group_similar_or_args(PlannerInfo *root, RelOptInfo *rel, RestrictInfo *rinfo)
 		return orargs;
 	}
 
-	/* Sort clauses to make similar clauses go together */
+	/*
+	 * Sort clauses to make similar clauses go together.  But at the same
+	 * time, we would like to change the order of clauses as little as
+	 * possible.  To do so, we reorder each group of similar clauses so that
+	 * the first item of the group stays in place, and all the other items are
+	 * moved after it.  So, if there are no similar clauses, the order of
+	 * clauses stays the same.  When there are some groups, required
+	 * reordering happens while the rest of the clauses remain in their
+	 * places.  That is achieved by assigning a 'groupindex' to each clause:
+	 * the number of the first item in the group in the original clause list.
+	 */
 	qsort(matches, n, sizeof(OrArgIndexMatch), or_arg_index_match_cmp);
+
+	/* Assign groupindex to the sorted clauses */
+	for (i = 1; i < n; i++)
+	{
+		/*
+		 * When two clauses are similar and should belong to the same group,
+		 * copy the 'groupindex' from the previous clause.  Given we are
+		 * considering clauses in direct order, all the clauses would have a
+		 * 'groupindex' equal to the 'groupindex' of the first clause in the
+		 * group.
+		 */
+		if (matches[i].indexnum == matches[i - 1].indexnum &&
+			matches[i].colnum == matches[i - 1].colnum &&
+			matches[i].opno == matches[i - 1].opno &&
+			matches[i].inputcollid == matches[i - 1].inputcollid &&
+			matches[i].indexnum != -1)
+			matches[i].groupindex = matches[i - 1].groupindex;
+	}
+
+	/* Re-sort clauses first by groupindex then by argindex */
+	qsort(matches, n, sizeof(OrArgIndexMatch), or_arg_index_match_cmp_group);
 
 	/*
 	 * Group similar clauses into single sub-restrictinfo. Side effect: the
@@ -3247,7 +3302,6 @@ match_orclause_to_indexcol(PlannerInfo *root,
 	BoolExpr   *orclause = (BoolExpr *) rinfo->orclause;
 	Node	   *indexExpr = NULL;
 	List	   *consts = NIL;
-	Node	   *arrayNode = NULL;
 	ScalarArrayOpExpr *saopexpr = NULL;
 	Oid			matchOpno = InvalidOid;
 	IndexClause *iclause;
@@ -3418,63 +3472,8 @@ match_orclause_to_indexcol(PlannerInfo *root,
 		return NULL;
 	}
 
-	/*
-	 * Assemble an array from the list of constants.  It seems more profitable
-	 * to build a const array.  But in the presence of other nodes, we don't
-	 * have a specific value here and must employ an ArrayExpr instead.
-	 */
-	if (haveNonConst)
-	{
-		ArrayExpr  *arrayExpr = makeNode(ArrayExpr);
-
-		/* array_collid will be set by parse_collate.c */
-		arrayExpr->element_typeid = consttype;
-		arrayExpr->array_typeid = arraytype;
-		arrayExpr->multidims = false;
-		arrayExpr->elements = consts;
-		arrayExpr->location = -1;
-
-		arrayNode = (Node *) arrayExpr;
-	}
-	else
-	{
-		int16		typlen;
-		bool		typbyval;
-		char		typalign;
-		Datum	   *elems;
-		int			i = 0;
-		ArrayType  *arrayConst;
-
-		get_typlenbyvalalign(consttype, &typlen, &typbyval, &typalign);
-
-		elems = (Datum *) palloc(sizeof(Datum) * list_length(consts));
-		foreach_node(Const, value, consts)
-		{
-			Assert(!value->constisnull);
-
-			elems[i++] = value->constvalue;
-		}
-
-		arrayConst = construct_array(elems, i, consttype,
-									 typlen, typbyval, typalign);
-		arrayNode = (Node *) makeConst(arraytype, -1, inputcollid,
-									   -1, PointerGetDatum(arrayConst),
-									   false, false);
-
-		pfree(elems);
-		list_free(consts);
-	}
-
-	/* Build the SAOP expression node */
-	saopexpr = makeNode(ScalarArrayOpExpr);
-	saopexpr->opno = matchOpno;
-	saopexpr->opfuncid = get_opcode(matchOpno);
-	saopexpr->hashfuncid = InvalidOid;
-	saopexpr->negfuncid = InvalidOid;
-	saopexpr->useOr = true;
-	saopexpr->inputcollid = inputcollid;
-	saopexpr->args = list_make2(indexExpr, arrayNode);
-	saopexpr->location = -1;
+	saopexpr = make_SAOP_expr(matchOpno, indexExpr, consttype, inputcollid,
+							  inputcollid, consts, haveNonConst);
 
 	/*
 	 * Finally, build an IndexClause based on the SAOP node.  Use
@@ -3756,12 +3755,12 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 	{
 		PathKey    *pathkey = (PathKey *) lfirst(lc1);
 		bool		found = false;
-		ListCell   *lc2;
+		EquivalenceMemberIterator it;
+		EquivalenceMember *member;
 
 
 		/* Pathkey must request default sort order for the target opfamily */
-		if (pathkey->pk_strategy != BTLessStrategyNumber ||
-			pathkey->pk_nulls_first)
+		if (pathkey->pk_cmptype != COMPARE_LT || pathkey->pk_nulls_first)
 			return;
 
 		/* If eclass is volatile, no hope of using an indexscan */
@@ -3776,9 +3775,10 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 		 * be considered to match more than one pathkey list, which is OK
 		 * here.  See also get_eclass_for_sort_expr.)
 		 */
-		foreach(lc2, pathkey->pk_eclass->ec_members)
+		setup_eclass_member_iterator(&it, pathkey->pk_eclass,
+									 index->rel->relids);
+		while ((member = eclass_member_iterator_next(&it)) != NULL)
 		{
-			EquivalenceMember *member = (EquivalenceMember *) lfirst(lc2);
 			int			indexcol;
 
 			/* No possibility of match if it references other relations */

@@ -711,6 +711,13 @@ remove_rel_from_eclass(EquivalenceClass *ec, SpecialJoinInfo *sjinfo,
 										 sjinfo->ojrelid, subst);
 
 	/*
+	 * We don't expect any EC child members to exist at this point.  Ensure
+	 * that's the case, otherwise, we might be getting asked to do something
+	 * this function hasn't been coded for.
+	 */
+	Assert(ec->ec_childmembers == NULL);
+
+	/*
 	 * Fix up the member expressions.  Any non-const member that ends with
 	 * empty em_relids must be a Var or PHV of the removed relation.  We don't
 	 * need it anymore, so we can drop it.
@@ -749,7 +756,7 @@ remove_rel_from_eclass(EquivalenceClass *ec, SpecialJoinInfo *sjinfo,
 	 * drop them.  (At this point, any such clauses would be base restriction
 	 * clauses, which we'd not need anymore anyway.)
 	 */
-	ec->ec_derives = NIL;
+	ec_clear_derived_clauses(ec);
 }
 
 /*
@@ -1509,6 +1516,13 @@ update_eclasses(EquivalenceClass *ec, int from, int to)
 	List	   *new_members = NIL;
 	List	   *new_sources = NIL;
 
+	/*
+	 * We don't expect any EC child members to exist at this point.  Ensure
+	 * that's the case, otherwise, we might be getting asked to do something
+	 * this function hasn't been coded for.
+	 */
+	Assert(ec->ec_childmembers == NULL);
+
 	foreach_node(EquivalenceMember, em, ec->ec_members)
 	{
 		bool		is_redundant = false;
@@ -1544,8 +1558,7 @@ update_eclasses(EquivalenceClass *ec, int from, int to)
 	list_free(ec->ec_members);
 	ec->ec_members = new_members;
 
-	list_free(ec->ec_derives);
-	ec->ec_derives = NULL;
+	ec_clear_derived_clauses(ec);
 
 	/* Update EC source expressions */
 	foreach_node(RestrictInfo, rinfo, ec->ec_sources)

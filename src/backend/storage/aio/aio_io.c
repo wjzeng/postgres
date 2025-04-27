@@ -25,7 +25,7 @@
 #include "utils/wait_event.h"
 
 
-static void pgaio_io_before_prep(PgAioHandle *ioh);
+static void pgaio_io_before_start(PgAioHandle *ioh);
 
 
 
@@ -63,22 +63,22 @@ pgaio_io_get_op_data(PgAioHandle *ioh)
 
 
 /* --------------------------------------------------------------------------------
- * "Preparation" routines for individual IO operations
+ * "Start" routines for individual IO operations
  *
  * These are called by the code actually initiating an IO, to associate the IO
  * specific data with an AIO handle.
  *
- * Each of the preparation routines first needs to call
- * pgaio_io_before_prep(), then fill IO specific fields in the handle and then
- * finally call pgaio_io_stage().
+ * Each of the "start" routines first needs to call pgaio_io_before_start(),
+ * then fill IO specific fields in the handle and then finally call
+ * pgaio_io_stage().
  * --------------------------------------------------------------------------------
  */
 
 void
-pgaio_io_prep_readv(PgAioHandle *ioh,
-					int fd, int iovcnt, uint64 offset)
+pgaio_io_start_readv(PgAioHandle *ioh,
+					 int fd, int iovcnt, uint64 offset)
 {
-	pgaio_io_before_prep(ioh);
+	pgaio_io_before_start(ioh);
 
 	ioh->op_data.read.fd = fd;
 	ioh->op_data.read.offset = offset;
@@ -88,10 +88,10 @@ pgaio_io_prep_readv(PgAioHandle *ioh,
 }
 
 void
-pgaio_io_prep_writev(PgAioHandle *ioh,
-					 int fd, int iovcnt, uint64 offset)
+pgaio_io_start_writev(PgAioHandle *ioh,
+					  int fd, int iovcnt, uint64 offset)
 {
-	pgaio_io_before_prep(ioh);
+	pgaio_io_before_start(ioh);
 
 	ioh->op_data.write.fd = fd;
 	ioh->op_data.write.offset = offset;
@@ -153,12 +153,18 @@ pgaio_io_perform_synchronously(PgAioHandle *ioh)
  * any data in the handle is set.  Mostly to centralize assertions.
  */
 static void
-pgaio_io_before_prep(PgAioHandle *ioh)
+pgaio_io_before_start(PgAioHandle *ioh)
 {
 	Assert(ioh->state == PGAIO_HS_HANDED_OUT);
 	Assert(pgaio_my_backend->handed_out_io == ioh);
 	Assert(pgaio_io_has_target(ioh));
 	Assert(ioh->op == PGAIO_OP_INVALID);
+
+	/*
+	 * Otherwise the FDs referenced by the IO could be closed due to interrupt
+	 * processing.
+	 */
+	Assert(!INTERRUPTS_CAN_BE_PROCESSED());
 }
 
 /*
@@ -181,4 +187,49 @@ pgaio_io_get_op_name(PgAioHandle *ioh)
 	}
 
 	return NULL;				/* silence compiler */
+}
+
+/*
+ * Used to determine if an IO needs to be waited upon before the file
+ * descriptor can be closed.
+ */
+bool
+pgaio_io_uses_fd(PgAioHandle *ioh, int fd)
+{
+	Assert(ioh->state >= PGAIO_HS_DEFINED);
+
+	switch (ioh->op)
+	{
+		case PGAIO_OP_READV:
+			return ioh->op_data.read.fd == fd;
+		case PGAIO_OP_WRITEV:
+			return ioh->op_data.write.fd == fd;
+		case PGAIO_OP_INVALID:
+			return false;
+	}
+
+	return false;				/* silence compiler */
+}
+
+/*
+ * Return the iovec and its length. Currently only expected to be used by
+ * debugging infrastructure
+ */
+int
+pgaio_io_get_iovec_length(PgAioHandle *ioh, struct iovec **iov)
+{
+	Assert(ioh->state >= PGAIO_HS_DEFINED);
+
+	*iov = &pgaio_ctl->iovecs[ioh->iovec_off];
+
+	switch (ioh->op)
+	{
+		case PGAIO_OP_READV:
+			return ioh->op_data.read.iov_length;
+		case PGAIO_OP_WRITEV:
+			return ioh->op_data.write.iov_length;
+		default:
+			pg_unreachable();
+			return 0;
+	}
 }

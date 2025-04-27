@@ -1404,7 +1404,7 @@ DescribeQuery(const char *query, double *elapsed_msec)
 				char	   *escname;
 
 				if (i > 0)
-					appendPQExpBufferStr(&buf, ",");
+					appendPQExpBufferChar(&buf, ',');
 
 				name = PQfname(result, i);
 				escname = PQescapeLiteral(pset.db, name, strlen(name));
@@ -1459,7 +1459,7 @@ DescribeQuery(const char *query, double *elapsed_msec)
  *
  * If a synchronisation point is found, we can stop discarding results as
  * the pipeline will switch back to a clean state.  If no synchronisation
- * point is available, we need to stop when ther are no more pending
+ * point is available, we need to stop when there are no more pending
  * results, otherwise, calling PQgetResult() would block.
  */
 static PGresult *
@@ -1476,6 +1476,23 @@ discardAbortedPipelineResults(void)
 			 * Found a synchronisation point.  The sync counter is decremented
 			 * by the caller.
 			 */
+			return res;
+		}
+		else if (res != NULL && result_status == PGRES_FATAL_ERROR)
+		{
+			/*
+			 * Found a FATAL error sent by the backend, and we cannot recover
+			 * from this state.  Instead, return the last result and let the
+			 * outer loop handle it.
+			 */
+			PGresult   *fatal_res PG_USED_FOR_ASSERTS_ONLY;
+
+			/*
+			 * Fetch result to consume the end of the current query being
+			 * processed.
+			 */
+			fatal_res = PQgetResult(pset.db);
+			Assert(fatal_res == NULL);
 			return res;
 		}
 		else if (res == NULL)

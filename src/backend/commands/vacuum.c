@@ -657,6 +657,8 @@ vacuum(List *relations, VacuumParams *params, BufferAccessStrategy bstrategy,
 				if (use_own_xacts)
 				{
 					PopActiveSnapshot();
+					/* standard_ProcessUtility() does CCI if !use_own_xacts */
+					CommandCounterIncrement();
 					CommitTransactionCommand();
 				}
 				else
@@ -2614,9 +2616,9 @@ vac_bulkdel_one_index(IndexVacuumInfo *ivinfo, IndexBulkDeleteResult *istat,
 							  dead_items);
 
 	ereport(ivinfo->message_level,
-			(errmsg("scanned index \"%s\" to remove %lld row versions",
+			(errmsg("scanned index \"%s\" to remove %" PRId64 " row versions",
 					RelationGetRelationName(ivinfo->index),
-					(long long) dead_items_info->num_items)));
+					dead_items_info->num_items)));
 
 	return istat;
 }

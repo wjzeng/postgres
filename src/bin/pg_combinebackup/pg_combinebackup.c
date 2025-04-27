@@ -24,6 +24,7 @@
 #include <linux/fs.h>
 #endif
 
+#include "access/xlog_internal.h"
 #include "backup_label.h"
 #include "common/checksum_helper.h"
 #include "common/controldata_utils.h"
@@ -300,12 +301,12 @@ main(int argc, char *argv[])
 		{
 			char	   *controlpath;
 
-			controlpath = psprintf("%s/%s", prior_backup_dirs[i], "global/pg_control");
+			controlpath = psprintf("%s/%s", prior_backup_dirs[i], XLOG_CONTROL_FILE);
 
-			pg_fatal("%s: manifest system identifier is %llu, but control file has %llu",
+			pg_fatal("%s: manifest system identifier is %" PRIu64 ", but control file has %" PRIu64,
 					 controlpath,
-					 (unsigned long long) manifests[i]->system_identifier,
-					 (unsigned long long) system_identifier);
+					 manifests[i]->system_identifier,
+					 system_identifier);
 		}
 	}
 
@@ -424,7 +425,7 @@ main(int argc, char *argv[])
 		else
 		{
 			pg_log_debug("recursively fsyncing \"%s\"", opt.output);
-			sync_pgdata(opt.output, version * 10000, opt.sync_method);
+			sync_pgdata(opt.output, version * 10000, opt.sync_method, true);
 		}
 	}
 
@@ -614,7 +615,7 @@ check_control_files(int n_backups, char **backup_dirs)
 		bool		crc_ok;
 		char	   *controlpath;
 
-		controlpath = psprintf("%s/%s", backup_dirs[i], "global/pg_control");
+		controlpath = psprintf("%s/%s", backup_dirs[i], XLOG_CONTROL_FILE);
 		pg_log_debug("reading \"%s\"", controlpath);
 		control_file = get_controlfile_by_exact_path(controlpath, &crc_ok);
 
@@ -631,9 +632,9 @@ check_control_files(int n_backups, char **backup_dirs)
 		if (i == n_backups - 1)
 			system_identifier = control_file->system_identifier;
 		else if (system_identifier != control_file->system_identifier)
-			pg_fatal("%s: expected system identifier %llu, but found %llu",
-					 controlpath, (unsigned long long) system_identifier,
-					 (unsigned long long) control_file->system_identifier);
+			pg_fatal("%s: expected system identifier %" PRIu64 ", but found %" PRIu64,
+					 controlpath, system_identifier,
+					 control_file->system_identifier);
 
 		/*
 		 * Detect checksum mismatches, but only if the last backup in the
@@ -654,8 +655,7 @@ check_control_files(int n_backups, char **backup_dirs)
 	 * If debug output is enabled, make a note of the system identifier that
 	 * we found in all of the relevant control files.
 	 */
-	pg_log_debug("system identifier is %llu",
-				 (unsigned long long) system_identifier);
+	pg_log_debug("system identifier is %" PRIu64, system_identifier);
 
 	/*
 	 * Warn the user if not all backups are in the same state with regards to
@@ -814,7 +814,7 @@ parse_oid(char *s, Oid *result)
  * Copy files from the input directory to the output directory, reconstructing
  * full files from incremental files as required.
  *
- * If processing is a user-defined tablespace, the tsoid should be the OID
+ * If processing a user-defined tablespace, the tsoid should be the OID
  * of that tablespace and input_directory and output_directory should be the
  * toplevel input and output directories for that tablespace. Otherwise,
  * tsoid should be InvalidOid and input_directory and output_directory should
@@ -826,7 +826,7 @@ parse_oid(char *s, Oid *result)
  *
  * n_prior_backups is the number of prior backups that we have available.
  * This doesn't count the very last backup, which is referenced by
- * output_directory, just the older ones. prior_backup_dirs is an array of
+ * input_directory, just the older ones. prior_backup_dirs is an array of
  * the locations of those previous backups.
  */
 static void

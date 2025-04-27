@@ -20,6 +20,9 @@
  */
 #include "postgres.h"
 
+#ifdef HAVE_COPYFILE_H
+#include <copyfile.h>
+#endif
 #include <float.h>
 #include <limits.h>
 #ifdef HAVE_SYSLOG
@@ -76,6 +79,7 @@
 #include "storage/aio.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/copydir.h"
 #include "storage/io_worker.h"
 #include "storage/large_object.h"
 #include "storage/pg_shmem.h"
@@ -479,6 +483,14 @@ static const struct config_enum_entry wal_compression_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry file_copy_method_options[] = {
+	{"copy", FILE_COPY_METHOD_COPY, false},
+#if defined(HAVE_COPYFILE) && defined(COPYFILE_CLONE_FORCE) || defined(HAVE_COPY_FILE_RANGE)
+	{"clone", FILE_COPY_METHOD_CLONE, false},
+#endif
+	{NULL, 0, false}
+};
+
 /*
  * Options for enum values stored in other modules
  */
@@ -566,7 +578,7 @@ static int	ssl_renegotiation_limit;
  */
 int			huge_pages = HUGE_PAGES_TRY;
 int			huge_page_size;
-static int	huge_pages_status = HUGE_PAGES_UNKNOWN;
+int			huge_pages_status = HUGE_PAGES_UNKNOWN;
 
 /*
  * These variables are all dummies that don't do anything, except in some
@@ -998,7 +1010,7 @@ struct config_bool ConfigureNamesBool[] =
 		{"enable_self_join_elimination", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables removal of unique self-joins."),
 			NULL,
-			GUC_EXPLAIN | GUC_NOT_IN_SAMPLE
+			GUC_EXPLAIN
 		},
 		&enable_self_join_elimination,
 		true,
@@ -2123,16 +2135,6 @@ struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
-		{"query_id_squash_values", PGC_USERSET, STATS_MONITORING,
-			gettext_noop("Allows to merge constants in a list when computing "
-						 "query_id."),
-		},
-		&query_id_squash_values,
-		false,
-		NULL, NULL, NULL
-	},
-
-	{
 		{"vacuum_truncate", PGC_USERSET, VACUUM_DEFAULT,
 			gettext_noop("Enables vacuum to truncate empty pages at the end of the table."),
 		},
@@ -3245,7 +3247,7 @@ struct config_int ConfigureNamesInt[] =
 		&effective_io_concurrency,
 		DEFAULT_EFFECTIVE_IO_CONCURRENCY,
 		0, MAX_IO_CONCURRENCY,
-		check_effective_io_concurrency, NULL, NULL
+		NULL, NULL, NULL
 	},
 
 	{
@@ -3259,7 +3261,7 @@ struct config_int ConfigureNamesInt[] =
 		&maintenance_io_concurrency,
 		DEFAULT_MAINTENANCE_IO_CONCURRENCY,
 		0, MAX_IO_CONCURRENCY,
-		check_maintenance_io_concurrency, assign_maintenance_io_concurrency,
+		NULL, assign_maintenance_io_concurrency,
 		NULL
 	},
 
@@ -3285,7 +3287,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL,
 			GUC_UNIT_BLOCKS
 		},
-		&io_combine_limit,
+		&io_combine_limit_guc,
 		DEFAULT_IO_COMBINE_LIMIT,
 		1, MAX_IO_COMBINE_LIMIT,
 		NULL, assign_io_combine_limit, NULL
@@ -5249,6 +5251,16 @@ struct config_enum ConfigureNamesEnum[] =
 		},
 		&shared_memory_type,
 		DEFAULT_SHARED_MEMORY_TYPE, shared_memory_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"file_copy_method", PGC_USERSET, RESOURCES_DISK,
+			gettext_noop("Selects the file copy method."),
+			NULL
+		},
+		&file_copy_method,
+		FILE_COPY_METHOD_COPY, file_copy_method_options,
 		NULL, NULL, NULL
 	},
 

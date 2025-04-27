@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "access/xlog.h"
+#include "access/xlogrecovery.h"
 #include "common/ip.h"
 #include "common/string.h"
 #include "libpq/libpq.h"
@@ -59,6 +60,7 @@ ConnectionTiming conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
 static void BackendInitialize(ClientSocket *client_sock, CAC_state cac);
 static int	ProcessSSLStartup(Port *port);
 static int	ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done);
+static void ProcessCancelRequestPacket(Port *port, void *pkt, int pktlen);
 static void SendNegotiateProtocolVersion(List *unrecognized_protocol_options);
 static void process_startup_packet_die(SIGNAL_ARGS);
 static void StartupPacketTimeoutHandler(void);
@@ -306,17 +308,24 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 						(errcode(ERRCODE_CANNOT_CONNECT_NOW),
 						 errmsg("the database system is starting up")));
 				break;
-			case CAC_NOTCONSISTENT:
-				if (EnableHotStandby)
-					ereport(FATAL,
-							(errcode(ERRCODE_CANNOT_CONNECT_NOW),
-							 errmsg("the database system is not yet accepting connections"),
-							 errdetail("Consistent recovery state has not been yet reached.")));
-				else
+			case CAC_NOTHOTSTANDBY:
+				if (!EnableHotStandby)
 					ereport(FATAL,
 							(errcode(ERRCODE_CANNOT_CONNECT_NOW),
 							 errmsg("the database system is not accepting connections"),
 							 errdetail("Hot standby mode is disabled.")));
+				else if (reachedConsistency)
+					ereport(FATAL,
+							(errcode(ERRCODE_CANNOT_CONNECT_NOW),
+							 errmsg("the database system is not yet accepting connections"),
+							 errdetail("Recovery snapshot is not yet ready for hot standby."),
+							 errhint("To enable hot standby, close write transactions with more than %d subtransactions on the primary server.",
+									 PGPROC_MAX_CACHED_SUBXIDS)));
+				else
+					ereport(FATAL,
+							(errcode(ERRCODE_CANNOT_CONNECT_NOW),
+							 errmsg("the database system is not yet accepting connections"),
+							 errdetail("Consistent recovery state has not been yet reached.")));
 				break;
 			case CAC_SHUTDOWN:
 				ereport(FATAL,
@@ -557,28 +566,7 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 
 	if (proto == CANCEL_REQUEST_CODE)
 	{
-		/*
-		 * The client has sent a cancel request packet, not a normal
-		 * start-a-new-connection packet.  Perform the necessary processing.
-		 * Nothing is sent back to the client.
-		 */
-		CancelRequestPacket *canc;
-		int			backendPID;
-		int32		cancelAuthCode;
-
-		if (len != sizeof(CancelRequestPacket))
-		{
-			ereport(COMMERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("invalid length of startup packet")));
-			return STATUS_ERROR;
-		}
-		canc = (CancelRequestPacket *) buf;
-		backendPID = (int) pg_ntoh32(canc->backendPID);
-		cancelAuthCode = (int32) pg_ntoh32(canc->cancelAuthCode);
-
-		if (backendPID != 0)
-			SendCancelRequest(backendPID, cancelAuthCode);
+		ProcessCancelRequestPacket(port, buf, len);
 		/* Not really an error, but we don't want to proceed further */
 		return STATUS_ERROR;
 	}
@@ -879,6 +867,37 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 }
 
 /*
+ * The client has sent a cancel request packet, not a normal
+ * start-a-new-connection packet.  Perform the necessary processing.  Nothing
+ * is sent back to the client.
+ */
+static void
+ProcessCancelRequestPacket(Port *port, void *pkt, int pktlen)
+{
+	CancelRequestPacket *canc;
+	int			len;
+
+	if (pktlen < offsetof(CancelRequestPacket, cancelAuthCode))
+	{
+		ereport(COMMERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("invalid length of query cancel packet")));
+		return;
+	}
+	len = pktlen - offsetof(CancelRequestPacket, cancelAuthCode);
+	if (len == 0 || len > 256)
+	{
+		ereport(COMMERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("invalid length of query cancel key")));
+		return;
+	}
+
+	canc = (CancelRequestPacket *) pkt;
+	SendCancelRequest(pg_ntoh32(canc->backendPID), canc->cancelAuthCode, len);
+}
+
+/*
  * Send a NegotiateProtocolVersion to the client.  This lets the client know
  * that they have either requested a newer minor protocol version than we are
  * able to speak, or at least one protocol option that we don't understand, or
@@ -1078,7 +1097,9 @@ check_log_connections(char **newval, void **extra, GucSource source)
 	 * We succeeded, so allocate `extra` and save the flags there for use by
 	 * assign_log_connections().
 	 */
-	*extra = guc_malloc(ERROR, sizeof(int));
+	*extra = guc_malloc(LOG, sizeof(int));
+	if (!*extra)
+		return false;
 	*((int *) *extra) = flags;
 
 	return true;

@@ -177,6 +177,9 @@ static const char *const BuiltinTrancheNames[] = {
 	[LWTRANCHE_SUBTRANS_SLRU] = "SubtransSLRU",
 	[LWTRANCHE_XACT_SLRU] = "XactSLRU",
 	[LWTRANCHE_PARALLEL_VACUUM_DSA] = "ParallelVacuumDSA",
+	[LWTRANCHE_AIO_URING_COMPLETION] = "AioUringCompletion",
+	[LWTRANCHE_MEMORY_CONTEXT_REPORTING_STATE] = "MemoryContextReportingState",
+	[LWTRANCHE_MEMORY_CONTEXT_REPORTING_PROC] = "MemoryContextReportingPerProcess",
 };
 
 StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
@@ -1829,7 +1832,7 @@ LWLockDisownInternal(LWLock *lock)
 
 /*
  * Helper function to release lock, shared between LWLockRelease() and
- * LWLockeleaseDisowned().
+ * LWLockReleaseDisowned().
  */
 static void
 LWLockReleaseInternal(LWLock *lock, LWLockMode mode)
@@ -1957,6 +1960,21 @@ LWLockReleaseAll(void)
 	}
 }
 
+
+/*
+ * ForEachLWLockHeldByMe - run a callback for each held lock
+ *
+ * This is meant as debug support only.
+ */
+void
+ForEachLWLockHeldByMe(void (*callback) (LWLock *, LWLockMode, void *),
+					  void *context)
+{
+	int			i;
+
+	for (i = 0; i < num_held_lwlocks; i++)
+		callback(held_lwlocks[i].lock, held_lwlocks[i].mode, context);
+}
 
 /*
  * LWLockHeldByMe - test whether my process holds a lock in any mode

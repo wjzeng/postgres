@@ -1022,7 +1022,9 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
     it may or may not be <literal>waiting</literal> on some event.  If the state
     is <literal>active</literal> and <structfield>wait_event</structfield> is non-null, it
     means that a query is being executed, but is being blocked somewhere
-    in the system.
+    in the system.  To keep the reporting overhead low, the system does not
+    attempt to synchronize different aspects of activity data for a backend.
+    As a result, ephemeral discrepancies may exist between the view's columns.
    </para>
   </note>
 
@@ -1154,7 +1156,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
    <note>
     <para>
      Extensions can add <literal>Extension</literal>,
-     <literal>InjectionPoint</literal>. and <literal>LWLock</literal> events
+     <literal>InjectionPoint</literal>, and <literal>LWLock</literal> events
      to the lists shown in <xref linkend="wait-event-extension-table"/> and
      <xref linkend="wait-event-lwlock-table"/>. In some cases, the name
      of an <literal>LWLock</literal> assigned by an extension will not be
@@ -2745,7 +2747,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <structfield>read_time</structfield> <type>double precision</type>
        </para>
        <para>
-        Time spent in read operations in milliseconds (if
+        Time spent waiting for read operations in milliseconds (if
         <xref linkend="guc-track-io-timing"/> is enabled and
         <varname>object</varname> is not <literal>wal</literal>,
         or if <xref linkend="guc-track-wal-io-timing"/> is enabled
@@ -2783,7 +2785,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <structfield>write_time</structfield> <type>double precision</type>
        </para>
        <para>
-        Time spent in write operations in milliseconds (if
+        Time spent waiting for write operations in milliseconds (if
         <xref linkend="guc-track-io-timing"/> is enabled and
         <varname>object</varname> is not <literal>wal</literal>,
         or if <xref linkend="guc-track-wal-io-timing"/> is enabled
@@ -2811,7 +2813,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <structfield>writeback_time</structfield> <type>double precision</type>
        </para>
        <para>
-        Time spent in writeback operations in milliseconds (if
+        Time spent waiting for writeback operations in milliseconds (if
         <xref linkend="guc-track-io-timing"/> is enabled, otherwise zero). This
         includes the time spent queueing write-out requests and, potentially,
         the time spent to write out the dirty data.
@@ -2847,7 +2849,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <structfield>extend_time</structfield> <type>double precision</type>
        </para>
        <para>
-        Time spent in extend operations in milliseconds. (if
+        Time spent waiting for extend operations in milliseconds. (if
         <xref linkend="guc-track-io-timing"/> is enabled and
         <varname>object</varname> is not <literal>wal</literal>,
         or if <xref linkend="guc-track-wal-io-timing"/> is enabled
@@ -2921,7 +2923,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
         <structfield>fsync_time</structfield> <type>double precision</type>
        </para>
        <para>
-        Time spent in fsync operations in milliseconds (if
+        Time spent waiting for fsync operations in milliseconds (if
         <xref linkend="guc-track-io-timing"/> is enabled and
         <varname>object</varname> is not <literal>wal</literal>,
         or if <xref linkend="guc-track-wal-io-timing"/> is enabled
@@ -3008,7 +3010,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
 
   <note>
    <para>
-    Columns tracking I/O time will only be non-zero when
+    Columns tracking I/O wait time will only be non-zero when
     <xref linkend="guc-track-io-timing"/> is enabled. The user should be
     careful when referencing these columns in combination with their
     corresponding I/O operations in case <varname>track_io_timing</varname>
@@ -4261,7 +4263,10 @@ description | Waiting for a newly initialized WAL file to reach durable storage
      <replaceable>column_name</replaceable> =
      <replaceable>value2</replaceable> ...</literal> construct, though only
     when the optimizer transforms the construct into an equivalent
-    multi-valued array representation.
+    multi-valued array representation.  Similarly, when B-tree index scans use
+    the skip scan optimization, an index search is performed each time the
+    scan is repositioned to the next index leaf page that might have matching
+    tuples (see <xref linkend="indexes-multicolumn"/>).
    </para>
   </note>
   <tip>

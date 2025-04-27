@@ -983,7 +983,21 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 	 * one we use --- by definition, they are either redundant or
 	 * contradictory.
 	 *
-	 * Any regular (not SK_SEARCHNULL) key implies a NOT NULL qualifier.
+	 * In practice we rarely see any "attribute boundary key gaps" here.
+	 * Preprocessing can usually backfill skip array keys for any attributes
+	 * that were omitted from the original scan->keyData[] input keys.  All
+	 * array keys are always considered = keys, but we'll sometimes need to
+	 * treat the current key value as if we were using an inequality strategy.
+	 * This happens with range skip arrays, which store inequality keys in the
+	 * array's low_compare/high_compare fields (used to find the first/last
+	 * set of matches, when = key will lack a usable sk_argument value).
+	 * These are always preferred over any redundant "standard" inequality
+	 * keys on the same column (per the usual rule about preferring = keys).
+	 * Note also that any column with an = skip array key can never have an
+	 * additional, contradictory = key.
+	 *
+	 * All keys (with the exception of SK_SEARCHNULL keys and SK_BT_SKIP
+	 * array keys whose array is "null_elem=true") imply a NOT NULL qualifier.
 	 * If the index stores nulls at the end of the index we'll be starting
 	 * from, and we have no boundary key for the column (which means the key
 	 * we deduced NOT NULL from is an inequality key that constrains the other
@@ -1040,8 +1054,54 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 			if (i >= so->numberOfKeys || cur->sk_attno != curattr)
 			{
 				/*
-				 * Done looking at keys for curattr.  If we didn't find a
-				 * usable boundary key, see if we can deduce a NOT NULL key.
+				 * Done looking at keys for curattr.
+				 *
+				 * If this is a scan key for a skip array whose current
+				 * element is MINVAL, choose low_compare (when scanning
+				 * backwards it'll be MAXVAL, and we'll choose high_compare).
+				 *
+				 * Note: if the array's low_compare key makes 'chosen' NULL,
+				 * then we behave as if the array's first element is -inf,
+				 * except when !array->null_elem implies a usable NOT NULL
+				 * constraint.
+				 */
+				if (chosen != NULL &&
+					(chosen->sk_flags & (SK_BT_MINVAL | SK_BT_MAXVAL)))
+				{
+					int			ikey = chosen - so->keyData;
+					ScanKey		skipequalitykey = chosen;
+					BTArrayKeyInfo *array = NULL;
+
+					for (int arridx = 0; arridx < so->numArrayKeys; arridx++)
+					{
+						array = &so->arrayKeys[arridx];
+						if (array->scan_key == ikey)
+							break;
+					}
+
+					if (ScanDirectionIsForward(dir))
+					{
+						Assert(!(skipequalitykey->sk_flags & SK_BT_MAXVAL));
+						chosen = array->low_compare;
+					}
+					else
+					{
+						Assert(!(skipequalitykey->sk_flags & SK_BT_MINVAL));
+						chosen = array->high_compare;
+					}
+
+					Assert(chosen == NULL ||
+						   chosen->sk_attno == skipequalitykey->sk_attno);
+
+					if (!array->null_elem)
+						impliesNN = skipequalitykey;
+					else
+						Assert(chosen == NULL && impliesNN == NULL);
+				}
+
+				/*
+				 * If we didn't find a usable boundary key, see if we can
+				 * deduce a NOT NULL key
 				 */
 				if (chosen == NULL && impliesNN != NULL &&
 					((impliesNN->sk_flags & SK_BT_NULLS_FIRST) ?
@@ -1084,9 +1144,40 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 					break;
 
 				/*
-				 * Done if that was the last attribute, or if next key is not
-				 * in sequence (implying no boundary key is available for the
-				 * next attribute).
+				 * If the key that we just added to startKeys[] is a skip
+				 * array = key whose current element is marked NEXT or PRIOR,
+				 * make strat_total > or < (and stop adding boundary keys).
+				 * This can only happen with opclasses that lack skip support.
+				 */
+				if (chosen->sk_flags & (SK_BT_NEXT | SK_BT_PRIOR))
+				{
+					Assert(chosen->sk_flags & SK_BT_SKIP);
+					Assert(strat_total == BTEqualStrategyNumber);
+
+					if (ScanDirectionIsForward(dir))
+					{
+						Assert(!(chosen->sk_flags & SK_BT_PRIOR));
+						strat_total = BTGreaterStrategyNumber;
+					}
+					else
+					{
+						Assert(!(chosen->sk_flags & SK_BT_NEXT));
+						strat_total = BTLessStrategyNumber;
+					}
+
+					/*
+					 * We're done.  We'll never find an exact = match for a
+					 * NEXT or PRIOR sentinel sk_argument value.  There's no
+					 * sense in trying to add more keys to startKeys[].
+					 */
+					break;
+				}
+
+				/*
+				 * Done if that was the last scan key output by preprocessing.
+				 * Also done if there is a gap index attribute that lacks a
+				 * usable key (only possible when preprocessing was unable to
+				 * generate a skip array key to "fill in the gap").
 				 */
 				if (i >= so->numberOfKeys ||
 					cur->sk_attno != curattr + 1)
@@ -1557,67 +1648,14 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	pstate.finaltup = NULL;
 	pstate.page = page;
 	pstate.firstpage = firstpage;
+	pstate.forcenonrequired = false;
+	pstate.startikey = 0;
 	pstate.offnum = InvalidOffsetNumber;
 	pstate.skip = InvalidOffsetNumber;
 	pstate.continuescan = true; /* default assumption */
-	pstate.prechecked = false;
-	pstate.firstmatch = false;
 	pstate.rechecks = 0;
 	pstate.targetdistance = 0;
-
-	/*
-	 * Prechecking the value of the continuescan flag for the last item on the
-	 * page (for backwards scan it will be the first item on a page).  If we
-	 * observe it to be true, then it should be true for all other items. This
-	 * allows us to do significant optimizations in the _bt_checkkeys()
-	 * function for all the items on the page.
-	 *
-	 * With the forward scan, we do this check for the last item on the page
-	 * instead of the high key.  It's relatively likely that the most
-	 * significant column in the high key will be different from the
-	 * corresponding value from the last item on the page.  So checking with
-	 * the last item on the page would give a more precise answer.
-	 *
-	 * We skip this for the first page read by each (primitive) scan, to avoid
-	 * slowing down point queries.  They typically don't stand to gain much
-	 * when the optimization can be applied, and are more likely to notice the
-	 * overhead of the precheck.
-	 *
-	 * The optimization is unsafe and must be avoided whenever _bt_checkkeys
-	 * just set a low-order required array's key to the best available match
-	 * for a truncated -inf attribute value from the prior page's high key
-	 * (array element 0 is always the best available match in this scenario).
-	 * It's quite likely that matches for array element 0 begin on this page,
-	 * but the start of matches won't necessarily align with page boundaries.
-	 * When the start of matches is somewhere in the middle of this page, it
-	 * would be wrong to treat page's final non-pivot tuple as representative.
-	 * Doing so might lead us to treat some of the page's earlier tuples as
-	 * being part of a group of tuples thought to satisfy the required keys.
-	 *
-	 * Note: Conversely, in the case where the scan's arrays just advanced
-	 * using the prior page's HIKEY _without_ advancement setting scanBehind,
-	 * the start of matches must be aligned with page boundaries, which makes
-	 * it safe to attempt the optimization here now.  It's also safe when the
-	 * prior page's HIKEY simply didn't need to advance any required array. In
-	 * both cases we can safely assume that the _first_ tuple from this page
-	 * must be >= the current set of array keys/equality constraints. And so
-	 * if the final tuple is == those same keys (and also satisfies any
-	 * required < or <= strategy scan keys) during the precheck, we can safely
-	 * assume that this must also be true of all earlier tuples from the page.
-	 */
-	if (!pstate.firstpage && !so->scanBehind && minoff < maxoff)
-	{
-		ItemId		iid;
-		IndexTuple	itup;
-
-		iid = PageGetItemId(page, ScanDirectionIsForward(dir) ? maxoff : minoff);
-		itup = (IndexTuple) PageGetItem(page, iid);
-
-		/* Call with arrayKeys=false to avoid undesirable side-effects */
-		_bt_checkkeys(scan, &pstate, false, itup, indnatts);
-		pstate.prechecked = pstate.continuescan;
-		pstate.continuescan = true; /* reset */
-	}
+	pstate.nskipadvances = 0;
 
 	if (ScanDirectionIsForward(dir))
 	{
@@ -1645,6 +1683,13 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 
 			so->scanBehind = so->oppositeDirCheck = false;	/* reset */
 		}
+
+		/*
+		 * Consider pstate.startikey optimization once the ongoing primitive
+		 * index scan has already read at least one page
+		 */
+		if (!pstate.firstpage && minoff < maxoff)
+			_bt_set_startikey(scan, &pstate);
 
 		/* load items[] in ascending order */
 		itemIndex = 0;
@@ -1682,6 +1727,7 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			{
 				Assert(!passes_quals && pstate.continuescan);
 				Assert(offnum < pstate.skip);
+				Assert(!pstate.forcenonrequired);
 
 				offnum = pstate.skip;
 				pstate.skip = InvalidOffsetNumber;
@@ -1691,7 +1737,6 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			if (passes_quals)
 			{
 				/* tuple passes all scan key conditions */
-				pstate.firstmatch = true;
 				if (!BTreeTupleIsPosting(itup))
 				{
 					/* Remember it */
@@ -1746,7 +1791,8 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			int			truncatt;
 
 			truncatt = BTreeTupleGetNAtts(itup, rel);
-			pstate.prechecked = false;	/* precheck didn't cover HIKEY */
+			pstate.forcenonrequired = false;
+			pstate.startikey = 0;	/* _bt_set_startikey ignores P_HIKEY */
 			_bt_checkkeys(scan, &pstate, arrayKeys, itup, truncatt);
 		}
 
@@ -1784,6 +1830,13 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 
 			so->scanBehind = so->oppositeDirCheck = false;	/* reset */
 		}
+
+		/*
+		 * Consider pstate.startikey optimization once the ongoing primitive
+		 * index scan has already read at least one page
+		 */
+		if (!pstate.firstpage && minoff < maxoff)
+			_bt_set_startikey(scan, &pstate);
 
 		/* load items[] in descending order */
 		itemIndex = MaxTIDsPerBTreePage;
@@ -1824,8 +1877,28 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			Assert(!BTreeTupleIsPivot(itup));
 
 			pstate.offnum = offnum;
+			if (arrayKeys && offnum == minoff && pstate.forcenonrequired)
+			{
+				pstate.forcenonrequired = false;
+				pstate.startikey = 0;
+			}
 			passes_quals = _bt_checkkeys(scan, &pstate, arrayKeys,
 										 itup, indnatts);
+
+			if (arrayKeys && so->scanBehind)
+			{
+				/*
+				 * Done scanning this page, but not done with the current
+				 * primscan.
+				 *
+				 * Note: Forward scans don't check this explicitly, since they
+				 * prefer to reuse pstate.skip for this instead.
+				 */
+				Assert(!passes_quals && pstate.continuescan);
+				Assert(!pstate.forcenonrequired);
+
+				break;
+			}
 
 			/*
 			 * Check if we need to skip ahead to a later tuple (only possible
@@ -1835,6 +1908,7 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			{
 				Assert(!passes_quals && pstate.continuescan);
 				Assert(offnum > pstate.skip);
+				Assert(!pstate.forcenonrequired);
 
 				offnum = pstate.skip;
 				pstate.skip = InvalidOffsetNumber;
@@ -1844,7 +1918,6 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			if (passes_quals && tuple_alive)
 			{
 				/* tuple passes all scan key conditions */
-				pstate.firstmatch = true;
 				if (!BTreeTupleIsPosting(itup))
 				{
 					/* Remember it */
@@ -1899,6 +1972,20 @@ _bt_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		so->currPos.lastItem = MaxTIDsPerBTreePage - 1;
 		so->currPos.itemIndex = MaxTIDsPerBTreePage - 1;
 	}
+
+	/*
+	 * If _bt_set_startikey told us to temporarily treat the scan's keys as
+	 * nonrequired (possible only during scans with array keys), there must be
+	 * no lasting consequences for the scan's array keys.  The scan's arrays
+	 * should now have exactly the same elements as they would have had if the
+	 * nonrequired behavior had never been used.  (In general, a scan's arrays
+	 * are expected to track its progress through the index's key space.)
+	 *
+	 * We are required (by _bt_set_startikey) to call _bt_checkkeys against
+	 * pstate.finaltup with pstate.forcenonrequired=false to allow the scan's
+	 * arrays to recover.  Assert that that step hasn't been missed.
+	 */
+	Assert(!pstate.forcenonrequired);
 
 	return (so->currPos.firstItem <= so->currPos.lastItem);
 }

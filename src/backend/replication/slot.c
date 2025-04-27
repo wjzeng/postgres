@@ -1544,11 +1544,11 @@ ReportSlotInvalidation(ReplicationSlotInvalidationCause cause,
 	{
 		case RS_INVAL_WAL_REMOVED:
 			{
-				unsigned long long ex = oldestLSN - restart_lsn;
+				uint64		ex = oldestLSN - restart_lsn;
 
 				appendStringInfo(&err_detail,
-								 ngettext("The slot's restart_lsn %X/%X exceeds the limit by %llu byte.",
-										  "The slot's restart_lsn %X/%X exceeds the limit by %llu bytes.",
+								 ngettext("The slot's restart_lsn %X/%X exceeds the limit by %" PRIu64 " byte.",
+										  "The slot's restart_lsn %X/%X exceeds the limit by %" PRIu64 " bytes.",
 										  ex),
 								 LSN_FORMAT_ARGS(restart_lsn),
 								 ex);
@@ -2730,6 +2730,8 @@ check_synchronized_standby_slots(char **newval, void **extra, GucSource source)
 
 	/* GUC extra value must be guc_malloc'd, not palloc'd */
 	config = (SyncStandbySlotsConfigData *) guc_malloc(LOG, size);
+	if (!config)
+		return false;
 
 	/* Transform the data into SyncStandbySlotsConfigData */
 	config->nslotnames = list_length(elemlist);

@@ -15,6 +15,7 @@
 #define BUFMGR_H
 
 #include "port/pg_iovec.h"
+#include "storage/aio_types.h"
 #include "storage/block.h"
 #include "storage/buf.h"
 #include "storage/bufpage.h"
@@ -111,6 +112,11 @@ typedef struct BufferManagerRelation
 #define READ_BUFFERS_ZERO_ON_ERROR (1 << 0)
 /* Call smgrprefetch() if I/O necessary. */
 #define READ_BUFFERS_ISSUE_ADVICE (1 << 1)
+/* Don't treat page as invalid due to checksum failures. */
+#define READ_BUFFERS_IGNORE_CHECKSUM_FAILURES (1 << 2)
+/* IO will immediately be waited for */
+#define READ_BUFFERS_SYNCHRONOUSLY (1 << 3)
+
 
 struct ReadBuffersOperation
 {
@@ -130,6 +136,9 @@ struct ReadBuffersOperation
 	BlockNumber blocknum;
 	int			flags;
 	int16		nblocks;
+	int16		nblocks_done;
+	PgAioWaitRef io_wref;
+	PgAioReturn io_return;
 };
 
 typedef struct ReadBuffersOperation ReadBuffersOperation;
@@ -149,14 +158,8 @@ extern PGDLLIMPORT int bgwriter_lru_maxpages;
 extern PGDLLIMPORT double bgwriter_lru_multiplier;
 extern PGDLLIMPORT bool track_io_timing;
 
-/* only applicable when prefetching is available */
-#ifdef USE_PREFETCH
 #define DEFAULT_EFFECTIVE_IO_CONCURRENCY 16
 #define DEFAULT_MAINTENANCE_IO_CONCURRENCY 16
-#else
-#define DEFAULT_EFFECTIVE_IO_CONCURRENCY 0
-#define DEFAULT_MAINTENANCE_IO_CONCURRENCY 0
-#endif
 extern PGDLLIMPORT int effective_io_concurrency;
 extern PGDLLIMPORT int maintenance_io_concurrency;
 
@@ -169,6 +172,9 @@ extern PGDLLIMPORT int io_max_combine_limit;
 extern PGDLLIMPORT int checkpoint_flush_after;
 extern PGDLLIMPORT int backend_flush_after;
 extern PGDLLIMPORT int bgwriter_flush_after;
+
+extern PGDLLIMPORT const PgAioHandleCallbacks aio_shared_buffer_readv_cb;
+extern PGDLLIMPORT const PgAioHandleCallbacks aio_local_buffer_readv_cb;
 
 /* in buf_init.c */
 extern PGDLLIMPORT char *BufferBlocks;
@@ -252,6 +258,9 @@ extern Buffer ExtendBufferedRelTo(BufferManagerRelation bmr,
 
 extern void InitBufferManagerAccess(void);
 extern void AtEOXact_Buffers(bool isCommit);
+#ifdef USE_ASSERT_CHECKING
+extern void AssertBufferLocksPermitCatalogRead(void);
+#endif
 extern char *DebugPrintBufferRefcount(Buffer buffer);
 extern void CheckPointBuffers(int flags);
 extern BlockNumber BufferGetBlockNumber(Buffer buffer);
@@ -298,7 +307,14 @@ extern uint32 GetAdditionalLocalPinLimit(void);
 extern void LimitAdditionalPins(uint32 *additional_pins);
 extern void LimitAdditionalLocalPins(uint32 *additional_pins);
 
-extern bool EvictUnpinnedBuffer(Buffer buf);
+extern bool EvictUnpinnedBuffer(Buffer buf, bool *buffer_flushed);
+extern void EvictAllUnpinnedBuffers(int32 *buffers_evicted,
+									int32 *buffers_flushed,
+									int32 *buffers_skipped);
+extern void EvictRelUnpinnedBuffers(Relation rel,
+									int32 *buffers_evicted,
+									int32 *buffers_flushed,
+									int32 *buffers_skipped);
 
 /* in buf_init.c */
 extern void BufferManagerShmemInit(void);

@@ -112,6 +112,16 @@ sub adjust_database_contents
 			'drop extension if exists test_ext7');
 	}
 
+	# we removed these test-support functions in v18
+	if ($old_version < 18)
+	{
+		_add_st($result, 'regression', 'drop function ttdummy()');
+		_add_st($result, 'regression', 'drop function set_ttdummy(integer)');
+		_add_st($result, 'regression', 'drop function autoinc()');
+		_add_st($result, 'regression', 'drop function check_foreign_key()');
+		_add_st($result, 'regression', 'drop function check_primary_key()');
+	}
+
 	# we removed this test-support function in v17
 	if ($old_version >= 15 && $old_version < 17)
 	{
@@ -647,6 +657,11 @@ sub adjust_new_dumpfile
 	# pg_restore_attribute_stats().
 	$dump =~ s {\n(\s+'version',) '\d+'::integer,$}
 		{$1 '000000'::integer,}mg;
+
+	if ($old_version < 18)
+	{
+		$dump =~ s {,\n(\s+'relallfrozen',) '-?\d+'::integer$}{}mg;
+	}
 
 	# pre-v16 dumps do not know about XMLSERIALIZE(NO INDENT).
 	if ($old_version < 16)

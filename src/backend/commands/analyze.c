@@ -827,16 +827,16 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 			}
 			appendStringInfo(&buf, _("avg read rate: %.3f MB/s, avg write rate: %.3f MB/s\n"),
 							 read_rate, write_rate);
-			appendStringInfo(&buf, _("buffer usage: %lld hits, %lld reads, %lld dirtied\n"),
-							 (long long) total_blks_hit,
-							 (long long) total_blks_read,
-							 (long long) total_blks_dirtied);
+			appendStringInfo(&buf, _("buffer usage: %" PRId64 " hits, %" PRId64 " reads, %" PRId64 " dirtied\n"),
+							 total_blks_hit,
+							 total_blks_read,
+							 total_blks_dirtied);
 			appendStringInfo(&buf,
-							 _("WAL usage: %lld records, %lld full page images, %llu bytes, %lld buffers full\n"),
-							 (long long) walusage.wal_records,
-							 (long long) walusage.wal_fpi,
-							 (unsigned long long) walusage.wal_bytes,
-							 (long long) walusage.wal_buffers_full);
+							 _("WAL usage: %" PRId64 " records, %" PRId64 " full page images, %" PRIu64 " bytes, %" PRId64 " buffers full\n"),
+							 walusage.wal_records,
+							 walusage.wal_fpi,
+							 walusage.wal_bytes,
+							 walusage.wal_buffers_full);
 			appendStringInfo(&buf, _("system usage: %s"), pg_rusage_show(&ru0));
 
 			ereport(verbose ? INFO : LOG,
@@ -1237,7 +1237,12 @@ acquire_sample_rows(Relation onerel, int elevel,
 	scan = table_beginscan_analyze(onerel);
 	slot = table_slot_create(onerel, NULL);
 
-	stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE,
+	/*
+	 * It is safe to use batching, as block_sampling_read_stream_next never
+	 * blocks.
+	 */
+	stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
+										READ_STREAM_USE_BATCHING,
 										vac_strategy,
 										scan->rs_rd,
 										MAIN_FORKNUM,

@@ -34,6 +34,11 @@
  * linearly through all states.
  *
  * State changes should all go through pgaio_io_update_state().
+ *
+ * Note that the externally visible functions to start IO
+ * (e.g. FileStartReadV(), via pgaio_io_start_readv()) move an IO from
+ * PGAIO_HS_HANDED_OUT to at least PGAIO_HS_STAGED and at most
+ * PGAIO_HS_COMPLETED_LOCAL (at which point the handle will be reused).
  */
 typedef enum PgAioHandleState
 {
@@ -42,13 +47,13 @@ typedef enum PgAioHandleState
 
 	/*
 	 * Returned by pgaio_io_acquire(). The next state is either DEFINED (if
-	 * pgaio_io_prep_*() is called), or IDLE (if pgaio_io_release() is
+	 * pgaio_io_start_*() is called), or IDLE (if pgaio_io_release() is
 	 * called).
 	 */
 	PGAIO_HS_HANDED_OUT,
 
 	/*
-	 * pgaio_io_prep_*() has been called, but IO is not yet staged. At this
+	 * pgaio_io_start_*() has been called, but IO is not yet staged. At this
 	 * point the handle has all the information for the IO to be executed.
 	 */
 	PGAIO_HS_DEFINED,
@@ -248,6 +253,15 @@ typedef struct PgAioCtl
  */
 typedef struct IoMethodOps
 {
+	/* properties */
+
+	/*
+	 * If an FD is about to be closed, do we need to wait for all in-flight
+	 * IOs referencing that FD?
+	 */
+	bool		wait_on_fd_before_close;
+
+
 	/* global initialization */
 
 	/*
@@ -276,6 +290,9 @@ typedef struct IoMethodOps
 	/*
 	 * Start executing passed in IOs.
 	 *
+	 * Shall advance state to at least PGAIO_HS_SUBMITTED.  (By the time this
+	 * returns, other backends might have advanced the state further.)
+	 *
 	 * Will not be called if ->needs_synchronous_execution() returned true.
 	 *
 	 * num_staged_ios is <= PGAIO_SUBMIT_BATCH_SIZE.
@@ -284,12 +301,24 @@ typedef struct IoMethodOps
 	 */
 	int			(*submit) (uint16 num_staged_ios, PgAioHandle **staged_ios);
 
-	/*
+	/* ---
 	 * Wait for the IO to complete. Optional.
+	 *
+	 * On return, state shall be on of
+	 * - PGAIO_HS_COMPLETED_IO
+	 * - PGAIO_HS_COMPLETED_SHARED
+	 * - PGAIO_HS_COMPLETED_LOCAL
+	 *
+	 * The callback must not block if the handle is already in one of those
+	 * states, or has been reused (see pgaio_io_was_recycled()).  If, on
+	 * return, the state is PGAIO_HS_COMPLETED_IO, state will reach
+	 * PGAIO_HS_COMPLETED_SHARED without further intervention by the IO
+	 * method.
 	 *
 	 * If not provided, it needs to be guaranteed that the IO method calls
 	 * pgaio_io_process_completion() without further interaction by the
 	 * issuing backend.
+	 * ---
 	 */
 	void		(*wait_one) (PgAioHandle *ioh,
 							 uint64 ref_generation);
@@ -309,11 +338,13 @@ extern void pgaio_shutdown(int code, Datum arg);
 /* aio_callback.c */
 extern void pgaio_io_call_stage(PgAioHandle *ioh);
 extern void pgaio_io_call_complete_shared(PgAioHandle *ioh);
-extern void pgaio_io_call_complete_local(PgAioHandle *ioh);
+extern PgAioResult pgaio_io_call_complete_local(PgAioHandle *ioh);
 
 /* aio_io.c */
 extern void pgaio_io_perform_synchronously(PgAioHandle *ioh);
 extern const char *pgaio_io_get_op_name(PgAioHandle *ioh);
+extern bool pgaio_io_uses_fd(PgAioHandle *ioh, int fd);
+extern int	pgaio_io_get_iovec_length(PgAioHandle *ioh, struct iovec **iov);
 
 /* aio_target.c */
 extern bool pgaio_io_can_reopen(PgAioHandle *ioh);
@@ -386,6 +417,9 @@ extern PgAioHandle *pgaio_inj_io_get(void);
 /* Declarations for the tables of function pointers exposed by each IO method. */
 extern PGDLLIMPORT const IoMethodOps pgaio_sync_ops;
 extern PGDLLIMPORT const IoMethodOps pgaio_worker_ops;
+#ifdef IOMETHOD_IO_URING_ENABLED
+extern PGDLLIMPORT const IoMethodOps pgaio_uring_ops;
+#endif
 
 extern PGDLLIMPORT const IoMethodOps *pgaio_method_ops;
 extern PGDLLIMPORT PgAioCtl *pgaio_ctl;

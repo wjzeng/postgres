@@ -18,22 +18,10 @@
  </para>
 
  <para>
-  This document describes version 3.0 of the protocol, implemented in
-  <productname>PostgreSQL</productname> 7.4 and later.  For descriptions
-  of the earlier protocol versions, see previous releases of the
-  <productname>PostgreSQL</productname> documentation.  A single server
-  can support multiple protocol versions.  The initial startup-request
-  message tells the server which protocol version the client is attempting to
-  use.  If the major version requested by the client is not supported by
-  the server, the connection will be rejected (for example, this would occur
-  if the client requested protocol version 4.0, which does not exist as of
-  this writing).  If the minor version requested by the client is not
-  supported by the server (e.g., the client requests version 3.1, but the
-  server supports only 3.0), the server may either reject the connection or
-  may respond with a NegotiateProtocolVersion message containing the highest
-  minor protocol version which it supports.  The client may then choose either
-  to continue with the connection using the specified protocol version or
-  to abort the connection.
+  This document describes version 3.2 of the protocol, introduced in
+  <productname>PostgreSQL</productname> version 18. The server and the libpq
+  client library are backwards compatible with protocol version 3.0,
+  implemented in <productname>PostgreSQL</productname> 7.4 and later.
  </para>
 
   <para>
@@ -198,6 +186,85 @@
     that binary representations for complex data types might change across
     server versions; the text format is usually the more portable choice.
    </para>
+  </sect2>
+
+  <sect2 id="protocol-versions">
+   <title>Protocol versions</title>
+
+   <para>
+    The current, latest version of the protocol is version 3.2. However, for
+    backwards compatibility with old server versions and middleware that don't
+    support the version negotiation yet, libpq still uses protocol version 3.0
+    by default.
+   </para>
+
+   <para>
+    A single server can support multiple protocol versions.  The initial
+    startup-request message tells the server which protocol version the client
+    is attempting to use.  If the major version requested by the client is not
+    supported by the server, the connection will be rejected (for example,
+    this would occur if the client requested protocol version 4.0, which does
+    not exist as of this writing).  If the minor version requested by the
+    client is not supported by the server (e.g., the client requests version
+    3.2, but the server supports only 3.0), the server may either reject the
+    connection or may respond with a NegotiateProtocolVersion message
+    containing the highest minor protocol version which it supports.  The
+    client may then choose either to continue with the connection using the
+    specified protocol version or to abort the connection.
+   </para>
+
+   <para>
+    The protocol negotiation was introduced in
+    <productname>PostgreSQL</productname> version 9.3.21. Earlier versions
+    would reject the connection if the client requested a minor version that
+    was not supported by the server.
+   </para>
+
+   <table>
+    <title>Protocol versions</title>
+
+    <tgroup cols="3">
+     <thead>
+      <row>
+       <entry>Version</entry>
+       <entry>Supported by</entry>
+       <entry>Description</entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+      <entry>3.2</entry>
+      <entry>PostgreSQL 18 and later</entry>
+      <entry>Current latest version. The secret key used in query
+        cancellation was enlarged from 4 bytes to a variable length field. The
+        BackendKeyData message was changed to accommodate that, and the CancelRequest
+        message was redefined to have a variable length payload.
+      </entry>
+      </row>
+      <row>
+      <entry>3.1</entry>
+      <entry>-</entry>
+      <entry>Reserved. Version 3.1 has not been used by any PostgreSQL
+        version, but it was skipped because old versions of the popular
+        pgbouncer application had a bug in the protocol negotiation which made
+        it incorrectly claim that it supported version 3.1.
+      </entry>
+      </row>
+      <row>
+      <entry>3.0</entry>
+      <entry>PostgreSQL 7.4 and later</entry>
+      </row>
+      <row>
+      <entry>2.0</entry>
+      <entry>up to PostgreSQL 13</entry>
+      <entry>See previous releases of
+      the <productname>PostgreSQL</productname> documentation for
+      details</entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
   </sect2>
  </sect1>
 
@@ -413,8 +480,14 @@
         this message indicates the highest supported minor version.  This
         message will also be sent if the client requested unsupported protocol
         options (i.e., beginning with <literal>_pq_.</literal>) in the
-        startup packet.  This message will be followed by an ErrorResponse or
-        a message indicating the success or failure of authentication.
+        startup packet.
+       </para>
+       <para>
+        After this message, the authentication will continue using the version
+        indicated by the server.  If the client does not support the older
+        version, it should immediately close the connection.  If the server
+        does not send this message, it supports the client's requested
+        protocol version and all the protocol options.
        </para>
       </listitem>
      </varlistentry>
@@ -3624,10 +3697,10 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
    indicate that it can be sent by a frontend (F), a backend (B), or both
    (F &amp; B).
    Notice that although each message includes a byte count at the beginning,
-   the message format is defined so that the message end can be found without
-   reference to the byte count.  This aids validity checking.  (The CopyData
-   message is an exception, because it forms part of a data stream; the contents
-   of any individual CopyData message cannot be interpretable on their own.)
+   most messages are defined so that the message end can be found without
+   reference to the byte count.  This is for historical reasons, as the
+   original, now-obsolete protocol version 2 did not have an explicit length
+   field.  It also aids validity checking though.
   </para>
 
   <variablelist>
@@ -4043,7 +4116,7 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
       </varlistentry>
 
       <varlistentry>
-       <term>Int32(12)</term>
+       <term>Int32</term>
        <listitem>
         <para>
          Length of message contents in bytes, including self.
@@ -4061,14 +4134,29 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
       </varlistentry>
 
       <varlistentry>
-       <term>Int32</term>
+       <term>Byte<replaceable>n</replaceable></term>
        <listitem>
         <para>
-         The secret key of this backend.
+         The secret key of this backend. This field extends to the end of the
+         message, indicated by the length field.
+        </para>
+        <para>
+          The maximum key length is 256 bytes. The
+          <productname>PostgreSQL</productname> server only sends keys up to
+          32 bytes, but the larger maximum size allows for future server
+          versions, as well as connection poolers and other middleware, to use
+          longer keys. One possible use case is augmenting the server's key
+          with extra information. Middleware is therefore also encouraged to
+          not use up all of the bytes, in case multiple middleware
+          applications are layered on top of each other, each of which may
+          wrap the key with extra data.
         </para>
        </listitem>
       </varlistentry>
      </variablelist>
+     <para>
+      Before protocol version 3.2, the secret key was always 4 bytes long.
+     </para>
     </listitem>
    </varlistentry>
 
@@ -4274,14 +4362,18 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
       </varlistentry>
 
       <varlistentry>
-       <term>Int32</term>
+       <term>Byte<replaceable>n</replaceable></term>
        <listitem>
         <para>
-         The secret key for the target backend.
+         The secret key for the target backend. This field extends to the end of the
+         message, indicated by the length field. The maximum key length is 256 bytes.
         </para>
        </listitem>
       </varlistentry>
      </variablelist>
+     <para>
+      Before protocol version 3.2, the secret key was always 4 bytes long.
+     </para>
     </listitem>
    </varlistentry>
 

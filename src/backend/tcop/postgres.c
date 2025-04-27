@@ -3335,6 +3335,10 @@ ProcessInterrupts(void)
 			 */
 			proc_exit(1);
 		}
+		else if (AmWalReceiverProcess())
+			ereport(FATAL,
+					(errcode(ERRCODE_ADMIN_SHUTDOWN),
+					 errmsg("terminating walreceiver process due to administrator command")));
 		else if (AmBackgroundWorkerProcess())
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
@@ -3531,6 +3535,9 @@ ProcessInterrupts(void)
 	if (LogMemoryContextPending)
 		ProcessLogMemoryContextInterrupt();
 
+	if (PublishMemoryContextPending)
+		ProcessGetMemoryContextInterrupt();
+
 	if (ParallelApplyMessagePending)
 		ProcessParallelApplyMessages();
 }
@@ -3648,7 +3655,9 @@ check_restrict_nonsystem_relation_kind(char **newval, void **extra, GucSource so
 	list_free(elemlist);
 
 	/* Save the flags in *extra, for use by the assign function */
-	*extra = guc_malloc(ERROR, sizeof(int));
+	*extra = guc_malloc(LOG, sizeof(int));
+	if (!*extra)
+		return false;
 	*((int *) *extra) = flags;
 
 	return true;
@@ -4257,16 +4266,20 @@ PostgresMain(const char *dbname, const char *username)
 	 * Generate a random cancel key, if this is a backend serving a
 	 * connection. InitPostgres() will advertise it in shared memory.
 	 */
-	Assert(!MyCancelKeyValid);
+	Assert(MyCancelKeyLength == 0);
 	if (whereToSendOutput == DestRemote)
 	{
-		if (!pg_strong_random(&MyCancelKey, sizeof(int32)))
+		int			len;
+
+		len = (MyProcPort == NULL || MyProcPort->proto >= PG_PROTOCOL(3, 2))
+			? MAX_CANCEL_KEY_LENGTH : 4;
+		if (!pg_strong_random(&MyCancelKey, len))
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("could not generate random cancel key")));
 		}
-		MyCancelKeyValid = true;
+		MyCancelKeyLength = len;
 	}
 
 	/*
@@ -4321,10 +4334,11 @@ PostgresMain(const char *dbname, const char *username)
 	{
 		StringInfoData buf;
 
-		Assert(MyCancelKeyValid);
+		Assert(MyCancelKeyLength > 0);
 		pq_beginmessage(&buf, PqMsg_BackendKeyData);
 		pq_sendint32(&buf, (int32) MyProcPid);
-		pq_sendint32(&buf, (int32) MyCancelKey);
+
+		pq_sendbytes(&buf, MyCancelKey, MyCancelKeyLength);
 		pq_endmessage(&buf);
 		/* Need not flush since ReadyForQuery will do it. */
 	}

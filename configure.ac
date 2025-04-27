@@ -975,6 +975,18 @@ AC_SUBST(with_readline)
 PGAC_ARG_BOOL(with, libedit-preferred, no,
               [prefer BSD Libedit over GNU Readline])
 
+#
+# liburing
+#
+AC_MSG_CHECKING([whether to build with liburing support])
+PGAC_ARG_BOOL(with, liburing, no, [build with io_uring support, for asynchronous I/O],
+              [AC_DEFINE([USE_LIBURING], 1, [Define to build with io_uring support. (--with-liburing)])])
+AC_MSG_RESULT([$with_liburing])
+AC_SUBST(with_liburing)
+
+if test "$with_liburing" = yes; then
+  PKG_CHECK_MODULES(LIBURING, liburing)
+fi
 
 #
 # UUID library
@@ -1040,6 +1052,20 @@ if test "$with_libcurl" = yes ; then
   fi
 fi
 
+
+#
+# libnuma
+#
+AC_MSG_CHECKING([whether to build with libnuma support])
+PGAC_ARG_BOOL(with, libnuma, no, [build with libnuma support],
+              [AC_DEFINE([USE_LIBNUMA], 1, [Define to build with NUMA support. (--with-libnuma)])])
+AC_MSG_RESULT([$with_libnuma])
+AC_SUBST(with_libnuma)
+
+if test "$with_libnuma" = yes ; then
+  AC_CHECK_LIB(numa,    numa_available, [], [AC_MSG_ERROR([library 'libnuma' is required for NUMA support])])
+  PKG_CHECK_MODULES(LIBNUMA, numa)
+fi
 
 #
 # XML
@@ -1370,7 +1396,7 @@ if test "$with_ssl" = openssl ; then
   # Function introduced in OpenSSL 1.0.2, not in LibreSSL.
   AC_CHECK_FUNCS([SSL_CTX_set_cert_cb])
   # Function introduced in OpenSSL 1.1.1, not in LibreSSL.
-  AC_CHECK_FUNCS([X509_get_signature_info SSL_CTX_set_num_tickets])
+  AC_CHECK_FUNCS([X509_get_signature_info SSL_CTX_set_num_tickets SSL_CTX_set_keylog_callback])
   AC_DEFINE([USE_OPENSSL], 1, [Define to 1 to build with OpenSSL support. (--with-ssl=openssl)])
 elif test "$with_ssl" != no ; then
   AC_MSG_ERROR([--with-ssl must specify openssl])
@@ -1752,6 +1778,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	getpeerucred
 	inet_pton
 	kqueue
+	localeconv_l
 	mbstowcs_l
 	memset_s
 	posix_fallocate
@@ -1759,7 +1786,6 @@ AC_CHECK_FUNCS(m4_normalize([
 	pthread_is_threaded_np
 	setproctitle
 	setproctitle_fast
-	strchrnul
 	strsignal
 	syncfs
 	sync_file_range
@@ -1793,12 +1819,13 @@ AC_CHECK_DECLS(posix_fadvise, [], [], [#include <fcntl.h>])
 ]) # fi
 
 AC_CHECK_DECLS(fdatasync, [], [], [#include <unistd.h>])
-AC_CHECK_DECLS([strlcat, strlcpy, strnlen, strsep])
+AC_CHECK_DECLS([strlcat, strlcpy, strnlen, strsep, timingsafe_bcmp])
 
 # We can't use AC_CHECK_FUNCS to detect these functions, because it
 # won't handle deployment target restrictions on macOS
 AC_CHECK_DECLS([preadv], [], [], [#include <sys/uio.h>])
 AC_CHECK_DECLS([pwritev], [], [], [#include <sys/uio.h>])
+AC_CHECK_DECLS([strchrnul], [], [], [#include <string.h>])
 
 # This is probably only present on macOS, but may as well check always
 AC_CHECK_DECLS(F_FULLFSYNC, [], [], [#include <fcntl.h>])
@@ -1813,6 +1840,7 @@ AC_REPLACE_FUNCS(m4_normalize([
 	strlcpy
 	strnlen
 	strsep
+	timingsafe_bcmp
 ]))
 
 AC_REPLACE_FUNCS(pthread_barrier_wait)
@@ -2057,6 +2085,15 @@ if test x"$host_cpu" = x"x86_64"; then
   fi
 fi
 
+# Check for SVE popcount intrinsics
+#
+if test x"$host_cpu" = x"aarch64"; then
+  PGAC_SVE_POPCNT_INTRINSICS()
+  if test x"$pgac_sve_popcnt_intrinsics" = x"yes"; then
+    AC_DEFINE(USE_SVE_POPCNT_WITH_RUNTIME_CHECK, 1, [Define to 1 to use SVE popcount instructions with a runtime check.])
+  fi
+fi
+
 # Check for Intel SSE 4.2 intrinsics to do CRC calculations.
 #
 PGAC_SSE42_CRC32_INTRINSICS()
@@ -2093,17 +2130,21 @@ AC_SUBST(CFLAGS_CRC)
 
 # Select CRC-32C implementation.
 #
-# If we are targeting a processor that has Intel SSE 4.2 instructions, we can
-# use the special CRC instructions for calculating CRC-32C. If we're not
-# targeting such a processor, but we can nevertheless produce code that uses
-# the SSE intrinsics, compile both implementations and select which one to use
-# at runtime, depending on whether SSE 4.2 is supported by the processor we're
-# running on.
+# There are three methods of calculating CRC, in order of increasing
+# performance:
 #
-# Similarly, if we are targeting an ARM processor that has the CRC
-# instructions that are part of the ARMv8 CRC Extension, use them. And if
-# we're not targeting such a processor, but can nevertheless produce code that
-# uses the CRC instructions, compile both, and select at runtime.
+# 1. The fallback using a lookup table, called slicing-by-8
+# 2. CRC-32C instructions (found in e.g. Intel SSE 4.2 and ARMv8 CRC Extension)
+# 3. Algorithms using carryless multiplication instructions
+#    (e.g. Intel PCLMUL and Arm PMULL)
+#
+# If we can produce code (via function attributes or additional compiler
+# flags) that uses #2 (and possibly #3), we compile all implementations
+# and select which one to use at runtime, depending on what is supported
+# by the processor we're running on.
+#
+# If we are targeting a processor that has #2, we can use that without
+# runtime selection.
 #
 # Note that we do not use __attribute__((target("..."))) for the ARM CRC
 # instructions because until clang 16, using the ARM intrinsics still requires
@@ -2151,7 +2192,7 @@ fi
 AC_MSG_CHECKING([which CRC-32C implementation to use])
 if test x"$USE_SSE42_CRC32C" = x"1"; then
   AC_DEFINE(USE_SSE42_CRC32C, 1, [Define to 1 use Intel SSE 4.2 CRC instructions.])
-  PG_CRC32C_OBJS="pg_crc32c_sse42.o"
+  PG_CRC32C_OBJS="pg_crc32c_sse42.o pg_crc32c_sse42_choose.o"
   AC_MSG_RESULT(SSE 4.2)
 else
   if test x"$USE_SSE42_CRC32C_WITH_RUNTIME_CHECK" = x"1"; then
@@ -2184,6 +2225,19 @@ else
 fi
 AC_SUBST(PG_CRC32C_OBJS)
 
+# Check for carryless multiplication intrinsics to do vectorized CRC calculations.
+#
+if test x"$host_cpu" = x"x86_64"; then
+  PGAC_AVX512_PCLMUL_INTRINSICS()
+fi
+
+AC_MSG_CHECKING([for vectorized CRC-32C])
+if test x"$pgac_avx512_pclmul_intrinsics" = x"yes"; then
+  AC_DEFINE(USE_AVX512_CRC32C_WITH_RUNTIME_CHECK, 1, [Define to 1 to use AVX-512 CRC algorithms with a runtime check.])
+  AC_MSG_RESULT(AVX-512 with runtime check)
+else
+  AC_MSG_RESULT(none)
+fi
 
 # Select semaphore implementation type.
 if test "$PORTNAME" != "win32"; then

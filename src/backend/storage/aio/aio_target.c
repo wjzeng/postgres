@@ -16,6 +16,7 @@
 
 #include "storage/aio.h"
 #include "storage/aio_internal.h"
+#include "storage/smgr.h"
 
 
 /*
@@ -25,6 +26,7 @@ static const PgAioTargetInfo *pgaio_target_info[] = {
 	[PGAIO_TID_INVALID] = &(PgAioTargetInfo) {
 		.name = "invalid",
 	},
+	[PGAIO_TID_SMGR] = &aio_smgr_target_info,
 };
 
 
@@ -47,7 +49,8 @@ pgaio_io_has_target(PgAioHandle *ioh)
 const char *
 pgaio_io_get_target_name(PgAioHandle *ioh)
 {
-	Assert(ioh->target >= 0 && ioh->target < PGAIO_TID_COUNT);
+	/* explicitly allow INVALID here, function used by debug messages */
+	Assert(ioh->target >= PGAIO_TID_INVALID && ioh->target < PGAIO_TID_COUNT);
 
 	return pgaio_target_info[ioh->target]->name;
 }
@@ -55,7 +58,7 @@ pgaio_io_get_target_name(PgAioHandle *ioh)
 /*
  * Assign a target to the IO.
  *
- * This has to be called exactly once before pgaio_io_prep_*() is called.
+ * This has to be called exactly once before pgaio_io_start_*() is called.
  */
 void
 pgaio_io_set_target(PgAioHandle *ioh, PgAioTargetID targetid)
@@ -80,6 +83,9 @@ pgaio_io_get_target_data(PgAioHandle *ioh)
 char *
 pgaio_io_get_target_description(PgAioHandle *ioh)
 {
+	/* disallow INVALID, there wouldn't be a description */
+	Assert(ioh->target > PGAIO_TID_INVALID && ioh->target < PGAIO_TID_COUNT);
+
 	return pgaio_target_info[ioh->target]->describe_identity(&ioh->target_data);
 }
 
@@ -96,19 +102,21 @@ pgaio_io_get_target_description(PgAioHandle *ioh)
 bool
 pgaio_io_can_reopen(PgAioHandle *ioh)
 {
+	Assert(ioh->target > PGAIO_TID_INVALID && ioh->target < PGAIO_TID_COUNT);
+
 	return pgaio_target_info[ioh->target]->reopen != NULL;
 }
 
 /*
  * Internal: Before executing an IO outside of the context of the process the
- * IO has been prepared in, the file descriptor has to be reopened - any FD
+ * IO has been staged in, the file descriptor has to be reopened - any FD
  * referenced in the IO itself, won't be valid in the separate process.
  */
 void
 pgaio_io_reopen(PgAioHandle *ioh)
 {
-	Assert(ioh->target >= 0 && ioh->target < PGAIO_TID_COUNT);
-	Assert(ioh->op >= 0 && ioh->op < PGAIO_OP_COUNT);
+	Assert(ioh->target > PGAIO_TID_INVALID && ioh->target < PGAIO_TID_COUNT);
+	Assert(ioh->op > PGAIO_OP_INVALID && ioh->op < PGAIO_OP_COUNT);
 
 	pgaio_target_info[ioh->target]->reopen(ioh);
 }

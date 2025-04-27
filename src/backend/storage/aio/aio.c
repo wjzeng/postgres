@@ -24,6 +24,8 @@
  *
  * - read_stream.c - helper for reading buffered relation data
  *
+ * - README.md - higher-level overview over AIO
+ *
  *
  * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -65,6 +67,9 @@ static void pgaio_io_wait(PgAioHandle *ioh, uint64 ref_generation);
 const struct config_enum_entry io_method_options[] = {
 	{"sync", IOMETHOD_SYNC, false},
 	{"worker", IOMETHOD_WORKER, false},
+#ifdef IOMETHOD_IO_URING_ENABLED
+	{"io_uring", IOMETHOD_IO_URING, false},
+#endif
 	{NULL, 0, false}
 };
 
@@ -82,6 +87,9 @@ PgAioBackend *pgaio_my_backend;
 static const IoMethodOps *const pgaio_method_ops_table[] = {
 	[IOMETHOD_SYNC] = &pgaio_sync_ops,
 	[IOMETHOD_WORKER] = &pgaio_worker_ops,
+#ifdef IOMETHOD_IO_URING_ENABLED
+	[IOMETHOD_IO_URING] = &pgaio_uring_ops,
+#endif
 };
 
 /* callbacks for the configured io_method, set by assign_io_method */
@@ -127,25 +135,25 @@ static PgAioHandle *pgaio_inj_cur_handle;
  * To react to the completion of the IO as soon as it is known to have
  * completed, callbacks can be registered with pgaio_io_register_callbacks().
  *
- * To actually execute IO using the returned handle, the pgaio_io_prep_*()
- * family of functions is used. In many cases the pgaio_io_prep_*() call will
+ * To actually execute IO using the returned handle, the pgaio_io_start_*()
+ * family of functions is used. In many cases the pgaio_io_start_*() call will
  * not be done directly by code that acquired the handle, but by lower level
  * code that gets passed the handle. E.g. if code in bufmgr.c wants to perform
  * AIO, it typically will pass the handle to smgr.c, which will pass it on to
- * md.c, on to fd.c, which then finally calls pgaio_io_prep_*().  This
+ * md.c, on to fd.c, which then finally calls pgaio_io_start_*().  This
  * forwarding allows the various layers to react to the IO's completion by
  * registering callbacks. These callbacks in turn can translate a lower
  * layer's result into a result understandable by a higher layer.
  *
- * During pgaio_io_prep_*() the IO is staged (i.e. prepared for execution but
+ * During pgaio_io_start_*() the IO is staged (i.e. prepared for execution but
  * not submitted to the kernel). Unless in batchmode
  * (c.f. pgaio_enter_batchmode()), the IO will also get submitted for
  * execution. Note that, whether in batchmode or not, the IO might even
  * complete before the functions return.
  *
- * After pgaio_io_prep_*() the AioHandle is "consumed" and may not be
+ * After pgaio_io_start_*() the AioHandle is "consumed" and may not be
  * referenced by the IO issuing code. To e.g. wait for IO, references to the
- * IO can be established with pgaio_io_get_wref() *before* pgaio_io_prep_*()
+ * IO can be established with pgaio_io_get_wref() *before* pgaio_io_start_*()
  * is called.  pgaio_wref_wait() can be used to wait for the IO to complete.
  *
  *
@@ -391,7 +399,7 @@ pgaio_io_resowner_register(PgAioHandle *ioh)
 /*
  * Stage IO for execution and, if appropriate, submit it immediately.
  *
- * Should only be called from pgaio_io_prep_*().
+ * Should only be called from pgaio_io_start_*().
  */
 void
 pgaio_io_stage(PgAioHandle *ioh, PgAioOp op)
@@ -421,7 +429,7 @@ pgaio_io_stage(PgAioHandle *ioh, PgAioOp op)
 	needs_synchronous = pgaio_io_needs_synchronous_execution(ioh);
 
 	pgaio_debug_io(DEBUG3, ioh,
-				   "prepared (synchronous: %d, in_batch: %d)",
+				   "staged (synchronous: %d, in_batch: %d)",
 				   needs_synchronous, pgaio_my_backend->in_batchmode);
 
 	if (!needs_synchronous)
@@ -499,7 +507,7 @@ pgaio_io_process_completion(PgAioHandle *ioh, int result)
 
 	pgaio_io_update_state(ioh, PGAIO_HS_COMPLETED_IO);
 
-	pgaio_io_call_inj(ioh, "AIO_PROCESS_COMPLETION_BEFORE_SHARED");
+	pgaio_io_call_inj(ioh, "aio-process-completion-before-shared");
 
 	pgaio_io_call_complete_shared(ioh);
 
@@ -626,13 +634,21 @@ pgaio_io_reclaim(PgAioHandle *ioh)
 
 	/*
 	 * It's a bit ugly, but right now the easiest place to put the execution
-	 * of shared completion callbacks is this function, as we need to execute
+	 * of local completion callbacks is this function, as we need to execute
 	 * local callbacks just before reclaiming at multiple callsites.
 	 */
 	if (ioh->state == PGAIO_HS_COMPLETED_SHARED)
 	{
-		pgaio_io_call_complete_local(ioh);
+		PgAioResult local_result;
+
+		local_result = pgaio_io_call_complete_local(ioh);
 		pgaio_io_update_state(ioh, PGAIO_HS_COMPLETED_LOCAL);
+
+		if (ioh->report_return)
+		{
+			ioh->report_return->result = local_result;
+			ioh->report_return->target_data = ioh->target_data;
+		}
 	}
 
 	pgaio_debug_io(DEBUG4, ioh,
@@ -642,17 +658,9 @@ pgaio_io_reclaim(PgAioHandle *ioh)
 				   ioh->distilled_result.error_data,
 				   ioh->result);
 
-	/* if the IO has been defined, we might need to do more work */
+	/* if the IO has been defined, it's on the in-flight list, remove */
 	if (ioh->state != PGAIO_HS_HANDED_OUT)
-	{
 		dclist_delete_from(&pgaio_my_backend->in_flight_ios, &ioh->node);
-
-		if (ioh->report_return)
-		{
-			ioh->report_return->result = ioh->distilled_result;
-			ioh->report_return->target_data = ioh->target_data;
-		}
-	}
 
 	if (ioh->resowner)
 	{
@@ -662,6 +670,21 @@ pgaio_io_reclaim(PgAioHandle *ioh)
 
 	Assert(!ioh->resowner);
 
+	/*
+	 * Update generation & state first, before resetting the IO's fields,
+	 * otherwise a concurrent "viewer" could think the fields are valid, even
+	 * though they are being reset.  Increment the generation first, so that
+	 * we can assert elsewhere that we never wait for an IDLE IO.  While it's
+	 * a bit weird for the state to go backwards for a generation, it's OK
+	 * here, as there cannot be references to the "reborn" IO yet.  Can't
+	 * update both at once, so something has to give.
+	 */
+	ioh->generation++;
+	pgaio_io_update_state(ioh, PGAIO_HS_IDLE);
+
+	/* ensure the state update is visible before we reset fields */
+	pg_write_barrier();
+
 	ioh->op = PGAIO_OP_INVALID;
 	ioh->target = PGAIO_TID_INVALID;
 	ioh->flags = 0;
@@ -670,12 +693,6 @@ pgaio_io_reclaim(PgAioHandle *ioh)
 	ioh->report_return = NULL;
 	ioh->result = 0;
 	ioh->distilled_result.status = PGAIO_RS_UNKNOWN;
-
-	/* XXX: the barrier is probably superfluous */
-	pg_write_barrier();
-	ioh->generation++;
-
-	pgaio_io_update_state(ioh, PGAIO_HS_IDLE);
 
 	/*
 	 * We push the IO to the head of the idle IO list, that seems more cache
@@ -694,8 +711,10 @@ pgaio_io_wait_for_free(void)
 {
 	int			reclaimed = 0;
 
-	pgaio_debug(DEBUG2, "waiting for self with %d pending",
-				pgaio_my_backend->num_staged_ios);
+	pgaio_debug(DEBUG2, "waiting for free IO with %d pending, %d in-flight, %d idle IOs",
+				pgaio_my_backend->num_staged_ios,
+				dclist_count(&pgaio_my_backend->in_flight_ios),
+				dclist_is_empty(&pgaio_my_backend->idle_ios));
 
 	/*
 	 * First check if any of our IOs actually have completed - when using
@@ -726,7 +745,12 @@ pgaio_io_wait_for_free(void)
 		pgaio_submit_staged();
 
 	if (dclist_count(&pgaio_my_backend->in_flight_ios) == 0)
-		elog(ERROR, "no free IOs despite no in-flight IOs");
+		ereport(ERROR,
+				errmsg_internal("no free IOs despite no in-flight IOs"),
+				errdetail_internal("%d pending, %d in-flight, %d idle IOs",
+								   pgaio_my_backend->num_staged_ios,
+								   dclist_count(&pgaio_my_backend->in_flight_ios),
+								   dclist_is_empty(&pgaio_my_backend->idle_ios)));
 
 	/*
 	 * Wait for the oldest in-flight IO to complete.
@@ -833,6 +857,8 @@ pgaio_result_status_string(PgAioResultStatus rs)
 			return "UNKNOWN";
 		case PGAIO_RS_OK:
 			return "OK";
+		case PGAIO_RS_WARNING:
+			return "WARNING";
 		case PGAIO_RS_PARTIAL:
 			return "PARTIAL";
 		case PGAIO_RS_ERROR:
@@ -1117,7 +1143,52 @@ pgaio_closing_fd(int fd)
 	 * For now just submit all staged IOs - we could be more selective, but
 	 * it's probably not worth it.
 	 */
-	pgaio_submit_staged();
+	if (pgaio_my_backend->num_staged_ios > 0)
+	{
+		pgaio_debug(DEBUG2,
+					"submitting %d IOs before FD %d gets closed",
+					pgaio_my_backend->num_staged_ios, fd);
+		pgaio_submit_staged();
+	}
+
+	/*
+	 * If requested by the IO method, wait for all IOs that use the
+	 * to-be-closed FD.
+	 */
+	if (pgaio_method_ops->wait_on_fd_before_close)
+	{
+		/*
+		 * As waiting for one IO to complete may complete multiple IOs, we
+		 * can't just use a mutable list iterator. The maximum number of
+		 * in-flight IOs is fairly small, so just restart the loop after
+		 * waiting for an IO.
+		 */
+		while (!dclist_is_empty(&pgaio_my_backend->in_flight_ios))
+		{
+			dlist_iter	iter;
+			PgAioHandle *ioh = NULL;
+
+			dclist_foreach(iter, &pgaio_my_backend->in_flight_ios)
+			{
+				ioh = dclist_container(PgAioHandle, node, iter.cur);
+
+				if (pgaio_io_uses_fd(ioh, fd))
+					break;
+				else
+					ioh = NULL;
+			}
+
+			if (!ioh)
+				break;
+
+			pgaio_debug_io(DEBUG2, ioh,
+						   "waiting for IO before FD %d gets closed, %d in-flight IOs",
+						   fd, dclist_count(&pgaio_my_backend->in_flight_ios));
+
+			/* see comment in pgaio_io_wait_for_free() about raciness */
+			pgaio_io_wait(ioh, ioh->generation);
+		}
+	}
 }
 
 /*
@@ -1144,6 +1215,10 @@ pgaio_shutdown(int code, Datum arg)
 	while (!dclist_is_empty(&pgaio_my_backend->in_flight_ios))
 	{
 		PgAioHandle *ioh = dclist_head_element(PgAioHandle, node, &pgaio_my_backend->in_flight_ios);
+
+		pgaio_debug_io(DEBUG2, ioh,
+					   "waiting for IO to complete during shutdown, %d in-flight IOs",
+					   dclist_count(&pgaio_my_backend->in_flight_ios));
 
 		/* see comment in pgaio_io_wait_for_free() about raciness */
 		pgaio_io_wait(ioh, ioh->generation);

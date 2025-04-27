@@ -2347,6 +2347,44 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc_file_copy_method" xreflabel="file_copy_method">
+      <term><varname>file_copy_method</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>file_copy_method</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the method used to copy files.
+        Possible values are <literal>COPY</literal> (default) and
+        <literal>CLONE</literal> (if operating support is available).
+       </para>
+
+       <para>
+       This parameter affects:
+       </para>
+       <itemizedlist>
+        <listitem>
+        <para>
+         <literal><command>CREATE DATABASE ... STRATEGY=FILE_COPY</command></literal>
+        </para>
+        </listitem>
+        <listitem>
+        <para>
+         <command>ALTER DATABASE ... SET TABLESPACE ...</command>
+        </para>
+        </listitem>
+       </itemizedlist>
+
+       <para>
+        <literal>CLONE</literal> uses the <function>copy_file_range()</function>
+        (Linux, FreeBSD) or <function>copyfile</function>
+        (macOS) system calls, giving the kernel the opportunity to share disk
+        blocks or push work down to lower layers on some file systems.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-max-notify-queue-pages" xreflabel="max_notify_queue_pages">
       <term><varname>max_notify_queue_pages</varname> (<type>integer</type>)
       <indexterm>
@@ -2585,8 +2623,7 @@ include_dir 'conf.d'
          session attempts to initiate in parallel.  The allowed range is
          <literal>1</literal> to <literal>1000</literal>, or
          <literal>0</literal> to disable issuance of asynchronous I/O requests.
-         The default is <literal>16</literal> on supported systems, otherwise
-         <literal>0</literal>.
+         The default is <literal>16</literal>.
         </para>
 
         <para>
@@ -2597,8 +2634,9 @@ include_dir 'conf.d'
         </para>
 
         <para>
-         On systems without prefetch advice support, attempting to configure
-         any value other than <literal>0</literal> will error out.
+         On systems with prefetch advice support,
+         <varname>effective_io_concurrency</varname> also controls the
+         prefetch distance.
         </para>
 
         <para>
@@ -2621,10 +2659,10 @@ include_dir 'conf.d'
          for maintenance work that is done on behalf of many client sessions.
         </para>
         <para>
-         The default is <literal>16</literal> on supported systems, otherwise
-         <literal>0</literal>.  This value can be overridden for tables in a
-         particular tablespace by setting the tablespace parameter of the same
-         name (see <xref linkend="sql-altertablespace"/>).
+         The default is <literal>16</literal>.  This value can be overridden
+         for tables in a particular tablespace by setting the tablespace
+         parameter of the same name (see <xref
+         linkend="sql-altertablespace"/>).
         </para>
        </listitem>
       </varlistentry>
@@ -2708,6 +2746,14 @@ include_dir 'conf.d'
           <listitem>
            <para>
             <literal>worker</literal> (execute asynchronous I/O using worker processes)
+           </para>
+          </listitem>
+          <listitem>
+           <para>
+            <literal>io_uring</literal> (execute asynchronous I/O using
+            io_uring, requires a build with
+            <link linkend="configure-option-with-liburing"><option>--with-liburing</option></link> /
+            <link linkend="configure-with-liburing-meson"><option>-Dliburing</option></link>)
            </para>
           </listitem>
           <listitem>
@@ -4465,7 +4511,6 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
        <term><varname>max_replication_slots</varname> (<type>integer</type>)
        <indexterm>
         <primary><varname>max_replication_slots</varname> configuration parameter</primary>
-        <secondary>in a sending server</secondary>
        </indexterm>
        </term>
        <listitem>
@@ -5060,6 +5105,13 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         until it eventually reaches the primary.  Standbys make no other use
         of feedback they receive other than to pass upstream.
        </para>
+       <para>
+        Note that if the clock on standby is moved ahead or backward, the
+        feedback message might not be sent at the required interval.  In
+        extreme cases, this can lead to a prolonged risk of not removing dead
+        rows on the primary for extended periods, as the feedback mechanism is
+        based on timestamps.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -5229,7 +5281,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       <term><varname>max_active_replication_origins</varname> (<type>integer</type>)
        <indexterm>
         <primary><varname>max_active_replication_origins</varname> configuration parameter</primary>
-        <secondary>in a subscriber</secondary>
        </indexterm>
       </term>
       <listitem>
@@ -7675,6 +7726,12 @@ local0.*    /var/log/postgresql
              <entry>yes</entry>
             </row>
             <row>
+             <entry><literal>%L</literal></entry>
+             <entry>Local address (the IP address on the server that the
+             client connected to)</entry>
+             <entry>yes</entry>
+            </row>
+            <row>
              <entry><literal>%b</literal></entry>
              <entry>Backend type</entry>
              <entry>no</entry>
@@ -8560,7 +8617,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </term>
       <listitem>
        <para>
-        Enables timing of database I/O calls.  This parameter is off by
+        Enables timing of database I/O waits.  This parameter is off by
         default, as it will repeatedly query the operating system for
         the current time, which may cause significant overhead on some
         platforms.  You can use the <xref linkend="pgtesttiming"/> tool to
@@ -8594,7 +8651,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </term>
       <listitem>
        <para>
-        Enables timing of WAL I/O calls. This parameter is off by default,
+        Enables timing of WAL I/O waits. This parameter is off by default,
         as it will repeatedly query the operating system for the current time,
         which may cause significant overhead on some platforms.
         You can use the <application>pg_test_timing</application> tool to
@@ -8715,36 +8772,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
          throw an error if a query identifier has already been computed.
         </para>
        </note>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-query-id-squash-values" xreflabel="query_id_squash_values">
-      <term><varname>query_id_squash_values</varname> (<type>bool</type>)
-      <indexterm>
-       <primary><varname>query_id_squash_values</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Specifies how a list of constants (e.g., for an <literal>IN</literal>
-        clause) contributes to the query identifier computation.
-        Normally, every element of such a list contributes to the query
-        identifier separately, which means that two queries that only differ
-        in the number of elements in such a list would get different query
-        identifiers.
-        If this parameter is on, a list of constants will not contribute
-        to the query identifier. This means that two queries whose only
-        difference is the number of constants in such a list are going to get the
-        same query identifier.
-       </para>
-       <para>
-        Only constants are affected; bind parameters do not benefit from this
-        functionality. The default value is <literal>off</literal>.
-       </para>
-       <para>
-        This parameter also affects how <xref linkend="pgstatstatements"/>
-        generates normalized query texts.
-       </para>
       </listitem>
      </varlistentry>
 
@@ -9528,8 +9555,8 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        </para>
 
        <para>
-        Note that when eager scanning is enabled, successful page freezes do
-        not count against the cap on eager freeze failures. Successful page
+        Note that when eager scanning is enabled, only freeze failures
+        count against the cap, not successful freezing. Successful page
         freezes are capped internally at 20% of the all-visible but not
         all-frozen pages in the relation. Capping successful page freezes helps
         amortize the overhead across multiple normal vacuums and limits the

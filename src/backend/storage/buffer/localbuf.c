@@ -18,10 +18,12 @@
 #include "access/parallel.h"
 #include "executor/instrument.h"
 #include "pgstat.h"
+#include "storage/aio.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "utils/guc_hooks.h"
+#include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
@@ -56,7 +58,6 @@ static int	NLocalPinnedBuffers = 0;
 static void InitLocalBuffers(void);
 static Block GetLocalBufferStorage(void);
 static Buffer GetLocalVictimBuffer(void);
-static void InvalidateLocalBuffer(BufferDesc *bufHdr, bool check_unreferenced);
 
 
 /*
@@ -183,11 +184,13 @@ FlushLocalBuffer(BufferDesc *bufHdr, SMgrRelation reln)
 	instr_time	io_start;
 	Page		localpage = (char *) LocalBufHdrGetBlock(bufHdr);
 
+	Assert(LocalRefCount[-BufferDescriptorGetBuffer(bufHdr) - 1] > 0);
+
 	/*
 	 * Try to start an I/O operation.  There currently are no reasons for
 	 * StartLocalBufferIO to return false, so we raise an error in that case.
 	 */
-	if (!StartLocalBufferIO(bufHdr, false))
+	if (!StartLocalBufferIO(bufHdr, false, false))
 		elog(ERROR, "failed to start write IO on local buffer");
 
 	/* Find smgr relation for buffer */
@@ -211,7 +214,7 @@ FlushLocalBuffer(BufferDesc *bufHdr, SMgrRelation reln)
 							IOOP_WRITE, io_start, 1, BLCKSZ);
 
 	/* Mark not-dirty */
-	TerminateLocalBufferIO(bufHdr, true, 0);
+	TerminateLocalBufferIO(bufHdr, true, 0, false);
 
 	pgBufferUsage.local_blks_written++;
 }
@@ -248,6 +251,13 @@ GetLocalVictimBuffer(void)
 				buf_state -= BUF_USAGECOUNT_ONE;
 				pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
 				trycounter = NLocBuffer;
+			}
+			else if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
+			{
+				/*
+				 * This can be reached if the backend initiated AIO for this
+				 * buffer and then errored out.
+				 */
 			}
 			else
 			{
@@ -423,7 +433,7 @@ ExtendBufferedRelLocal(BufferManagerRelation bmr,
 			pg_atomic_unlocked_write_u32(&existing_hdr->state, buf_state);
 
 			/* no need to loop for local buffers */
-			StartLocalBufferIO(existing_hdr, true);
+			StartLocalBufferIO(existing_hdr, true, false);
 		}
 		else
 		{
@@ -439,7 +449,7 @@ ExtendBufferedRelLocal(BufferManagerRelation bmr,
 
 			hresult->id = victim_buf_id;
 
-			StartLocalBufferIO(victim_buf_hdr, true);
+			StartLocalBufferIO(victim_buf_hdr, true, false);
 		}
 	}
 
@@ -508,13 +518,31 @@ MarkLocalBufferDirty(Buffer buffer)
  * Like StartBufferIO, but for local buffers
  */
 bool
-StartLocalBufferIO(BufferDesc *bufHdr, bool forInput)
+StartLocalBufferIO(BufferDesc *bufHdr, bool forInput, bool nowait)
 {
-	uint32		buf_state = pg_atomic_read_u32(&bufHdr->state);
+	uint32		buf_state;
 
+	/*
+	 * With AIO the buffer could have IO in progress, e.g. when there are two
+	 * scans of the same relation. Either wait for the other IO or return
+	 * false.
+	 */
+	if (pgaio_wref_valid(&bufHdr->io_wref))
+	{
+		PgAioWaitRef iow = bufHdr->io_wref;
+
+		if (nowait)
+			return false;
+
+		pgaio_wref_wait(&iow);
+	}
+
+	/* Once we get here, there is definitely no I/O active on this buffer */
+
+	/* Check if someone else already did the I/O */
+	buf_state = pg_atomic_read_u32(&bufHdr->state);
 	if (forInput ? (buf_state & BM_VALID) : !(buf_state & BM_DIRTY))
 	{
-		/* someone else already did the I/O */
 		return false;
 	}
 
@@ -529,7 +557,8 @@ StartLocalBufferIO(BufferDesc *bufHdr, bool forInput)
  * Like TerminateBufferIO, but for local buffers
  */
 void
-TerminateLocalBufferIO(BufferDesc *bufHdr, bool clear_dirty, uint32 set_flag_bits)
+TerminateLocalBufferIO(BufferDesc *bufHdr, bool clear_dirty, uint32 set_flag_bits,
+					   bool release_aio)
 {
 	/* Only need to adjust flags */
 	uint32		buf_state = pg_atomic_read_u32(&bufHdr->state);
@@ -542,12 +571,22 @@ TerminateLocalBufferIO(BufferDesc *bufHdr, bool clear_dirty, uint32 set_flag_bit
 	if (clear_dirty)
 		buf_state &= ~BM_DIRTY;
 
+	if (release_aio)
+	{
+		/* release pin held by IO subsystem, see also buffer_stage_common() */
+		Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
+		buf_state -= BUF_REFCOUNT_ONE;
+		pgaio_wref_clear(&bufHdr->io_wref);
+	}
+
 	buf_state |= set_flag_bits;
 	pg_atomic_unlocked_write_u32(&bufHdr->state, buf_state);
 
 	/* local buffers don't track IO using resowners */
 
 	/* local buffers don't use the IO CV, as no other process can see buffer */
+
+	/* local buffers don't use BM_PIN_COUNT_WAITER, so no need to wake */
 }
 
 /*
@@ -560,7 +599,7 @@ TerminateLocalBufferIO(BufferDesc *bufHdr, bool clear_dirty, uint32 set_flag_bit
  *
  * See also InvalidateBuffer().
  */
-static void
+void
 InvalidateLocalBuffer(BufferDesc *bufHdr, bool check_unreferenced)
 {
 	Buffer		buffer = BufferDescriptorGetBuffer(bufHdr);
@@ -568,9 +607,28 @@ InvalidateLocalBuffer(BufferDesc *bufHdr, bool check_unreferenced)
 	uint32		buf_state;
 	LocalBufferLookupEnt *hresult;
 
+	/*
+	 * It's possible that we started IO on this buffer before e.g. aborting
+	 * the transaction that created a table. We need to wait for that IO to
+	 * complete before removing / reusing the buffer.
+	 */
+	if (pgaio_wref_valid(&bufHdr->io_wref))
+	{
+		PgAioWaitRef iow = bufHdr->io_wref;
+
+		pgaio_wref_wait(&iow);
+		Assert(!pgaio_wref_valid(&bufHdr->io_wref));
+	}
+
 	buf_state = pg_atomic_read_u32(&bufHdr->state);
 
-	if (check_unreferenced && LocalRefCount[bufid] != 0)
+	/*
+	 * We need to test not just LocalRefCount[bufid] but also the BufferDesc
+	 * itself, as the latter is used to represent a pin by the AIO subsystem.
+	 * This can happen if AIO is initiated and then the query errors out.
+	 */
+	if (check_unreferenced &&
+		(LocalRefCount[bufid] != 0 || BUF_STATE_GET_REFCOUNT(buf_state) != 0))
 		elog(ERROR, "block %u of %s is still referenced (local %u)",
 			 bufHdr->tag.blockNum,
 			 relpathbackend(BufTagGetRelFileLocator(&bufHdr->tag),
@@ -701,6 +759,8 @@ InitLocalBuffers(void)
 		 */
 		buf->buf_id = -i - 2;
 
+		pgaio_wref_clear(&buf->io_wref);
+
 		/*
 		 * Intentionally do not initialize the buffer's atomic variable
 		 * (besides zeroing the underlying memory above). That way we get
@@ -744,12 +804,22 @@ PinLocalBuffer(BufferDesc *buf_hdr, bool adjust_usagecount)
 	if (LocalRefCount[bufid] == 0)
 	{
 		NLocalPinnedBuffers++;
+		buf_state += BUF_REFCOUNT_ONE;
 		if (adjust_usagecount &&
 			BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
 		{
 			buf_state += BUF_USAGECOUNT_ONE;
-			pg_atomic_unlocked_write_u32(&buf_hdr->state, buf_state);
 		}
+		pg_atomic_unlocked_write_u32(&buf_hdr->state, buf_state);
+
+		/*
+		 * See comment in PinBuffer().
+		 *
+		 * If the buffer isn't allocated yet, it'll be marked as defined in
+		 * GetLocalBufferStorage().
+		 */
+		if (LocalBufHdrGetBlock(buf_hdr) != NULL)
+			VALGRIND_MAKE_MEM_DEFINED(LocalBufHdrGetBlock(buf_hdr), BLCKSZ);
 	}
 	LocalRefCount[bufid]++;
 	ResourceOwnerRememberBuffer(CurrentResourceOwner,
@@ -775,7 +845,20 @@ UnpinLocalBufferNoOwner(Buffer buffer)
 	Assert(NLocalPinnedBuffers > 0);
 
 	if (--LocalRefCount[buffid] == 0)
+	{
+		BufferDesc *buf_hdr = GetLocalBufferDescriptor(buffid);
+		uint32		buf_state;
+
 		NLocalPinnedBuffers--;
+
+		buf_state = pg_atomic_read_u32(&buf_hdr->state);
+		Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
+		buf_state -= BUF_REFCOUNT_ONE;
+		pg_atomic_unlocked_write_u32(&buf_hdr->state, buf_state);
+
+		/* see comment in UnpinBufferNoOwner */
+		VALGRIND_MAKE_MEM_NOACCESS(LocalBufHdrGetBlock(buf_hdr), BLCKSZ);
+	}
 }
 
 /*
@@ -854,6 +937,16 @@ GetLocalBufferStorage(void)
 	this_buf = cur_block + next_buf_in_block * BLCKSZ;
 	next_buf_in_block++;
 	total_bufs_allocated++;
+
+	/*
+	 * Caller's PinLocalBuffer() was too early for Valgrind updates, so do it
+	 * here.  The block is actually undefined, but we want consistency with
+	 * the regular case of not needing to allocate memory.  This is
+	 * specifically needed when method_io_uring.c fills the block, because
+	 * Valgrind doesn't recognize io_uring reads causing undefined memory to
+	 * become defined.
+	 */
+	VALGRIND_MAKE_MEM_DEFINED(this_buf, BLCKSZ);
 
 	return (Block) this_buf;
 }

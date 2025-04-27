@@ -61,7 +61,7 @@ PageInit(Page page, Size pageSize, Size specialSize)
 
 
 /*
- * PageIsVerifiedExtended
+ * PageIsVerified
  *		Check that the page header and checksum (if any) appear valid.
  *
  * This is called when a page has just been read in from disk.  The idea is
@@ -78,20 +78,29 @@ PageInit(Page page, Size pageSize, Size specialSize)
  * treat such a page as empty and without free space.  Eventually, VACUUM
  * will clean up such a page and make it usable.
  *
- * If flag PIV_LOG_WARNING is set, a WARNING is logged in the event of
- * a checksum failure.
+ * If flag PIV_LOG_WARNING/PIV_LOG_LOG is set, a WARNING/LOG message is logged
+ * in the event of a checksum failure.
  *
- * If flag PIV_REPORT_STAT is set, a checksum failure is reported directly
- * to pgstat.
+ * If flag PIV_IGNORE_CHECKSUM_FAILURE is set, checksum failures will cause a
+ * message about the failure to be emitted, but will not cause
+ * PageIsVerified() to return false.
+ *
+ * To allow the caller to report statistics about checksum failures,
+ * *checksum_failure_p can be passed in. Note that there may be checksum
+ * failures even if this function returns true, due to
+ * PIV_IGNORE_CHECKSUM_FAILURE.
  */
 bool
-PageIsVerifiedExtended(PageData *page, BlockNumber blkno, int flags)
+PageIsVerified(PageData *page, BlockNumber blkno, int flags, bool *checksum_failure_p)
 {
 	const PageHeaderData *p = (const PageHeaderData *) page;
 	size_t	   *pagebytes;
 	bool		checksum_failure = false;
 	bool		header_sane = false;
 	uint16		checksum = 0;
+
+	if (checksum_failure_p)
+		*checksum_failure_p = false;
 
 	/*
 	 * Don't verify page data unless the page passes basic non-zero test
@@ -103,7 +112,11 @@ PageIsVerifiedExtended(PageData *page, BlockNumber blkno, int flags)
 			checksum = pg_checksum_page(page, blkno);
 
 			if (checksum != p->pd_checksum)
+			{
 				checksum_failure = true;
+				if (checksum_failure_p)
+					*checksum_failure_p = true;
+			}
 		}
 
 		/*
@@ -130,21 +143,18 @@ PageIsVerifiedExtended(PageData *page, BlockNumber blkno, int flags)
 		return true;
 
 	/*
-	 * Throw a WARNING if the checksum fails, but only after we've checked for
-	 * the all-zeroes case.
+	 * Throw a WARNING/LOG, as instructed by PIV_LOG_*, if the checksum fails,
+	 * but only after we've checked for the all-zeroes case.
 	 */
 	if (checksum_failure)
 	{
-		if ((flags & PIV_LOG_WARNING) != 0)
-			ereport(WARNING,
+		if ((flags & (PIV_LOG_WARNING | PIV_LOG_LOG)) != 0)
+			ereport(flags & PIV_LOG_WARNING ? WARNING : LOG,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("page verification failed, calculated checksum %u but expected %u",
 							checksum, p->pd_checksum)));
 
-		if ((flags & PIV_REPORT_STAT) != 0)
-			pgstat_report_checksum_failure();
-
-		if (header_sane && ignore_checksum_failure)
+		if (header_sane && (flags & PIV_IGNORE_CHECKSUM_FAILURE))
 			return true;
 	}
 

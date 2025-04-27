@@ -314,31 +314,6 @@ bitmapheap_stream_read_next(ReadStream *pgsr, void *private_data,
 			tbmres->blockno >= hscan->rs_nblocks)
 			continue;
 
-		/*
-		 * We can skip fetching the heap page if we don't need any fields from
-		 * the heap, the bitmap entries don't need rechecking, and all tuples
-		 * on the page are visible to our transaction.
-		 */
-		if (!(sscan->rs_flags & SO_NEED_TUPLES) &&
-			!tbmres->recheck &&
-			VM_ALL_VISIBLE(sscan->rs_rd, tbmres->blockno, &bscan->rs_vmbuffer))
-		{
-			OffsetNumber offsets[TBM_MAX_TUPLES_PER_PAGE];
-			int			noffsets;
-
-			/* can't be lossy in the skip_fetch case */
-			Assert(!tbmres->lossy);
-			Assert(bscan->rs_empty_tuples_pending >= 0);
-
-			/*
-			 * We throw away the offsets, but this is the easiest way to get a
-			 * count of tuples.
-			 */
-			noffsets = tbm_extract_page_tuple(tbmres, offsets, TBM_MAX_TUPLES_PER_PAGE);
-			bscan->rs_empty_tuples_pending += noffsets;
-			continue;
-		}
-
 		return tbmres->blockno;
 	}
 
@@ -1052,6 +1027,9 @@ heapgettup_pagemode(HeapScanDesc scan,
 		linesleft = scan->rs_ntuples;
 		lineindex = ScanDirectionIsForward(dir) ? 0 : linesleft - 1;
 
+		/* block is the same for all tuples, set it once outside the loop */
+		ItemPointerSetBlockNumber(&tuple->t_self, scan->rs_cblock);
+
 		/* lineindex now references the next or previous visible tid */
 continue_page:
 
@@ -1067,7 +1045,7 @@ continue_page:
 
 			tuple->t_data = (HeapTupleHeader) PageGetItem(page, lpp);
 			tuple->t_len = ItemIdGetLength(lpp);
-			ItemPointerSet(&(tuple->t_self), scan->rs_cblock, lineoff);
+			ItemPointerSetOffsetNumber(&tuple->t_self, lineoff);
 
 			/* skip any tuples that don't match the scan key */
 			if (key != NULL &&
@@ -1121,8 +1099,10 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	{
 		BitmapHeapScanDesc bscan = palloc(sizeof(BitmapHeapScanDescData));
 
-		bscan->rs_vmbuffer = InvalidBuffer;
-		bscan->rs_empty_tuples_pending = 0;
+		/*
+		 * Bitmap Heap scans do not have any fields that a normal Heap Scan
+		 * does not have, so no special initializations required here.
+		 */
 		scan = (HeapScanDesc) bscan;
 	}
 	else
@@ -1206,7 +1186,15 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 		else
 			cb = heap_scan_stream_read_next_serial;
 
-		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_SEQUENTIAL,
+		/* ---
+		 * It is safe to use batchmode as the only locks taken by `cb`
+		 * are never taken while waiting for IO:
+		 * - SyncScanLock is used in the non-parallel case
+		 * - in the parallel case, only spinlocks and atomics are used
+		 * ---
+		 */
+		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_SEQUENTIAL |
+														  READ_STREAM_USE_BATCHING,
 														  scan->rs_strategy,
 														  scan->rs_base.rs_rd,
 														  MAIN_FORKNUM,
@@ -1216,7 +1204,8 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	}
 	else if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
 	{
-		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_DEFAULT,
+		scan->rs_read_stream = read_stream_begin_relation(READ_STREAM_DEFAULT |
+														  READ_STREAM_USE_BATCHING,
 														  scan->rs_strategy,
 														  scan->rs_base.rs_rd,
 														  MAIN_FORKNUM,
@@ -1263,23 +1252,10 @@ heap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 		scan->rs_cbuf = InvalidBuffer;
 	}
 
-	if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
-	{
-		BitmapHeapScanDesc bscan = (BitmapHeapScanDesc) scan;
-
-		/*
-		 * Reset empty_tuples_pending, a field only used by bitmap heap scan,
-		 * to avoid incorrectly emitting NULL-filled tuples from a previous
-		 * scan on rescan.
-		 */
-		bscan->rs_empty_tuples_pending = 0;
-
-		if (BufferIsValid(bscan->rs_vmbuffer))
-		{
-			ReleaseBuffer(bscan->rs_vmbuffer);
-			bscan->rs_vmbuffer = InvalidBuffer;
-		}
-	}
+	/*
+	 * SO_TYPE_BITMAPSCAN would be cleaned up here, but it does not hold any
+	 * additional data vs a normal HeapScan
+	 */
 
 	/*
 	 * The read stream is reset on rescan. This must be done before
@@ -1307,15 +1283,6 @@ heap_endscan(TableScanDesc sscan)
 	 */
 	if (BufferIsValid(scan->rs_cbuf))
 		ReleaseBuffer(scan->rs_cbuf);
-
-	if (scan->rs_base.rs_flags & SO_TYPE_BITMAPSCAN)
-	{
-		BitmapHeapScanDesc bscan = (BitmapHeapScanDesc) sscan;
-
-		bscan->rs_empty_tuples_pending = 0;
-		if (BufferIsValid(bscan->rs_vmbuffer))
-			ReleaseBuffer(bscan->rs_vmbuffer);
-	}
 
 	/*
 	 * Must free the read stream before freeing the BufferAccessStrategy.
@@ -6540,9 +6507,17 @@ heap_inplace_update_and_unlock(Relation relation,
 	 * [crash]
 	 * [recovery restores datfrozenxid w/o relfrozenxid]
 	 *
-	 * Like in MarkBufferDirtyHint() subroutine XLogSaveBufferForHint(), copy
-	 * the buffer to the stack before logging.  Here, that facilitates a FPI
-	 * of the post-mutation block before we accept other sessions seeing it.
+	 * Mimic MarkBufferDirtyHint() subroutine XLogSaveBufferForHint().
+	 * Specifically, use DELAY_CHKPT_START, and copy the buffer to the stack.
+	 * The stack copy facilitates a FPI of the post-mutation block before we
+	 * accept other sessions seeing it.  DELAY_CHKPT_START allows us to
+	 * XLogInsert() before MarkBufferDirty().  Since XLogSaveBufferForHint()
+	 * can operate under BUFFER_LOCK_SHARED, it can't avoid DELAY_CHKPT_START.
+	 * This function, however, likely could avoid it with the following order
+	 * of operations: MarkBufferDirty(), XLogInsert(), memcpy().  Opt to use
+	 * DELAY_CHKPT_START here, too, as a way to have fewer distinct code
+	 * patterns to analyze.  Inplace update isn't so frequent that it should
+	 * pursue the small optimization of skipping DELAY_CHKPT_START.
 	 */
 	Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
 	START_CRIT_SECTION();

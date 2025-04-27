@@ -18,6 +18,8 @@
 #include "miscadmin.h"
 #include "storage/aio.h"
 #include "storage/aio_internal.h"
+#include "storage/bufmgr.h"
+#include "storage/md.h"
 
 
 /* just to have something to put into aio_handle_cbs */
@@ -37,6 +39,12 @@ typedef struct PgAioHandleCallbacksEntry
 static const PgAioHandleCallbacksEntry aio_handle_cbs[] = {
 #define CALLBACK_ENTRY(id, callback)  [id] = {.cb = &callback, .name = #callback}
 	CALLBACK_ENTRY(PGAIO_HCB_INVALID, aio_invalid_cb),
+
+	CALLBACK_ENTRY(PGAIO_HCB_MD_READV, aio_md_readv_cb),
+
+	CALLBACK_ENTRY(PGAIO_HCB_SHARED_BUFFER_READV, aio_shared_buffer_readv_cb),
+
+	CALLBACK_ENTRY(PGAIO_HCB_LOCAL_BUFFER_READV, aio_local_buffer_readv_cb),
 #undef CALLBACK_ENTRY
 };
 
@@ -54,7 +62,7 @@ static const PgAioHandleCallbacksEntry aio_handle_cbs[] = {
  * registered for each IO.
  *
  * Callbacks need to be registered before [indirectly] calling
- * pgaio_io_prep_*(), as the IO may be executed immediately.
+ * pgaio_io_start_*(), as the IO may be executed immediately.
  *
  * A callback can be passed a small bit of data, e.g. to indicate whether to
  * zero a buffer if it is invalid.
@@ -80,6 +88,7 @@ pgaio_io_register_callbacks(PgAioHandle *ioh, PgAioHandleCallbackID cb_id,
 {
 	const PgAioHandleCallbacksEntry *ce = &aio_handle_cbs[cb_id];
 
+	Assert(cb_id <= PGAIO_HCB_MAX);
 	if (cb_id >= lengthof(aio_handle_cbs))
 		elog(ERROR, "callback %d is out of range", cb_id);
 	if (aio_handle_cbs[cb_id].cb->complete_shared == NULL &&
@@ -115,6 +124,7 @@ pgaio_io_set_handle_data_64(PgAioHandle *ioh, uint64 *data, uint8 len)
 	Assert(ioh->state == PGAIO_HS_HANDED_OUT);
 	Assert(ioh->handle_data_len == 0);
 	Assert(len <= PG_IOV_MAX);
+	Assert(len <= io_max_combine_limit);
 
 	for (int i = 0; i < len; i++)
 		pgaio_ctl->handle_data[ioh->iovec_off + i] = data[i];
@@ -132,6 +142,7 @@ pgaio_io_set_handle_data_32(PgAioHandle *ioh, uint32 *data, uint8 len)
 	Assert(ioh->state == PGAIO_HS_HANDED_OUT);
 	Assert(ioh->handle_data_len == 0);
 	Assert(len <= PG_IOV_MAX);
+	Assert(len <= io_max_combine_limit);
 
 	for (int i = 0; i < len; i++)
 		pgaio_ctl->handle_data[ioh->iovec_off + i] = data[i];
@@ -262,9 +273,12 @@ pgaio_io_call_complete_shared(PgAioHandle *ioh)
  * Internal function which invokes ->complete_local for all the registered
  * callbacks.
  *
+ * Returns ioh->distilled_result after, possibly, being modified by local
+ * callbacks.
+ *
  * XXX: It'd be nice to deduplicate with pgaio_io_call_complete_shared().
  */
-void
+PgAioResult
 pgaio_io_call_complete_local(PgAioHandle *ioh)
 {
 	PgAioResult result;
@@ -296,13 +310,17 @@ pgaio_io_call_complete_local(PgAioHandle *ioh)
 
 	/*
 	 * Note that we don't save the result in ioh->distilled_result, the local
-	 * callback's result should not ever matter to other waiters.
+	 * callback's result should not ever matter to other waiters. However, the
+	 * local backend does care, so we return the result as modified by local
+	 * callbacks, which then can be passed to ioh->report_return->result.
 	 */
 	pgaio_debug_io(DEBUG3, ioh,
-				   "after local completion: distilled result: (status %s, id %u, error_data %d, result %d), raw_result: %d",
+				   "after local completion: result: (status %s, id %u, error_data %d, result %d), raw_result: %d",
 				   pgaio_result_status_string(result.status),
 				   result.id, result.error_data, result.result,
 				   ioh->result);
 
 	END_CRIT_SECTION();
+
+	return result;
 }

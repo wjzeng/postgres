@@ -191,7 +191,7 @@ static void InitPartitionPruneContext(PartitionPruneContext *context,
 									  PartitionKey partkey,
 									  PlanState *planstate,
 									  ExprContext *econtext);
-static void InitExecPartitionPruneContexts(PartitionPruneState *prunstate,
+static void InitExecPartitionPruneContexts(PartitionPruneState *prunestate,
 										   PlanState *parent_plan,
 										   Bitmapset *initially_valid_subplans,
 										   int n_total_subplans);
@@ -876,7 +876,7 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 	 * reference and make copy for this relation, converting stuff that
 	 * references attribute numbers to match this relation's.
 	 *
-	 * This duplicates much of the logic in ExecInitMerge(), so something
+	 * This duplicates much of the logic in ExecInitMerge(), so if something
 	 * changes there, look here too.
 	 */
 	if (node && node->operation == CMD_MERGE)
@@ -956,6 +956,8 @@ ExecInitPartitionInfo(ModifyTableState *mtstate, EState *estate,
 												  NULL);
 					break;
 				case CMD_DELETE:
+				case CMD_NOTHING:
+					/* Nothing to do */
 					break;
 
 				default:
@@ -1776,7 +1778,7 @@ adjust_partition_colnos_using_map(List *colnos, AttrMap *attrMap)
  *		Updates the PartitionPruneState found at given part_prune_index in
  *		EState.es_part_prune_states for use during "exec" pruning if required.
  *		Also returns the set of subplans to initialize that would be stored at
- *		part_prune_index in EState.es_part_prune_result by
+ *		part_prune_index in EState.es_part_prune_results by
  *		ExecDoInitialPruning().  Maps in PartitionPruneState are updated to
  *		account for initial pruning possibly having eliminated some of the
  *		subplans.
@@ -1981,8 +1983,8 @@ ExecInitPartitionExecPruning(PlanState *planstate,
 	 * account for any that were removed due to initial pruning; refer to the
 	 * condition in InitExecPartitionPruneContexts() that is used to determine
 	 * whether to do this.  If no exec pruning needs to be done, we would thus
-	 * leave the maps to be in an invalid invalid state, but that's ok since
-	 * that data won't be consulted again (cf initial Assert in
+	 * leave the maps to be in an invalid state, but that's ok since that data
+	 * won't be consulted again (cf initial Assert in
 	 * ExecFindMatchingSubPlans).
 	 */
 	if (prunestate->do_exec_prune)
@@ -2107,7 +2109,7 @@ CreatePartitionPruneState(EState *estate, PartitionPruneInfo *pruneinfo,
 			 */
 			partrel = ExecGetRangeTableRelation(estate, pinfo->rtindex, false);
 
-			/* Remember for InitExecPartitionPruneContext(). */
+			/* Remember for InitExecPartitionPruneContexts(). */
 			pprune->partrel = partrel;
 
 			partkey = RelationGetPartitionKey(partrel);

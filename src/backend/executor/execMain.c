@@ -92,6 +92,9 @@ static bool ExecCheckPermissionsModified(Oid relOid, Oid userid,
 										 AclMode requiredPerms);
 static void ExecCheckXactReadOnly(PlannedStmt *plannedstmt);
 static void EvalPlanQualStart(EPQState *epqstate, Plan *planTree);
+static void ReportNotNullViolationError(ResultRelInfo *resultRelInfo,
+										TupleTableSlot *slot,
+										EState *estate, int attnum);
 
 /* end of local decls */
 
@@ -1371,7 +1374,8 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_projectNewInfoValid = false;
 	resultRelInfo->ri_FdwState = NULL;
 	resultRelInfo->ri_usesFdwDirectModify = false;
-	resultRelInfo->ri_ConstraintExprs = NULL;
+	resultRelInfo->ri_CheckConstraintExprs = NULL;
+	resultRelInfo->ri_GenVirtualNotNullConstraintExprs = NULL;
 	resultRelInfo->ri_GeneratedExprsI = NULL;
 	resultRelInfo->ri_GeneratedExprsU = NULL;
 	resultRelInfo->ri_projectReturning = NULL;
@@ -1842,7 +1846,7 @@ ExecutePlan(QueryDesc *queryDesc,
 
 
 /*
- * ExecRelCheck --- check that tuple meets constraints for result relation
+ * ExecRelCheck --- check that tuple meets check constraints for result relation
  *
  * Returns NULL if OK, else name of failed check constraint
  */
@@ -1855,10 +1859,9 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 	ConstrCheck *check = rel->rd_att->constr->check;
 	ExprContext *econtext;
 	MemoryContext oldContext;
-	int			i;
 
 	/*
-	 * CheckConstraintFetch let this pass with only a warning, but now we
+	 * CheckNNConstraintFetch let this pass with only a warning, but now we
 	 * should fail rather than possibly failing to enforce an important
 	 * constraint.
 	 */
@@ -1871,12 +1874,11 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 	 * nodetrees for rel's constraint expressions.  Keep them in the per-query
 	 * memory context so they'll survive throughout the query.
 	 */
-	if (resultRelInfo->ri_ConstraintExprs == NULL)
+	if (resultRelInfo->ri_CheckConstraintExprs == NULL)
 	{
 		oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
-		resultRelInfo->ri_ConstraintExprs =
-			(ExprState **) palloc0(ncheck * sizeof(ExprState *));
-		for (i = 0; i < ncheck; i++)
+		resultRelInfo->ri_CheckConstraintExprs = palloc0_array(ExprState *, ncheck);
+		for (int i = 0; i < ncheck; i++)
 		{
 			Expr	   *checkconstr;
 
@@ -1886,7 +1888,7 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 
 			checkconstr = stringToNode(check[i].ccbin);
 			checkconstr = (Expr *) expand_generated_columns_in_expr((Node *) checkconstr, rel, 1);
-			resultRelInfo->ri_ConstraintExprs[i] =
+			resultRelInfo->ri_CheckConstraintExprs[i] =
 				ExecPrepareExpr(checkconstr, estate);
 		}
 		MemoryContextSwitchTo(oldContext);
@@ -1902,9 +1904,9 @@ ExecRelCheck(ResultRelInfo *resultRelInfo,
 	econtext->ecxt_scantuple = slot;
 
 	/* And evaluate the constraints */
-	for (i = 0; i < ncheck; i++)
+	for (int i = 0; i < ncheck; i++)
 	{
-		ExprState  *checkconstr = resultRelInfo->ri_ConstraintExprs[i];
+		ExprState  *checkconstr = resultRelInfo->ri_CheckConstraintExprs[i];
 
 		/*
 		 * NOTE: SQL specifies that a NULL result from a constraint expression
@@ -2058,73 +2060,45 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 	TupleDesc	tupdesc = RelationGetDescr(rel);
 	TupleConstr *constr = tupdesc->constr;
 	Bitmapset  *modifiedCols;
+	List	   *notnull_virtual_attrs = NIL;
 
 	Assert(constr);				/* we should not be called otherwise */
 
+	/*
+	 * Verify not-null constraints.
+	 *
+	 * Not-null constraints on virtual generated columns are collected and
+	 * checked separately below.
+	 */
 	if (constr->has_not_null)
 	{
-		int			natts = tupdesc->natts;
-		int			attrChk;
-
-		for (attrChk = 1; attrChk <= natts; attrChk++)
+		for (AttrNumber attnum = 1; attnum <= tupdesc->natts; attnum++)
 		{
-			Form_pg_attribute att = TupleDescAttr(tupdesc, attrChk - 1);
+			Form_pg_attribute att = TupleDescAttr(tupdesc, attnum - 1);
 
-			if (att->attnotnull && slot_attisnull(slot, attrChk))
-			{
-				char	   *val_desc;
-				Relation	orig_rel = rel;
-				TupleDesc	orig_tupdesc = RelationGetDescr(rel);
-
-				/*
-				 * If the tuple has been routed, it's been converted to the
-				 * partition's rowtype, which might differ from the root
-				 * table's.  We must convert it back to the root table's
-				 * rowtype so that val_desc shown error message matches the
-				 * input tuple.
-				 */
-				if (resultRelInfo->ri_RootResultRelInfo)
-				{
-					ResultRelInfo *rootrel = resultRelInfo->ri_RootResultRelInfo;
-					AttrMap    *map;
-
-					tupdesc = RelationGetDescr(rootrel->ri_RelationDesc);
-					/* a reverse map */
-					map = build_attrmap_by_name_if_req(orig_tupdesc,
-													   tupdesc,
-													   false);
-
-					/*
-					 * Partition-specific slot's tupdesc can't be changed, so
-					 * allocate a new one.
-					 */
-					if (map != NULL)
-						slot = execute_attr_map_slot(map, slot,
-													 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
-					modifiedCols = bms_union(ExecGetInsertedCols(rootrel, estate),
-											 ExecGetUpdatedCols(rootrel, estate));
-					rel = rootrel->ri_RelationDesc;
-				}
-				else
-					modifiedCols = bms_union(ExecGetInsertedCols(resultRelInfo, estate),
-											 ExecGetUpdatedCols(resultRelInfo, estate));
-				val_desc = ExecBuildSlotValueDescription(RelationGetRelid(rel),
-														 slot,
-														 tupdesc,
-														 modifiedCols,
-														 64);
-
-				ereport(ERROR,
-						(errcode(ERRCODE_NOT_NULL_VIOLATION),
-						 errmsg("null value in column \"%s\" of relation \"%s\" violates not-null constraint",
-								NameStr(att->attname),
-								RelationGetRelationName(orig_rel)),
-						 val_desc ? errdetail("Failing row contains %s.", val_desc) : 0,
-						 errtablecol(orig_rel, attrChk)));
-			}
+			if (att->attnotnull && att->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+				notnull_virtual_attrs = lappend_int(notnull_virtual_attrs, attnum);
+			else if (att->attnotnull && slot_attisnull(slot, attnum))
+				ReportNotNullViolationError(resultRelInfo, slot, estate, attnum);
 		}
 	}
 
+	/*
+	 * Verify not-null constraints on virtual generated column, if any.
+	 */
+	if (notnull_virtual_attrs)
+	{
+		AttrNumber	attnum;
+
+		attnum = ExecRelGenVirtualNotNull(resultRelInfo, slot, estate,
+										  notnull_virtual_attrs);
+		if (attnum != InvalidAttrNumber)
+			ReportNotNullViolationError(resultRelInfo, slot, estate, attnum);
+	}
+
+	/*
+	 * Verify check constraints.
+	 */
 	if (rel->rd_rel->relchecks > 0)
 	{
 		const char *failed;
@@ -2134,7 +2108,12 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 			char	   *val_desc;
 			Relation	orig_rel = rel;
 
-			/* See the comment above. */
+			/*
+			 * If the tuple has been routed, it's been converted to the
+			 * partition's rowtype, which might differ from the root table's.
+			 * We must convert it back to the root table's rowtype so that
+			 * val_desc shown error message matches the input tuple.
+			 */
 			if (resultRelInfo->ri_RootResultRelInfo)
 			{
 				ResultRelInfo *rootrel = resultRelInfo->ri_RootResultRelInfo;
@@ -2174,6 +2153,142 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 					 errtableconstraint(orig_rel, failed)));
 		}
 	}
+}
+
+/*
+ * Verify not-null constraints on virtual generated columns of the given
+ * tuple slot.
+ *
+ * Return value of InvalidAttrNumber means all not-null constraints on virtual
+ * generated columns are satisfied.  A return value > 0 means a not-null
+ * violation happened for that attribute.
+ *
+ * notnull_virtual_attrs is the list of the attnums of virtual generated column with
+ * not-null constraints.
+ */
+AttrNumber
+ExecRelGenVirtualNotNull(ResultRelInfo *resultRelInfo, TupleTableSlot *slot,
+						 EState *estate, List *notnull_virtual_attrs)
+{
+	Relation	rel = resultRelInfo->ri_RelationDesc;
+	ExprContext *econtext;
+	MemoryContext oldContext;
+
+	/*
+	 * We implement this by building a NullTest node for each virtual
+	 * generated column, which we cache in resultRelInfo, and running those
+	 * through ExecCheck().
+	 */
+	if (resultRelInfo->ri_GenVirtualNotNullConstraintExprs == NULL)
+	{
+		oldContext = MemoryContextSwitchTo(estate->es_query_cxt);
+		resultRelInfo->ri_GenVirtualNotNullConstraintExprs =
+			palloc0_array(ExprState *, list_length(notnull_virtual_attrs));
+
+		foreach_int(attnum, notnull_virtual_attrs)
+		{
+			int			i = foreach_current_index(attnum);
+			NullTest   *nnulltest;
+
+			/* "generated_expression IS NOT NULL" check. */
+			nnulltest = makeNode(NullTest);
+			nnulltest->arg = (Expr *) build_generation_expression(rel, attnum);
+			nnulltest->nulltesttype = IS_NOT_NULL;
+			nnulltest->argisrow = false;
+			nnulltest->location = -1;
+
+			resultRelInfo->ri_GenVirtualNotNullConstraintExprs[i] =
+				ExecPrepareExpr((Expr *) nnulltest, estate);
+		}
+		MemoryContextSwitchTo(oldContext);
+	}
+
+	/*
+	 * We will use the EState's per-tuple context for evaluating virtual
+	 * generated column not null constraint expressions (creating it if it's
+	 * not already there).
+	 */
+	econtext = GetPerTupleExprContext(estate);
+
+	/* Arrange for econtext's scan tuple to be the tuple under test */
+	econtext->ecxt_scantuple = slot;
+
+	/* And evaluate the check constraints for virtual generated column */
+	foreach_int(attnum, notnull_virtual_attrs)
+	{
+		int			i = foreach_current_index(attnum);
+		ExprState  *exprstate = resultRelInfo->ri_GenVirtualNotNullConstraintExprs[i];
+
+		Assert(exprstate != NULL);
+		if (!ExecCheck(exprstate, econtext))
+			return attnum;
+	}
+
+	/* InvalidAttrNumber result means no error */
+	return InvalidAttrNumber;
+}
+
+/*
+ * Report a violation of a not-null constraint that was already detected.
+ */
+static void
+ReportNotNullViolationError(ResultRelInfo *resultRelInfo, TupleTableSlot *slot,
+							EState *estate, int attnum)
+{
+	Bitmapset  *modifiedCols;
+	char	   *val_desc;
+	Relation	rel = resultRelInfo->ri_RelationDesc;
+	Relation	orig_rel = rel;
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	TupleDesc	orig_tupdesc = RelationGetDescr(rel);
+	Form_pg_attribute att = TupleDescAttr(tupdesc, attnum - 1);
+
+	Assert(attnum > 0);
+
+	/*
+	 * If the tuple has been routed, it's been converted to the partition's
+	 * rowtype, which might differ from the root table's.  We must convert it
+	 * back to the root table's rowtype so that val_desc shown error message
+	 * matches the input tuple.
+	 */
+	if (resultRelInfo->ri_RootResultRelInfo)
+	{
+		ResultRelInfo *rootrel = resultRelInfo->ri_RootResultRelInfo;
+		AttrMap    *map;
+
+		tupdesc = RelationGetDescr(rootrel->ri_RelationDesc);
+		/* a reverse map */
+		map = build_attrmap_by_name_if_req(orig_tupdesc,
+										   tupdesc,
+										   false);
+
+		/*
+		 * Partition-specific slot's tupdesc can't be changed, so allocate a
+		 * new one.
+		 */
+		if (map != NULL)
+			slot = execute_attr_map_slot(map, slot,
+										 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
+		modifiedCols = bms_union(ExecGetInsertedCols(rootrel, estate),
+								 ExecGetUpdatedCols(rootrel, estate));
+		rel = rootrel->ri_RelationDesc;
+	}
+	else
+		modifiedCols = bms_union(ExecGetInsertedCols(resultRelInfo, estate),
+								 ExecGetUpdatedCols(resultRelInfo, estate));
+
+	val_desc = ExecBuildSlotValueDescription(RelationGetRelid(rel),
+											 slot,
+											 tupdesc,
+											 modifiedCols,
+											 64);
+	ereport(ERROR,
+			errcode(ERRCODE_NOT_NULL_VIOLATION),
+			errmsg("null value in column \"%s\" of relation \"%s\" violates not-null constraint",
+				   NameStr(att->attname),
+				   RelationGetRelationName(orig_rel)),
+			val_desc ? errdetail("Failing row contains %s.", val_desc) : 0,
+			errtablecol(orig_rel, attnum));
 }
 
 /*
