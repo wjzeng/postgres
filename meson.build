@@ -8,7 +8,7 @@
 
 project('postgresql',
   ['c'],
-  version: '18devel',
+  version: '18beta1',
   license: 'PostgreSQL',
 
   # We want < 0.56 for python 3.5 compatibility on old platforms. EPEL for
@@ -107,6 +107,7 @@ os_deps = []
 backend_both_deps = []
 backend_deps = []
 libpq_deps = []
+libpq_oauth_deps = []
 
 pg_sysroot = ''
 
@@ -860,13 +861,13 @@ endif
 ###############################################################
 
 libcurlopt = get_option('libcurl')
+oauth_flow_supported = false
+
 if not libcurlopt.disabled()
   # Check for libcurl 7.61.0 or higher (corresponding to RHEL8 and the ability
   # to explicitly set TLS 1.3 ciphersuites).
   libcurl = dependency('libcurl', version: '>= 7.61.0', required: libcurlopt)
   if libcurl.found()
-    cdata.set('USE_LIBCURL', 1)
-
     # Check to see whether the current platform supports thread-safe Curl
     # initialization.
     libcurl_threadsafe_init = false
@@ -936,6 +937,22 @@ if not libcurlopt.disabled()
 *** to use it with libpq.''')
       endif
     endif
+  endif
+
+  # Check that the current platform supports our builtin flow. This requires
+  # libcurl and one of either epoll or kqueue.
+  oauth_flow_supported = (
+    libcurl.found()
+    and (cc.check_header('sys/event.h', required: false,
+                         args: test_c_args, include_directories: postgres_inc)
+         or cc.check_header('sys/epoll.h', required: false,
+                            args: test_c_args, include_directories: postgres_inc))
+  )
+
+  if oauth_flow_supported
+    cdata.set('USE_LIBCURL', 1)
+  elif libcurlopt.enabled()
+    error('client-side OAuth is not supported on this platform')
   endif
 
 else
@@ -2637,6 +2654,7 @@ decl_checks += [
   ['preadv', 'sys/uio.h'],
   ['pwritev', 'sys/uio.h'],
   ['strchrnul', 'string.h'],
+  ['memset_s', 'string.h', '#define __STDC_WANT_LIB_EXT1__ 1'],
 ]
 
 # Check presence of some optional LLVM functions.
@@ -2650,21 +2668,23 @@ endif
 foreach c : decl_checks
   func = c.get(0)
   header = c.get(1)
-  args = c.get(2, {})
+  prologue = c.get(2, '')
+  args = c.get(3, {})
   varname = 'HAVE_DECL_' + func.underscorify().to_upper()
 
   found = cc.compiles('''
-#include <@0@>
+@0@
+#include <@1@>
 
 int main()
 {
-#ifndef @1@
-    (void) @1@;
+#ifndef @2@
+    (void) @2@;
 #endif
 
 return 0;
 }
-'''.format(header, func),
+'''.format(prologue, header, func),
     name: 'test whether @0@ is declared'.format(func),
     # need to add cflags_warn to get at least
     # -Werror=unguarded-availability-new if applicable
@@ -2863,7 +2883,6 @@ func_checks = [
   ['kqueue'],
   ['localeconv_l'],
   ['mbstowcs_l'],
-  ['memset_s'],
   ['mkdtemp'],
   ['posix_fadvise'],
   ['posix_fallocate'],
@@ -3272,17 +3291,18 @@ libpq_deps += [
 
   gssapi,
   ldap_r,
-  # XXX libcurl must link after libgssapi_krb5 on FreeBSD to avoid segfaults
-  # during gss_acquire_cred(). This is possibly related to Curl's Heimdal
-  # dependency on that platform?
-  libcurl,
   libintl,
   ssl,
 ]
 
+libpq_oauth_deps += [
+  libcurl,
+]
+
 subdir('src/interfaces/libpq')
-# fe_utils depends on libpq
+# fe_utils and libpq-oauth depends on libpq
 subdir('src/fe_utils')
+subdir('src/interfaces/libpq-oauth')
 
 # for frontend binaries
 frontend_code = declare_dependency(

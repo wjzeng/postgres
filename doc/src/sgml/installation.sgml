@@ -241,7 +241,7 @@
       language, you need a <productname>Python</productname>
       installation with the header files and
       the <application>sysconfig</application> module.  The minimum
-      required version is <productname>Python</productname> 3.2.
+      supported version is <productname>Python</productname> 3.6.8.
      </para>
 
      <para>
@@ -310,6 +310,14 @@
       You need <application>MIT Kerberos</application> (for GSSAPI),
       <productname>OpenLDAP</productname>, and/or <application>PAM</application>,
       if you want to support authentication using those services.
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      You need <productname>Curl</productname> to build an optional module
+      which implements the <link linkend="libpq-oauth">OAuth Device
+      Authorization flow</link> for client applications.
      </para>
     </listitem>
 
@@ -2761,7 +2769,7 @@ ninja install
 
     <variablelist>
      <varlistentry id="configure-auto-features-meson">
-      <term><option>--auto_features={ auto | enabled | disabled }</option></term>
+      <term><option>--auto-features={ auto | enabled | disabled }</option></term>
       <listitem>
        <para>
         Setting this option allows you to override the value of all

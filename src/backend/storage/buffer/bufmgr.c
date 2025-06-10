@@ -3333,7 +3333,7 @@ UnpinBufferNoOwner(BufferDesc *buf)
 #define ST_COMPARE(a, b) ckpt_buforder_comparator(a, b)
 #define ST_SCOPE static
 #define ST_DEFINE
-#include <lib/sort_template.h>
+#include "lib/sort_template.h"
 
 /*
  * BufferSync -- Write out all dirty buffers in the pool.
@@ -4161,8 +4161,6 @@ AssertNotCatalogBufferLock(LWLock *lock, LWLockMode mode,
 		return;
 
 	Assert(!IsCatalogRelationOid(relid));
-	/* Shared rels are always catalogs: detect even after VACUUM FULL. */
-	Assert(tag.spcOid != GLOBALTABLESPACE_OID);
 }
 #endif
 
@@ -6450,7 +6448,7 @@ ScheduleBufferTagForWriteback(WritebackContext *wb_context, IOContext io_context
 #define ST_COMPARE(a, b) buffertag_comparator(&a->tag, &b->tag)
 #define ST_SCOPE static
 #define ST_DEFINE
-#include <lib/sort_template.h>
+#include "lib/sort_template.h"
 
 /*
  * Issue all pending writeback requests, previously scheduled with
@@ -7322,7 +7320,7 @@ buffer_readv_report(PgAioResult result, const PgAioTargetData *td,
 				affected_count > 1 ?
 				errdetail("Block %u held first zeroed page.",
 						  first + first_off) : 0,
-				errhint("See server log for details about the other %u invalid block(s).",
+				errhint("See server log for details about the other %d invalid block(s).",
 						affected_count + checkfail_count - 1));
 		return;
 	}

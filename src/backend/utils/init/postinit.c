@@ -663,13 +663,6 @@ BaseInit(void)
 	 * drop ephemeral slots, which in turn triggers stats reporting.
 	 */
 	ReplicationSlotInitialize();
-
-	/*
-	 * The before shmem exit callback frees the DSA memory occupied by the
-	 * latest memory context statistics that could be published by this proc
-	 * if requested.
-	 */
-	before_shmem_exit(AtProcExit_memstats_cleanup, 0);
 }
 
 
@@ -747,7 +740,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	if (!bootstrap)
 	{
 		pgstat_bestart_initial();
-		INJECTION_POINT("init-pre-auth");
+		INJECTION_POINT("init-pre-auth", NULL);
 	}
 
 	/*

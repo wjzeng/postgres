@@ -200,7 +200,7 @@ sub configure_test_server_for_ssl
 	$node->append_conf(
 		'postgresql.conf', <<EOF
 fsync=off
-log_connections=on
+log_connections=all
 log_hostname=on
 listen_addresses='$serverhost'
 log_statement=all
@@ -240,6 +240,23 @@ sub ssl_library
 	my $backend = $self->{backend};
 
 	return $backend->get_library();
+}
+
+=pod
+
+=item $server->is_libressl()
+
+Detect whether the currently used SSL backend is LibreSSL.
+(Ideally we'd not need this hack, but presently we do.)
+
+=cut
+
+sub is_libressl
+{
+	my $self = shift;
+	my $backend = $self->{backend};
+
+	return $backend->library_is_libressl();
 }
 
 =pod

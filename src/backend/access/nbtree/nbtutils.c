@@ -63,7 +63,7 @@ static bool _bt_check_compare(IndexScanDesc scan, ScanDirection dir,
 							  bool *continuescan, int *ikey);
 static bool _bt_check_rowcompare(ScanKey skey,
 								 IndexTuple tuple, int tupnatts, TupleDesc tupdesc,
-								 ScanDirection dir, bool forcenonrequired, bool *continuescan);
+								 ScanDirection dir, bool *continuescan);
 static void _bt_checkkeys_look_ahead(IndexScanDesc scan, BTReadPageState *pstate,
 									 int tupnatts, TupleDesc tupdesc);
 static int	_bt_keep_natts(Relation rel, IndexTuple lastleft,
@@ -1110,7 +1110,7 @@ _bt_rewind_nonrequired_arrays(IndexScanDesc scan, ScanDirection dir)
  *
  * readpagetup callers must only call here when _bt_check_compare already set
  * continuescan=false.  We help these callers deal with _bt_check_compare's
- * inability to distinguishing between the < and > cases (it uses equality
+ * inability to distinguish between the < and > cases (it uses equality
  * operator scan keys, whereas we use 3-way ORDER procs).  These callers pass
  * a _bt_check_compare-set sktrig value that indicates which scan key
  * triggered the call (!readpagetup callers just pass us sktrig=0 instead).
@@ -1826,7 +1826,7 @@ _bt_advance_array_keys(IndexScanDesc scan, BTReadPageState *pstate,
 
 		/* Recheck _bt_check_compare on behalf of caller */
 		if (_bt_check_compare(scan, dir, tuple, tupnatts, tupdesc, false,
-							  false, &continuescan,
+							  !sktrig_required, &continuescan,
 							  &nsktrig) &&
 			!so->scanBehind)
 		{
@@ -1950,7 +1950,7 @@ _bt_advance_array_keys(IndexScanDesc scan, BTReadPageState *pstate,
 	 * keys for one or more truncated attribute values (scan keys required in
 	 * _either_ scan direction).
 	 *
-	 * There is a chance that _bt_checkkeys (which checks so->scanBehind) will
+	 * There is a chance that _bt_readpage (which checks so->scanBehind) will
 	 * find that even the sibling leaf page's finaltup is < the new array
 	 * keys.  When that happens, our optimistic policy will have incurred a
 	 * single extra leaf page access that could have been avoided.
@@ -2393,11 +2393,27 @@ _bt_scanbehind_checkkeys(IndexScanDesc scan, ScanDirection dir,
 	TupleDesc	tupdesc = RelationGetDescr(rel);
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	int			nfinaltupatts = BTreeTupleGetNAtts(finaltup, rel);
+	bool		scanBehind;
 
 	Assert(so->numArrayKeys);
 
 	if (_bt_tuple_before_array_skeys(scan, dir, finaltup, tupdesc,
-									 nfinaltupatts, false, 0, NULL))
+									 nfinaltupatts, false, 0, &scanBehind))
+		return false;
+
+	/*
+	 * If scanBehind was set, all of the untruncated attribute values from
+	 * finaltup that correspond to an array match the array's current element,
+	 * but there are other keys associated with truncated suffix attributes.
+	 * Array advancement must have incremented the scan's arrays on the
+	 * previous page, resulting in a set of array keys that happen to be an
+	 * exact match for the current page high key's untruncated prefix values.
+	 *
+	 * This page definitely doesn't contain tuples that the scan will need to
+	 * return.  The next page may or may not contain relevant tuples.  Handle
+	 * this by cutting our losses and starting a new primscan.
+	 */
+	if (scanBehind)
 		return false;
 
 	if (!so->oppositeDirCheck)
@@ -2473,13 +2489,14 @@ _bt_oppodir_checkkeys(IndexScanDesc scan, ScanDirection dir,
  * primscan's first page would mislead _bt_advance_array_keys, which expects
  * pstate.nskipadvances to be representative of every first page's key space.)
  *
- * Caller must reset startikey and forcenonrequired ahead of the _bt_checkkeys
- * call for pstate.finaltup iff we set forcenonrequired=true.  This will give
- * _bt_checkkeys the opportunity to call _bt_advance_array_keys once more,
- * with sktrig_required=true, to advance the arrays that were ignored during
- * checks of all of the page's prior tuples.  Caller doesn't need to do this
- * on the rightmost/leftmost page in the index (where pstate.finaltup isn't
- * set), since forcenonrequired won't be set here by us in the first place.
+ * Caller must call _bt_start_array_keys and reset startikey/forcenonrequired
+ * ahead of the finaltup _bt_checkkeys call when we set forcenonrequired=true.
+ * This will give _bt_checkkeys the opportunity to call _bt_advance_array_keys
+ * with sktrig_required=true, restoring the invariant that the scan's required
+ * arrays always track the scan's progress through the index's key space.
+ * Caller won't need to do this on the rightmost/leftmost page in the index
+ * (where pstate.finaltup isn't ever set), since forcenonrequired will never
+ * be set here in the first place.
  */
 void
 _bt_set_startikey(IndexScanDesc scan, BTReadPageState *pstate)
@@ -2540,10 +2557,31 @@ _bt_set_startikey(IndexScanDesc scan, BTReadPageState *pstate)
 		if (key->sk_flags & SK_ROW_HEADER)
 		{
 			/*
-			 * Can't let pstate.startikey get set to an ikey beyond a
-			 * RowCompare inequality
+			 * RowCompare inequality.
+			 *
+			 * Only the first subkey from a RowCompare can ever be marked
+			 * required (that happens when the row header is marked required).
+			 * There is no simple, general way for us to transitively deduce
+			 * whether or not every tuple on the page satisfies a RowCompare
+			 * key based only on firsttup and lasttup -- so we just give up.
 			 */
-			break;				/* unsafe */
+			if (!start_past_saop_eq && !so->skipScan)
+				break;			/* unsafe to go further */
+
+			/*
+			 * We have to be even more careful with RowCompares that come
+			 * after an array: we assume it's unsafe to even bypass the array.
+			 * Calling _bt_start_array_keys to recover the scan's arrays
+			 * following use of forcenonrequired mode isn't compatible with
+			 * _bt_check_rowcompare's continuescan=false behavior with NULL
+			 * row compare members.  _bt_advance_array_keys must not make a
+			 * decision on the basis of a key not being satisfied in the
+			 * opposite-to-scan direction until the scan reaches a leaf page
+			 * where the same key begins to be satisfied in scan direction.
+			 * The _bt_first !used_all_subkeys behavior makes this limitation
+			 * hard to work around some other way.
+			 */
+			return;				/* completely unsafe to set pstate.startikey */
 		}
 		if (key->sk_strategy != BTEqualStrategyNumber)
 		{
@@ -2799,8 +2837,6 @@ _bt_check_compare(IndexScanDesc scan, ScanDirection dir,
 {
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 
-	Assert(!forcenonrequired || advancenonrequired);
-
 	*continuescan = true;		/* default assumption */
 
 	for (; *ikey < so->numberOfKeys; (*ikey)++)
@@ -2866,8 +2902,10 @@ _bt_check_compare(IndexScanDesc scan, ScanDirection dir,
 		/* row-comparison keys need special processing */
 		if (key->sk_flags & SK_ROW_HEADER)
 		{
+			Assert(!forcenonrequired);	/* forbidden by _bt_set_startikey */
+
 			if (_bt_check_rowcompare(key, tuple, tupnatts, tupdesc, dir,
-									 forcenonrequired, continuescan))
+									 continuescan))
 				continue;
 			return false;
 		}
@@ -2920,6 +2958,17 @@ _bt_check_compare(IndexScanDesc scan, ScanDirection dir,
 
 		if (isNull)
 		{
+			/*
+			 * Scalar scan key isn't satisfied by NULL tuple value.
+			 *
+			 * If we're treating scan keys as nonrequired, and key is for a
+			 * skip array, then we must attempt to advance the array to NULL
+			 * (if we're successful then the tuple might match the qual).
+			 */
+			if (unlikely(forcenonrequired && key->sk_flags & SK_BT_SKIP))
+				return _bt_advance_array_keys(scan, NULL, tuple, tupnatts,
+											  tupdesc, *ikey, false);
+
 			if (key->sk_flags & SK_BT_NULLS_FIRST)
 			{
 				/*
@@ -2958,7 +3007,7 @@ _bt_check_compare(IndexScanDesc scan, ScanDirection dir,
 			}
 
 			/*
-			 * In any case, this indextuple doesn't match the qual.
+			 * This indextuple doesn't match the qual.
 			 */
 			return false;
 		}
@@ -3013,8 +3062,7 @@ _bt_check_compare(IndexScanDesc scan, ScanDirection dir,
  */
 static bool
 _bt_check_rowcompare(ScanKey skey, IndexTuple tuple, int tupnatts,
-					 TupleDesc tupdesc, ScanDirection dir,
-					 bool forcenonrequired, bool *continuescan)
+					 TupleDesc tupdesc, ScanDirection dir, bool *continuescan)
 {
 	ScanKey		subkey = (ScanKey) DatumGetPointer(skey->sk_argument);
 	int32		cmpresult = 0;
@@ -3054,11 +3102,7 @@ _bt_check_rowcompare(ScanKey skey, IndexTuple tuple, int tupnatts,
 
 		if (isNull)
 		{
-			if (forcenonrequired)
-			{
-				/* treating scan's keys as non-required */
-			}
-			else if (subkey->sk_flags & SK_BT_NULLS_FIRST)
+			if (subkey->sk_flags & SK_BT_NULLS_FIRST)
 			{
 				/*
 				 * Since NULLs are sorted before non-NULLs, we know we have
@@ -3112,12 +3156,8 @@ _bt_check_rowcompare(ScanKey skey, IndexTuple tuple, int tupnatts,
 			 */
 			Assert(subkey != (ScanKey) DatumGetPointer(skey->sk_argument));
 			subkey--;
-			if (forcenonrequired)
-			{
-				/* treating scan's keys as non-required */
-			}
-			else if ((subkey->sk_flags & SK_BT_REQFWD) &&
-					 ScanDirectionIsForward(dir))
+			if ((subkey->sk_flags & SK_BT_REQFWD) &&
+				ScanDirectionIsForward(dir))
 				*continuescan = false;
 			else if ((subkey->sk_flags & SK_BT_REQBKWD) &&
 					 ScanDirectionIsBackward(dir))
@@ -3169,7 +3209,7 @@ _bt_check_rowcompare(ScanKey skey, IndexTuple tuple, int tupnatts,
 			break;
 	}
 
-	if (!result && !forcenonrequired)
+	if (!result)
 	{
 		/*
 		 * Tuple fails this qual.  If it's a required qual for the current
@@ -3295,75 +3335,71 @@ _bt_checkkeys_look_ahead(IndexScanDesc scan, BTReadPageState *pstate,
  *
  * Note that if we hold a pin on the target page continuously from initially
  * reading the items until applying this function, VACUUM cannot have deleted
- * any items from the page, and so there is no need to search left from the
- * recorded offset.  (This observation also guarantees that the item is still
- * the right one to delete, which might otherwise be questionable since heap
- * TIDs can get recycled.)	This holds true even if the page has been modified
- * by inserts and page splits, so there is no need to consult the LSN.
- *
- * If the pin was released after reading the page, then we re-read it.  If it
- * has been modified since we read it (as determined by the LSN), we dare not
- * flag any entries because it is possible that the old entry was vacuumed
- * away and the TID was re-used by a completely different heap tuple.
+ * any items on the page, so the page's TIDs can't have been recycled by now.
+ * There's no risk that we'll confuse a new index tuple that happens to use a
+ * recycled TID with a now-removed tuple with the same TID (that used to be on
+ * this same page).  We can't rely on that during scans that drop pins eagerly
+ * (so->dropPin scans), though, so we must condition setting LP_DEAD bits on
+ * the page LSN having not changed since back when _bt_readpage saw the page.
  */
 void
 _bt_killitems(IndexScanDesc scan)
 {
+	Relation	rel = scan->indexRelation;
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	Page		page;
 	BTPageOpaque opaque;
 	OffsetNumber minoff;
 	OffsetNumber maxoff;
-	int			i;
 	int			numKilled = so->numKilled;
 	bool		killedsomething = false;
-	bool		droppedpin PG_USED_FOR_ASSERTS_ONLY;
 
+	Assert(numKilled > 0);
 	Assert(BTScanPosIsValid(so->currPos));
+	Assert(scan->heapRelation != NULL); /* can't be a bitmap index scan */
 
-	/*
-	 * Always reset the scan state, so we don't look for same items on other
-	 * pages.
-	 */
+	/* Always invalidate so->killedItems[] before leaving so->currPos */
 	so->numKilled = 0;
 
-	if (BTScanPosIsPinned(so->currPos))
+	if (!so->dropPin)
 	{
 		/*
 		 * We have held the pin on this page since we read the index tuples,
 		 * so all we need to do is lock it.  The pin will have prevented
-		 * re-use of any TID on the page, so there is no need to check the
-		 * LSN.
+		 * concurrent VACUUMs from recycling any of the TIDs on the page.
 		 */
-		droppedpin = false;
-		_bt_lockbuf(scan->indexRelation, so->currPos.buf, BT_READ);
-
-		page = BufferGetPage(so->currPos.buf);
+		Assert(BTScanPosIsPinned(so->currPos));
+		_bt_lockbuf(rel, so->currPos.buf, BT_READ);
 	}
 	else
 	{
 		Buffer		buf;
+		XLogRecPtr	latestlsn;
 
-		droppedpin = true;
-		/* Attempt to re-read the buffer, getting pin and lock. */
-		buf = _bt_getbuf(scan->indexRelation, so->currPos.currPage, BT_READ);
+		Assert(!BTScanPosIsPinned(so->currPos));
+		Assert(RelationNeedsWAL(rel));
+		buf = _bt_getbuf(rel, so->currPos.currPage, BT_READ);
 
-		page = BufferGetPage(buf);
-		if (BufferGetLSNAtomic(buf) == so->currPos.lsn)
-			so->currPos.buf = buf;
-		else
+		latestlsn = BufferGetLSNAtomic(buf);
+		Assert(!XLogRecPtrIsInvalid(so->currPos.lsn));
+		Assert(so->currPos.lsn <= latestlsn);
+		if (so->currPos.lsn != latestlsn)
 		{
-			/* Modified while not pinned means hinting is not safe. */
-			_bt_relbuf(scan->indexRelation, buf);
+			/* Modified, give up on hinting */
+			_bt_relbuf(rel, buf);
 			return;
 		}
+
+		/* Unmodified, hinting is safe */
+		so->currPos.buf = buf;
 	}
 
+	page = BufferGetPage(so->currPos.buf);
 	opaque = BTPageGetOpaque(page);
 	minoff = P_FIRSTDATAKEY(opaque);
 	maxoff = PageGetMaxOffsetNumber(page);
 
-	for (i = 0; i < numKilled; i++)
+	for (int i = 0; i < numKilled; i++)
 	{
 		int			itemIndex = so->killedItems[i];
 		BTScanPosItem *kitem = &so->currPos.items[itemIndex];
@@ -3395,7 +3431,7 @@ _bt_killitems(IndexScanDesc scan)
 				 * correctness.
 				 *
 				 * Note that the page may have been modified in almost any way
-				 * since we first read it (in the !droppedpin case), so it's
+				 * since we first read it (in the !so->dropPin case), so it's
 				 * possible that this posting list tuple wasn't a posting list
 				 * tuple when we first encountered its heap TIDs.
 				 */
@@ -3411,7 +3447,7 @@ _bt_killitems(IndexScanDesc scan)
 					 * though only in the common case where the page can't
 					 * have been concurrently modified
 					 */
-					Assert(kitem->indexOffset == offnum || !droppedpin);
+					Assert(kitem->indexOffset == offnum || !so->dropPin);
 
 					/*
 					 * Read-ahead to later kitems here.
@@ -3478,7 +3514,7 @@ _bt_killitems(IndexScanDesc scan)
 		MarkBufferDirtyHint(so->currPos.buf, true);
 	}
 
-	_bt_unlockbuf(scan->indexRelation, so->currPos.buf);
+	_bt_unlockbuf(rel, so->currPos.buf);
 }
 
 
