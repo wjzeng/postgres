@@ -1,0 +1,42 @@
+name: PostgreSQL regression
+
+on:
+  push:
+    branches: [ REL_17_STABLE ]
+  pull_request:
+    branches: [ REL_17_STABLE ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Perl environment
+      uses: shogo82148/actions-setup-perl@v1
+
+    - name: Restore install dependencies from cache
+      uses: actions/cache@v4
+      id: cache-perl-env
+      with:
+          path: /opt/hostedtoolcache/perl
+          key: builddeps-${{ hashFiles('**/Build.PL') }}
+          restore-keys: |
+            builddeps-
+
+    - name: Install perl modules
+      if: steps.cache-perl-env.outputs.cache-hit != 'true'
+      run: cpan -i IPC::Run Test::More Time::HiRes
+
+    - name: Update dependencies
+      run: sudo apt-get update
+    - name: Install dependencies
+      run: sudo apt-get install -y gdb lcov libreadline-dev libipc-run-perl libperl-dev tcl-dev libldap2-dev libicu-dev docbook docbook-xml docbook-dsssl docbook-xsl libxml2-utils opensp xsltproc krb5-admin-server krb5-kdc krb5-user slapd ldap-utils libssl-dev
+
+    - name: configure
+      run: ./configure --enable-debug --enable-cassert --enable-tap-tests --with-tcl --with-python --with-ldap --with-openssl --with-icu && echo "COPT=-Wall -Werror" > src/Makefile.custom
+    - name: build
+      run: make -j4 all contrib docs
+    - name: regression
+      run: make check-world
