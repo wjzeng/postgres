@@ -351,6 +351,14 @@ typedef struct A_Expr
 	List	   *name;			/* possibly-qualified name of operator */
 	Node	   *lexpr;			/* left argument, or NULL if none */
 	Node	   *rexpr;			/* right argument, or NULL if none */
+
+	/*
+	 * If rexpr is a list of some kind, we separately track its starting and
+	 * ending location; it's not the same as the starting and ending location
+	 * of the token itself.
+	 */
+	ParseLoc	rexpr_list_start;
+	ParseLoc	rexpr_list_end;
 	ParseLoc	location;		/* token location, or -1 if unknown */
 } A_Expr;
 
@@ -506,6 +514,8 @@ typedef struct A_ArrayExpr
 {
 	NodeTag		type;
 	List	   *elements;		/* array element expressions */
+	ParseLoc	list_start;		/* start of the element list */
+	ParseLoc	list_end;		/* end of the elements list */
 	ParseLoc	location;		/* token location, or -1 if unknown */
 } A_ArrayExpr;
 
@@ -2100,8 +2110,6 @@ typedef struct InsertStmt
 	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
 	OverridingKind override;	/* OVERRIDING clause */
-	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
-	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
 } InsertStmt;
 
 /* ----------------------
@@ -2116,8 +2124,6 @@ typedef struct DeleteStmt
 	Node	   *whereClause;	/* qualifications */
 	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
-	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
-	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
 } DeleteStmt;
 
 /* ----------------------
@@ -2133,8 +2139,6 @@ typedef struct UpdateStmt
 	List	   *fromClause;		/* optional from clause for more tables */
 	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
-	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
-	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
 } UpdateStmt;
 
 /* ----------------------
@@ -2150,8 +2154,6 @@ typedef struct MergeStmt
 	List	   *mergeWhenClauses;	/* list of MergeWhenClause(es) */
 	ReturningClause *returningClause;	/* RETURNING clause */
 	WithClause *withClause;		/* WITH clause */
-	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
-	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
 } MergeStmt;
 
 /* ----------------------
@@ -2221,8 +2223,6 @@ typedef struct SelectStmt
 	bool		all;			/* ALL specified? */
 	struct SelectStmt *larg;	/* left child */
 	struct SelectStmt *rarg;	/* right child */
-	ParseLoc	stmt_location;	/* start location, or -1 if unknown */
-	ParseLoc	stmt_len;		/* length in bytes; 0 means "rest of string" */
 	/* Eventually add fields for CORRESPONDING spec here */
 } SelectStmt;
 
