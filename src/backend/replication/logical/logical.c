@@ -29,6 +29,7 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "access/xlog_internal.h"
 #include "access/xlogutils.h"
 #include "fmgr.h"
 #include "miscadmin.h"
@@ -41,6 +42,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/builtins.h"
+#include "utils/injection_point.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 
@@ -1844,8 +1846,12 @@ LogicalConfirmReceivedLocation(XLogRecPtr lsn)
 	{
 		bool		updated_xmin = false;
 		bool		updated_restart = false;
+		XLogRecPtr	restart_lsn pg_attribute_unused();
 
 		SpinLockAcquire(&MyReplicationSlot->mutex);
+
+		/* remember the old restart lsn */
+		restart_lsn = MyReplicationSlot->data.restart_lsn;
 
 		/*
 		 * Prevent moving the confirmed_flush backwards, as this could lead to
@@ -1897,9 +1903,29 @@ LogicalConfirmReceivedLocation(XLogRecPtr lsn)
 
 		SpinLockRelease(&MyReplicationSlot->mutex);
 
-		/* first write new xmin to disk, so we know what's up after a crash */
+		/*
+		 * First, write new xmin and restart_lsn to disk so we know what's up
+		 * after a crash.  Even when we do this, the checkpointer can see the
+		 * updated restart_lsn value in the shared memory; then, a crash can
+		 * happen before we manage to write that value to the disk.  Thus,
+		 * checkpointer still needs to make special efforts to keep WAL
+		 * segments required by the restart_lsn written to the disk.  See
+		 * CreateCheckPoint() and CreateRestartPoint() for details.
+		 */
 		if (updated_xmin || updated_restart)
 		{
+#ifdef USE_INJECTION_POINTS
+			XLogSegNo	seg1,
+						seg2;
+
+			XLByteToSeg(restart_lsn, seg1, wal_segment_size);
+			XLByteToSeg(MyReplicationSlot->data.restart_lsn, seg2, wal_segment_size);
+
+			/* trigger injection point, but only if segment changes */
+			if (seg1 != seg2)
+				INJECTION_POINT("logical-replication-slot-advance-segment");
+#endif
+
 			ReplicationSlotMarkDirty();
 			ReplicationSlotSave();
 			elog(DEBUG1, "updated xmin: %u restart: %u", updated_xmin, updated_restart);
