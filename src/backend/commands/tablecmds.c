@@ -7374,7 +7374,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	/* make sure datatype is legal for a column */
 	CheckAttributeType(NameStr(attribute->attname), attribute->atttypid, attribute->attcollation,
 					   list_make1_oid(rel->rd_rel->reltype),
-					   0);
+					   (attribute->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL ? CHKATYPE_IS_VIRTUAL : 0));
 
 	InsertPgAttributeTuples(attrdesc, tupdesc, myrelid, NULL, NULL);
 
@@ -8609,7 +8609,7 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 		rel->rd_att->constr && rel->rd_att->constr->num_check > 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns on tables with check constraints"),
+				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns in tables with check constraints"),
 				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
 						   colName, RelationGetRelationName(rel))));
 
@@ -8627,7 +8627,7 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 		GetRelationPublications(RelationGetRelid(rel)) != NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns on tables that are part of a publication"),
+				 errmsg("ALTER TABLE / SET EXPRESSION is not supported for virtual generated columns in tables that are part of a publication"),
 				 errdetail("Column \"%s\" of relation \"%s\" is a virtual generated column.",
 						   colName, RelationGetRelationName(rel))));
 
@@ -10189,7 +10189,7 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	if (pk_has_without_overlaps && !with_period)
 		ereport(ERROR,
 				errcode(ERRCODE_INVALID_FOREIGN_KEY),
-				errmsg("foreign key must use PERIOD when referencing a primary using WITHOUT OVERLAPS"));
+				errmsg("foreign key must use PERIOD when referencing a primary key using WITHOUT OVERLAPS"));
 
 	/*
 	 * Now we can check permissions.
@@ -10330,8 +10330,8 @@ ATAddForeignKeyConstraint(List **wqueue, AlteredTableInfo *tab, Relation rel,
 					for_overlaps
 					? errmsg("could not identify an overlaps operator for foreign key")
 					: errmsg("could not identify an equality operator for foreign key"),
-					errdetail("Could not translate compare type %d for operator family \"%s\", input type %s, access method \"%s\".",
-							  cmptype, get_opfamily_name(opfamily, false), format_type_be(opcintype), get_am_name(amid)));
+					errdetail("Could not translate compare type %d for operator family \"%s\" of access method \"%s\".",
+							  cmptype, get_opfamily_name(opfamily, false), get_am_name(amid)));
 
 		/*
 		 * There had better be a primary equality operator for the index.
@@ -12913,8 +12913,9 @@ ATExecValidateConstraint(List **wqueue, Relation rel, char *constrName,
 		con->contype != CONSTRAINT_NOTNULL)
 		ereport(ERROR,
 				errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				errmsg("constraint \"%s\" of relation \"%s\" is not a foreign key, check, or not-null constraint",
-					   constrName, RelationGetRelationName(rel)));
+				errmsg("cannot validate constraint \"%s\" of relation \"%s\"",
+					   constrName, RelationGetRelationName(rel)),
+				errdetail("This operation is not supported for this type of constraint."));
 
 	if (!con->conenforced)
 		ereport(ERROR,
@@ -14426,7 +14427,7 @@ ATPrepAlterColumnType(List **wqueue,
 	/* make sure datatype is legal for a column */
 	CheckAttributeType(colName, targettype, targetcollid,
 					   list_make1_oid(rel->rd_rel->reltype),
-					   0);
+					   (attTup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL ? CHKATYPE_IS_VIRTUAL : 0));
 
 	if (attTup->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
 	{
@@ -14483,6 +14484,9 @@ ATPrepAlterColumnType(List **wqueue,
 
 		/* Fix collations after all else */
 		assign_expr_collations(pstate, transform);
+
+		/* Expand virtual generated columns in the expr. */
+		transform = expand_generated_columns_in_expr(transform, rel, 1);
 
 		/* Plan the expr now so we can accurately assess the need to rewrite. */
 		transform = (Node *) expression_planner((Expr *) transform);
