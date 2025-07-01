@@ -26753,6 +26753,23 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>to_regdatabase</primary>
+        </indexterm>
+        <function>to_regdatabase</function> ( <type>text</type> )
+        <returnvalue>regdatabase</returnvalue>
+       </para>
+       <para>
+        Translates a textual database name to its OID.  A similar result is
+        obtained by casting the string to type <type>regdatabase</type> (see
+        <xref linkend="datatype-oid"/>); however, this function will return
+        <literal>NULL</literal> rather than throwing an error if the name is
+        not found.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>to_regcollation</primary>
         </indexterm>
         <function>to_regcollation</function> ( <type>text</type> )
@@ -29981,7 +29998,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         logical decoding and must be dropped after promotion. See
         <xref linkend="logicaldecoding-replication-slots-synchronization"/> for details.
         Note that this function is primarily intended for testing and
-        debugging purposes and should be used with caution. Additionaly,
+        debugging purposes and should be used with caution. Additionally,
         this function cannot be executed if
         <link linkend="guc-sync-replication-slots"><varname>
         sync_replication_slots</varname></link> is enabled and the slotsync
