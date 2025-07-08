@@ -5,10 +5,22 @@ SELECT set_val_in_shmem(1236);
  
 (1 row)
 
+SELECT set_val_in_hash('test', '1414');
+ set_val_in_hash 
+-----------------
+ 
+(1 row)
+
 \c
 SELECT get_val_in_shmem();
  get_val_in_shmem 
 ------------------
              1236
+(1 row)
+
+SELECT get_val_in_hash('test');
+ get_val_in_hash 
+-----------------
+ 1414
 (1 row)
 
