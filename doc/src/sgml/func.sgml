@@ -11247,10 +11247,10 @@ now()
     statement (more specifically, the time of receipt of the latest command
     message from the client).
     <function>statement_timestamp()</function> and <function>transaction_timestamp()</function>
-    return the same value during the first command of a transaction, but might
-    differ during subsequent commands.
+    return the same value during the first statement of a transaction, but might
+    differ during subsequent statements.
     <function>clock_timestamp()</function> returns the actual current time, and
-    therefore its value changes even within a single SQL command.
+    therefore its value changes even within a single SQL statement.
     <function>timeofday()</function> is a historical
     <productname>PostgreSQL</productname> function.  Like
     <function>clock_timestamp()</function>, it returns the actual current time,
@@ -28521,7 +28521,7 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
         Returns information about the progress of the WAL summarizer. If the
         WAL summarizer has never run since the instance was started, then
         <literal>summarized_tli</literal> and <literal>summarized_lsn</literal>
-        will be <literal>0</literal> and <literal>0/0</literal> respectively;
+        will be <literal>0</literal> and <literal>0/00000000</literal> respectively;
         otherwise, they will be the TLI and ending LSN of the last WAL summary
         file written to disk. If the WAL summarizer is currently running,
         <literal>pending_lsn</literal> will be the ending LSN of the last
@@ -28973,7 +28973,7 @@ LOG:  Grand total: 1651920 bytes in 201 blocks; 622360 free (88 chunks); 1029560
         will be stored.)
         If the optional second parameter is given as <literal>true</literal>,
         it specifies executing <function>pg_backup_start</function> as quickly
-        as possible.  This forces an immediate checkpoint which will cause a
+        as possible.  This forces a fast checkpoint which will cause a
         spike in I/O operations, slowing any concurrently executing queries.
        </para>
        <para>

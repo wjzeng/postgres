@@ -1198,6 +1198,19 @@ Alter_procedure_options, "COST", "IMMUTABLE", "LEAKPROOF", "NOT LEAKPROOF", \
 Alter_routine_options, "CALLED ON NULL INPUT", "RETURNS NULL ON NULL INPUT", \
 "STRICT", "SUPPORT"
 
+/* COPY options shared between FROM and TO */
+#define Copy_common_options \
+"DELIMITER", "ENCODING", "ESCAPE", "FORMAT", "HEADER", "NULL", "QUOTE"
+
+/* COPY FROM options */
+#define Copy_from_options \
+Copy_common_options, "DEFAULT", "FORCE_NOT_NULL", "FORCE_NULL", "FREEZE", \
+"LOG_VERBOSITY", "ON_ERROR", "REJECT_LIMIT"
+
+/* COPY TO options */
+#define Copy_to_options \
+Copy_common_options, "FORCE_QUOTE"
+
 /*
  * These object types were introduced later than our support cutoff of
  * server version 9.2.  We use the VersionedQuery infrastructure so that
@@ -3140,6 +3153,22 @@ match_previous_words(int pattern_id,
 		COMPLETE_WITH_VERSIONED_SCHEMA_QUERY(Query_for_list_of_procedures);
 	else if (Matches("CALL", MatchAny))
 		COMPLETE_WITH("(");
+/* CHECKPOINT */
+	else if (Matches("CHECKPOINT"))
+		COMPLETE_WITH("(");
+	else if (HeadMatches("CHECKPOINT", "(*") &&
+			 !HeadMatches("CHECKPOINT", "(*)"))
+	{
+		/*
+		 * This fires if we're in an unfinished parenthesized option list.
+		 * get_previous_words treats a completed parenthesized option list as
+		 * one word, so the above test is correct.
+		 */
+		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
+			COMPLETE_WITH("MODE", "FLUSH_UNLOGGED");
+		else if (TailMatches("MODE"))
+			COMPLETE_WITH("FAST", "SPREAD");
+	}
 /* CLOSE */
 	else if (Matches("CLOSE"))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_cursors,
@@ -3299,23 +3328,24 @@ match_previous_words(int pattern_id,
 	else if (Matches("COPY|\\copy", MatchAny, "FROM", MatchAny))
 		COMPLETE_WITH("WITH (", "WHERE");
 
-	/* Complete COPY <sth> FROM|TO filename WITH ( */
-	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "WITH", "("))
-		COMPLETE_WITH("FORMAT", "FREEZE", "DELIMITER", "NULL",
-					  "HEADER", "QUOTE", "ESCAPE", "FORCE_QUOTE",
-					  "FORCE_NOT_NULL", "FORCE_NULL", "ENCODING", "DEFAULT",
-					  "ON_ERROR", "LOG_VERBOSITY", "REJECT_LIMIT");
+	/* Complete COPY <sth> FROM filename WITH ( */
+	else if (Matches("COPY|\\copy", MatchAny, "FROM", MatchAny, "WITH", "("))
+		COMPLETE_WITH(Copy_from_options);
+
+	/* Complete COPY <sth> TO filename WITH ( */
+	else if (Matches("COPY|\\copy", MatchAny, "TO", MatchAny, "WITH", "("))
+		COMPLETE_WITH(Copy_to_options);
 
 	/* Complete COPY <sth> FROM|TO filename WITH (FORMAT */
 	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "WITH", "(", "FORMAT"))
 		COMPLETE_WITH("binary", "csv", "text");
 
 	/* Complete COPY <sth> FROM filename WITH (ON_ERROR */
-	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "WITH", "(", "ON_ERROR"))
+	else if (Matches("COPY|\\copy", MatchAny, "FROM", MatchAny, "WITH", "(", "ON_ERROR"))
 		COMPLETE_WITH("stop", "ignore");
 
 	/* Complete COPY <sth> FROM filename WITH (LOG_VERBOSITY */
-	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "WITH", "(", "LOG_VERBOSITY"))
+	else if (Matches("COPY|\\copy", MatchAny, "FROM", MatchAny, "WITH", "(", "LOG_VERBOSITY"))
 		COMPLETE_WITH("silent", "default", "verbose");
 
 	/* Complete COPY <sth> FROM <sth> WITH (<options>) */
@@ -4589,10 +4619,14 @@ match_previous_words(int pattern_id,
 	else if (Matches("ALTER", "DEFAULT", "PRIVILEGES", MatchAnyN, "TO", MatchAny))
 		COMPLETE_WITH("WITH GRANT OPTION");
 	/* Complete "GRANT/REVOKE ... ON * *" with TO/FROM */
-	else if (Matches("GRANT", MatchAnyN, "ON", MatchAny, MatchAny))
-		COMPLETE_WITH("TO");
-	else if (Matches("REVOKE", MatchAnyN, "ON", MatchAny, MatchAny))
-		COMPLETE_WITH("FROM");
+	else if (Matches("GRANT|REVOKE", MatchAnyN, "ON", MatchAny, MatchAny) &&
+			 !TailMatches("FOREIGN", "SERVER") && !TailMatches("LARGE", "OBJECT"))
+	{
+		if (Matches("GRANT", MatchAnyN, "ON", MatchAny, MatchAny))
+			COMPLETE_WITH("TO");
+		else
+			COMPLETE_WITH("FROM");
+	}
 
 	/* Complete "GRANT/REVOKE * ON ALL * IN SCHEMA *" with TO/FROM */
 	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "ALL", MatchAny, "IN", "SCHEMA", MatchAny) ||
@@ -4619,6 +4653,26 @@ match_previous_words(int pattern_id,
 			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "FOREIGN", "SERVER", MatchAny))
 	{
 		if (TailMatches("GRANT", MatchAny, MatchAny, MatchAny, MatchAny, MatchAny))
+			COMPLETE_WITH("TO");
+		else
+			COMPLETE_WITH("FROM");
+	}
+
+	/* Complete "GRANT/REVOKE * ON LARGE OBJECT *" with TO/FROM */
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "LARGE", "OBJECT", MatchAny) ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "LARGE", "OBJECT", MatchAny))
+	{
+		if (TailMatches("GRANT", MatchAny, MatchAny, MatchAny, MatchAny, MatchAny))
+			COMPLETE_WITH("TO");
+		else
+			COMPLETE_WITH("FROM");
+	}
+
+	/* Complete "GRANT/REVOKE * ON LARGE OBJECTS" with TO/FROM */
+	else if (TailMatches("GRANT|REVOKE", MatchAny, "ON", "LARGE", "OBJECTS") ||
+			 TailMatches("REVOKE", "GRANT", "OPTION", "FOR", MatchAny, "ON", "LARGE", "OBJECTS"))
+	{
+		if (TailMatches("GRANT", MatchAny, MatchAny, MatchAny, MatchAny))
 			COMPLETE_WITH("TO");
 		else
 			COMPLETE_WITH("FROM");

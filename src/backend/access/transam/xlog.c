@@ -449,7 +449,6 @@ typedef struct XLogCtlData
 	/* Protected by info_lck: */
 	XLogwrtRqst LogwrtRqst;
 	XLogRecPtr	RedoRecPtr;		/* a recent copy of Insert->RedoRecPtr */
-	FullTransactionId ckptFullXid;	/* nextXid of latest checkpoint */
 	XLogRecPtr	asyncXactLSN;	/* LSN of newest async commit/abort */
 	XLogRecPtr	replicationSlotMinLSN;	/* oldest LSN needed by any slot */
 
@@ -2340,25 +2339,6 @@ check_wal_segment_size(int *newval, void **extra, GucSource source)
 	if (!IsValidWalSegSize(*newval))
 	{
 		GUC_check_errdetail("The WAL segment size must be a power of two between 1 MB and 1 GB.");
-		return false;
-	}
-
-	return true;
-}
-
-/*
- * GUC check_hook for max_slot_wal_keep_size
- *
- * We don't allow the value of max_slot_wal_keep_size other than -1 during the
- * binary upgrade. See start_postmaster() in pg_upgrade for more details.
- */
-bool
-check_max_slot_wal_keep_size(int *newval, void **extra, GucSource source)
-{
-	if (IsBinaryUpgrade && *newval != -1)
-	{
-		GUC_check_errdetail("\"%s\" must be set to -1 during binary upgrade mode.",
-							"max_slot_wal_keep_size");
 		return false;
 	}
 
@@ -5763,7 +5743,6 @@ StartupXLOG(void)
 	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB, true);
 	SetCommitTsLimit(checkPoint.oldestCommitTsXid,
 					 checkPoint.newestCommitTsXid);
-	XLogCtl->ckptFullXid = checkPoint.nextXid;
 
 	/*
 	 * Clear out any old relcache cache files.  This is *necessary* if we do
@@ -6505,7 +6484,7 @@ PerformRecoveryXLogAction(void)
 	else
 	{
 		RequestCheckpoint(CHECKPOINT_END_OF_RECOVERY |
-						  CHECKPOINT_IMMEDIATE |
+						  CHECKPOINT_FAST |
 						  CHECKPOINT_WAIT);
 	}
 
@@ -6814,7 +6793,7 @@ ShutdownXLOG(int code, Datum arg)
 	WalSndWaitStopping();
 
 	if (RecoveryInProgress())
-		CreateRestartPoint(CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_IMMEDIATE);
+		CreateRestartPoint(CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_FAST);
 	else
 	{
 		/*
@@ -6826,7 +6805,7 @@ ShutdownXLOG(int code, Datum arg)
 		if (XLogArchivingActive())
 			RequestXLogSwitch(false);
 
-		CreateCheckPoint(CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_IMMEDIATE);
+		CreateCheckPoint(CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_FAST);
 	}
 }
 
@@ -6842,24 +6821,24 @@ LogCheckpointStart(int flags, bool restartpoint)
 				(errmsg("restartpoint starting:%s%s%s%s%s%s%s%s",
 						(flags & CHECKPOINT_IS_SHUTDOWN) ? " shutdown" : "",
 						(flags & CHECKPOINT_END_OF_RECOVERY) ? " end-of-recovery" : "",
-						(flags & CHECKPOINT_IMMEDIATE) ? " immediate" : "",
+						(flags & CHECKPOINT_FAST) ? " fast" : "",
 						(flags & CHECKPOINT_FORCE) ? " force" : "",
 						(flags & CHECKPOINT_WAIT) ? " wait" : "",
 						(flags & CHECKPOINT_CAUSE_XLOG) ? " wal" : "",
 						(flags & CHECKPOINT_CAUSE_TIME) ? " time" : "",
-						(flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "")));
+						(flags & CHECKPOINT_FLUSH_UNLOGGED) ? " flush-unlogged" : "")));
 	else
 		ereport(LOG,
 		/* translator: the placeholders show checkpoint options */
 				(errmsg("checkpoint starting:%s%s%s%s%s%s%s%s",
 						(flags & CHECKPOINT_IS_SHUTDOWN) ? " shutdown" : "",
 						(flags & CHECKPOINT_END_OF_RECOVERY) ? " end-of-recovery" : "",
-						(flags & CHECKPOINT_IMMEDIATE) ? " immediate" : "",
+						(flags & CHECKPOINT_FAST) ? " fast" : "",
 						(flags & CHECKPOINT_FORCE) ? " force" : "",
 						(flags & CHECKPOINT_WAIT) ? " wait" : "",
 						(flags & CHECKPOINT_CAUSE_XLOG) ? " wal" : "",
 						(flags & CHECKPOINT_CAUSE_TIME) ? " time" : "",
-						(flags & CHECKPOINT_FLUSH_ALL) ? " flush-all" : "")));
+						(flags & CHECKPOINT_FLUSH_UNLOGGED) ? " flush-unlogged" : "")));
 }
 
 /*
@@ -7042,12 +7021,12 @@ update_checkpoint_display(int flags, bool restartpoint, bool reset)
  * flags is a bitwise OR of the following:
  *	CHECKPOINT_IS_SHUTDOWN: checkpoint is for database shutdown.
  *	CHECKPOINT_END_OF_RECOVERY: checkpoint is for end of WAL recovery.
- *	CHECKPOINT_IMMEDIATE: finish the checkpoint ASAP,
- *		ignoring checkpoint_completion_target parameter.
+ *	CHECKPOINT_FAST: finish the checkpoint ASAP, ignoring
+ *		checkpoint_completion_target parameter.
  *	CHECKPOINT_FORCE: force a checkpoint even if no XLOG activity has occurred
  *		since the last one (implied by CHECKPOINT_IS_SHUTDOWN or
  *		CHECKPOINT_END_OF_RECOVERY).
- *	CHECKPOINT_FLUSH_ALL: also flush buffers of unlogged tables.
+ *	CHECKPOINT_FLUSH_UNLOGGED: also flush buffers of unlogged tables.
  *
  * Note: flags contains other bits, of interest here only for logging purposes.
  * In particular note that this routine is synchronous and does not pay
@@ -7455,11 +7434,6 @@ CreateCheckPoint(int flags)
 
 	UpdateControlFile();
 	LWLockRelease(ControlFileLock);
-
-	/* Update shared-memory copy of checkpoint XID/epoch */
-	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->ckptFullXid = checkPoint.nextXid;
-	SpinLockRelease(&XLogCtl->info_lck);
 
 	/*
 	 * We are now done with critical updates; no need for system panic if we
@@ -8150,17 +8124,19 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 	XLByteToSeg(recptr, currSegNo, wal_segment_size);
 	segno = currSegNo;
 
-	/*
-	 * Calculate how many segments are kept by slots first, adjusting for
-	 * max_slot_wal_keep_size.
-	 */
+	/* Calculate how many segments are kept by slots. */
 	keep = XLogGetReplicationSlotMinimumLSN();
 	if (keep != InvalidXLogRecPtr && keep < recptr)
 	{
 		XLByteToSeg(keep, segno, wal_segment_size);
 
-		/* Cap by max_slot_wal_keep_size ... */
-		if (max_slot_wal_keep_size_mb >= 0)
+		/*
+		 * Account for max_slot_wal_keep_size to avoid keeping more than
+		 * configured.  However, don't do that during a binary upgrade: if
+		 * slots were to be invalidated because of this, it would not be
+		 * possible to preserve logical ones during the upgrade.
+		 */
+		if (max_slot_wal_keep_size_mb >= 0 && !IsBinaryUpgrade)
 		{
 			uint64		slot_keep_segs;
 
@@ -8533,11 +8509,6 @@ xlog_redo(XLogReaderState *record)
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
 		LWLockRelease(ControlFileLock);
 
-		/* Update shared-memory copy of checkpoint XID/epoch */
-		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->ckptFullXid = checkPoint.nextXid;
-		SpinLockRelease(&XLogCtl->info_lck);
-
 		/*
 		 * We should've already switched to the new TLI before replaying this
 		 * record.
@@ -8593,11 +8564,6 @@ xlog_redo(XLogReaderState *record)
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
 		LWLockRelease(ControlFileLock);
-
-		/* Update shared-memory copy of checkpoint XID/epoch */
-		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->ckptFullXid = checkPoint.nextXid;
-		SpinLockRelease(&XLogCtl->info_lck);
 
 		/* TLI should not change in an on-line checkpoint */
 		(void) GetCurrentReplayRecPtr(&replayTLI);
@@ -8946,9 +8912,8 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
  * backup state and tablespace map.
  *
  * Input parameters are "state" (the backup state), "fast" (if true, we do
- * the checkpoint in immediate mode to make it faster), and "tablespaces"
- * (if non-NULL, indicates a list of tablespaceinfo structs describing the
- * cluster's tablespaces.).
+ * the checkpoint in fast mode), and "tablespaces" (if non-NULL, indicates a
+ * list of tablespaceinfo structs describing the cluster's tablespaces.).
  *
  * The tablespace map contents are appended to passed-in parameter
  * tablespace_map and the caller is responsible for including it in the backup
@@ -9076,11 +9041,11 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 			 * during recovery means that checkpointer is running, we can use
 			 * RequestCheckpoint() to establish a restartpoint.
 			 *
-			 * We use CHECKPOINT_IMMEDIATE only if requested by user (via
-			 * passing fast = true).  Otherwise this can take awhile.
+			 * We use CHECKPOINT_FAST only if requested by user (via passing
+			 * fast = true).  Otherwise this can take awhile.
 			 */
 			RequestCheckpoint(CHECKPOINT_FORCE | CHECKPOINT_WAIT |
-							  (fast ? CHECKPOINT_IMMEDIATE : 0));
+							  (fast ? CHECKPOINT_FAST : 0));
 
 			/*
 			 * Now we need to fetch the checkpoint record location, and also

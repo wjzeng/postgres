@@ -42,6 +42,8 @@
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xlogrecovery.h"
+#include "catalog/pg_authid.h"
+#include "commands/defrem.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -61,6 +63,7 @@
 #include "storage/shmem.h"
 #include "storage/smgr.h"
 #include "storage/spin.h"
+#include "utils/acl.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -161,7 +164,7 @@ static pg_time_t last_xlog_switch_time;
 static void ProcessCheckpointerInterrupts(void);
 static void CheckArchiveTimeout(void);
 static bool IsCheckpointOnSchedule(double progress);
-static bool ImmediateCheckpointRequested(void);
+static bool FastCheckpointRequested(void);
 static bool CompactCheckpointerRequestQueue(void);
 static void UpdateSharedMemoryConfig(void);
 
@@ -734,12 +737,12 @@ CheckArchiveTimeout(void)
 }
 
 /*
- * Returns true if an immediate checkpoint request is pending.  (Note that
- * this does not check the *current* checkpoint's IMMEDIATE flag, but whether
- * there is one pending behind it.)
+ * Returns true if a fast checkpoint request is pending.  (Note that this does
+ * not check the *current* checkpoint's FAST flag, but whether there is one
+ * pending behind it.)
  */
 static bool
-ImmediateCheckpointRequested(void)
+FastCheckpointRequested(void)
 {
 	volatile CheckpointerShmemStruct *cps = CheckpointerShmem;
 
@@ -747,7 +750,7 @@ ImmediateCheckpointRequested(void)
 	 * We don't need to acquire the ckpt_lck in this case because we're only
 	 * looking at a single flag bit.
 	 */
-	if (cps->ckpt_flags & CHECKPOINT_IMMEDIATE)
+	if (cps->ckpt_flags & CHECKPOINT_FAST)
 		return true;
 	return false;
 }
@@ -760,7 +763,7 @@ ImmediateCheckpointRequested(void)
  * checkpoint_completion_target.
  *
  * The checkpoint request flags should be passed in; currently the only one
- * examined is CHECKPOINT_IMMEDIATE, which disables delays between writes.
+ * examined is CHECKPOINT_FAST, which disables delays between writes.
  *
  * 'progress' is an estimate of how much of the work has been done, as a
  * fraction between 0.0 meaning none, and 1.0 meaning all done.
@@ -778,10 +781,10 @@ CheckpointWriteDelay(int flags, double progress)
 	 * Perform the usual duties and take a nap, unless we're behind schedule,
 	 * in which case we just try to catch up as quickly as possible.
 	 */
-	if (!(flags & CHECKPOINT_IMMEDIATE) &&
+	if (!(flags & CHECKPOINT_FAST) &&
 		!ShutdownXLOGPending &&
 		!ShutdownRequestPending &&
-		!ImmediateCheckpointRequested() &&
+		!FastCheckpointRequested() &&
 		IsCheckpointOnSchedule(progress))
 	{
 		if (ConfigReloadPending)
@@ -977,17 +980,67 @@ CheckpointerShmemInit(void)
 }
 
 /*
+ * ExecCheckpoint
+ *		Primary entry point for manual CHECKPOINT commands
+ *
+ * This is mainly a wrapper for RequestCheckpoint().
+ */
+void
+ExecCheckpoint(ParseState *pstate, CheckPointStmt *stmt)
+{
+	bool		fast = true;
+	bool		unlogged = false;
+
+	foreach_ptr(DefElem, opt, stmt->options)
+	{
+		if (strcmp(opt->defname, "mode") == 0)
+		{
+			char	   *mode = defGetString(opt);
+
+			if (strcmp(mode, "spread") == 0)
+				fast = false;
+			else if (strcmp(mode, "fast") != 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("unrecognized MODE option \"%s\"", mode),
+						 parser_errposition(pstate, opt->location)));
+		}
+		else if (strcmp(opt->defname, "flush_unlogged") == 0)
+			unlogged = defGetBoolean(opt);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized CHECKPOINT option \"%s\"", opt->defname),
+					 parser_errposition(pstate, opt->location)));
+	}
+
+	if (!has_privs_of_role(GetUserId(), ROLE_PG_CHECKPOINT))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+		/* translator: %s is name of an SQL command (e.g., CHECKPOINT) */
+				 errmsg("permission denied to execute %s command",
+						"CHECKPOINT"),
+				 errdetail("Only roles with privileges of the \"%s\" role may execute this command.",
+						   "pg_checkpoint")));
+
+	RequestCheckpoint(CHECKPOINT_WAIT |
+					  (fast ? CHECKPOINT_FAST : 0) |
+					  (unlogged ? CHECKPOINT_FLUSH_UNLOGGED : 0) |
+					  (RecoveryInProgress() ? 0 : CHECKPOINT_FORCE));
+}
+
+/*
  * RequestCheckpoint
  *		Called in backend processes to request a checkpoint
  *
  * flags is a bitwise OR of the following:
  *	CHECKPOINT_IS_SHUTDOWN: checkpoint is for database shutdown.
  *	CHECKPOINT_END_OF_RECOVERY: checkpoint is for end of WAL recovery.
- *	CHECKPOINT_IMMEDIATE: finish the checkpoint ASAP,
+ *	CHECKPOINT_FAST: finish the checkpoint ASAP,
  *		ignoring checkpoint_completion_target parameter.
  *	CHECKPOINT_FORCE: force a checkpoint even if no XLOG activity has occurred
  *		since the last one (implied by CHECKPOINT_IS_SHUTDOWN or
- *		CHECKPOINT_END_OF_RECOVERY).
+ *		CHECKPOINT_END_OF_RECOVERY, and the CHECKPOINT command).
  *	CHECKPOINT_WAIT: wait for completion before returning (otherwise,
  *		just signal checkpointer to do it, and return).
  *	CHECKPOINT_CAUSE_XLOG: checkpoint is requested due to xlog filling.
@@ -1009,7 +1062,7 @@ RequestCheckpoint(int flags)
 		 * There's no point in doing slow checkpoints in a standalone backend,
 		 * because there's no other backends the checkpoint could disrupt.
 		 */
-		CreateCheckPoint(flags | CHECKPOINT_IMMEDIATE);
+		CreateCheckPoint(flags | CHECKPOINT_FAST);
 
 		/* Free all smgr objects, as CheckpointerMain() normally would. */
 		smgrdestroyall();
