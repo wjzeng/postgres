@@ -1002,7 +1002,7 @@ static const SchemaQuery Query_for_trigger_of_table = {
 
 #define Query_for_list_of_database_vars \
 "SELECT conf FROM ("\
-"       SELECT setdatabase, pg_catalog.split_part(unnest(setconfig),'=',1) conf"\
+"       SELECT setdatabase, pg_catalog.split_part(pg_catalog.unnest(setconfig),'=',1) conf"\
 "         FROM pg_db_role_setting "\
 "       ) s, pg_database d "\
 " WHERE s.setdatabase = d.oid "\
@@ -1078,9 +1078,12 @@ Keywords_for_list_of_owner_roles, "PUBLIC"
 "  WHERE usename LIKE '%s'"
 
 #define Query_for_list_of_user_vars \
-" SELECT pg_catalog.split_part(pg_catalog.unnest(rolconfig),'=',1) "\
-"   FROM pg_catalog.pg_roles "\
-"  WHERE rolname LIKE '%s'"
+"SELECT conf FROM ("\
+"       SELECT rolname, pg_catalog.split_part(pg_catalog.unnest(rolconfig),'=',1) conf"\
+"         FROM pg_catalog.pg_roles"\
+"       ) s"\
+"  WHERE s.conf like '%s' "\
+"    AND s.rolname LIKE '%s'"
 
 #define Query_for_list_of_access_methods \
 " SELECT amname "\
@@ -1907,11 +1910,11 @@ psql_completion(const char *text, int start, int end)
 		"\\out",
 		"\\parse", "\\password", "\\print", "\\prompt", "\\pset",
 		"\\qecho", "\\quit",
-		"\\reset",
+		"\\reset", "\\restrict",
 		"\\s", "\\sendpipeline", "\\set", "\\setenv", "\\sf",
 		"\\startpipeline", "\\sv", "\\syncpipeline",
 		"\\t", "\\T", "\\timing",
-		"\\unset",
+		"\\unrestrict", "\\unset",
 		"\\x",
 		"\\warn", "\\watch", "\\write",
 		"\\z",
@@ -2508,7 +2511,10 @@ match_previous_words(int pattern_id,
 
 	/* ALTER USER,ROLE <name> RESET */
 	else if (Matches("ALTER", "USER|ROLE", MatchAny, "RESET"))
+	{
+		set_completion_reference(prev2_wd);
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_user_vars, "ALL");
+	}
 
 	/* ALTER USER,ROLE <name> WITH */
 	else if (Matches("ALTER", "USER|ROLE", MatchAny, "WITH"))
@@ -4958,7 +4964,7 @@ match_previous_words(int pattern_id,
 	/* Complete with a variable name */
 	else if (TailMatches("SET|RESET") &&
 			 !TailMatches("UPDATE", MatchAny, "SET") &&
-			 !TailMatches("ALTER", "DATABASE", MatchAny, "RESET"))
+			 !TailMatches("ALTER", "DATABASE|USER|ROLE", MatchAny, "RESET"))
 		COMPLETE_WITH_QUERY_VERBATIM_PLUS(Query_for_list_of_set_vars,
 										  "CONSTRAINTS",
 										  "TRANSACTION",
