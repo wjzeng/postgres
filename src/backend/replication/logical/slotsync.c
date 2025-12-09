@@ -1175,10 +1175,10 @@ ProcessSlotSyncInterrupts(WalReceiverConn *wrconn)
 {
 	CHECK_FOR_INTERRUPTS();
 
-	if (ShutdownRequestPending)
+	if (SlotSyncCtx->stopSignaled)
 	{
 		ereport(LOG,
-				errmsg("replication slot synchronization worker is shutting down on receiving SIGINT"));
+				errmsg("replication slot synchronization worker is shutting down because promotion is triggered"));
 
 		proc_exit(0);
 	}
@@ -1338,7 +1338,7 @@ reset_syncing_flag()
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
 	syncing_slots = false;
-};
+}
 
 /*
  * The main loop of our worker process.
@@ -1409,7 +1409,7 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 
 	/* Setup signal handling */
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, SignalHandlerForShutdownRequest);
+	pqsignal(SIGINT, StatementCancelHandler);
 	pqsignal(SIGTERM, die);
 	pqsignal(SIGFPE, FloatExceptionHandler);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
@@ -1477,13 +1477,14 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	 */
 	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false,
 							app_name.data, &err);
-	pfree(app_name.data);
 
 	if (!wrconn)
 		ereport(ERROR,
 				errcode(ERRCODE_CONNECTION_FAILURE),
 				errmsg("synchronization worker \"%s\" could not connect to the primary server: %s",
 					   app_name.data, err));
+
+	pfree(app_name.data);
 
 	/*
 	 * Register the disconnection callback.
@@ -1515,7 +1516,8 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 
 	/*
 	 * The slot sync worker can't get here because it will only stop when it
-	 * receives a SIGINT from the startup process, or when there is an error.
+	 * receives a stop request from the startup process, or when there is an
+	 * error.
 	 */
 	Assert(false);
 }
@@ -1600,8 +1602,12 @@ ShutDownSlotSync(void)
 
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
+	/*
+	 * Signal slotsync worker if it was still running. The worker will stop
+	 * upon detecting that the stopSignaled flag is set to true.
+	 */
 	if (worker_pid != InvalidPid)
-		kill(worker_pid, SIGINT);
+		kill(worker_pid, SIGUSR1);
 
 	/* Wait for slot sync to end */
 	for (;;)

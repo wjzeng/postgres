@@ -25,6 +25,7 @@
 #include "postgres.h"
 
 #include "access/xlog.h"
+#include "executor/instrument.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -41,9 +42,9 @@ static bool backend_has_iostats = false;
 
 /*
  * WAL usage counters saved from pgWalUsage at the previous call to
- * pgstat_report_wal().  This is used to calculate how much WAL usage
- * happens between pgstat_report_wal() calls, by subtracting the previous
- * counters from the current ones.
+ * pgstat_flush_backend().  This is used to calculate how much WAL usage
+ * happens between pgstat_flush_backend() calls, by subtracting the
+ * previous counters from the current ones.
  */
 static WalUsage prevBackendWalUsage;
 

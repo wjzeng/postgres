@@ -42,6 +42,7 @@
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "partitioning/partdesc.h"
+#include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "statistics/statistics.h"
 #include "storage/bufmgr.h"
@@ -702,6 +703,11 @@ get_relation_foreign_keys(PlannerInfo *root, RelOptInfo *rel,
  * the purposes of inference.  If no opclass (or collation) is specified, then
  * all matching indexes (that may or may not match the default in terms of
  * each attribute opclass/collation) are used for inference.
+ *
+ * Note: during index CONCURRENTLY operations, different transactions may
+ * reference different sets of arbiter indexes. This can lead to false unique
+ * constraint violations that wouldn't occur during normal operations.  For
+ * more information, see insert.sgml.
  */
 List *
 infer_arbiter_indexes(PlannerInfo *root)
@@ -1391,6 +1397,14 @@ get_relation_constraints(PlannerInfo *root,
 		set_baserel_partition_constraint(relation, rel);
 		result = list_concat(result, rel->partition_qual);
 	}
+
+	/*
+	 * Expand virtual generated columns in the constraint expressions.
+	 */
+	if (result)
+		result = (List *) expand_generated_columns_in_expr((Node *) result,
+														   relation,
+														   varno);
 
 	table_close(relation, NoLock);
 
