@@ -852,10 +852,10 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 												   conflictindexes, false);
 
 		/*
-		 * Checks the conflict indexes to fetch the conflicting local tuple
-		 * and reports the conflict. We perform this check here, instead of
+		 * Checks the conflict indexes to fetch the conflicting local row and
+		 * reports the conflict. We perform this check here, instead of
 		 * performing an additional index scan before the actual insertion and
-		 * reporting the conflict if any conflicting tuples are found. This is
+		 * reporting the conflict if any conflicting rows are found. This is
 		 * to avoid the overhead of executing the extra scan for each INSERT
 		 * operation, even when no conflict arises, which could introduce
 		 * significant overhead to replication, particularly in cases where
@@ -1112,18 +1112,36 @@ CheckCmdReplicaIdentity(Relation rel, CmdType cmd)
 
 
 /*
- * Check if we support writing into specific relkind.
+ * Check if we support writing into specific relkind of local relation and check
+ * if it aligns with the relkind of the relation on the publisher.
  *
  * The nspname and relname are only needed for error reporting.
  */
 void
-CheckSubscriptionRelkind(char relkind, const char *nspname,
-						 const char *relname)
+CheckSubscriptionRelkind(char localrelkind, char remoterelkind,
+						 const char *nspname, const char *relname)
 {
-	if (relkind != RELKIND_RELATION && relkind != RELKIND_PARTITIONED_TABLE)
+	if (localrelkind != RELKIND_RELATION &&
+		localrelkind != RELKIND_PARTITIONED_TABLE &&
+		localrelkind != RELKIND_SEQUENCE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
 						nspname, relname),
-				 errdetail_relkind_not_supported(relkind)));
+				 errdetail_relkind_not_supported(localrelkind)));
+
+	/*
+	 * Allow RELKIND_RELATION and RELKIND_PARTITIONED_TABLE to be treated
+	 * interchangeably, but ensure that sequences (RELKIND_SEQUENCE) match
+	 * exactly on both publisher and subscriber.
+	 */
+	if ((localrelkind == RELKIND_SEQUENCE && remoterelkind != RELKIND_SEQUENCE) ||
+		(localrelkind != RELKIND_SEQUENCE && remoterelkind == RELKIND_SEQUENCE))
+		ereport(ERROR,
+				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+		/* translator: 3rd and 4th %s are "sequence" or "table" */
+				errmsg("relation \"%s.%s\" type mismatch: source \"%s\", target \"%s\"",
+					   nspname, relname,
+					   remoterelkind == RELKIND_SEQUENCE ? "sequence" : "table",
+					   localrelkind == RELKIND_SEQUENCE ? "sequence" : "table"));
 }

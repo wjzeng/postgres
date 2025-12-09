@@ -48,12 +48,6 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
-#define DSMR_NAME_LEN				128
-
-#define DSMR_DSA_TRANCHE_SUFFIX		" DSA"
-#define DSMR_DSA_TRANCHE_SUFFIX_LEN (sizeof(DSMR_DSA_TRANCHE_SUFFIX) - 1)
-#define DSMR_DSA_TRANCHE_NAME_LEN	(DSMR_NAME_LEN + DSMR_DSA_TRANCHE_SUFFIX_LEN)
-
 typedef struct DSMRegistryCtxStruct
 {
 	dsa_handle	dsah;
@@ -72,15 +66,13 @@ typedef struct NamedDSAState
 {
 	dsa_handle	handle;
 	int			tranche;
-	char		tranche_name[DSMR_DSA_TRANCHE_NAME_LEN];
 } NamedDSAState;
 
 typedef struct NamedDSHState
 {
-	NamedDSAState dsa;
-	dshash_table_handle handle;
+	dsa_handle dsa_handle;
+	dshash_table_handle dsh_handle;
 	int			tranche;
-	char		tranche_name[DSMR_NAME_LEN];
 } NamedDSHState;
 
 typedef enum DSMREntryType
@@ -99,14 +91,14 @@ static const char *const DSMREntryTypeNames[] =
 
 typedef struct DSMRegistryEntry
 {
-	char		name[DSMR_NAME_LEN];
+	char		name[NAMEDATALEN];
 	DSMREntryType type;
 	union
 	{
 		NamedDSMState dsm;
 		NamedDSAState dsa;
 		NamedDSHState dsh;
-	}			data;
+	};
 } DSMRegistryEntry;
 
 static const dshash_parameters dsh_params = {
@@ -163,9 +155,10 @@ init_dsm_registry(void)
 	{
 		/* Initialize dynamic shared hash table for registry. */
 		dsm_registry_dsa = dsa_create(LWTRANCHE_DSM_REGISTRY_DSA);
+		dsm_registry_table = dshash_create(dsm_registry_dsa, &dsh_params, NULL);
+
 		dsa_pin(dsm_registry_dsa);
 		dsa_pin_mapping(dsm_registry_dsa);
-		dsm_registry_table = dshash_create(dsm_registry_dsa, &dsh_params, NULL);
 
 		/* Store handles in shared memory for other backends to use. */
 		DSMRegistryCtx->dsah = dsa_get_handle(dsm_registry_dsa);
@@ -196,6 +189,8 @@ GetNamedDSMSegment(const char *name, size_t size,
 	DSMRegistryEntry *entry;
 	MemoryContext oldcontext;
 	void	   *ret;
+	NamedDSMState *state;
+	dsm_segment *seg;
 
 	Assert(found);
 
@@ -218,36 +213,36 @@ GetNamedDSMSegment(const char *name, size_t size,
 	init_dsm_registry();
 
 	entry = dshash_find_or_insert(dsm_registry_table, name, found);
+	state = &entry->dsm;
 	if (!(*found))
 	{
-		NamedDSMState *state = &entry->data.dsm;
-		dsm_segment *seg;
-
 		entry->type = DSMR_ENTRY_TYPE_DSM;
-
-		/* Initialize the segment. */
-		seg = dsm_create(size, 0);
-
-		dsm_pin_segment(seg);
-		dsm_pin_mapping(seg);
-		state->handle = dsm_segment_handle(seg);
+		state->handle = DSM_HANDLE_INVALID;
 		state->size = size;
-		ret = dsm_segment_address(seg);
-
-		if (init_callback)
-			(*init_callback) (ret);
 	}
 	else if (entry->type != DSMR_ENTRY_TYPE_DSM)
 		ereport(ERROR,
 				(errmsg("requested DSM segment does not match type of existing entry")));
-	else if (entry->data.dsm.size != size)
+	else if (state->size != size)
 		ereport(ERROR,
 				(errmsg("requested DSM segment size does not match size of existing segment")));
+
+	if (state->handle == DSM_HANDLE_INVALID)
+	{
+		*found = false;
+
+		/* Initialize the segment. */
+		seg = dsm_create(size, 0);
+
+		if (init_callback)
+			(*init_callback) (dsm_segment_address(seg));
+
+		dsm_pin_segment(seg);
+		dsm_pin_mapping(seg);
+		state->handle = dsm_segment_handle(seg);
+	}
 	else
 	{
-		NamedDSMState *state = &entry->data.dsm;
-		dsm_segment *seg;
-
 		/* If the existing segment is not already attached, attach it now. */
 		seg = dsm_find_mapping(state->handle);
 		if (seg == NULL)
@@ -258,10 +253,9 @@ GetNamedDSMSegment(const char *name, size_t size,
 
 			dsm_pin_mapping(seg);
 		}
-
-		ret = dsm_segment_address(seg);
 	}
 
+	ret = dsm_segment_address(seg);
 	dshash_release_lock(dsm_registry_table, entry);
 	MemoryContextSwitchTo(oldcontext);
 
@@ -282,6 +276,7 @@ GetNamedDSA(const char *name, bool *found)
 	DSMRegistryEntry *entry;
 	MemoryContext oldcontext;
 	dsa_area   *ret;
+	NamedDSAState *state;
 
 	Assert(found);
 
@@ -300,16 +295,28 @@ GetNamedDSA(const char *name, bool *found)
 	init_dsm_registry();
 
 	entry = dshash_find_or_insert(dsm_registry_table, name, found);
+	state = &entry->dsa;
 	if (!(*found))
 	{
-		NamedDSAState *state = &entry->data.dsa;
-
 		entry->type = DSMR_ENTRY_TYPE_DSA;
+		state->handle = DSA_HANDLE_INVALID;
+		state->tranche = -1;
+	}
+	else if (entry->type != DSMR_ENTRY_TYPE_DSA)
+		ereport(ERROR,
+				(errmsg("requested DSA does not match type of existing entry")));
+
+	if (state->tranche == -1)
+	{
+		*found = false;
 
 		/* Initialize the LWLock tranche for the DSA. */
-		state->tranche = LWLockNewTrancheId();
-		strcpy(state->tranche_name, name);
-		LWLockRegisterTranche(state->tranche, state->tranche_name);
+		state->tranche = LWLockNewTrancheId(name);
+	}
+
+	if (state->handle == DSA_HANDLE_INVALID)
+	{
+		*found = false;
 
 		/* Initialize the DSA. */
 		ret = dsa_create(state->tranche);
@@ -319,20 +326,11 @@ GetNamedDSA(const char *name, bool *found)
 		/* Store handle for other backends to use. */
 		state->handle = dsa_get_handle(ret);
 	}
-	else if (entry->type != DSMR_ENTRY_TYPE_DSA)
+	else if (dsa_is_attached(state->handle))
 		ereport(ERROR,
-				(errmsg("requested DSA does not match type of existing entry")));
+				(errmsg("requested DSA already attached to current process")));
 	else
 	{
-		NamedDSAState *state = &entry->data.dsa;
-
-		if (dsa_is_attached(state->handle))
-			ereport(ERROR,
-					(errmsg("requested DSA already attached to current process")));
-
-		/* Initialize existing LWLock tranche for the DSA. */
-		LWLockRegisterTranche(state->tranche, state->tranche_name);
-
 		/* Attach to existing DSA. */
 		ret = dsa_attach(state->handle);
 		dsa_pin_mapping(ret);
@@ -348,11 +346,10 @@ GetNamedDSA(const char *name, bool *found)
  * Initialize or attach a named dshash table.
  *
  * This routine returns the address of the table.  The tranche_id member of
- * params is ignored; new tranche IDs will be generated if needed.  Note that
- * the DSA lock tranche will be registered with the provided name with " DSA"
- * appended.  The dshash lock tranche will be registered with the provided
- * name.  Also note that this should be called at most once for a given table
- * in each backend.
+ * params is ignored; a new LWLock tranche ID will be generated if needed.
+ * Note that the lock tranche will be registered with the provided name.  Also
+ * note that this should be called at most once for a given table in each
+ * backend.
  */
 dshash_table *
 GetNamedDSHash(const char *name, const dshash_parameters *params, bool *found)
@@ -360,6 +357,7 @@ GetNamedDSHash(const char *name, const dshash_parameters *params, bool *found)
 	DSMRegistryEntry *entry;
 	MemoryContext oldcontext;
 	dshash_table *ret;
+	NamedDSHState *dsh_state;
 
 	Assert(params);
 	Assert(found);
@@ -379,64 +377,63 @@ GetNamedDSHash(const char *name, const dshash_parameters *params, bool *found)
 	init_dsm_registry();
 
 	entry = dshash_find_or_insert(dsm_registry_table, name, found);
+	dsh_state = &entry->dsh;
 	if (!(*found))
 	{
-		NamedDSAState *dsa_state = &entry->data.dsh.dsa;
-		NamedDSHState *dsh_state = &entry->data.dsh;
+		entry->type = DSMR_ENTRY_TYPE_DSH;
+		dsh_state->dsa_handle = DSA_HANDLE_INVALID;
+		dsh_state->dsh_handle = DSHASH_HANDLE_INVALID;
+		dsh_state->tranche = -1;
+	}
+	else if (entry->type != DSMR_ENTRY_TYPE_DSH)
+		ereport(ERROR,
+				(errmsg("requested DSHash does not match type of existing entry")));
+
+	if (dsh_state->tranche == -1)
+	{
+		*found = false;
+
+		/* Initialize the LWLock tranche for the hash table. */
+		dsh_state->tranche = LWLockNewTrancheId(name);
+	}
+
+	if (dsh_state->dsa_handle == DSA_HANDLE_INVALID)
+	{
 		dshash_parameters params_copy;
 		dsa_area   *dsa;
 
-		entry->type = DSMR_ENTRY_TYPE_DSH;
-
-		/* Initialize the LWLock tranche for the DSA. */
-		dsa_state->tranche = LWLockNewTrancheId();
-		sprintf(dsa_state->tranche_name, "%s%s", name, DSMR_DSA_TRANCHE_SUFFIX);
-		LWLockRegisterTranche(dsa_state->tranche, dsa_state->tranche_name);
-
-		/* Initialize the LWLock tranche for the dshash table. */
-		dsh_state->tranche = LWLockNewTrancheId();
-		strcpy(dsh_state->tranche_name, name);
-		LWLockRegisterTranche(dsh_state->tranche, dsh_state->tranche_name);
+		*found = false;
 
 		/* Initialize the DSA for the hash table. */
-		dsa = dsa_create(dsa_state->tranche);
-		dsa_pin(dsa);
-		dsa_pin_mapping(dsa);
+		dsa = dsa_create(dsh_state->tranche);
 
 		/* Initialize the dshash table. */
 		memcpy(&params_copy, params, sizeof(dshash_parameters));
 		params_copy.tranche_id = dsh_state->tranche;
 		ret = dshash_create(dsa, &params_copy, NULL);
 
+		dsa_pin(dsa);
+		dsa_pin_mapping(dsa);
+
 		/* Store handles for other backends to use. */
-		dsa_state->handle = dsa_get_handle(dsa);
-		dsh_state->handle = dshash_get_hash_table_handle(ret);
+		dsh_state->dsa_handle = dsa_get_handle(dsa);
+		dsh_state->dsh_handle = dshash_get_hash_table_handle(ret);
 	}
-	else if (entry->type != DSMR_ENTRY_TYPE_DSH)
+	else if (dsa_is_attached(dsh_state->dsa_handle))
 		ereport(ERROR,
-				(errmsg("requested DSHash does not match type of existing entry")));
+				(errmsg("requested DSHash already attached to current process")));
 	else
 	{
-		NamedDSAState *dsa_state = &entry->data.dsh.dsa;
-		NamedDSHState *dsh_state = &entry->data.dsh;
 		dsa_area   *dsa;
 
 		/* XXX: Should we verify params matches what table was created with? */
 
-		if (dsa_is_attached(dsa_state->handle))
-			ereport(ERROR,
-					(errmsg("requested DSHash already attached to current process")));
-
-		/* Initialize existing LWLock tranches for the DSA and dshash table. */
-		LWLockRegisterTranche(dsa_state->tranche, dsa_state->tranche_name);
-		LWLockRegisterTranche(dsh_state->tranche, dsh_state->tranche_name);
-
 		/* Attach to existing DSA for the hash table. */
-		dsa = dsa_attach(dsa_state->handle);
+		dsa = dsa_attach(dsh_state->dsa_handle);
 		dsa_pin_mapping(dsa);
 
 		/* Attach to existing dshash table. */
-		ret = dshash_attach(dsa, params, dsh_state->handle, NULL);
+		ret = dshash_attach(dsa, params, dsh_state->dsh_handle, NULL);
 	}
 
 	dshash_release_lock(dsm_registry_table, entry);
@@ -469,12 +466,16 @@ pg_get_dsm_registry_allocations(PG_FUNCTION_ARGS)
 		vals[0] = CStringGetTextDatum(entry->name);
 		vals[1] = CStringGetTextDatum(DSMREntryTypeNames[entry->type]);
 
-		/*
-		 * Since we can't know the size of DSA/dshash entries without first
-		 * attaching to them, return NULL for those.
-		 */
-		if (entry->type == DSMR_ENTRY_TYPE_DSM)
-			vals[2] = Int64GetDatum(entry->data.dsm.size);
+		/* Be careful to only return the sizes of initialized entries. */
+		if (entry->type == DSMR_ENTRY_TYPE_DSM &&
+			entry->dsm.handle != DSM_HANDLE_INVALID)
+			vals[2] = Int64GetDatum(entry->dsm.size);
+		else if (entry->type == DSMR_ENTRY_TYPE_DSA &&
+				 entry->dsa.handle != DSA_HANDLE_INVALID)
+			vals[2] = Int64GetDatum(dsa_get_total_size_from_handle(entry->dsa.handle));
+		else if (entry->type == DSMR_ENTRY_TYPE_DSH &&
+				 entry->dsh.dsa_handle !=DSA_HANDLE_INVALID)
+			vals[2] = Int64GetDatum(dsa_get_total_size_from_handle(entry->dsh.dsa_handle));
 		else
 			nulls[2] = true;
 

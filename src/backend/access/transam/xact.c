@@ -31,6 +31,7 @@
 #include "access/xloginsert.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
+#include "access/xlogwait.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_enum.h"
@@ -2843,6 +2844,11 @@ AbortTransaction(void)
 	 */
 	LWLockReleaseAll();
 
+	/*
+	 * Cleanup waiting for LSN if any.
+	 */
+	WaitLSNCleanup();
+
 	/* Clear wait information and command progress indicator */
 	pgstat_report_wait_end();
 	pgstat_progress_end_command();
@@ -4535,13 +4541,13 @@ ReleaseSavepoint(const char *name)
 			break;
 	}
 
-	for (target = s; PointerIsValid(target); target = target->parent)
+	for (target = s; target; target = target->parent)
 	{
-		if (PointerIsValid(target->name) && strcmp(target->name, name) == 0)
+		if (target->name && strcmp(target->name, name) == 0)
 			break;
 	}
 
-	if (!PointerIsValid(target))
+	if (!target)
 		ereport(ERROR,
 				(errcode(ERRCODE_S_E_INVALID_SPECIFICATION),
 				 errmsg("savepoint \"%s\" does not exist", name)));
@@ -4565,7 +4571,7 @@ ReleaseSavepoint(const char *name)
 		if (xact == target)
 			break;
 		xact = xact->parent;
-		Assert(PointerIsValid(xact));
+		Assert(xact);
 	}
 }
 
@@ -4644,13 +4650,13 @@ RollbackToSavepoint(const char *name)
 			break;
 	}
 
-	for (target = s; PointerIsValid(target); target = target->parent)
+	for (target = s; target; target = target->parent)
 	{
-		if (PointerIsValid(target->name) && strcmp(target->name, name) == 0)
+		if (target->name && strcmp(target->name, name) == 0)
 			break;
 	}
 
-	if (!PointerIsValid(target))
+	if (!target)
 		ereport(ERROR,
 				(errcode(ERRCODE_S_E_INVALID_SPECIFICATION),
 				 errmsg("savepoint \"%s\" does not exist", name)));
@@ -4679,7 +4685,7 @@ RollbackToSavepoint(const char *name)
 			elog(FATAL, "RollbackToSavepoint: unexpected state %s",
 				 BlockStateAsString(xact->blockState));
 		xact = xact->parent;
-		Assert(PointerIsValid(xact));
+		Assert(xact);
 	}
 
 	/* And mark the target as "restart pending" */
@@ -5700,12 +5706,12 @@ ShowTransactionStateRec(const char *str, TransactionState s)
 	ereport(DEBUG5,
 			(errmsg_internal("%s(%d) name: %s; blockState: %s; state: %s, xid/subid/cid: %u/%u/%u%s%s",
 							 str, s->nestingLevel,
-							 PointerIsValid(s->name) ? s->name : "unnamed",
+							 s->name ? s->name : "unnamed",
 							 BlockStateAsString(s->blockState),
 							 TransStateAsString(s->state),
-							 (unsigned int) XidFromFullTransactionId(s->fullTransactionId),
-							 (unsigned int) s->subTransactionId,
-							 (unsigned int) currentCommandId,
+							 XidFromFullTransactionId(s->fullTransactionId),
+							 s->subTransactionId,
+							 currentCommandId,
 							 currentCommandIdUsed ? " (used)" : "",
 							 buf.data)));
 	pfree(buf.data);

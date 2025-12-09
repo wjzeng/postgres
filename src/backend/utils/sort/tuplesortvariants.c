@@ -816,7 +816,7 @@ tuplesort_putheaptuple(Tuplesortstate *state, HeapTuple tup)
  */
 void
 tuplesort_putindextuplevalues(Tuplesortstate *state, Relation rel,
-							  ItemPointer self, const Datum *values,
+							  const ItemPointerData *self, const Datum *values,
 							  const bool *isnull)
 {
 	SortTuple	stup;
@@ -1954,7 +1954,7 @@ readtup_index_gin(Tuplesortstate *state, SortTuple *stup,
 	LogicalTapeReadExact(tape, tuple, tuplen);
 	if (base->sortopt & TUPLESORT_RANDOMACCESS) /* need trailing length word? */
 		LogicalTapeReadExact(tape, &tuplen, sizeof(tuplen));
-	stup->tuple = (void *) tuple;
+	stup->tuple = tuple;
 
 	/* no abbreviations (FIXME maybe use attrnum for this?) */
 	stup->datum1 = (Datum) 0;

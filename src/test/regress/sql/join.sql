@@ -760,6 +760,26 @@ select * from tbl_rs t1 join
   on true;
 
 --
+-- regression test for bug with parallel-hash-right-semi join
+--
+
+begin;
+
+-- encourage use of parallel plans
+set local parallel_setup_cost=0;
+set local parallel_tuple_cost=0;
+set local min_parallel_table_scan_size=0;
+set local max_parallel_workers_per_gather=4;
+
+-- ensure we don't get parallel hash right semi join
+explain (costs off)
+select * from tenk1 t1
+where exists (select 1 from tenk1 t2 where fivethous = t1.fivethous)
+and t1.fivethous < 5;
+
+rollback;
+
+--
 -- regression test for bug #13908 (hash join with skew tuples & nbatch increase)
 --
 
@@ -838,6 +858,13 @@ where not exists (select 1 from tenk1 b where a.unique1 = b.unique2);
 explain (costs off)
 select a.* from tenk1 a left join tenk1 b on a.unique1 = b.unique2
 where b.unique2 is null;
+
+-- check that we avoid de-duplicating columns redundantly
+set enable_memoize to off;
+explain (costs off)
+select 1 from tenk1
+where (hundred, thousand) in (select twothousand, twothousand from onek);
+reset enable_memoize;
 
 --
 -- regression test for bogus RTE_GROUP entries
@@ -2205,6 +2232,24 @@ explain (costs off)
 select d.* from d left join (select * from b group by b.id, b.c_id) s
   on d.a = s.id and d.b = s.c_id;
 
+-- check that join removal works for a left join when joining a subquery
+-- that is guaranteed to be unique by GROUPING SETS
+explain (costs off)
+select d.* from d left join (select 1 as x from b group by ()) s
+  on d.a = s.x;
+
+explain (costs off)
+select d.* from d left join (select 1 as x from b group by grouping sets(())) s
+  on d.a = s.x;
+
+explain (costs off)
+select d.* from d left join (select 1 as x from b group by grouping sets(()), grouping sets(())) s
+  on d.a = s.x;
+
+explain (costs off)
+select d.* from d left join (select 1 as x from b group by distinct grouping sets((), ())) s
+  on d.a = s.x;
+
 -- similarly, but keying off a DISTINCT clause
 explain (costs off)
 select d.* from d left join (select distinct * from b) s
@@ -2217,6 +2262,20 @@ select d.* from d left join (select distinct * from b) s
 explain (costs off)
 select d.* from d left join (select * from b group by b.id, b.c_id) s
   on d.a = s.id;
+
+-- join removal is not possible when the GROUP BY contains non-empty grouping
+-- sets or multiple empty grouping sets
+explain (costs off)
+select d.* from d left join (select 1 as x from b group by rollup(x)) s
+  on d.a = s.x;
+
+explain (costs off)
+select d.* from d left join (select 1 as x from b group by grouping sets((), ())) s
+  on d.a = s.x;
+
+explain (costs off)
+select d.* from d left join (select 1 as x from b group by grouping sets((), grouping sets(()))) s
+  on d.a = s.x;
 
 -- similarly, but keying off a DISTINCT clause
 explain (costs off)
@@ -2417,6 +2476,69 @@ from t t1
              from t t2 left join t t3 on t2.a = t3.a) s
     on true
 where t1.a = s.c;
+
+rollback;
+
+-- check handling of semijoins after join removal: we must suppress
+-- unique-ification of known-constant values
+begin;
+
+create temp table t (a int unique, b int);
+insert into t values (1, 2);
+
+explain (verbose, costs off)
+select t1.a from t t1
+  left join t t2 on t1.a = t2.a
+       join t t3 on true
+where exists (select 1 from t t4
+                join t t5 on t4.b = t5.b
+                join t t6 on t5.b = t6.b
+              where t1.a = t4.a and t3.a = t5.a and t4.a = 1);
+
+select t1.a from t t1
+  left join t t2 on t1.a = t2.a
+       join t t3 on true
+where exists (select 1 from t t4
+                join t t5 on t4.b = t5.b
+                join t t6 on t5.b = t6.b
+              where t1.a = t4.a and t3.a = t5.a and t4.a = 1);
+
+rollback;
+
+-- check handling of semijoins if all RHS columns are equated to constants: we
+-- should suppress unique-ification in this case.
+begin;
+
+create temp table t (a int, b int);
+insert into t values (1, 2);
+
+explain (costs off)
+select * from t t1, t t2 where exists
+  (select 1 from t t3 where t1.a = t3.a and t2.b = t3.b and t3.a = 1 and t3.b = 2);
+
+select * from t t1, t t2 where exists
+  (select 1 from t t3 where t1.a = t3.a and t2.b = t3.b and t3.a = 1 and t3.b = 2);
+
+rollback;
+
+-- check handling of semijoin unique-ification for child relations if all RHS
+-- columns are equated to constants.
+begin;
+
+create temp table p (a int, b int) partition by range (a);
+create temp table p1 partition of p for values from (0) to (10);
+create temp table p2 partition of p for values from (10) to (20);
+insert into p values (1, 2);
+insert into p values (10, 20);
+
+set enable_partitionwise_join to on;
+
+explain (costs off)
+select * from p t1 where exists
+  (select 1 from p t2 where t1.a = t2.a and t1.a = 1);
+
+select * from p t1 where exists
+  (select 1 from p t2 where t1.a = t2.a and t1.a = 1);
 
 rollback;
 
@@ -3509,7 +3631,7 @@ explain (verbose, costs off)
 select * from j1
 left join j2 on j1.id1 = j2.id1 where j1.id2 = 1;
 
-create unique index j1_id2_idx on j1(id2) where id2 is not null;
+create unique index j1_id2_idx on j1(id2) where id2 > 0;
 
 -- ensure we don't use a partial unique index as unique proofs
 explain (verbose, costs off)

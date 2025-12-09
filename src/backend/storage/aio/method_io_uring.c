@@ -300,7 +300,7 @@ pgaio_uring_shmem_init(bool first_time)
 	if (pgaio_uring_caps.mem_init_size > 0)
 	{
 		ring_mem_remain = pgaio_uring_ring_shmem_size();
-		ring_mem_next = (char *) shmem;
+		ring_mem_next = shmem;
 
 		/* align to page boundary, see also pgaio_uring_ring_shmem_size() */
 		ring_mem_next = (char *) TYPEALIGN(sysconf(_SC_PAGESIZE), ring_mem_next);
@@ -377,7 +377,7 @@ pgaio_uring_shmem_init(bool first_time)
 			else if (-ret == ENOSYS)
 			{
 				err = ERRCODE_FEATURE_NOT_SUPPORTED;
-				hint = _("Kernel does not support io_uring.");
+				hint = _("The kernel does not support io_uring.");
 			}
 
 			/* update errno to allow %m to work */
@@ -660,7 +660,7 @@ pgaio_uring_sq_from_io(PgAioHandle *ioh, struct io_uring_sqe *sqe)
 {
 	struct iovec *iov;
 
-	switch (ioh->op)
+	switch ((PgAioOp) ioh->op)
 	{
 		case PGAIO_OP_READV:
 			iov = &pgaio_ctl->iovecs[ioh->iovec_off];

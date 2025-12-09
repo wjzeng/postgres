@@ -123,7 +123,7 @@ missing_match(const void *key1, const void *key2, Size keysize)
 }
 
 static void
-init_missing_cache()
+init_missing_cache(void)
 {
 	HASHCTL		hash_ctl;
 
@@ -1502,7 +1502,6 @@ heap_form_minimal_tuple(TupleDesc tupleDescriptor,
 	 * Allocate and zero the space needed.
 	 */
 	mem = palloc0(len + extra);
-	memset(mem, 0, extra);
 	tuple = (MinimalTuple) (mem + extra);
 
 	/*

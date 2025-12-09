@@ -85,10 +85,9 @@ extern PGDLLIMPORT int max_safe_fds;
  * to the appropriate Windows flag in src/port/open.c.  We simulate it with
  * fcntl(F_NOCACHE) on macOS inside fd.c's open() wrapper.  We use the name
  * PG_O_DIRECT rather than defining O_DIRECT in that case (probably not a good
- * idea on a Unix).  We can only use it if the compiler will correctly align
- * PGIOAlignedBlock for us, though.
+ * idea on a Unix).
  */
-#if defined(O_DIRECT) && defined(pg_attribute_aligned)
+#if defined(O_DIRECT)
 #define		PG_O_DIRECT O_DIRECT
 #elif defined(F_NOCACHE)
 #define		PG_O_DIRECT 0x80000000
@@ -108,17 +107,17 @@ extern File PathNameOpenFile(const char *fileName, int fileFlags);
 extern File PathNameOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode);
 extern File OpenTemporaryFile(bool interXact);
 extern void FileClose(File file);
-extern int	FilePrefetch(File file, off_t offset, off_t amount, uint32 wait_event_info);
-extern ssize_t FileReadV(File file, const struct iovec *iov, int iovcnt, off_t offset, uint32 wait_event_info);
-extern ssize_t FileWriteV(File file, const struct iovec *iov, int iovcnt, off_t offset, uint32 wait_event_info);
-extern int	FileStartReadV(struct PgAioHandle *ioh, File file, int iovcnt, off_t offset, uint32 wait_event_info);
+extern int	FilePrefetch(File file, pgoff_t offset, pgoff_t amount, uint32 wait_event_info);
+extern ssize_t FileReadV(File file, const struct iovec *iov, int iovcnt, pgoff_t offset, uint32 wait_event_info);
+extern ssize_t FileWriteV(File file, const struct iovec *iov, int iovcnt, pgoff_t offset, uint32 wait_event_info);
+extern int	FileStartReadV(struct PgAioHandle *ioh, File file, int iovcnt, pgoff_t offset, uint32 wait_event_info);
 extern int	FileSync(File file, uint32 wait_event_info);
-extern int	FileZero(File file, off_t offset, off_t amount, uint32 wait_event_info);
-extern int	FileFallocate(File file, off_t offset, off_t amount, uint32 wait_event_info);
+extern int	FileZero(File file, pgoff_t offset, pgoff_t amount, uint32 wait_event_info);
+extern int	FileFallocate(File file, pgoff_t offset, pgoff_t amount, uint32 wait_event_info);
 
-extern off_t FileSize(File file);
-extern int	FileTruncate(File file, off_t offset, uint32 wait_event_info);
-extern void FileWriteback(File file, off_t offset, off_t nbytes, uint32 wait_event_info);
+extern pgoff_t FileSize(File file);
+extern int	FileTruncate(File file, pgoff_t offset, uint32 wait_event_info);
+extern void FileWriteback(File file, pgoff_t offset, pgoff_t nbytes, uint32 wait_event_info);
 extern char *FilePathName(File file);
 extern int	FileGetRawDesc(File file);
 extern int	FileGetRawFlags(File file);
@@ -186,8 +185,8 @@ extern int	pg_fsync_no_writethrough(int fd);
 extern int	pg_fsync_writethrough(int fd);
 extern int	pg_fdatasync(int fd);
 extern bool pg_file_exists(const char *name);
-extern void pg_flush_data(int fd, off_t offset, off_t nbytes);
-extern int	pg_truncate(const char *path, off_t length);
+extern void pg_flush_data(int fd, pgoff_t offset, pgoff_t nbytes);
+extern int	pg_truncate(const char *path, pgoff_t length);
 extern void fsync_fname(const char *fname, bool isdir);
 extern int	fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel);
 extern int	durable_rename(const char *oldfile, const char *newfile, int elevel);
@@ -196,7 +195,7 @@ extern void SyncDataDirectory(void);
 extern int	data_sync_elevel(int elevel);
 
 static inline ssize_t
-FileRead(File file, void *buffer, size_t amount, off_t offset,
+FileRead(File file, void *buffer, size_t amount, pgoff_t offset,
 		 uint32 wait_event_info)
 {
 	struct iovec iov = {
@@ -208,7 +207,7 @@ FileRead(File file, void *buffer, size_t amount, off_t offset,
 }
 
 static inline ssize_t
-FileWrite(File file, const void *buffer, size_t amount, off_t offset,
+FileWrite(File file, const void *buffer, size_t amount, pgoff_t offset,
 		  uint32 wait_event_info)
 {
 	struct iovec iov = {

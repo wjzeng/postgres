@@ -64,6 +64,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
@@ -2353,7 +2354,8 @@ DropDatabase(ParseState *pstate, DropdbStmt *stmt)
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("unrecognized DROP DATABASE option \"%s\"", opt->defname),
+					 errmsg("unrecognized %s option \"%s\"",
+							"DROP DATABASE", opt->defname),
 					 parser_errposition(pstate, opt->location)));
 	}
 
@@ -3205,30 +3207,6 @@ get_database_oid(const char *dbname, bool missing_ok)
 
 
 /*
- * get_database_name - given a database OID, look up the name
- *
- * Returns a palloc'd string, or NULL if no such database.
- */
-char *
-get_database_name(Oid dbid)
-{
-	HeapTuple	dbtuple;
-	char	   *result;
-
-	dbtuple = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(dbid));
-	if (HeapTupleIsValid(dbtuple))
-	{
-		result = pstrdup(NameStr(((Form_pg_database) GETSTRUCT(dbtuple))->datname));
-		ReleaseSysCache(dbtuple);
-	}
-	else
-		result = NULL;
-
-	return result;
-}
-
-
-/*
  * While dropping a database the pg_database row is marked invalid, but the
  * catalog contents still exist. Connections to such a database are not
  * allowed.
@@ -3398,6 +3376,7 @@ dbase_redo(XLogReaderState *record)
 		parent_path = pstrdup(dbpath);
 		get_parent_directory(parent_path);
 		recovery_create_dbdir(parent_path, true);
+		pfree(parent_path);
 
 		/* Create the database directory with the version file. */
 		CreateDirAndVersionFile(dbpath, xlrec->db_id, xlrec->tablespace_id,

@@ -42,6 +42,7 @@
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "partitioning/partdesc.h"
+#include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "statistics/statistics.h"
 #include "storage/bufmgr.h"
@@ -62,7 +63,7 @@ get_relation_info_hook_type get_relation_info_hook = NULL;
 typedef struct NotnullHashEntry
 {
 	Oid			relid;			/* OID of the relation */
-	Relids		notnullattnums; /* attnums of NOT NULL columns */
+	Bitmapset  *notnullattnums; /* attnums of NOT NULL columns */
 } NotnullHashEntry;
 
 
@@ -77,7 +78,8 @@ static List *get_relation_constraints(PlannerInfo *root,
 									  bool include_partition);
 static List *build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 							   Relation heapRelation);
-static List *get_relation_statistics(RelOptInfo *rel, Relation relation);
+static List *get_relation_statistics(PlannerInfo *root, RelOptInfo *rel,
+									 Relation relation);
 static void set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
 										Relation relation);
 static PartitionScheme find_partition_scheme(PlannerInfo *root,
@@ -427,13 +429,32 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			 * modify the copies we obtain from the relcache to have the
 			 * correct varno for the parent relation, so that they match up
 			 * correctly against qual clauses.
+			 *
+			 * After fixing the varnos, we need to run the index expressions
+			 * and predicate through const-simplification again, using a valid
+			 * "root".  This ensures that NullTest quals for Vars can be
+			 * properly reduced.
 			 */
 			info->indexprs = RelationGetIndexExpressions(indexRelation);
 			info->indpred = RelationGetIndexPredicate(indexRelation);
-			if (info->indexprs && varno != 1)
-				ChangeVarNodes((Node *) info->indexprs, 1, varno, 0);
-			if (info->indpred && varno != 1)
-				ChangeVarNodes((Node *) info->indpred, 1, varno, 0);
+			if (info->indexprs)
+			{
+				if (varno != 1)
+					ChangeVarNodes((Node *) info->indexprs, 1, varno, 0);
+
+				info->indexprs = (List *)
+					eval_const_expressions(root, (Node *) info->indexprs);
+			}
+			if (info->indpred)
+			{
+				if (varno != 1)
+					ChangeVarNodes((Node *) info->indpred, 1, varno, 0);
+
+				info->indpred = (List *)
+					eval_const_expressions(root,
+										   (Node *) make_ands_explicit(info->indpred));
+				info->indpred = make_ands_implicit((Expr *) info->indpred);
+			}
 
 			/* Build targetlist using the completed indexprs data */
 			info->indextlist = build_index_tlist(root, info, relation);
@@ -508,7 +529,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 	rel->indexlist = indexinfos;
 
-	rel->statlist = get_relation_statistics(rel, relation);
+	rel->statlist = get_relation_statistics(root, rel, relation);
 
 	/* Grab foreign-table info using the relcache, while we have it */
 	if (relation->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
@@ -682,7 +703,7 @@ get_relation_notnullatts(PlannerInfo *root, Relation relation)
 	Oid			relid = RelationGetRelid(relation);
 	NotnullHashEntry *hentry;
 	bool		found;
-	Relids		notnullattnums = NULL;
+	Bitmapset  *notnullattnums = NULL;
 
 	/* bail out if the relation has no not-null constraints */
 	if (relation->rd_att->constr == NULL ||
@@ -749,7 +770,7 @@ get_relation_notnullatts(PlannerInfo *root, Relation relation)
  *	  Searches the hash table and returns the column not-null constraint
  *	  information for a given relation.
  */
-Relids
+Bitmapset *
 find_relation_notnullatts(PlannerInfo *root, Oid relid)
 {
 	NotnullHashEntry *hentry;
@@ -799,14 +820,21 @@ infer_arbiter_indexes(PlannerInfo *root)
 	Relation	relation;
 	Oid			indexOidFromConstraint = InvalidOid;
 	List	   *indexList;
-	ListCell   *l;
+	List	   *indexRelList = NIL;
 
-	/* Normalized inference attributes and inference expressions: */
+	/*
+	 * Required attributes and expressions used to match indexes to the clause
+	 * given by the user.  In the ON CONFLICT ON CONSTRAINT case, we compute
+	 * these from that constraint's index to match all other indexes, to
+	 * account for the case where that index is being concurrently reindexed.
+	 */
+	List	   *inferIndexExprs = (List *) onconflict->arbiterWhere;
 	Bitmapset  *inferAttrs = NULL;
 	List	   *inferElems = NIL;
 
 	/* Results */
 	List	   *results = NIL;
+	bool		foundValid = false;
 
 	/*
 	 * Quickly return NIL for ON CONFLICT DO NOTHING without an inference
@@ -833,11 +861,13 @@ infer_arbiter_indexes(PlannerInfo *root)
 	 * well as a separate list of expression items.  This simplifies matching
 	 * the cataloged definition of indexes.
 	 */
-	foreach(l, onconflict->arbiterElems)
+	foreach_ptr(InferenceElem, elem, onconflict->arbiterElems)
 	{
-		InferenceElem *elem = (InferenceElem *) lfirst(l);
 		Var		   *var;
 		int			attno;
+
+		/* we cannot also have a constraint name, per grammar */
+		Assert(!OidIsValid(onconflict->constraint));
 
 		if (!IsA(elem->expr, Var))
 		{
@@ -859,49 +889,115 @@ infer_arbiter_indexes(PlannerInfo *root)
 	}
 
 	/*
-	 * Lookup named constraint's index.  This is not immediately returned
-	 * because some additional sanity checks are required.
+	 * Next, open all the indexes.  We need this list for two things: first,
+	 * if an ON CONSTRAINT clause was given, and that constraint's index is
+	 * undergoing REINDEX CONCURRENTLY, then we need to consider all matches
+	 * for that index.  Second, if an attribute list was specified in the ON
+	 * CONFLICT clause, we use the list to find the indexes whose attributes
+	 * match that list.
+	 */
+	indexList = RelationGetIndexList(relation);
+	foreach_oid(indexoid, indexList)
+	{
+		Relation	idxRel;
+
+		/* obtain the same lock type that the executor will ultimately use */
+		idxRel = index_open(indexoid, rte->rellockmode);
+		indexRelList = lappend(indexRelList, idxRel);
+	}
+
+	/*
+	 * If a constraint was named in the command, look up its index.  We don't
+	 * return it immediately because we need some additional sanity checks,
+	 * and also because we need to include other indexes as arbiters to
+	 * account for REINDEX CONCURRENTLY processing it.
 	 */
 	if (onconflict->constraint != InvalidOid)
 	{
-		indexOidFromConstraint = get_constraint_index(onconflict->constraint);
+		/* we cannot also have an explicit list of elements, per grammar */
+		Assert(onconflict->arbiterElems == NIL);
 
+		indexOidFromConstraint = get_constraint_index(onconflict->constraint);
 		if (indexOidFromConstraint == InvalidOid)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 					 errmsg("constraint in ON CONFLICT clause has no associated index")));
+
+		/*
+		 * Find the named constraint index to extract its attributes and
+		 * predicates.
+		 */
+		foreach_ptr(RelationData, idxRel, indexRelList)
+		{
+			Form_pg_index idxForm = idxRel->rd_index;
+
+			if (indexOidFromConstraint == idxForm->indexrelid)
+			{
+				/* Found it. */
+				Assert(idxForm->indisready);
+
+				/*
+				 * Set up inferElems and inferPredExprs to match the
+				 * constraint index, so that we can match them in the loop
+				 * below.
+				 */
+				for (int natt = 0; natt < idxForm->indnkeyatts; natt++)
+				{
+					int			attno;
+
+					attno = idxRel->rd_index->indkey.values[natt];
+					if (attno != InvalidAttrNumber)
+						inferAttrs =
+							bms_add_member(inferAttrs,
+										   attno - FirstLowInvalidHeapAttributeNumber);
+				}
+
+				inferElems = RelationGetIndexExpressions(idxRel);
+				inferIndexExprs = RelationGetIndexPredicate(idxRel);
+				break;
+			}
+		}
 	}
 
 	/*
 	 * Using that representation, iterate through the list of indexes on the
-	 * target relation to try and find a match
+	 * target relation to find matches.
 	 */
-	indexList = RelationGetIndexList(relation);
-
-	foreach(l, indexList)
+	foreach_ptr(RelationData, idxRel, indexRelList)
 	{
-		Oid			indexoid = lfirst_oid(l);
-		Relation	idxRel;
 		Form_pg_index idxForm;
 		Bitmapset  *indexedAttrs;
 		List	   *idxExprs;
 		List	   *predExprs;
 		AttrNumber	natt;
-		ListCell   *el;
+		bool		match;
 
 		/*
-		 * Extract info from the relation descriptor for the index.  Obtain
-		 * the same lock type that the executor will ultimately use.
+		 * Extract info from the relation descriptor for the index.
 		 *
 		 * Let executor complain about !indimmediate case directly, because
 		 * enforcement needs to occur there anyway when an inference clause is
 		 * omitted.
 		 */
-		idxRel = index_open(indexoid, rte->rellockmode);
 		idxForm = idxRel->rd_index;
 
-		if (!idxForm->indisvalid)
-			goto next;
+		/*
+		 * Ignore indexes that aren't indisready, because we cannot trust
+		 * their catalog structure yet.  However, if any indexes are marked
+		 * indisready but not yet indisvalid, we still consider them, because
+		 * they might turn valid while we're running.  Doing it this way
+		 * allows a concurrent transaction with a slightly later catalog
+		 * snapshot infer the same set of indexes, which is critical to
+		 * prevent spurious 'duplicate key' errors.
+		 *
+		 * However, another critical aspect is that a unique index that isn't
+		 * yet marked indisvalid=true might not be complete yet, meaning it
+		 * wouldn't detect possible duplicate rows.  In order to prevent false
+		 * negatives, we require that we include in the set of inferred
+		 * indexes at least one index that is marked valid.
+		 */
+		if (!idxForm->indisready)
+			continue;
 
 		/*
 		 * Note that we do not perform a check against indcheckxmin (like e.g.
@@ -911,7 +1007,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 		 */
 
 		/*
-		 * Look for match on "ON constraint_name" variant, which may not be
+		 * Look for match for "ON constraint_name" variant, which may not be a
 		 * unique constraint.  This can only be a constraint name.
 		 */
 		if (indexOidFromConstraint == idxForm->indexrelid)
@@ -921,32 +1017,37 @@ infer_arbiter_indexes(PlannerInfo *root)
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						 errmsg("ON CONFLICT DO UPDATE not supported with exclusion constraints")));
 
+			/* Consider this one a match already */
 			results = lappend_oid(results, idxForm->indexrelid);
-			list_free(indexList);
-			index_close(idxRel, NoLock);
-			table_close(relation, NoLock);
-			return results;
+			foundValid |= idxForm->indisvalid;
+			continue;
 		}
 		else if (indexOidFromConstraint != InvalidOid)
 		{
-			/* No point in further work for index in named constraint case */
-			goto next;
+			/*
+			 * In the case of "ON constraint_name DO UPDATE" we need to skip
+			 * non-unique candidates.
+			 */
+			if (!idxForm->indisunique && onconflict->action == ONCONFLICT_UPDATE)
+				continue;
 		}
-
-		/*
-		 * Only considering conventional inference at this point (not named
-		 * constraints), so index under consideration can be immediately
-		 * skipped if it's not unique
-		 */
-		if (!idxForm->indisunique)
-			goto next;
+		else
+		{
+			/*
+			 * Only considering conventional inference at this point (not
+			 * named constraints), so index under consideration can be
+			 * immediately skipped if it's not unique.
+			 */
+			if (!idxForm->indisunique)
+				continue;
+		}
 
 		/*
 		 * So-called unique constraints with WITHOUT OVERLAPS are really
 		 * exclusion constraints, so skip those too.
 		 */
 		if (idxForm->indisexclusion)
-			goto next;
+			continue;
 
 		/* Build BMS representation of plain (non expression) index attrs */
 		indexedAttrs = NULL;
@@ -961,17 +1062,25 @@ infer_arbiter_indexes(PlannerInfo *root)
 
 		/* Non-expression attributes (if any) must match */
 		if (!bms_equal(indexedAttrs, inferAttrs))
-			goto next;
+			continue;
 
 		/* Expression attributes (if any) must match */
 		idxExprs = RelationGetIndexExpressions(idxRel);
-		if (idxExprs && varno != 1)
-			ChangeVarNodes((Node *) idxExprs, 1, varno, 0);
-
-		foreach(el, onconflict->arbiterElems)
+		if (idxExprs)
 		{
-			InferenceElem *elem = (InferenceElem *) lfirst(el);
+			if (varno != 1)
+				ChangeVarNodes((Node *) idxExprs, 1, varno, 0);
 
+			idxExprs = (List *) eval_const_expressions(root, (Node *) idxExprs);
+		}
+
+		/*
+		 * If arbiterElems are present, check them.  (Note that if a
+		 * constraint name was given in the command line, this list is NIL.)
+		 */
+		match = true;
+		foreach_ptr(InferenceElem, elem, onconflict->arbiterElems)
+		{
 			/*
 			 * Ensure that collation/opclass aspects of inference expression
 			 * element match.  Even though this loop is primarily concerned
@@ -980,7 +1089,10 @@ infer_arbiter_indexes(PlannerInfo *root)
 			 * attributes appearing as inference elements.
 			 */
 			if (!infer_collation_opclass_match(elem, idxRel, idxExprs))
-				goto next;
+			{
+				match = false;
+				break;
+			}
 
 			/*
 			 * Plain Vars don't factor into count of expression elements, and
@@ -1001,39 +1113,71 @@ infer_arbiter_indexes(PlannerInfo *root)
 				list_member(idxExprs, elem->expr))
 				continue;
 
-			goto next;
+			match = false;
+			break;
 		}
+		if (!match)
+			continue;
 
 		/*
-		 * Now that all inference elements were matched, ensure that the
+		 * In case of inference from an attribute list, ensure that the
 		 * expression elements from inference clause are not missing any
 		 * cataloged expressions.  This does the right thing when unique
 		 * indexes redundantly repeat the same attribute, or if attributes
 		 * redundantly appear multiple times within an inference clause.
+		 *
+		 * In case a constraint was named, ensure the candidate has an equal
+		 * set of expressions as the named constraint's index.
 		 */
 		if (list_difference(idxExprs, inferElems) != NIL)
-			goto next;
+			continue;
+
+		predExprs = RelationGetIndexPredicate(idxRel);
+		if (predExprs)
+		{
+			if (varno != 1)
+				ChangeVarNodes((Node *) predExprs, 1, varno, 0);
+
+			predExprs = (List *)
+				eval_const_expressions(root,
+									   (Node *) make_ands_explicit(predExprs));
+			predExprs = make_ands_implicit((Expr *) predExprs);
+		}
 
 		/*
-		 * If it's a partial index, its predicate must be implied by the ON
-		 * CONFLICT's WHERE clause.
+		 * Partial indexes affect each form of ON CONFLICT differently: if a
+		 * constraint was named, then the predicates must be identical.  In
+		 * conventional inference, the index's predicate must be implied by
+		 * the WHERE clause.
 		 */
-		predExprs = RelationGetIndexPredicate(idxRel);
-		if (predExprs && varno != 1)
-			ChangeVarNodes((Node *) predExprs, 1, varno, 0);
+		if (OidIsValid(indexOidFromConstraint))
+		{
+			if (list_difference(predExprs, inferIndexExprs) != NIL)
+				continue;
+		}
+		else
+		{
+			if (!predicate_implied_by(predExprs, inferIndexExprs, false))
+				continue;
+		}
 
-		if (!predicate_implied_by(predExprs, (List *) onconflict->arbiterWhere, false))
-			goto next;
-
+		/* All good -- consider this index a match */
 		results = lappend_oid(results, idxForm->indexrelid);
-next:
+		foundValid |= idxForm->indisvalid;
+	}
+
+	/* Close all indexes */
+	foreach_ptr(RelationData, idxRel, indexRelList)
+	{
 		index_close(idxRel, NoLock);
 	}
 
 	list_free(indexList);
+	list_free(indexRelList);
 	table_close(relation, NoLock);
 
-	if (results == NIL)
+	/* We require at least one indisvalid index */
+	if (results == NIL || !foundValid)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 				 errmsg("there is no unique or exclusion constraint matching the ON CONFLICT specification")));
@@ -1407,6 +1551,14 @@ get_relation_constraints(PlannerInfo *root,
 			cexpr = stringToNode(constr->check[i].ccbin);
 
 			/*
+			 * Fix Vars to have the desired varno.  This must be done before
+			 * const-simplification because eval_const_expressions reduces
+			 * NullTest for Vars based on varno.
+			 */
+			if (varno != 1)
+				ChangeVarNodes(cexpr, 1, varno, 0);
+
+			/*
 			 * Run each expression through const-simplification and
 			 * canonicalization.  This is not just an optimization, but is
 			 * necessary, because we will be comparing it to
@@ -1419,10 +1571,6 @@ get_relation_constraints(PlannerInfo *root,
 			cexpr = eval_const_expressions(root, cexpr);
 
 			cexpr = (Node *) canonicalize_qual((Expr *) cexpr, true);
-
-			/* Fix Vars to have the desired varno */
-			if (varno != 1)
-				ChangeVarNodes(cexpr, 1, varno, 0);
 
 			/*
 			 * Finally, convert to implicit-AND format (that is, a List) and
@@ -1476,6 +1624,14 @@ get_relation_constraints(PlannerInfo *root,
 		set_baserel_partition_constraint(relation, rel);
 		result = list_concat(result, rel->partition_qual);
 	}
+
+	/*
+	 * Expand virtual generated columns in the constraint expressions.
+	 */
+	if (result)
+		result = (List *) expand_generated_columns_in_expr((Node *) result,
+														   relation,
+														   varno);
 
 	table_close(relation, NoLock);
 
@@ -1572,7 +1728,8 @@ get_relation_statistics_worker(List **stainfos, RelOptInfo *rel,
  * just the identifying metadata.  Only stats actually built are considered.
  */
 static List *
-get_relation_statistics(RelOptInfo *rel, Relation relation)
+get_relation_statistics(PlannerInfo *root, RelOptInfo *rel,
+						Relation relation)
 {
 	Index		varno = rel->relid;
 	List	   *statoidlist;
@@ -1604,8 +1761,8 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			keys = bms_add_member(keys, staForm->stxkeys.values[i]);
 
 		/*
-		 * Preprocess expressions (if any). We read the expressions, run them
-		 * through eval_const_expressions, and fix the varnos.
+		 * Preprocess expressions (if any). We read the expressions, fix the
+		 * varnos, and run them through eval_const_expressions.
 		 *
 		 * XXX We don't know yet if there are any data for this stats object,
 		 * with either stxdinherit value. But it's reasonable to assume there
@@ -1629,6 +1786,18 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 				pfree(exprsString);
 
 				/*
+				 * Modify the copies we obtain from the relcache to have the
+				 * correct varno for the parent relation, so that they match
+				 * up correctly against qual clauses.
+				 *
+				 * This must be done before const-simplification because
+				 * eval_const_expressions reduces NullTest for Vars based on
+				 * varno.
+				 */
+				if (varno != 1)
+					ChangeVarNodes((Node *) exprs, 1, varno, 0);
+
+				/*
 				 * Run the expressions through eval_const_expressions. This is
 				 * not just an optimization, but is necessary, because the
 				 * planner will be comparing them to similarly-processed qual
@@ -1636,18 +1805,10 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 				 * We must not use canonicalize_qual, however, since these
 				 * aren't qual expressions.
 				 */
-				exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+				exprs = (List *) eval_const_expressions(root, (Node *) exprs);
 
 				/* May as well fix opfuncids too */
 				fix_opfuncids((Node *) exprs);
-
-				/*
-				 * Modify the copies we obtain from the relcache to have the
-				 * correct varno for the parent relation, so that they match
-				 * up correctly against qual clauses.
-				 */
-				if (varno != 1)
-					ChangeVarNodes((Node *) exprs, 1, varno, 0);
 			}
 		}
 
@@ -2124,9 +2285,8 @@ join_selectivity(PlannerInfo *root,
 /*
  * function_selectivity
  *
- * Returns the selectivity of a specified boolean function clause.
- * This code executes registered procedures stored in the
- * pg_proc relation, by calling the function manager.
+ * Attempt to estimate the selectivity of a specified boolean function clause
+ * by asking its support function.  If the function lacks support, return -1.
  *
  * See clause_selectivity() for the meaning of the additional parameters.
  */
@@ -2144,15 +2304,8 @@ function_selectivity(PlannerInfo *root,
 	SupportRequestSelectivity req;
 	SupportRequestSelectivity *sresult;
 
-	/*
-	 * If no support function is provided, use our historical default
-	 * estimate, 0.3333333.  This seems a pretty unprincipled choice, but
-	 * Postgres has been using that estimate for function calls since 1992.
-	 * The hoariness of this behavior suggests that we should not be in too
-	 * much hurry to use another value.
-	 */
 	if (!prosupport)
-		return (Selectivity) 0.3333333;
+		return (Selectivity) -1;	/* no support function */
 
 	req.type = T_SupportRequestSelectivity;
 	req.root = root;
@@ -2169,9 +2322,8 @@ function_selectivity(PlannerInfo *root,
 		DatumGetPointer(OidFunctionCall1(prosupport,
 										 PointerGetDatum(&req)));
 
-	/* If support function fails, use default */
 	if (sresult != &req)
-		return (Selectivity) 0.3333333;
+		return (Selectivity) -1;	/* function did not honor request */
 
 	if (req.selectivity < 0.0 || req.selectivity > 1.0)
 		elog(ERROR, "invalid function selectivity: %f", req.selectivity);
@@ -2499,7 +2651,7 @@ get_dependent_generated_columns(PlannerInfo *root, Index rti,
 			Bitmapset  *attrs_used = NULL;
 
 			/* skip if not generated column */
-			if (!TupleDescAttr(tupdesc, defval->adnum - 1)->attgenerated)
+			if (!TupleDescCompactAttr(tupdesc, defval->adnum - 1)->attgenerated)
 				continue;
 
 			/* identify columns this generated column depends on */

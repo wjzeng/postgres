@@ -66,7 +66,7 @@ TypeShellMake(const char *typeName, Oid typeNamespace, Oid ownerId)
 	NameData	name;
 	ObjectAddress address;
 
-	Assert(PointerIsValid(typeName));
+	Assert(typeName);
 
 	/*
 	 * open pg_type
@@ -948,7 +948,7 @@ char *
 makeMultirangeTypeName(const char *rangeTypeName, Oid typeNamespace)
 {
 	char	   *buf;
-	char	   *rangestr;
+	const char *rangestr;
 
 	/*
 	 * If the range type name contains "range" then change that to

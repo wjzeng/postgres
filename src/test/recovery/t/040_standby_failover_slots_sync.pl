@@ -100,8 +100,9 @@ $subscriber1->safe_psql('postgres',
 # Disable failover for enabled subscription
 my ($result, $stdout, $stderr) = $subscriber1->psql('postgres',
 	"ALTER SUBSCRIPTION regress_mysub1 SET (failover = false)");
-ok( $stderr =~
-	  /ERROR:  cannot set option "failover" for enabled subscription/,
+like(
+	$stderr,
+	qr/ERROR:  cannot set option "failover" for enabled subscription/,
 	"altering failover is not allowed for enabled subscription");
 
 ##################################################
@@ -110,8 +111,9 @@ ok( $stderr =~
 
 ($result, $stdout, $stderr) =
   $publisher->psql('postgres', "SELECT pg_sync_replication_slots();");
-ok( $stderr =~
-	  /ERROR:  replication slots can only be synchronized to a standby server/,
+like(
+	$stderr,
+	qr/ERROR:  replication slots can only be synchronized to a standby server/,
 	"cannot sync slots on a non-standby server");
 
 ##################################################
@@ -313,8 +315,9 @@ $standby1->reload;
 # Attempting to perform logical decoding on a synced slot should result in an error
 ($result, $stdout, $stderr) = $standby1->psql('postgres',
 	"select * from pg_logical_slot_get_changes('lsub1_slot', NULL, NULL);");
-ok( $stderr =~
-	  /ERROR:  cannot use replication slot "lsub1_slot" for logical decoding/,
+like(
+	$stderr,
+	qr/ERROR:  cannot use replication slot "lsub1_slot" for logical decoding/,
 	"logical decoding is not allowed on synced slot");
 
 # Attempting to alter a synced slot should result in an error
@@ -322,13 +325,17 @@ ok( $stderr =~
 	'postgres',
 	qq[ALTER_REPLICATION_SLOT lsub1_slot (failover);],
 	replication => 'database');
-ok($stderr =~ /ERROR:  cannot alter replication slot "lsub1_slot"/,
+like(
+	$stderr,
+	qr/ERROR:  cannot alter replication slot "lsub1_slot"/,
 	"synced slot on standby cannot be altered");
 
 # Attempting to drop a synced slot should result in an error
 ($result, $stdout, $stderr) = $standby1->psql('postgres',
 	"SELECT pg_drop_replication_slot('lsub1_slot');");
-ok($stderr =~ /ERROR:  cannot drop replication slot "lsub1_slot"/,
+like(
+	$stderr,
+	qr/ERROR:  cannot drop replication slot "lsub1_slot"/,
 	"synced slot on standby cannot be dropped");
 
 ##################################################
@@ -337,12 +344,25 @@ ok($stderr =~ /ERROR:  cannot drop replication slot "lsub1_slot"/,
 ##################################################
 
 $standby1->append_conf('postgresql.conf', "primary_conninfo = '$connstr_1'");
+
+# Capture the log position before reload to check for walreceiver
+# termination.
+$log_offset = -s $standby1->logfile;
+
 $standby1->reload;
+
+# Wait for the walreceiver to be stopped and restarted after a configuration
+# reload.  When primary_conninfo changes, the walreceiver should be
+# terminated and a new one spawned.
+$standby1->wait_for_log(
+	qr/FATAL: .* terminating walreceiver process due to administrator command/,
+	$log_offset);
 
 ($result, $stdout, $stderr) =
   $standby1->psql('postgres', "SELECT pg_sync_replication_slots();");
-ok( $stderr =~
-	  /ERROR:  replication slot synchronization requires "dbname" to be specified in "primary_conninfo"/,
+like(
+	$stderr,
+	qr/ERROR:  replication slot synchronization requires "dbname" to be specified in "primary_conninfo"/,
 	"cannot sync slots if dbname is not specified in primary_conninfo");
 
 # Add the dbname back to the primary_conninfo for further tests
@@ -379,8 +399,9 @@ $cascading_standby->start;
 
 ($result, $stdout, $stderr) =
   $cascading_standby->psql('postgres', "SELECT pg_sync_replication_slots();");
-ok( $stderr =~
-	  /ERROR:  cannot synchronize replication slots from a standby server/,
+like(
+	$stderr,
+	qr/ERROR:  cannot synchronize replication slots from a standby server/,
 	"cannot sync slots to a cascading standby server");
 
 $cascading_standby->stop;
@@ -965,5 +986,79 @@ $result = $standby1->safe_psql('postgres',
 );
 
 is($result, '1', "data can be consumed using snap_test_slot");
+
+##################################################
+# Remove any unnecessary replication slots and clear pending transactions on the
+# primary server to ensure a clean environment.
+##################################################
+
+$primary->psql(
+	'postgres', qq(
+	SELECT pg_drop_replication_slot('sb1_slot');
+	SELECT pg_drop_replication_slot('lsub1_slot');
+	SELECT pg_drop_replication_slot('snap_test_slot');
+));
+
+$subscriber2->safe_psql('postgres', 'DROP SUBSCRIPTION regress_mysub2;');
+
+# Verify that all slots have been removed except the one necessary for standby2,
+# which is needed for further testing.
+is( $primary->safe_psql(
+		'postgres',
+		q{SELECT count(*) = 0 FROM pg_replication_slots WHERE slot_name != 'sb2_slot';}
+	),
+	"t",
+	'all replication slots have been dropped except the physical slot used by standby2'
+);
+
+# Commit the pending prepared transaction
+$primary->safe_psql('postgres', "COMMIT PREPARED 'test_twophase_slotsync';");
+$primary->wait_for_replay_catchup($standby2);
+
+##################################################
+# Verify that slotsync skip statistics are correctly updated when the
+# slotsync operation is skipped.
+##################################################
+
+# Create a logical replication slot and create some DDL on the primary so
+# that the slot lags behind the standby.
+$primary->safe_psql(
+	'postgres', qq(
+	SELECT pg_create_logical_replication_slot('lsub1_slot', 'pgoutput', false, false, true);
+	CREATE TABLE wal_push(a int);
+));
+$primary->wait_for_replay_catchup($standby2);
+
+$log_offset = -s $standby2->logfile;
+
+# Enable slot sync worker
+$standby2->append_conf(
+	'postgresql.conf', qq(
+hot_standby_feedback = on
+primary_conninfo = '$connstr_1 dbname=postgres'
+log_min_messages = 'debug2'
+sync_replication_slots = on
+));
+
+$standby2->reload;
+
+# Confirm that the slot sync worker is able to start.
+$standby2->wait_for_log(qr/slot sync worker started/, $log_offset);
+
+# Confirm that the slot sync is skipped due to the remote slot lagging behind
+$standby2->wait_for_log(
+	qr/could not synchronize replication slot \"lsub1_slot\"/, $log_offset);
+
+# Confirm that the slotsync skip reason is updated
+$result = $standby2->safe_psql('postgres',
+	"SELECT slotsync_skip_reason FROM pg_replication_slots WHERE slot_name = 'lsub1_slot'"
+);
+is($result, 'wal_or_rows_removed', "check slot sync skip reason");
+
+# Confirm that the slotsync skip statistics is updated
+$result = $standby2->safe_psql('postgres',
+	"SELECT slotsync_skip_count > 0 FROM pg_stat_replication_slots WHERE slot_name = 'lsub1_slot'"
+);
+is($result, 't', "check slot sync skip count increments");
 
 done_testing();

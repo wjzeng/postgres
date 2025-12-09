@@ -16,7 +16,6 @@ test: ri-trigger
 test: partial-index
 test: two-ids
 test: multiple-row-versions
-test: index-killtuples
 test: index-only-scan
 test: index-only-bitmapscan
 test: predicate-lock-hot-tuple
@@ -36,6 +35,8 @@ test: fk-deadlock2
 test: fk-partitioned-1
 test: fk-partitioned-2
 test: fk-snapshot
+test: fk-snapshot-2
+test: fk-snapshot-3
 test: subxid-overflow
 test: eval-plan-qual
 test: eval-plan-qual-trigger

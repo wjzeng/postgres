@@ -83,9 +83,7 @@ my $rc =
 	  . "--outputdir=\"$outputdir\"");
 
 # Regression diffs are only meaningful if both the primary and the standby
-# are still alive after a regression test failure.  A crash would cause a
-# useless increase in the log quantity, mostly filled with information
-# related to queries that could not run.
+# are still alive after a regression test failure.
 my $primary_alive = $node_primary->is_alive;
 my $standby_alive = $node_standby_1->is_alive;
 if ($rc != 0 && $primary_alive && $standby_alive)
@@ -94,9 +92,21 @@ if ($rc != 0 && $primary_alive && $standby_alive)
 	my $diffs = "$outputdir/regression.diffs";
 	if (-e $diffs)
 	{
-		print "=== dumping $diffs ===\n";
-		print slurp_file($diffs);
-		print "=== EOF ===\n";
+		# Dump portions of the diff file.
+		my ($head, $tail) = read_head_tail($diffs);
+
+		diag("=== dumping $diffs (head) ===");
+		foreach my $line (@$head)
+		{
+			diag($line);
+		}
+
+		diag("=== dumping $diffs (tail) ===");
+		foreach my $line (@$tail)
+		{
+			diag($line);
+		}
+		diag("=== EOF ===");
 	}
 }
 is($rc, 0, 'regression tests pass');
@@ -117,7 +127,7 @@ command_ok(
 		'pg_dumpall',
 		'--file' => $outputdir . '/primary.dump',
 		'--no-sync', '--no-statistics',
-		'--restrict-key=test',
+		'--restrict-key' => 'test',
 		'--port' => $node_primary->port,
 		'--no-unlogged-table-data',    # if unlogged, standby has schema only
 	],
@@ -127,7 +137,7 @@ command_ok(
 		'pg_dumpall',
 		'--file' => $outputdir . '/standby.dump',
 		'--no-sync', '--no-statistics',
-		'--restrict-key=test',
+		'--restrict-key' => 'test',
 		'--port' => $node_standby_1->port,
 	],
 	'dump standby server');
@@ -147,7 +157,7 @@ command_ok(
 		'--schema' => 'pg_catalog',
 		'--file' => $outputdir . '/catalogs_primary.dump',
 		'--no-sync',
-		'--restrict-key=test',
+		'--restrict-key' => 'test',
 		'--port', $node_primary->port,
 		'--no-unlogged-table-data',
 		'regression',
@@ -159,7 +169,7 @@ command_ok(
 		'--schema' => 'pg_catalog',
 		'--file' => $outputdir . '/catalogs_standby.dump',
 		'--no-sync',
-		'--restrict-key=test',
+		'--restrict-key' => 'test',
 		'--port' => $node_standby_1->port,
 		'regression',
 	],

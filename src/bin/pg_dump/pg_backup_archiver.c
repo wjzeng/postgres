@@ -1346,8 +1346,8 @@ PrintTOCSummary(Archive *AHX)
 	ahprintf(AH, ";     Dump Version: %d.%d-%d\n",
 			 ARCHIVE_MAJOR(AH->version), ARCHIVE_MINOR(AH->version), ARCHIVE_REV(AH->version));
 	ahprintf(AH, ";     Format: %s\n", fmtName);
-	ahprintf(AH, ";     Integer: %d bytes\n", (int) AH->intSize);
-	ahprintf(AH, ";     Offset: %d bytes\n", (int) AH->offSize);
+	ahprintf(AH, ";     Integer: %zu bytes\n", AH->intSize);
+	ahprintf(AH, ";     Offset: %zu bytes\n", AH->offSize);
 	if (AH->archiveRemoteVersion)
 		ahprintf(AH, ";     Dumped from database version: %s\n",
 				 AH->archiveRemoteVersion);
@@ -1883,8 +1883,8 @@ ahwrite(const void *ptr, size_t size, size_t nmemb, ArchiveHandle *AH)
 	{
 		CompressFileHandle *CFH = (CompressFileHandle *) AH->OF;
 
-		if (CFH->write_func(ptr, size * nmemb, CFH))
-			bytes_written = size * nmemb;
+		CFH->write_func(ptr, size * nmemb, CFH);
+		bytes_written = size * nmemb;
 	}
 
 	if (bytes_written != size * nmemb)
@@ -2067,7 +2067,7 @@ WriteOffset(ArchiveHandle *AH, pgoff_t o, int wasSet)
 }
 
 int
-ReadOffset(ArchiveHandle *AH, pgoff_t * o)
+ReadOffset(ArchiveHandle *AH, pgoff_t *o)
 {
 	int			i;
 	int			off;
@@ -2307,8 +2307,7 @@ _discoverArchiveFormat(ArchiveHandle *AH)
 		if (ferror(fh))
 			pg_fatal("could not read input file: %m");
 		else
-			pg_fatal("input file is too short (read %lu, expected 5)",
-					 (unsigned long) cnt);
+			pg_fatal("input file is too short (read %zu, expected 5)", cnt);
 	}
 
 	/* Save it, just in case we need it later */
@@ -3049,6 +3048,25 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 		return 0;
 
 	/*
+	 * If it's a comment on a policy, a publication, or a subscription, maybe
+	 * ignore it.
+	 */
+	if (strcmp(te->desc, "COMMENT") == 0)
+	{
+		if (ropt->no_policies &&
+			strncmp(te->tag, "POLICY", strlen("POLICY")) == 0)
+			return 0;
+
+		if (ropt->no_publications &&
+			strncmp(te->tag, "PUBLICATION", strlen("PUBLICATION")) == 0)
+			return 0;
+
+		if (ropt->no_subscriptions &&
+			strncmp(te->tag, "SUBSCRIPTION", strlen("SUBSCRIPTION")) == 0)
+			return 0;
+	}
+
+	/*
 	 * If it's a publication or a table part of a publication, maybe ignore
 	 * it.
 	 */
@@ -3061,6 +3079,21 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 	/* If it's a security label, maybe ignore it */
 	if (ropt->no_security_labels && strcmp(te->desc, "SECURITY LABEL") == 0)
 		return 0;
+
+	/*
+	 * If it's a security label on a publication or a subscription, maybe
+	 * ignore it.
+	 */
+	if (strcmp(te->desc, "SECURITY LABEL") == 0)
+	{
+		if (ropt->no_publications &&
+			strncmp(te->tag, "PUBLICATION", strlen("PUBLICATION")) == 0)
+			return 0;
+
+		if (ropt->no_subscriptions &&
+			strncmp(te->tag, "SUBSCRIPTION", strlen("SUBSCRIPTION")) == 0)
+			return 0;
+	}
 
 	/* If it's a subscription, maybe ignore it */
 	if (ropt->no_subscriptions && strcmp(te->desc, "SUBSCRIPTION") == 0)
@@ -3306,12 +3339,14 @@ _tocEntryRestorePass(TocEntry *te)
 		return RESTORE_PASS_POST_ACL;
 
 	/*
-	 * Comments need to be emitted in the same pass as their parent objects.
-	 * ACLs haven't got comments, and neither do matview data objects, but
-	 * event triggers do.  (Fortunately, event triggers haven't got ACLs, or
-	 * we'd need yet another weird special case.)
+	 * Comments and security labels need to be emitted in the same pass as
+	 * their parent objects. ACLs haven't got comments and security labels,
+	 * and neither do matview data objects, but event triggers do.
+	 * (Fortunately, event triggers haven't got ACLs, or we'd need yet another
+	 * weird special case.)
 	 */
-	if (strcmp(te->desc, "COMMENT") == 0 &&
+	if ((strcmp(te->desc, "COMMENT") == 0 ||
+		 strcmp(te->desc, "SECURITY LABEL") == 0) &&
 		strncmp(te->tag, "EVENT TRIGGER ", 14) == 0)
 		return RESTORE_PASS_POST_ACL;
 
@@ -4149,8 +4184,7 @@ ReadHead(ArchiveHandle *AH)
 
 	AH->intSize = AH->ReadBytePtr(AH);
 	if (AH->intSize > 32)
-		pg_fatal("sanity check on integer size (%lu) failed",
-				 (unsigned long) AH->intSize);
+		pg_fatal("sanity check on integer size (%zu) failed", AH->intSize);
 
 	if (AH->intSize > sizeof(int))
 		pg_log_warning("archive was made on a machine with larger integers, some operations might fail");

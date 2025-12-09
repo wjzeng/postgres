@@ -22,6 +22,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
+#include "varatt.h"
 
 
 static void printtup_startup(DestReceiver *self, int operation,
@@ -430,7 +431,7 @@ printatt(unsigned attributeId,
 		   value != NULL ? " = \"" : "",
 		   value != NULL ? value : "",
 		   value != NULL ? "\"" : "",
-		   (unsigned int) (attributeP->atttypid),
+		   attributeP->atttypid,
 		   attributeP->attlen,
 		   attributeP->atttypmod,
 		   attributeP->attbyval ? 't' : 'f');

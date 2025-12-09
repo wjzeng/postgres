@@ -168,7 +168,7 @@
  *		PredicateLockRelation(Relation relation, Snapshot snapshot)
  *		PredicateLockPage(Relation relation, BlockNumber blkno,
  *						Snapshot snapshot)
- *		PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
+ *		PredicateLockTID(Relation relation, const ItemPointerData *tid, Snapshot snapshot,
  *						 TransactionId tuple_xid)
  *		PredicateLockPageSplit(Relation relation, BlockNumber oldblkno,
  *							   BlockNumber newblkno)
@@ -180,7 +180,7 @@
  * conflict detection (may also trigger rollback)
  *		CheckForSerializableConflictOut(Relation relation, TransactionId xid,
  *										Snapshot snapshot)
- *		CheckForSerializableConflictIn(Relation relation, ItemPointer tid,
+ *		CheckForSerializableConflictIn(Relation relation, const ItemPointerData *tid,
  *									   BlockNumber blkno)
  *		CheckTableForSerializableConflictIn(Relation relation)
  *
@@ -1145,7 +1145,7 @@ void
 PredicateLockShmemInit(void)
 {
 	HASHCTL		info;
-	long		max_table_size;
+	int64		max_table_size;
 	Size		requestSize;
 	bool		found;
 
@@ -2618,7 +2618,7 @@ PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot)
  * Skip if this is a temporary table.
  */
 void
-PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
+PredicateLockTID(Relation relation, const ItemPointerData *tid, Snapshot snapshot,
 				 TransactionId tuple_xid)
 {
 	PREDICATELOCKTARGETTAG tag;
@@ -4333,7 +4333,7 @@ CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag)
  * tuple itself.
  */
 void
-CheckForSerializableConflictIn(Relation relation, ItemPointer tid, BlockNumber blkno)
+CheckForSerializableConflictIn(Relation relation, const ItemPointerData *tid, BlockNumber blkno)
 {
 	PREDICATELOCKTARGETTAG targettag;
 
@@ -4988,7 +4988,7 @@ predicatelock_twophase_recover(FullTransactionId fxid, uint16 info,
 											   HASH_ENTER, &found);
 		Assert(sxid != NULL);
 		Assert(!found);
-		sxid->myXact = (SERIALIZABLEXACT *) sxact;
+		sxid->myXact = sxact;
 
 		/*
 		 * Update global xmin. Note that this is a special case compared to

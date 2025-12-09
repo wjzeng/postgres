@@ -138,14 +138,11 @@ static int	regexec_auth_token(const char *match, AuthToken *token,
 static void tokenize_error_callback(void *arg);
 
 
-/*
- * isblank() exists in the ISO C99 spec, but it's not very portable yet,
- * so provide our own version.
- */
-bool
+static bool
 pg_isblank(const char c)
 {
-	return c == ' ' || c == '\t' || c == '\r';
+	/* don't accept non-ASCII data */
+	return (!IS_HIGHBIT_SET(c) && isblank(c));
 }
 
 
@@ -1075,7 +1072,7 @@ hostname_match(const char *pattern, const char *actual_hostname)
  * Check to see if a connecting IP matches a given host name.
  */
 static bool
-check_hostname(hbaPort *port, const char *hostname)
+check_hostname(Port *port, const char *hostname)
 {
 	struct addrinfo *gai_result,
 			   *gai;
@@ -2528,7 +2525,7 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
  *	request.
  */
 static void
-check_hba(hbaPort *port)
+check_hba(Port *port)
 {
 	Oid			roleid;
 	ListCell   *line;
@@ -3125,7 +3122,7 @@ load_ident(void)
  *	method = uaImplicitReject.
  */
 void
-hba_getauthmethod(hbaPort *port)
+hba_getauthmethod(Port *port)
 {
 	check_hba(port);
 }
