@@ -159,7 +159,7 @@ _bt_search(Relation rel, Relation heaprel, BTScanInsert key, Buffer *bufP,
 		 * page one level down, it usually ends up inserting a new pivot
 		 * tuple/downlink immediately after the location recorded here.
 		 */
-		new_stack = (BTStack) palloc(sizeof(BTStackData));
+		new_stack = (BTStack) palloc_object(BTStackData);
 		new_stack->bts_blkno = BufferGetBlockNumber(*bufP);
 		new_stack->bts_offset = offnum;
 		new_stack->bts_parent = stack_in;
@@ -2147,6 +2147,9 @@ _bt_get_endpoint(Relation rel, uint32 level, bool rightmost)
 			offnum = PageGetMaxOffsetNumber(page);
 		else
 			offnum = P_FIRSTDATAKEY(opaque);
+
+		if (offnum < 1 || offnum > PageGetMaxOffsetNumber(page))
+			elog(PANIC, "offnum out of range");
 
 		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
 		blkno = BTreeTupleGetDownLink(itup);

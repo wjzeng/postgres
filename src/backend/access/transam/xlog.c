@@ -2884,7 +2884,9 @@ XLogFlush(XLogRecPtr record)
 		if (CommitDelay > 0 && enableFsync &&
 			MinimumActiveBackends(CommitSiblings))
 		{
+			pgstat_report_wait_start(WAIT_EVENT_COMMIT_DELAY);
 			pg_usleep(CommitDelay);
+			pgstat_report_wait_end();
 
 			/*
 			 * Re-check how far we can now flush the WAL. It's generally not
@@ -4902,7 +4904,7 @@ void
 LocalProcessControlFile(bool reset)
 {
 	Assert(reset || ControlFile == NULL);
-	ControlFile = palloc(sizeof(ControlFileData));
+	ControlFile = palloc_object(ControlFileData);
 	ReadControlFile();
 }
 
@@ -5137,7 +5139,7 @@ BootStrapXLOG(uint32 data_checksum_version)
 		FullTransactionIdFromEpochAndXid(0, FirstNormalTransactionId);
 	checkPoint.nextOid = FirstGenbkiObjectId;
 	checkPoint.nextMulti = FirstMultiXactId;
-	checkPoint.nextMultiOffset = 0;
+	checkPoint.nextMultiOffset = 1;
 	checkPoint.oldestXid = FirstNormalTransactionId;
 	checkPoint.oldestXidDB = Template1DbOid;
 	checkPoint.oldestMulti = FirstMultiXactId;
@@ -5153,7 +5155,7 @@ BootStrapXLOG(uint32 data_checksum_version)
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
 	AdvanceOldestClogXid(checkPoint.oldestXid);
 	SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
-	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB, true);
+	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB);
 	SetCommitTsLimit(InvalidTransactionId, InvalidTransactionId);
 
 	/* Set up the XLOG page header */
@@ -5632,7 +5634,7 @@ StartupXLOG(void)
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
 	AdvanceOldestClogXid(checkPoint.oldestXid);
 	SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
-	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB, true);
+	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB);
 	SetCommitTsLimit(checkPoint.oldestCommitTsXid,
 					 checkPoint.newestCommitTsXid);
 
@@ -6999,6 +7001,10 @@ CreateCheckPoint(int flags)
 	 */
 	SyncPreCheckpoint();
 
+	/* Run these points outside the critical section. */
+	INJECTION_POINT("create-checkpoint-initial", NULL);
+	INJECTION_POINT_LOAD("create-checkpoint-run");
+
 	/*
 	 * Use a critical section to force system panic if we have trouble.
 	 */
@@ -7148,6 +7154,8 @@ CreateCheckPoint(int flags)
 	 */
 	if (log_checkpoints)
 		LogCheckpointStart(flags, false);
+
+	INJECTION_POINT_CACHED("create-checkpoint-run", NULL);
 
 	/* Update the process title */
 	update_checkpoint_display(flags, false, false);
@@ -9131,7 +9139,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 				continue;
 			}
 
-			ti = palloc(sizeof(tablespaceinfo));
+			ti = palloc_object(tablespaceinfo);
 			ti->oid = tsoid;
 			ti->path = pstrdup(linkpath);
 			ti->rpath = relpath;

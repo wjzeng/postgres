@@ -1353,6 +1353,26 @@ pg_strfold(char *dst, size_t dstsize, const char *src, ssize_t srclen,
 }
 
 /*
+ * Lowercase an identifier using the database default locale.
+ *
+ * For historical reasons, does not use ordinary locale behavior. Should only
+ * be used for identifiers. XXX: can we make this equivalent to
+ * pg_strfold(..., default_locale)?
+ */
+size_t
+pg_downcase_ident(char *dst, size_t dstsize, const char *src, ssize_t srclen)
+{
+	pg_locale_t locale = default_locale;
+
+	if (locale == NULL || locale->ctype == NULL ||
+		locale->ctype->downcase_ident == NULL)
+		return strlower_c(dst, dstsize, src, srclen);
+	else
+		return locale->ctype->downcase_ident(dst, dstsize, src, srclen,
+											 locale);
+}
+
+/*
  * pg_strcoll
  *
  * Like pg_strncoll for NUL-terminated input strings.
@@ -1588,6 +1608,17 @@ pg_iswxdigit(pg_wchar wc, pg_locale_t locale)
 		return locale->ctype->wc_isxdigit(wc, locale);
 }
 
+bool
+pg_iswcased(pg_wchar wc, pg_locale_t locale)
+{
+	/* for the C locale, Cased and Alpha are equivalent */
+	if (locale->ctype == NULL)
+		return (wc <= (pg_wchar) 127 &&
+				(pg_char_properties[wc] & PG_ISALPHA));
+	else
+		return locale->ctype->wc_iscased(wc, locale);
+}
+
 pg_wchar
 pg_towupper(pg_wchar wc, pg_locale_t locale)
 {
@@ -1612,47 +1643,6 @@ pg_towlower(pg_wchar wc, pg_locale_t locale)
 	}
 	else
 		return locale->ctype->wc_tolower(wc, locale);
-}
-
-/*
- * char_is_cased()
- *
- * Fuzzy test of whether the given char is case-varying or not. The argument
- * is a single byte, so in a multibyte encoding, just assume any non-ASCII
- * char is case-varying.
- */
-bool
-char_is_cased(char ch, pg_locale_t locale)
-{
-	if (locale->ctype == NULL)
-		return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
-	return locale->ctype->char_is_cased(ch, locale);
-}
-
-/*
- * char_tolower_enabled()
- *
- * Does the provider support char_tolower()?
- */
-bool
-char_tolower_enabled(pg_locale_t locale)
-{
-	if (locale->ctype == NULL)
-		return true;
-	return (locale->ctype->char_tolower != NULL);
-}
-
-/*
- * char_tolower()
- *
- * Convert char (single-byte encoding) to lowercase.
- */
-char
-char_tolower(unsigned char ch, pg_locale_t locale)
-{
-	if (locale->ctype == NULL)
-		return pg_ascii_tolower(ch);
-	return locale->ctype->char_tolower(ch, locale);
 }
 
 /*

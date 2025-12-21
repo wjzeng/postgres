@@ -846,7 +846,7 @@ RelationGetNotNullConstraints(Oid relid, bool cooked, bool include_noinh)
 		{
 			CookedConstraint *cooked;
 
-			cooked = (CookedConstraint *) palloc(sizeof(CookedConstraint));
+			cooked = palloc_object(CookedConstraint);
 
 			cooked->contype = CONSTR_NOTNULL;
 			cooked->conoid = conForm->oid;
@@ -875,7 +875,7 @@ RelationGetNotNullConstraints(Oid relid, bool cooked, bool include_noinh)
 															 false)));
 			constr->is_enforced = true;
 			constr->skip_validation = !conForm->convalidated;
-			constr->initially_valid = true;
+			constr->initially_valid = conForm->convalidated;
 			constr->is_no_inherit = conForm->connoinherit;
 			notnulls = lappend(notnulls, constr);
 		}

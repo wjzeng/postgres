@@ -359,7 +359,6 @@ extern bool rmtree(const char *path, bool rmtopdir);
  * open() and fopen() replacements to allow deletion of open files and
  * passing of other special options.
  */
-#define		O_DIRECT	0x80000000
 extern HANDLE pgwin32_open_handle(const char *, int, bool);
 extern int	pgwin32_open(const char *, int,...);
 extern FILE *pgwin32_fopen(const char *, const char *);
@@ -419,7 +418,7 @@ extern FILE *pgwin32_popen(const char *command, const char *type);
 
 /* Type to use with fseeko/ftello */
 #ifndef WIN32					/* WIN32 is handled in port/win32_port.h */
-#define pgoff_t off_t
+typedef off_t pgoff_t;
 #endif
 
 #ifndef HAVE_GETPEEREID

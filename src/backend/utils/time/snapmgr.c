@@ -1179,7 +1179,7 @@ ExportSnapshot(Snapshot snapshot)
 	snapshot = CopySnapshot(snapshot);
 
 	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
-	esnap = (ExportedSnapshot *) palloc(sizeof(ExportedSnapshot));
+	esnap = palloc_object(ExportedSnapshot);
 	esnap->snapfile = pstrdup(path);
 	esnap->snapshot = snapshot;
 	exportedSnapshots = lappend(exportedSnapshots, esnap);
@@ -1848,12 +1848,9 @@ RestoreSnapshot(char *start_address)
 
 /*
  * Install a restored snapshot as the transaction snapshot.
- *
- * The second argument is of type void * so that snapmgr.h need not include
- * the declaration for PGPROC.
  */
 void
-RestoreTransactionSnapshot(Snapshot snapshot, void *source_pgproc)
+RestoreTransactionSnapshot(Snapshot snapshot, PGPROC *source_pgproc)
 {
 	SetTransactionSnapshot(snapshot, NULL, InvalidPid, source_pgproc);
 }
