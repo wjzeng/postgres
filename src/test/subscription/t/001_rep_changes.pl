@@ -1,5 +1,5 @@
 
-# Copyright (c) 2021-2025, PostgreSQL Global Development Group
+# Copyright (c) 2021-2026, PostgreSQL Global Development Group
 
 # Basic logical replication test
 use strict;
@@ -595,7 +595,7 @@ ROLLBACK;
 });
 like(
 	$reterr,
-	qr/WARNING:  "wal_level" is insufficient to publish logical changes/,
+	qr/WARNING:  logical decoding must be enabled to publish logical changes/,
 	'CREATE PUBLICATION while "wal_level=minimal"');
 
 done_testing();

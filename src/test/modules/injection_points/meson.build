@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, PostgreSQL Global Development Group
+# Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 if not get_option('injection_points')
   subdir_done()
@@ -46,6 +46,7 @@ tests += {
       'basic',
       'inplace',
       'syscache-update-pruned',
+      'heap_lock_update',
       # temporarily disabled because of flakiness
       # 'index-concurrently-upsert',
       # 'index-concurrently-upsert-predicate',

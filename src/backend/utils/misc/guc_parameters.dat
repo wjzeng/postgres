@@ -4,7 +4,7 @@
 #
 # See src/backend/utils/misc/README for design notes.
 #
-# Portions Copyright (c) 2000-2025, PostgreSQL Global Development Group
+# Portions Copyright (c) 2000-2026, PostgreSQL Global Development Group
 #
 # src/backend/utils/misc/guc_parameters.dat
 #
@@ -803,6 +803,15 @@
   boot_val => 'DEFAULT_EFFECTIVE_IO_CONCURRENCY',
   min => '0',
   max => 'MAX_IO_CONCURRENCY',
+},
+
+{ name => 'effective_wal_level', type => 'enum', context => 'PGC_INTERNAL', group => 'PRESET_OPTIONS',
+  short_desc => 'Show effective WAL level.',
+  flags => 'GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE',
+  variable => 'effective_wal_level',
+  boot_val => 'WAL_LEVEL_REPLICA',
+  options => 'wal_level_options',
+  show_hook => 'show_effective_wal_level',
 },
 
 { name => 'enable_async_append', type => 'bool', context => 'PGC_USERSET', group => 'QUERY_TUNING_METHOD',

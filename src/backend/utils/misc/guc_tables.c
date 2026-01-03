@@ -10,7 +10,7 @@
  * fields change at runtime.
  *
  *
- * Copyright (c) 2000-2025, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2026, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
  * IDENTIFICATION
@@ -617,6 +617,7 @@ static int	shared_memory_size_mb;
 static int	shared_memory_size_in_huge_pages;
 static int	wal_block_size;
 static int	num_os_semaphores;
+static int	effective_wal_level = WAL_LEVEL_REPLICA;
 static bool data_checksums;
 static bool integer_datetimes;
 

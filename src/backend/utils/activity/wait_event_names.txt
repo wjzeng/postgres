@@ -2,7 +2,7 @@
 # wait_event_names.txt
 #      PostgreSQL wait events
 #
-# Copyright (c) 2023-2025, PostgreSQL Global Development Group
+# Copyright (c) 2023-2026, PostgreSQL Global Development Group
 #
 # This list serves as the basis for generating source and documentation files
 # related to wait events.
@@ -359,6 +359,7 @@ InjectionPoint	"Waiting to read or update information related to injection point
 SerialControl	"Waiting to read or update shared <filename>pg_serial</filename> state."
 AioWorkerSubmissionQueue	"Waiting to access AIO worker submission queue."
 WaitLSN	"Waiting to read or update shared Wait-for-LSN state."
+LogicalDecodingControl	"Waiting to read or update logical decoding status information."
 
 #
 # END OF PREDEFINED LWLOCKS (DO NOT CHANGE THIS LINE)

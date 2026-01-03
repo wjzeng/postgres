@@ -3,7 +3,7 @@
  * ipci.c
  *	  POSTGRES inter-process communication initialization code.
  *
- * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -140,6 +140,7 @@ CalculateShmemSize(void)
 	size = add_size(size, SlotSyncShmemSize());
 	size = add_size(size, AioShmemSize());
 	size = add_size(size, WaitLSNShmemSize());
+	size = add_size(size, LogicalDecodingCtlShmemSize());
 
 	/* include additional requested shmem from preload libraries */
 	size = add_size(size, total_addin_request);
@@ -328,6 +329,7 @@ CreateOrAttachShmemStructs(void)
 	InjectionPointShmemInit();
 	AioShmemInit();
 	WaitLSNShmemInit();
+	LogicalDecodingCtlShmemInit();
 }
 
 /*

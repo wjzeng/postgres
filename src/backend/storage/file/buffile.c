@@ -3,7 +3,7 @@
  * buffile.c
  *	  Management of large buffered temporary files.
  *
- * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -92,9 +92,9 @@ struct BufFile
 	 * Position as seen by user of BufFile is (curFile, curOffset + pos).
 	 */
 	int			curFile;		/* file index (0..n) part of current pos */
-	off_t		curOffset;		/* offset part of current pos */
-	int			pos;			/* next read/write position in buffer */
-	int			nbytes;			/* total # of valid bytes in buffer */
+	pgoff_t		curOffset;		/* offset part of current pos */
+	int64		pos;			/* next read/write position in buffer */
+	int64		nbytes;			/* total # of valid bytes in buffer */
 
 	/*
 	 * XXX Should ideally use PGIOAlignedBlock, but might need a way to avoid
@@ -493,8 +493,8 @@ BufFileLoadBuffer(BufFile *file)
 static void
 BufFileDumpBuffer(BufFile *file)
 {
-	int			wpos = 0;
-	int			bytestowrite;
+	int64		wpos = 0;
+	int64		bytestowrite;
 	File		thisfile;
 
 	/*
@@ -503,7 +503,7 @@ BufFileDumpBuffer(BufFile *file)
 	 */
 	while (wpos < file->nbytes)
 	{
-		off_t		availbytes;
+		int64		availbytes;
 		instr_time	io_start;
 		instr_time	io_time;
 
@@ -524,8 +524,8 @@ BufFileDumpBuffer(BufFile *file)
 		bytestowrite = file->nbytes - wpos;
 		availbytes = MAX_PHYSICAL_FILESIZE - file->curOffset;
 
-		if ((off_t) bytestowrite > availbytes)
-			bytestowrite = (int) availbytes;
+		if (bytestowrite > availbytes)
+			bytestowrite = availbytes;
 
 		thisfile = file->files[file->curFile];
 
@@ -729,7 +729,7 @@ BufFileFlush(BufFile *file)
  * BufFileSeek
  *
  * Like fseek(), except that target position needs two values in order to
- * work when logical filesize exceeds maximum value representable by off_t.
+ * work when logical filesize exceeds maximum value representable by pgoff_t.
  * We do not support relative seeks across more than that, however.
  * I/O errors are reported by ereport().
  *
@@ -737,10 +737,10 @@ BufFileFlush(BufFile *file)
  * impossible seek is attempted.
  */
 int
-BufFileSeek(BufFile *file, int fileno, off_t offset, int whence)
+BufFileSeek(BufFile *file, int fileno, pgoff_t offset, int whence)
 {
 	int			newFile;
-	off_t		newOffset;
+	pgoff_t		newOffset;
 
 	switch (whence)
 	{
@@ -754,8 +754,7 @@ BufFileSeek(BufFile *file, int fileno, off_t offset, int whence)
 
 			/*
 			 * Relative seek considers only the signed offset, ignoring
-			 * fileno. Note that large offsets (> 1 GB) risk overflow in this
-			 * add, unless we have 64-bit off_t.
+			 * fileno.
 			 */
 			newFile = file->curFile;
 			newOffset = (file->curOffset + file->pos) + offset;
@@ -795,7 +794,7 @@ BufFileSeek(BufFile *file, int fileno, off_t offset, int whence)
 		 * whether reading or writing, but buffer remains dirty if we were
 		 * writing.
 		 */
-		file->pos = (int) (newOffset - file->curOffset);
+		file->pos = (int64) (newOffset - file->curOffset);
 		return 0;
 	}
 	/* Otherwise, must reposition buffer, so flush any dirty data */
@@ -830,7 +829,7 @@ BufFileSeek(BufFile *file, int fileno, off_t offset, int whence)
 }
 
 void
-BufFileTell(BufFile *file, int *fileno, off_t *offset)
+BufFileTell(BufFile *file, int *fileno, pgoff_t *offset)
 {
 	*fileno = file->curFile;
 	*offset = file->curOffset + file->pos;
@@ -852,7 +851,7 @@ BufFileSeekBlock(BufFile *file, int64 blknum)
 {
 	return BufFileSeek(file,
 					   (int) (blknum / BUFFILE_SEG_SIZE),
-					   (off_t) (blknum % BUFFILE_SEG_SIZE) * BLCKSZ,
+					   (pgoff_t) (blknum % BUFFILE_SEG_SIZE) * BLCKSZ,
 					   SEEK_SET);
 }
 
@@ -925,11 +924,11 @@ BufFileAppend(BufFile *target, BufFile *source)
  * and the offset.
  */
 void
-BufFileTruncateFileSet(BufFile *file, int fileno, off_t offset)
+BufFileTruncateFileSet(BufFile *file, int fileno, pgoff_t offset)
 {
 	int			numFiles = file->numFiles;
 	int			newFile = fileno;
-	off_t		newOffset = file->curOffset;
+	pgoff_t		newOffset = file->curOffset;
 	char		segment_name[MAXPGPATH];
 	int			i;
 
@@ -984,10 +983,10 @@ BufFileTruncateFileSet(BufFile *file, int fileno, off_t offset)
 	{
 		/* No need to reset the current pos if the new pos is greater. */
 		if (newOffset <= file->curOffset + file->pos)
-			file->pos = (int) (newOffset - file->curOffset);
+			file->pos = (int64) newOffset - file->curOffset;
 
 		/* Adjust the nbytes for the current buffer. */
-		file->nbytes = (int) (newOffset - file->curOffset);
+		file->nbytes = (int64) newOffset - file->curOffset;
 	}
 	else if (newFile == file->curFile &&
 			 newOffset < file->curOffset)

@@ -3,7 +3,7 @@
  * slotfuncs.c
  *	   Support functions for replication slots
  *
- * Copyright (c) 2012-2025, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2026, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/slotfuncs.c
@@ -146,6 +146,13 @@ create_logical_replication_slot(char *name, char *plugin,
 	ReplicationSlotCreate(name, true,
 						  temporary ? RS_TEMPORARY : RS_EPHEMERAL, two_phase,
 						  failover, false);
+
+	/*
+	 * Ensure the logical decoding is enabled before initializing the logical
+	 * decoding context.
+	 */
+	EnsureLogicalDecodingEnabled();
+	Assert(IsLogicalDecodingEnabled());
 
 	/*
 	 * Create logical decoding context to find start point or, if we don't

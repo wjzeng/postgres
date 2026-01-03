@@ -2,7 +2,7 @@
  * worker.c
  *	   PostgreSQL logical replication worker (apply)
  *
- * Copyright (c) 2016-2025, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2026, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/worker.c
@@ -530,7 +530,7 @@ typedef struct SubXactInfo
 {
 	TransactionId xid;			/* XID of the subxact */
 	int			fileno;			/* file number in the buffile */
-	off_t		offset;			/* offset in the file */
+	pgoff_t		offset;			/* offset in the file */
 } SubXactInfo;
 
 /* Sub-transaction data for the current streaming transaction */
@@ -2226,12 +2226,12 @@ apply_handle_stream_abort(StringInfo s)
  */
 static void
 ensure_last_message(FileSet *stream_fileset, TransactionId xid, int fileno,
-					off_t offset)
+					pgoff_t offset)
 {
 	char		path[MAXPGPATH];
 	BufFile    *fd;
 	int			last_fileno;
-	off_t		last_offset;
+	pgoff_t		last_offset;
 
 	Assert(!IsTransactionState());
 
@@ -2266,7 +2266,7 @@ apply_spooled_messages(FileSet *stream_fileset, TransactionId xid,
 	MemoryContext oldcxt;
 	ResourceOwner oldowner;
 	int			fileno;
-	off_t		offset;
+	pgoff_t		offset;
 
 	if (!am_parallel_apply_worker())
 		maybe_start_skipping_changes(lsn);
@@ -5849,6 +5849,23 @@ InitializeLogRepWorker(void)
 					   MySubscription->name));
 
 	CommitTransactionCommand();
+
+	/*
+	 * Register a callback to reset the origin state before aborting any
+	 * pending transaction during shutdown (see ShutdownPostgres()). This will
+	 * avoid origin advancement for an incomplete transaction which could
+	 * otherwise lead to its loss as such a transaction won't be sent by the
+	 * server again.
+	 *
+	 * Note that even a LOG or DEBUG statement placed after setting the origin
+	 * state may process a shutdown signal before committing the current apply
+	 * operation. So, it is important to register such a callback here.
+	 *
+	 * Register this callback here to ensure that all types of logical
+	 * replication workers that set up origins and apply remote transactions
+	 * are protected.
+	 */
+	before_shmem_exit(replorigin_reset, (Datum) 0);
 }
 
 /*
@@ -5891,19 +5908,6 @@ SetupApplyOrSyncWorker(int worker_slot)
 	load_file("libpqwalreceiver", false);
 
 	InitializeLogRepWorker();
-
-	/*
-	 * Register a callback to reset the origin state before aborting any
-	 * pending transaction during shutdown (see ShutdownPostgres()). This will
-	 * avoid origin advancement for an in-complete transaction which could
-	 * otherwise lead to its loss as such a transaction won't be sent by the
-	 * server again.
-	 *
-	 * Note that even a LOG or DEBUG statement placed after setting the origin
-	 * state may process a shutdown signal before committing the current apply
-	 * operation. So, it is important to register such a callback here.
-	 */
-	before_shmem_exit(replorigin_reset, (Datum) 0);
 
 	/* Connect to the origin and start the replication. */
 	elog(DEBUG1, "connecting to publisher using connection string \"%s\"",

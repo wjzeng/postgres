@@ -7,7 +7,7 @@
  * declare them all here to avoid having to propagate guc.h into
  * a lot of unrelated header files.
  *
- * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
  *	  src/include/utils/guc_hooks.h
  *
@@ -61,6 +61,7 @@ extern bool check_default_text_search_config(char **newval, void **extra, GucSou
 extern void assign_default_text_search_config(const char *newval, void *extra);
 extern bool check_default_with_oids(bool *newval, void **extra,
 									GucSource source);
+extern const char *show_effective_wal_level(void);
 extern bool check_huge_page_size(int *newval, void **extra, GucSource source);
 extern void assign_io_method(int newval, void *extra);
 extern bool check_io_max_concurrency(int *newval, void **extra, GucSource source);

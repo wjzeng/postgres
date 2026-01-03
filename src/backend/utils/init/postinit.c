@@ -3,7 +3,7 @@
  * postinit.c
  *	  postgres initialization utilities
  *
- * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -652,6 +652,9 @@ BaseInit(void)
 
 	/* Initialize lock manager's local structs */
 	InitLockManagerAccess();
+
+	/* Initialize logical info WAL logging state */
+	InitializeProcessXLogLogicalInfo();
 
 	/*
 	 * Initialize replication slots after pgstat. The exit hook might need to

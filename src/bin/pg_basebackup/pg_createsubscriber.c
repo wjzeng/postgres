@@ -3,7 +3,7 @@
  * pg_createsubscriber.c
  *	  Create a new logical replica from a standby server
  *
- * Copyright (c) 2024-2025, PostgreSQL Global Development Group
+ * Copyright (c) 2024-2026, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/bin/pg_basebackup/pg_createsubscriber.c
@@ -953,7 +953,7 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 	 * Since these parameters are not a requirement for physical replication,
 	 * we should check it to make sure it won't fail.
 	 *
-	 * - wal_level = logical
+	 * - wal_level >= replica
 	 * - max_replication_slots >= current + number of dbs to be converted
 	 * - max_wal_senders >= current + number of dbs to be converted
 	 * - max_slot_wal_keep_size = -1 (to prevent deletion of required WAL files)
@@ -997,9 +997,9 @@ check_publisher(const struct LogicalRepInfo *dbinfo)
 
 	disconnect_database(conn, false);
 
-	if (strcmp(wal_level, "logical") != 0)
+	if (strcmp(wal_level, "minimal") == 0)
 	{
-		pg_log_error("publisher requires \"wal_level\" >= \"logical\"");
+		pg_log_error("publisher requires \"wal_level\" >= \"replica\"");
 		failed = true;
 	}
 

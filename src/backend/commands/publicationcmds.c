@@ -3,7 +3,7 @@
  * publicationcmds.c
  *		publication manipulation
  *
- * Portions Copyright (c) 1996-2025, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -975,11 +975,16 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 
 	InvokeObjectPostCreateHook(PublicationRelationId, puboid, 0);
 
-	if (wal_level != WAL_LEVEL_LOGICAL)
+	/*
+	 * We don't need this warning message when wal_level >= 'replica' since
+	 * logical decoding is automatically enabled up on a logical slot
+	 * creation.
+	 */
+	if (wal_level < WAL_LEVEL_REPLICA)
 		ereport(WARNING,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("\"wal_level\" is insufficient to publish logical changes"),
-				 errhint("Set \"wal_level\" to \"logical\" before creating subscriptions.")));
+				 errmsg("logical decoding must be enabled to publish logical changes"),
+				 errhint("Before creating subscriptions, ensure that \"wal_level\" is set to \"replica\" or higher.")));
 
 	return myself;
 }

@@ -3,7 +3,7 @@
  *	   Functionality for synchronizing slots to a standby server from the
  *         primary server.
  *
- * Copyright (c) 2024-2025, PostgreSQL Global Development Group
+ * Copyright (c) 2024-2026, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/slotsync.c
@@ -857,6 +857,7 @@ synchronize_one_slot(RemoteSlot *remote_slot, Oid remote_dbid,
 
 		reserve_wal_for_local_slot(remote_slot->restart_lsn);
 
+		LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
 		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 		xmin_horizon = GetOldestSafeDecodingTransactionId(true);
 		SpinLockAcquire(&slot->mutex);
@@ -865,6 +866,7 @@ synchronize_one_slot(RemoteSlot *remote_slot, Oid remote_dbid,
 		SpinLockRelease(&slot->mutex);
 		ReplicationSlotsComputeRequiredXmin(true);
 		LWLockRelease(ProcArrayLock);
+		LWLockRelease(ReplicationSlotControlLock);
 
 		/*
 		 * Make sure that concerned WAL is received and flushed before syncing
@@ -1201,13 +1203,15 @@ bool
 ValidateSlotSyncParams(int elevel)
 {
 	/*
-	 * Logical slot sync/creation requires wal_level >= logical.
+	 * Logical slot sync/creation requires logical decoding to be enabled.
 	 */
-	if (wal_level < WAL_LEVEL_LOGICAL)
+	if (!IsLogicalDecodingEnabled())
 	{
 		ereport(elevel,
 				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				errmsg("replication slot synchronization requires \"wal_level\" >= \"logical\""));
+				errmsg("replication slot synchronization requires \"effective_wal_level\" >= \"logical\" on the primary"),
+				errhint("To enable logical decoding on primary, set \"wal_level\" >= \"logical\" or create at least one logical slot when \"wal_level\" = \"replica\"."));
+
 		return false;
 	}
 
