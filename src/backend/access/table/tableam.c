@@ -11,7 +11,7 @@
  *	  src/backend/access/table/tableam.c
  *
  * NOTES
- *	  Note that most function in here are documented in tableam.h, rather than
+ *	  Note that most functions in here are documented in tableam.h, rather than
  *	  here. That's because there's a lot of inline functions in tableam.h and
  *	  it'd be harder to understand if one constantly had to switch between files.
  *
@@ -117,8 +117,8 @@ table_beginscan_catalog(Relation relation, int nkeys, ScanKeyData *key)
 	Oid			relid = RelationGetRelid(relation);
 	Snapshot	snapshot = RegisterSnapshot(GetCatalogSnapshot(relid));
 
-	return relation->rd_tableam->scan_begin(relation, snapshot, nkeys, key,
-											NULL, flags);
+	return table_beginscan_common(relation, snapshot, nkeys, key,
+								  NULL, flags, SO_NONE);
 }
 
 
@@ -163,10 +163,11 @@ table_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan,
 }
 
 TableScanDesc
-table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan)
+table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan,
+						 uint32 flags)
 {
 	Snapshot	snapshot;
-	uint32		flags = SO_TYPE_SEQSCAN |
+	uint32		internal_flags = SO_TYPE_SEQSCAN |
 		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
 
 	Assert(RelFileLocatorEquals(relation->rd_locator, pscan->phs_locator));
@@ -176,7 +177,7 @@ table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan)
 		/* Snapshot was serialized -- restore it */
 		snapshot = RestoreSnapshot((char *) pscan + pscan->phs_snapshot_off);
 		RegisterSnapshot(snapshot);
-		flags |= SO_TEMP_SNAPSHOT;
+		internal_flags |= SO_TEMP_SNAPSHOT;
 	}
 	else
 	{
@@ -184,17 +185,18 @@ table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan)
 		snapshot = SnapshotAny;
 	}
 
-	return relation->rd_tableam->scan_begin(relation, snapshot, 0, NULL,
-											pscan, flags);
+	return table_beginscan_common(relation, snapshot, 0, NULL,
+								  pscan, internal_flags, flags);
 }
 
 TableScanDesc
 table_beginscan_parallel_tidrange(Relation relation,
-								  ParallelTableScanDesc pscan)
+								  ParallelTableScanDesc pscan,
+								  uint32 flags)
 {
 	Snapshot	snapshot;
-	uint32		flags = SO_TYPE_TIDRANGESCAN | SO_ALLOW_PAGEMODE;
 	TableScanDesc sscan;
+	uint32		internal_flags = SO_TYPE_TIDRANGESCAN | SO_ALLOW_PAGEMODE;
 
 	Assert(RelFileLocatorEquals(relation->rd_locator, pscan->phs_locator));
 
@@ -206,7 +208,7 @@ table_beginscan_parallel_tidrange(Relation relation,
 		/* Snapshot was serialized -- restore it */
 		snapshot = RestoreSnapshot((char *) pscan + pscan->phs_snapshot_off);
 		RegisterSnapshot(snapshot);
-		flags |= SO_TEMP_SNAPSHOT;
+		internal_flags |= SO_TEMP_SNAPSHOT;
 	}
 	else
 	{
@@ -214,8 +216,8 @@ table_beginscan_parallel_tidrange(Relation relation,
 		snapshot = SnapshotAny;
 	}
 
-	sscan = relation->rd_tableam->scan_begin(relation, snapshot, 0, NULL,
-											 pscan, flags);
+	sscan = table_beginscan_common(relation, snapshot, 0, NULL,
+								   pscan, internal_flags, flags);
 	return sscan;
 }
 
@@ -248,7 +250,7 @@ table_index_fetch_tuple_check(Relation rel,
 	bool		found;
 
 	slot = table_slot_create(rel, NULL);
-	scan = table_index_fetch_begin(rel);
+	scan = table_index_fetch_begin(rel, SO_NONE);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
 									all_dead);
 	table_index_fetch_end(scan);
@@ -268,14 +270,6 @@ table_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
 {
 	Relation	rel = scan->rs_rd;
 	const TableAmRoutine *tableam = rel->rd_tableam;
-
-	/*
-	 * We don't expect direct calls to table_tuple_get_latest_tid with valid
-	 * CheckXidAlive for catalog or regular tables.  See detailed comments in
-	 * xact.c where these variables are declared.
-	 */
-	if (unlikely(TransactionIdIsValid(CheckXidAlive) && !bsysscan))
-		elog(ERROR, "unexpected table_tuple_get_latest_tid call during logical decoding");
 
 	/*
 	 * Since this can be called with user-supplied TID, don't trust the input
@@ -326,9 +320,9 @@ simple_table_tuple_delete(Relation rel, ItemPointer tid, Snapshot snapshot)
 
 	result = table_tuple_delete(rel, tid,
 								GetCurrentCommandId(true),
-								snapshot, InvalidSnapshot,
+								0, snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
-								&tmfd, false /* changingPart */ );
+								&tmfd);
 
 	switch (result)
 	{
@@ -375,7 +369,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 
 	result = table_tuple_update(rel, otid, slot,
 								GetCurrentCommandId(true),
-								snapshot, InvalidSnapshot,
+								0, snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
 								&tmfd, &lockmode, update_indexes);
 

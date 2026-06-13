@@ -28,7 +28,14 @@ extern PGDLLIMPORT int min_parallel_table_scan_size;
 extern PGDLLIMPORT int min_parallel_index_scan_size;
 extern PGDLLIMPORT bool enable_group_by_reordering;
 
-/* Hook for plugins to get control in set_rel_pathlist() */
+/* Hooks for plugins to get control in set_rel_pathlist() */
+typedef void (*join_path_setup_hook_type) (PlannerInfo *root,
+										   RelOptInfo *joinrel,
+										   RelOptInfo *outerrel,
+										   RelOptInfo *innerrel,
+										   JoinType jointype,
+										   JoinPathExtraData *extra);
+extern PGDLLIMPORT join_path_setup_hook_type join_path_setup_hook;
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
 											RelOptInfo *rel,
 											Index rti,
@@ -81,7 +88,6 @@ extern bool indexcol_is_bool_constant_for_query(PlannerInfo *root,
 												int indexcol);
 extern bool match_index_to_operand(Node *operand, int indexcol,
 								   IndexOptInfo *index);
-extern Node *strip_phvs_in_index_operand(Node *operand);
 extern void check_index_predicates(PlannerInfo *root, RelOptInfo *rel);
 
 /*

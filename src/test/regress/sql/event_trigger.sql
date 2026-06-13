@@ -143,6 +143,21 @@ create user mapping for regress_evt_user server useless_server;
 alter default privileges for role regress_evt_user
  revoke delete on tables from regress_evt_user;
 
+-- DROP PROPERTY GRAPH should work with event trigger in place
+CREATE TABLE tv1 (a int PRIMARY KEY, b text);
+CREATE TABLE tv2 (i int PRIMARY KEY, j text);
+CREATE TABLE te1 (p int PRIMARY KEY, a int REFERENCES tv1(a), b int REFERENCES tv2(i), q text);
+
+CREATE PROPERTY GRAPH gx
+	VERTEX TABLES (
+		tv1 LABEL l1 PROPERTIES (b AS p1),
+		tv2 LABEL l2 PROPERTIES (j AS p1))
+  EDGE TABLES (te1 SOURCE tv1 DESTINATION tv2 LABEL e1 PROPERTIES (q as p1));
+
+ALTER PROPERTY GRAPH gx ALTER EDGE TABLE te1 ALTER LABEL e1 DROP PROPERTIES (p1);
+DROP PROPERTY GRAPH gx;
+DROP TABLE tv1, tv2, te1;
+
 -- alter owner to non-superuser should fail
 alter event trigger regress_event_trigger owner to regress_evt_user;
 
@@ -324,7 +339,12 @@ CREATE SCHEMA evttrig
 	CREATE TABLE one (col_a SERIAL PRIMARY KEY, col_b text DEFAULT 'forty two', col_c SERIAL)
 	CREATE INDEX one_idx ON one (col_b)
 	CREATE TABLE two (col_c INTEGER CHECK (col_c > 0) REFERENCES one DEFAULT 42)
-	CREATE TABLE id (col_d int NOT NULL GENERATED ALWAYS AS IDENTITY);
+	CREATE TABLE id (col_d int NOT NULL GENERATED ALWAYS AS IDENTITY)
+	CREATE VIEW one_view AS SELECT * FROM two;
+
+-- View with column additions
+CREATE OR REPLACE VIEW evttrig.one_view AS SELECT * FROM evttrig.two, evttrig.id;
+DROP VIEW evttrig.one_view;
 
 -- Partitioned tables with a partitioned index
 CREATE TABLE evttrig.parted (

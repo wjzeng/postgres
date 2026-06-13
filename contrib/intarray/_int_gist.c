@@ -25,8 +25,8 @@
 /* or: #define MAXNUMELTS 1000000 */
 
 /*
-** GiST support methods
-*/
+ * GiST support methods
+ */
 PG_FUNCTION_INFO_V1(g_int_consistent);
 PG_FUNCTION_INFO_V1(g_int_compress);
 PG_FUNCTION_INFO_V1(g_int_decompress);
@@ -38,19 +38,20 @@ PG_FUNCTION_INFO_V1(g_int_options);
 
 
 /*
-** The GiST Consistent method for _intments
-** Should return false if for all data items x below entry,
-** the predicate x op query == false, where op is the oper
-** corresponding to strategy in the pg_amop table.
-*/
+ * The GiST Consistent method for _intments
+ * Should return false if for all data items x below entry,
+ * the predicate x op query == false, where op is the oper
+ * corresponding to strategy in the pg_amop table.
+ */
 Datum
 g_int_consistent(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
 	ArrayType  *query = PG_GETARG_ARRAYTYPE_P_COPY(1);
 	StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
-
-	/* Oid		subtype = PG_GETARG_OID(3); */
+#ifdef NOT_USED
+	Oid			subtype = PG_GETARG_OID(3);
+#endif
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(4);
 	bool		retval = false; /* silence compiler warning */
 
@@ -157,8 +158,8 @@ g_int_union(PG_FUNCTION_ARGS)
 }
 
 /*
-** GiST Compress and Decompress methods
-*/
+ * GiST Compress and Decompress methods
+ */
 Datum
 g_int_compress(PG_FUNCTION_ARGS)
 {
@@ -358,8 +359,8 @@ g_int_decompress(PG_FUNCTION_ARGS)
 }
 
 /*
-** The GiST Penalty method for _intments
-*/
+ * The GiST Penalty method for _intments
+ */
 Datum
 g_int_penalty(PG_FUNCTION_ARGS)
 {
@@ -435,9 +436,9 @@ comparecost(const void *a, const void *b)
 }
 
 /*
-** The GiST PickSplit method for _intments
-** We use Guttman's poly time split algorithm
-*/
+ * The GiST PickSplit method for _intments
+ * We use Guttman's poly time split algorithm
+ */
 Datum
 g_int_picksplit(PG_FUNCTION_ARGS)
 {

@@ -291,7 +291,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		SplitPageLayout *dist = NULL,
 				   *ptr;
 		BlockNumber oldrlink = InvalidBlockNumber;
-		GistNSN		oldnsn = 0;
+		GistNSN		oldnsn = InvalidXLogRecPtr;
 		SplitPageLayout rootpg;
 		bool		is_rootsplit;
 		int			npage;
@@ -517,7 +517,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 									   dist, oldrlink, oldnsn, leftchildbuf,
 									   markfollowright);
 			else
-				recptr = gistGetFakeLSN(rel);
+				recptr = XLogGetFakeLSN(rel);
 		}
 
 		for (ptr = dist; ptr; ptr = ptr->next)
@@ -594,7 +594,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 										leftchildbuf);
 			}
 			else
-				recptr = gistGetFakeLSN(rel);
+				recptr = XLogGetFakeLSN(rel);
 		}
 		PageSetLSN(page, recptr);
 
@@ -654,7 +654,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 
 	/* Start from the root */
 	firststack.blkno = GIST_ROOT_BLKNO;
-	firststack.lsn = 0;
+	firststack.lsn = InvalidXLogRecPtr;
 	firststack.retry_from_parent = false;
 	firststack.parent = NULL;
 	firststack.downlinkoffnum = InvalidOffsetNumber;
@@ -1733,7 +1733,7 @@ gistprunepage(Relation rel, Page page, Buffer buffer, Relation heapRel)
 			PageSetLSN(page, recptr);
 		}
 		else
-			PageSetLSN(page, gistGetFakeLSN(rel));
+			PageSetLSN(page, XLogGetFakeLSN(rel));
 
 		END_CRIT_SECTION();
 	}

@@ -14,6 +14,7 @@
 #ifndef BOOTSTRAP_H
 #define BOOTSTRAP_H
 
+#include "catalog/pg_attribute.h"
 #include "nodes/execnodes.h"
 #include "nodes/parsenodes.h"
 
@@ -53,7 +54,10 @@ extern void boot_get_type_io_data(Oid typid,
 								  char *typdelim,
 								  Oid *typioparam,
 								  Oid *typinput,
-								  Oid *typoutput);
+								  Oid *typoutput,
+								  Oid *typcollation);
+
+extern Oid	boot_get_role_oid(const char *rolname);
 
 union YYSTYPE;
 typedef void *yyscan_t;

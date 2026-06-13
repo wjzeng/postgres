@@ -25,8 +25,9 @@
 extern void RemoveObjects(DropStmt *stmt);
 
 /* commands/indexcmds.c */
-extern ObjectAddress DefineIndex(Oid tableId,
-								 IndexStmt *stmt,
+extern ObjectAddress DefineIndex(ParseState *pstate,
+								 Oid tableId,
+								 const IndexStmt *stmt,
 								 Oid indexRelationId,
 								 Oid parentIndexId,
 								 Oid parentConstraintId,

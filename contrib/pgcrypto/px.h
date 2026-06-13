@@ -75,7 +75,7 @@
 /* -108 is unused */
 #define PXE_PGP_MATH_FAILED			-109
 #define PXE_PGP_SHORT_ELGAMAL_KEY	-110
-/* -111 is unused */
+#define PXE_PGP_KEY_TOO_BIG			-111
 #define PXE_PGP_UNKNOWN_PUBALGO		-112
 #define PXE_PGP_WRONG_KEY			-113
 #define PXE_PGP_MULTIPLE_KEYS		-114
@@ -194,7 +194,7 @@ bool		CheckFIPSMode(void);
 void		CheckBuiltinCryptoMode(void);
 
 #ifdef PX_DEBUG
-void		px_debug(const char *fmt,...) pg_attribute_printf(1, 2);
+void		px_debug(const char *fmt, ...) pg_attribute_printf(1, 2);
 #else
 #define px_debug(...)
 #endif

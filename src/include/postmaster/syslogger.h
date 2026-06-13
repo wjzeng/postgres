@@ -46,7 +46,7 @@ typedef struct
 	char		nuls[2];		/* always \0\0 */
 	uint16		len;			/* size of this chunk (counts data only) */
 	int32		pid;			/* writer's pid */
-	bits8		flags;			/* bitmask of PIPE_PROTO_* */
+	uint8		flags;			/* bitmask of PIPE_PROTO_* */
 	char		data[FLEXIBLE_ARRAY_MEMBER];	/* data payload starts here */
 } PipeProtoHeader;
 
@@ -85,6 +85,7 @@ extern PGDLLIMPORT int syslogPipe[2];
 extern PGDLLIMPORT HANDLE syslogPipe[2];
 #endif
 
+extern bool syslogger_setup_done;
 
 extern int	SysLogger_Start(int child_slot);
 

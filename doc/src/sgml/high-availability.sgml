@@ -865,7 +865,7 @@ archive_cleanup_command = 'pg_archivecleanup /path/to/archive "%r"'
 # as a replication standby if the user's password is correctly supplied.
 #
 # TYPE  DATABASE        USER            ADDRESS                 METHOD
-host    replication     foo             192.168.1.100/32        md5
+host    replication     foo             192.168.1.100/32        scram-sha-256
 </programlisting>
     </para>
     <para>
@@ -1190,10 +1190,12 @@ primary_slot_name = 'node_a_slot'
    </para>
 
    <para>
-    Users will stop waiting if a fast shutdown is requested.  However, as
-    when using asynchronous replication, the server will not fully
-    shutdown until all outstanding WAL records are transferred to the currently
-    connected standby servers.
+    Users will stop waiting if a fast shutdown is requested.  However, when
+    using replication, the server will not fully shutdown until all
+    outstanding WAL records are transferred to the currently connected
+    standby servers, or <xref linkend="guc-wal-sender-shutdown-timeout"/>
+    (if set) expires, regardless of whether replication is synchronous or
+    asynchronous.
    </para>
 
    </sect3>
@@ -1408,13 +1410,13 @@ synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
     operations, the application retrieves the current WAL location using a
     function call like this.
 
-    <programlisting>
+<programlisting>
 postgres=# SELECT pg_current_wal_insert_lsn();
-pg_current_wal_insert_lsn
---------------------
-0/306EE20
+ pg_current_wal_insert_lsn
+---------------------------
+ 0/306EE20
 (1 row)
-    </programlisting>
+</programlisting>
    </para>
 
    <para>
@@ -1425,13 +1427,13 @@ pg_current_wal_insert_lsn
     the standby's WAL replay process reaches (or exceeds) the specified
     <acronym>LSN</acronym>.
 
-    <programlisting>
+<programlisting>
 postgres=# WAIT FOR LSN '0/306EE20';
  status
---------
+---------
  success
 (1 row)
-    </programlisting>
+</programlisting>
     Once the command returns a status of success, it guarantees that all
     changes up to the provided <acronym>LSN</acronym> have been applied,
     ensuring that subsequent read queries will reflect the latest updates.

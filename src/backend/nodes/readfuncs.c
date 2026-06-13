@@ -26,8 +26,6 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "nodes/readfuncs.h"
@@ -424,6 +422,15 @@ _readRangeTblEntry(void)
 			READ_NODE_FIELD(colcollations);
 			/* we re-use these RELATION fields, too: */
 			READ_OID_FIELD(relid);
+			break;
+		case RTE_GRAPH_TABLE:
+			READ_NODE_FIELD(graph_pattern);
+			READ_NODE_FIELD(graph_table_columns);
+			/* we re-use these RELATION fields, too: */
+			READ_OID_FIELD(relid);
+			READ_CHAR_FIELD(relkind);
+			READ_INT_FIELD(rellockmode);
+			READ_UINT_FIELD(perminfoindex);
 			break;
 		case RTE_RESULT:
 			/* no extra fields */

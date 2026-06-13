@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "foreign/fdwapi.h"
 #include "nodes/makefuncs.h"
@@ -237,8 +238,9 @@ adjust_appendrel_attrs_mutator(Node *node,
 		 * You might think we need to adjust var->varnullingrels, but that
 		 * shouldn't need any changes.  It will contain outer-join relids,
 		 * while the transformation we are making affects only baserels.
-		 * Below, we just propagate var->varnullingrels into the translated
-		 * Var.
+		 * Below, we just merge var->varnullingrels into the translated Var.
+		 * (We must merge not just copy: the child Var could have some
+		 * nullingrel bits set already, and we mustn't drop those.)
 		 *
 		 * If var->varnullingrels isn't empty, and the translation wouldn't be
 		 * a Var, we have to fail.  One could imagine wrapping the translated
@@ -291,8 +293,11 @@ adjust_appendrel_attrs_mutator(Node *node,
 						 var->varattno, get_rel_name(appinfo->parent_reloid));
 				if (IsA(newnode, Var))
 				{
-					((Var *) newnode)->varreturningtype = var->varreturningtype;
-					((Var *) newnode)->varnullingrels = var->varnullingrels;
+					Var		   *newvar = (Var *) newnode;
+
+					newvar->varreturningtype = var->varreturningtype;
+					newvar->varnullingrels = bms_add_members(newvar->varnullingrels,
+															 var->varnullingrels);
 				}
 				else
 				{

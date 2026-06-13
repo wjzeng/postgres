@@ -17,6 +17,35 @@
 #include "nodes/bitmapset.h"
 #include "nodes/pathnodes.h"
 
+/* Hook for plugins to get control in build_simple_rel() */
+typedef void (*build_simple_rel_hook_type) (PlannerInfo *root,
+											RelOptInfo *rel,
+											RangeTblEntry *rte);
+extern PGDLLIMPORT build_simple_rel_hook_type build_simple_rel_hook;
+
+/*
+ * Everything in subpaths or partial_subpaths will become part of the
+ * Append node's subpaths list. Partial and non-partial subpaths can be
+ * mixed in the same Append node only if it is parallel-aware.
+ *
+ * See the comments for AppendPath for the meaning and purpose of the
+ * child_append_relid_sets field.
+ */
+typedef struct AppendPathInput
+{
+	List	   *subpaths;
+	List	   *partial_subpaths;
+	List	   *child_append_relid_sets;
+} AppendPathInput;
+
+/* Hook for plugins to get control during joinrel setup */
+typedef void (*joinrel_setup_hook_type) (PlannerInfo *root,
+										 RelOptInfo *joinrel,
+										 RelOptInfo *outer_rel,
+										 RelOptInfo *inner_rel,
+										 SpecialJoinInfo *sjinfo,
+										 List *restrictlist);
+extern PGDLLIMPORT joinrel_setup_hook_type joinrel_setup_hook;
 
 /*
  * prototypes for pathnode.c
@@ -32,7 +61,7 @@ extern bool add_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
 							  List *pathkeys, Relids required_outer);
 extern void add_partial_path(RelOptInfo *parent_rel, Path *new_path);
 extern bool add_partial_path_precheck(RelOptInfo *parent_rel,
-									  int disabled_nodes,
+									  int disabled_nodes, Cost startup_cost,
 									  Cost total_cost, List *pathkeys);
 
 extern Path *create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
@@ -69,21 +98,24 @@ extern TidRangePath *create_tidrangescan_path(PlannerInfo *root,
 											  List *tidrangequals,
 											  Relids required_outer,
 											  int parallel_workers);
+
 extern AppendPath *create_append_path(PlannerInfo *root, RelOptInfo *rel,
-									  List *subpaths, List *partial_subpaths,
+									  AppendPathInput input,
 									  List *pathkeys, Relids required_outer,
 									  int parallel_workers, bool parallel_aware,
 									  double rows);
 extern MergeAppendPath *create_merge_append_path(PlannerInfo *root,
 												 RelOptInfo *rel,
 												 List *subpaths,
+												 List *child_append_relid_sets,
 												 List *pathkeys,
 												 Relids required_outer);
 extern GroupResultPath *create_group_result_path(PlannerInfo *root,
 												 RelOptInfo *rel,
 												 PathTarget *target,
 												 List *havingqual);
-extern MaterialPath *create_material_path(RelOptInfo *rel, Path *subpath);
+extern MaterialPath *create_material_path(RelOptInfo *rel, Path *subpath,
+										  bool enabled);
 extern MemoizePath *create_memoize_path(PlannerInfo *root,
 										RelOptInfo *rel,
 										Path *subpath,
@@ -287,7 +319,7 @@ extern ModifyTablePath *create_modifytable_path(PlannerInfo *root,
 												List *withCheckOptionLists, List *returningLists,
 												List *rowMarks, OnConflictExpr *onconflict,
 												List *mergeActionLists, List *mergeJoinConditions,
-												int epqParam);
+												ForPortionOfExpr *forPortionOf, int epqParam);
 extern LimitPath *create_limit_path(PlannerInfo *root, RelOptInfo *rel,
 									Path *subpath,
 									Node *limitOffset, Node *limitCount,

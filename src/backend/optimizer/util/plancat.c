@@ -57,9 +57,6 @@
 /* GUC parameter */
 int			constraint_exclusion = CONSTRAINT_EXCLUSION_PARTITION;
 
-/* Hook for plugins to get control in get_relation_info() */
-get_relation_info_hook_type get_relation_info_hook = NULL;
-
 typedef struct NotnullHashEntry
 {
 	Oid			relid;			/* OID of the relation */
@@ -571,14 +568,6 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 		set_relation_partition_info(root, rel, relation);
 
 	table_close(relation, NoLock);
-
-	/*
-	 * Allow a plugin to editorialize on the info we obtained from the
-	 * catalogs.  Actions might include altering the assumed relation size,
-	 * removing an index, or adding a hypothetical index to the indexlist.
-	 */
-	if (get_relation_info_hook)
-		(*get_relation_info_hook) (root, relationObjectId, inhparent, rel);
 }
 
 /*
@@ -838,9 +827,9 @@ infer_arbiter_indexes(PlannerInfo *root)
 
 	/*
 	 * Quickly return NIL for ON CONFLICT DO NOTHING without an inference
-	 * specification or named constraint.  ON CONFLICT DO UPDATE statements
-	 * must always provide one or the other (but parser ought to have caught
-	 * that already).
+	 * specification or named constraint.  ON CONFLICT DO SELECT/UPDATE
+	 * statements must always provide one or the other (but parser ought to
+	 * have caught that already).
 	 */
 	if (onconflict->arbiterElems == NIL &&
 		onconflict->constraint == InvalidOid)
@@ -937,7 +926,7 @@ infer_arbiter_indexes(PlannerInfo *root)
 				Assert(idxForm->indisready);
 
 				/*
-				 * Set up inferElems and inferPredExprs to match the
+				 * Set up inferElems and inferIndexExprs to match the
 				 * constraint index, so that we can match them in the loop
 				 * below.
 				 */
@@ -1021,10 +1010,17 @@ infer_arbiter_indexes(PlannerInfo *root)
 		 */
 		if (indexOidFromConstraint == idxForm->indexrelid)
 		{
-			if (idxForm->indisexclusion && onconflict->action == ONCONFLICT_UPDATE)
+			/*
+			 * ON CONFLICT DO UPDATE and ON CONFLICT DO SELECT are not
+			 * supported with exclusion constraints.
+			 */
+			if (idxForm->indisexclusion &&
+				(onconflict->action == ONCONFLICT_UPDATE ||
+				 onconflict->action == ONCONFLICT_SELECT))
 				ereport(ERROR,
-						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-						 errmsg("ON CONFLICT DO UPDATE not supported with exclusion constraints")));
+						errcode(ERRCODE_WRONG_OBJECT_TYPE),
+						errmsg("ON CONFLICT DO %s not supported with exclusion constraints",
+							   onconflict->action == ONCONFLICT_UPDATE ? "UPDATE" : "SELECT"));
 
 			/* Consider this one a match already */
 			results = lappend_oid(results, idxForm->indexrelid);
@@ -1034,10 +1030,12 @@ infer_arbiter_indexes(PlannerInfo *root)
 		else if (indexOidFromConstraint != InvalidOid)
 		{
 			/*
-			 * In the case of "ON constraint_name DO UPDATE" we need to skip
-			 * non-unique candidates.
+			 * In the case of "ON constraint_name DO SELECT/UPDATE" we need to
+			 * skip non-unique candidates.
 			 */
-			if (!idxForm->indisunique && onconflict->action == ONCONFLICT_UPDATE)
+			if (!idxForm->indisunique &&
+				(onconflict->action == ONCONFLICT_UPDATE ||
+				 onconflict->action == ONCONFLICT_SELECT))
 				continue;
 		}
 		else
@@ -1793,6 +1791,9 @@ get_relation_statistics(PlannerInfo *root, RelOptInfo *rel,
 				exprsString = TextDatumGetCString(datum);
 				exprs = (List *) stringToNode(exprsString);
 				pfree(exprsString);
+
+				/* Expand virtual generated columns in the expressions */
+				exprs = (List *) expand_generated_columns_in_expr((Node *) exprs, relation, 1);
 
 				/*
 				 * Modify the copies we obtain from the relcache to have the

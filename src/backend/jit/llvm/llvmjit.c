@@ -674,7 +674,11 @@ llvm_optimize_module(LLVMJitContext *context, LLVMModuleRef module)
 
 	if (context->base.flags & PGJIT_OPT3)
 		passes = "default<O3>";
+	else if (context->base.flags & PGJIT_INLINE)
+		/* if doing inlining, but no expensive optimization, add inline pass */
+		passes = "default<O0>,mem2reg,inline";
 	else
+		/* default<O0> includes always-inline pass */
 		passes = "default<O0>,mem2reg";
 
 	options = LLVMCreatePassBuilderOptions();
@@ -1046,9 +1050,6 @@ llvm_create_types(void)
 void
 llvm_split_symbol_name(const char *name, char **modname, char **funcname)
 {
-	*modname = NULL;
-	*funcname = NULL;
-
 	/*
 	 * Module function names are pgextern.$module.$funcname
 	 */
@@ -1058,14 +1059,21 @@ llvm_split_symbol_name(const char *name, char **modname, char **funcname)
 		 * Symbol names cannot contain a ., therefore we can split based on
 		 * first and last occurrence of one.
 		 */
-		*funcname = rindex(name, '.');
-		(*funcname)++;			/* jump over . */
+		const char *lastdot;
 
-		*modname = pnstrdup(name + strlen("pgextern."),
-							*funcname - name - strlen("pgextern.") - 1);
-		Assert(funcname);
-
-		*funcname = pstrdup(*funcname);
+		name += strlen("pgextern.");
+		lastdot = strrchr(name, '.');
+		if (lastdot)
+		{
+			*modname = pnstrdup(name, lastdot - name);
+			*funcname = pstrdup(lastdot + 1);
+		}
+		else
+		{
+			/* hmm, no second dot? */
+			*modname = NULL;
+			*funcname = pstrdup(name);
+		}
 	}
 	else
 	{
@@ -1172,7 +1180,10 @@ llvm_log_jit_error(void *ctx, LLVMErrorRef error)
 static LLVMOrcObjectLayerRef
 llvm_create_object_layer(void *Ctx, LLVMOrcExecutionSessionRef ES, const char *Triple)
 {
-#ifdef USE_LLVM_BACKPORT_SECTION_MEMORY_MANAGER
+#if LLVM_VERSION_MAJOR >= 22
+	LLVMOrcObjectLayerRef objlayer =
+		LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManagerReserveAlloc(ES, true);
+#elif defined(USE_LLVM_BACKPORT_SECTION_MEMORY_MANAGER)
 	LLVMOrcObjectLayerRef objlayer =
 		LLVMOrcCreateRTDyldObjectLinkingLayerWithSafeSectionMemoryManager(ES);
 #else

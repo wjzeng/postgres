@@ -163,7 +163,7 @@ typedef struct DecodedXLogRecord
 	XLogRecPtr	lsn;			/* location */
 	XLogRecPtr	next_lsn;		/* location of next record */
 	XLogRecord	header;			/* header */
-	RepOriginId record_origin;
+	ReplOriginId record_origin;
 	TransactionId toplevel_xid; /* XID of top-level transaction */
 	char	   *main_data;		/* record's main data portion */
 	uint32		main_data_len;	/* main data portion's length */
@@ -342,7 +342,8 @@ extern void XLogReaderSetDecodeBuffer(XLogReaderState *state,
 
 /* Position the XLogReader to given record */
 extern void XLogBeginRead(XLogReaderState *state, XLogRecPtr RecPtr);
-extern XLogRecPtr XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr);
+extern XLogRecPtr XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr,
+									 char **errormsg);
 
 /* Return values from XLogPageReadCB. */
 typedef enum XLogPageReadResult

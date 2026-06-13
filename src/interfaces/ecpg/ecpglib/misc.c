@@ -64,9 +64,9 @@ static volatile int simple_debug = 0;
 static FILE *debugstream = NULL;
 
 void
-ecpg_init_sqlca(struct sqlca_t *sqlca)
+ecpg_init_sqlca(struct sqlca_t *sqlca_p)
 {
-	memcpy(sqlca, &sqlca_init, sizeof(struct sqlca_t));
+	memcpy(sqlca_p, &sqlca_init, sizeof(struct sqlca_t));
 }
 
 bool
@@ -229,7 +229,7 @@ ECPGdebug(int n, FILE *dbgs)
 }
 
 void
-ecpg_log(const char *format,...)
+ecpg_log(const char *format, ...)
 {
 	va_list		ap;
 	const char *intl_format;

@@ -25,6 +25,7 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/optimizer.h"
 #include "utils/array.h"
+#include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -109,7 +110,8 @@ static bool operator_same_subexprs_proof(Oid pred_op, Oid clause_op,
 static bool operator_same_subexprs_lookup(Oid pred_op, Oid clause_op,
 										  bool refute_it);
 static Oid	get_btree_test_op(Oid pred_op, Oid clause_op, bool refute_it);
-static void InvalidateOprProofCacheCallBack(Datum arg, int cacheid, uint32 hashvalue);
+static void InvalidateOprProofCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
+											uint32 hashvalue);
 
 
 /*
@@ -2343,7 +2345,8 @@ get_btree_test_op(Oid pred_op, Oid clause_op, bool refute_it)
  * Callback for pg_amop inval events
  */
 static void
-InvalidateOprProofCacheCallBack(Datum arg, int cacheid, uint32 hashvalue)
+InvalidateOprProofCacheCallBack(Datum arg, SysCacheIdentifier cacheid,
+								uint32 hashvalue)
 {
 	HASH_SEQ_STATUS status;
 	OprProofCacheEntry *hentry;

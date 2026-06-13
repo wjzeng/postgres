@@ -1670,7 +1670,7 @@ drop table trigger_ddl_table;
 drop function trigger_ddl_func();
 --
 -- Verify behavior of before and after triggers with INSERT...ON CONFLICT
--- DO UPDATE
+-- DO UPDATE and DO SELECT
 --
 create table upsert (key int4 primary key, color text);
 create function upsert_before_func()
@@ -1745,6 +1745,14 @@ insert into upsert values(8, 'yellow') on conflict (key) do update set color = '
 WARNING:  before insert (new): (8,yellow)
 WARNING:  before insert (new, modified): (9,"yellow trig modified")
 WARNING:  after insert (new): (9,"yellow trig modified")
+insert into upsert values(8, 'blue') on conflict (key) do select for update where upsert.color = 'yellow trig modified' returning old.*, new.*, upsert.*;
+WARNING:  before insert (new): (8,blue)
+WARNING:  before insert (new, modified): (9,"blue trig modified")
+ key |        color         | key |        color         | key |        color         
+-----+----------------------+-----+----------------------+-----+----------------------
+   9 | yellow trig modified |   9 | yellow trig modified |   9 | yellow trig modified
+(1 row)
+
 select * from upsert;
  key |            color            
 -----+-----------------------------
@@ -3033,13 +3041,19 @@ NOTICE:  trigger = table1_trig, new table = (42)
 with wcte as (insert into table1 values (43))
   insert into table1 values (44);
 NOTICE:  trigger = table1_trig, new table = (43), (44)
+with wcte as (insert into table1 values (45))
+  merge into table1 using (values (46)) as v(a) on table1.a = v.a
+    when not matched then insert values (v.a);
+NOTICE:  trigger = table1_trig, new table = (45), (46)
 select * from table1;
  a  
 ----
  42
  44
  43
-(3 rows)
+ 46
+ 45
+(5 rows)
 
 select * from table2;
       a      
@@ -3558,7 +3572,8 @@ alter trigger parenttrig on parent rename to anothertrig;
  a      | integer |           |          |         | plain   |              | 
 Triggers:
     parenttrig AFTER INSERT ON child FOR EACH ROW EXECUTE FUNCTION f()
-Inherits: parent
+Inherits:
+    parent
 
 drop table parent, child;
 drop function f();
@@ -3629,3 +3644,27 @@ drop table defer_trig;
 drop function whoami();
 drop role regress_fn_owner;
 drop role regress_caller;
+--
+-- Test a recursive AFTER ROW trigger that nests after-trigger query levels
+-- deeply enough to grow query_stack mid-fire.  Outer levels then resume their
+-- post-loop cleanup against the relocated stack.
+--
+create table trigger_recursive (id int);
+create function trigger_recursive_fn() returns trigger language plpgsql as $$
+begin
+    if new.id < 10 then
+        insert into trigger_recursive values (new.id + 1);
+    end if;
+    return new;
+end$$;
+create trigger trigger_recursive after insert on trigger_recursive
+    for each row execute function trigger_recursive_fn();
+insert into trigger_recursive values (1);
+select count(*) from trigger_recursive;
+ count 
+-------
+    10
+(1 row)
+
+drop table trigger_recursive;
+drop function trigger_recursive_fn();

@@ -243,6 +243,17 @@ DELETE FROM foo WHERE f1 = 5
   RETURNING old.tableoid::regclass, old.ctid, old.*,
             new.tableoid::regclass, new.ctid, new.*, *;
 
+-- Parenthesized OLD and NEW
+INSERT INTO foo VALUES (6, 'paren-test', 60, 600)
+  RETURNING old, (old).f4, (old).*,
+            new, (new).f4, (new).*;
+UPDATE foo SET f4 = 700 WHERE f1 = 6
+  RETURNING old, (old).f4, (old).*,
+            new, (new).f4, (new).*;
+DELETE FROM foo WHERE f1 = 6
+  RETURNING old, (old).f4, (old).*,
+            new, (new).f4, (new).*;
+
 -- RETURNING OLD and NEW from subquery
 EXPLAIN (verbose, costs off)
 INSERT INTO foo VALUES (5, 'subquery test')
@@ -408,3 +419,23 @@ END;
 
 \sf foo_update
 DROP FUNCTION foo_update;
+
+-- Test that the planner does not fold OLD/NEW IS NULL tests to constants
+-- based on NOT NULL constraints, since OLD is NULL for INSERT and NEW is
+-- NULL for DELETE.
+CREATE TEMP TABLE ret_nn (a int NOT NULL);
+
+-- INSERT has no OLD row, should return true
+INSERT INTO ret_nn VALUES (1) RETURNING old.a IS NULL;
+
+-- DELETE has no NEW row, should return true
+DELETE FROM ret_nn WHERE a = 1 RETURNING new.a IS NULL;
+
+-- MERGE: DELETE should have new.a IS NULL, INSERT should have old.a IS NULL
+INSERT INTO ret_nn VALUES (2);
+MERGE INTO ret_nn USING (VALUES (2), (3)) AS src(a) ON ret_nn.a = src.a
+  WHEN MATCHED THEN DELETE
+  WHEN NOT MATCHED THEN INSERT VALUES (src.a)
+  RETURNING merge_action(), old.a IS NULL, new.a IS NULL;
+
+DROP TABLE ret_nn;

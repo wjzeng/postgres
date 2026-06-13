@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [19devel], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
+AC_INIT([PostgreSQL], [19beta1], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -62,6 +62,7 @@ PGAC_ARG_REQ(with, template, [NAME], [override operating system template],
 # --with-template not given
 
 case $host_os in
+     aix*) template=aix ;;
   cygwin*|msys*) template=cygwin ;;
   darwin*) template=darwin ;;
 dragonfly*) template=netbsd ;;
@@ -387,6 +388,46 @@ fi
 
 AC_PROG_CXX([$pgac_cxx_list])
 
+# Check if it actually found a C++ compiler.
+AC_LANG_PUSH([C++])
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],
+  [have_cxx=yes],
+  [have_cxx=no])
+AC_LANG_POP([C++])
+AC_SUBST(have_cxx)
+
+if test "$have_cxx" = yes; then
+
+# Detect option needed for C++11
+AC_MSG_CHECKING([for $CXX option to accept ISO C++11])
+AC_CACHE_VAL([pgac_cv_prog_cxx_cxx11],
+[pgac_cv_prog_cxx_cxx11=no
+pgac_save_CXX=$CXX
+AC_LANG_PUSH([C++])
+for pgac_arg in '' '-std=gnu++11' '-std=c++11'; do
+  CXX="$pgac_save_CXX $pgac_arg"
+  AC_COMPILE_IFELSE([AC_LANG_SOURCE([[#if !defined __cplusplus || __cplusplus < 201103L
+# error "Compiler does not advertise C++11 conformance"
+#endif]])], [[pgac_cv_prog_cxx_cxx11=$pgac_arg]])
+  test x"$pgac_cv_prog_cxx_cxx11" != x"no" && break
+done
+AC_LANG_POP([C++])
+CXX=$pgac_save_CXX])
+
+if test x"$pgac_cv_prog_cxx_cxx11" = x"no"; then
+  AC_MSG_RESULT([unsupported])
+  AC_MSG_WARN([C++ compiler "$CXX" does not support C++11])
+  have_cxx=no
+elif test x"$pgac_cv_prog_cxx_cxx11" = x""; then
+  AC_MSG_RESULT([none needed])
+else
+  AC_MSG_RESULT([$pgac_cv_prog_cxx_cxx11])
+  CXX="$CXX $pgac_cv_prog_cxx_cxx11"
+fi
+
+fi  # have_cxx
+
+
 # Check if it's Intel's compiler, which (usually) pretends to be gcc,
 # but has idiosyncrasies of its own.  We assume icc will define
 # __INTEL_COMPILER regardless of CFLAGS.
@@ -506,18 +547,32 @@ if test "$GCC" = yes -a "$ICC" = no; then
     PERMIT_DECLARATION_AFTER_STATEMENT=-Wno-declaration-after-statement
   fi
   AC_SUBST(PERMIT_DECLARATION_AFTER_STATEMENT)
-  # Really don't want VLAs to be used in our dialect of C
+  # Really don't want VLAs to be used
   PGAC_PROG_CC_CFLAGS_OPT([-Werror=vla])
+  PGAC_PROG_CXX_CFLAGS_OPT([-Werror=vla])
   # On macOS, complain about usage of symbols newer than the deployment target
   PGAC_PROG_CC_CFLAGS_OPT([-Werror=unguarded-availability-new])
   PGAC_PROG_CXX_CFLAGS_OPT([-Werror=unguarded-availability-new])
-  # -Wvla is not applicable for C++
-  PGAC_PROG_CC_CFLAGS_OPT([-Wendif-labels])
-  PGAC_PROG_CXX_CFLAGS_OPT([-Wendif-labels])
   PGAC_PROG_CC_CFLAGS_OPT([-Wmissing-format-attribute])
   PGAC_PROG_CXX_CFLAGS_OPT([-Wmissing-format-attribute])
-  PGAC_PROG_CC_CFLAGS_OPT([-Wimplicit-fallthrough=3])
-  PGAC_PROG_CXX_CFLAGS_OPT([-Wimplicit-fallthrough=3])
+  PGAC_PROG_CC_CFLAGS_OPT([-Wold-style-declaration])
+  # -Wold-style-declaration is not applicable for C++
+
+  # To require fallthrough attribute annotations, use
+  # -Wimplicit-fallthrough=5 with gcc and -Wimplicit-fallthrough with
+  # clang.  The latter is also accepted on gcc but does not enforce
+  # attribute annotations, so test the former first.
+  save_CFLAGS=$CFLAGS
+  PGAC_PROG_CC_CFLAGS_OPT([-Wimplicit-fallthrough=5])
+  if test x"$save_CFLAGS" = x"$CFLAGS"; then
+    PGAC_PROG_CC_CFLAGS_OPT([-Wimplicit-fallthrough])
+  fi
+  save_CXXFLAGS=$CXXFLAGS
+  PGAC_PROG_CXX_CFLAGS_OPT([-Wimplicit-fallthrough=5])
+  if test x"$save_CXXFLAGS" = x"$CXXFLAGS"; then
+    PGAC_PROG_CXX_CFLAGS_OPT([-Wimplicit-fallthrough])
+  fi
+
   PGAC_PROG_CC_CFLAGS_OPT([-Wcast-function-type])
   PGAC_PROG_CXX_CFLAGS_OPT([-Wcast-function-type])
   PGAC_PROG_CC_CFLAGS_OPT([-Wshadow=compatible-local])
@@ -730,13 +785,6 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM([], [return 0;])],
   [AC_MSG_RESULT(yes)],
   [AC_MSG_RESULT(no)
    AC_MSG_ERROR([cannot proceed])])
-
-# Defend against gcc -ffast-math
-if test "$GCC" = yes; then
-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [@%:@ifdef __FAST_MATH__
-choke me
-@%:@endif])], [], [AC_MSG_ERROR([do not put -ffast-math in CFLAGS])])
-fi
 
 # Defend against clang being used on x86-32 without SSE2 enabled.  As current
 # versions of clang do not understand -fexcess-precision=standard, the use of
@@ -1395,7 +1443,7 @@ if test "$with_ssl" = openssl ; then
   # Function introduced in OpenSSL 1.0.2, not in LibreSSL.
   AC_CHECK_FUNCS([SSL_CTX_set_cert_cb])
   # Function introduced in OpenSSL 1.1.1, not in LibreSSL.
-  AC_CHECK_FUNCS([X509_get_signature_info SSL_CTX_set_num_tickets SSL_CTX_set_keylog_callback])
+  AC_CHECK_FUNCS([X509_get_signature_info SSL_CTX_set_num_tickets SSL_CTX_set_keylog_callback SSL_CTX_set_client_hello_cb])
   AC_DEFINE([USE_OPENSSL], 1, [Define to 1 to build with OpenSSL support. (--with-ssl=openssl)])
 elif test "$with_ssl" != no ; then
   AC_MSG_ERROR([--with-ssl must specify openssl])
@@ -1429,7 +1477,8 @@ if test "$with_zstd" = yes ; then
   AC_CHECK_LIB(zstd, ZSTD_compress, [], [AC_MSG_ERROR([library 'zstd' is required for ZSTD support])])
 fi
 
-# Note: We can test for libldap_r only after we know PTHREAD_LIBS
+# Note: We can test for libldap_r only after we know PTHREAD_LIBS;
+# also, on AIX, we may need to have openssl in LIBS for this step.
 if test "$with_ldap" = yes ; then
   _LIBS="$LIBS"
   if test "$PORTNAME" != "win32"; then
@@ -1501,12 +1550,10 @@ AC_SUBST(UUID_LIBS)
 ##
 
 AC_CHECK_HEADERS(m4_normalize([
-	atomic.h
 	copyfile.h
 	execinfo.h
 	getopt.h
 	ifaddrs.h
-	mbarrier.h
 	sys/epoll.h
 	sys/event.h
 	sys/personality.h
@@ -1674,11 +1721,12 @@ fi
 
 m4_defun([AC_PROG_CC_STDC], []) dnl We don't want that.
 AC_C_BIGENDIAN
-AC_C_INLINE
 PGAC_PRINTF_ARCHETYPE
 PGAC_CXX_PRINTF_ARCHETYPE
-PGAC_C_STATEMENT_EXPRESSIONS
 PGAC_C_TYPEOF
+PGAC_CXX_TYPEOF
+PGAC_C_TYPEOF_UNQUAL
+PGAC_CXX_TYPEOF_UNQUAL
 PGAC_C_TYPES_COMPATIBLE
 PGAC_C_BUILTIN_CONSTANT_P
 PGAC_C_BUILTIN_OP_OVERFLOW
@@ -1689,11 +1737,19 @@ PGAC_UNION_SEMUN
 AC_CHECK_TYPES(socklen_t, [], [], [#include <sys/socket.h>])
 PGAC_STRUCT_SOCKADDR_SA_LEN
 
-# Even though restrict is in C99 and should be supported by all
-# supported compilers, this test is useful because it will prefer a
-# spelling that also works in C++ (often __restrict).  (restrict is
-# not part of the C++ standard.)
+# MSVC doesn't cope well with defining restrict to __restrict, the
+# spelling it understands, because it conflicts with
+# __declspec(restrict) in C++ mode. Therefore we define pg_restrict to
+# the appropriate definition, which presumably won't conflict.
 AC_C_RESTRICT
+if test "$ac_cv_c_restrict" = "no"; then
+  pg_restrict=""
+else
+  pg_restrict="$ac_cv_c_restrict"
+fi
+AC_DEFINE_UNQUOTED([pg_restrict], [$pg_restrict],
+[Define to keyword to use for C99 restrict support, or to nothing if not
+supported])
 
 AC_CHECK_TYPES([struct option], [], [],
 [#ifdef HAVE_GETOPT_H
@@ -1761,6 +1817,24 @@ if test "$ac_cv_sizeof_off_t" -lt 8; then
   fi
 fi
 
+# Check for SA_SIGINFO extended signal handler availability
+AC_CACHE_CHECK([for SA_SIGINFO], [ac_cv_have_sa_siginfo], [
+    AC_COMPILE_IFELSE([
+        AC_LANG_PROGRAM([[
+            #include <signal.h>
+            #include <stddef.h>
+        ]], [[
+            struct sigaction sa;
+            sa.sa_flags = SA_SIGINFO;
+        ]])
+    ],
+    [ac_cv_have_sa_siginfo=yes],
+    [ac_cv_have_sa_siginfo=no])
+])
+
+if test "x$ac_cv_have_sa_siginfo" = "xyes"; then
+    AC_DEFINE([HAVE_SA_SIGINFO], 1, [Define to 1 if you have SA_SIGINFO available.])
+fi
 
 ##
 ## Functions, global variables
@@ -1780,6 +1854,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	copyfile
 	copy_file_range
 	elf_aux_info
+	explicit_memset
 	getauxval
 	getifaddrs
 	getpeerucred
@@ -1787,6 +1862,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	kqueue
 	localeconv_l
 	mbstowcs_l
+	memset_explicit
 	posix_fallocate
 	ppoll
 	pthread_is_threaded_np
@@ -1806,7 +1882,6 @@ PGAC_CHECK_BUILTIN_FUNC([__builtin_bswap64], [long int x])
 # We assume that we needn't test all widths of these explicitly:
 PGAC_CHECK_BUILTIN_FUNC([__builtin_clz], [unsigned int x])
 PGAC_CHECK_BUILTIN_FUNC([__builtin_ctz], [unsigned int x])
-PGAC_CHECK_BUILTIN_FUNC([__builtin_popcount], [unsigned int x])
 # __builtin_frame_address may draw a diagnostic for non-constant argument,
 # so it needs a different test function.
 PGAC_CHECK_BUILTIN_FUNC_PTR([__builtin_frame_address], [0])
@@ -1825,7 +1900,7 @@ AC_CHECK_DECLS(posix_fadvise, [], [], [#include <fcntl.h>])
 ]) # fi
 
 AC_CHECK_DECLS(fdatasync, [], [], [#include <unistd.h>])
-AC_CHECK_DECLS([strlcat, strlcpy, strnlen, strsep, timingsafe_bcmp])
+AC_CHECK_DECLS([strlcat, strlcpy, strsep, timingsafe_bcmp])
 
 # We can't use AC_CHECK_FUNCS to detect these functions, because it
 # won't handle deployment target restrictions on macOS
@@ -1846,7 +1921,6 @@ AC_REPLACE_FUNCS(m4_normalize([
 	mkdtemp
 	strlcat
 	strlcpy
-	strnlen
 	strsep
 	timingsafe_bcmp
 ]))
@@ -1971,6 +2045,14 @@ related to locating shared libraries.  Check the file 'config.log'
 for the exact reason.]])],
 [AC_MSG_RESULT([cross-compiling])])
 
+# These flags are supported in all C11-capable GCC/Clang versions,
+# so no capability test is needed.  Added here to avoid affecting configure probes,
+# particularly PGAC_PRINTF_ARCHETYPE which uses -Werror and would fail to detect
+# gnu_printf if -Wstrict-prototypes is active.
+if test "$GCC" = yes -a "$ICC" = no; then
+  CFLAGS="$CFLAGS -Wstrict-prototypes -Wold-style-definition"
+fi
+
 # --------------------
 # Run tests below here
 # --------------------
@@ -1986,33 +2068,23 @@ AC_CHECK_SIZEOF([intmax_t])
 
 AC_CHECK_ALIGNOF(short)
 AC_CHECK_ALIGNOF(int)
-AC_CHECK_ALIGNOF(long)
 AC_CHECK_ALIGNOF(int64_t)
 AC_CHECK_ALIGNOF(double)
 
 # Compute maximum alignment of any basic type.
 #
-# We require 'double' to have the strictest alignment among the basic types,
-# because otherwise the C ABI might impose 8-byte alignment on some of the
-# other C types that correspond to TYPALIGN_DOUBLE SQL types.  That could
-# cause a mismatch between the tuple layout and the C struct layout of a
-# catalog tuple.  We used to carefully order catalog columns such that any
-# fixed-width, attalign=4 columns were at offsets divisible by 8 regardless
-# of MAXIMUM_ALIGNOF to avoid that, but we no longer support any platforms
-# where TYPALIGN_DOUBLE != MAXIMUM_ALIGNOF.
-#
-# We assume without checking that long's alignment is at least as strong as
-# char, short, or int.  Note that we intentionally do not consider any types
-# wider than 64 bits, as allowing MAXIMUM_ALIGNOF to exceed 8 would be too
-# much of a penalty for disk and memory space.
+# We assume without checking that the maximum alignment requirement is that
+# of int64_t and/or double.  (On most platforms those are the same, but not
+# everywhere.)  For historical reasons, both int8 and float8 datatypes have
+# typalign 'd', and therefore will be aligned per ALIGNOF_DOUBLE in database
+# tuples even if ALIGNOF_INT64_T is more.  Note that we intentionally do not
+# consider any types wider than 64 bits, as allowing MAXIMUM_ALIGNOF to exceed
+# 8 would be too much of a penalty for disk and memory space.
 
-MAX_ALIGNOF=$ac_cv_alignof_double
-
-if test $ac_cv_alignof_long -gt $MAX_ALIGNOF ; then
-  AC_MSG_ERROR([alignment of 'long' is greater than the alignment of 'double'])
-fi
-if test $ac_cv_alignof_int64_t -gt $MAX_ALIGNOF ; then
-  AC_MSG_ERROR([alignment of 'int64_t' is greater than the alignment of 'double'])
+if test $ac_cv_alignof_int64_t -gt $ac_cv_alignof_double ; then
+  MAX_ALIGNOF=$ac_cv_alignof_int64_t
+else
+  MAX_ALIGNOF=$ac_cv_alignof_double
 fi
 AC_DEFINE_UNQUOTED(MAXIMUM_ALIGNOF, $MAX_ALIGNOF, [Define as the maximum alignment requirement of any C data type.])
 
@@ -2053,7 +2125,7 @@ else
   fi
 fi
 
-# Check for __get_cpuid_count() and __cpuidex() in a similar fashion.
+# Check for __get_cpuid_count()
 AC_CACHE_CHECK([for __get_cpuid_count], [pgac_cv__get_cpuid_count],
 [AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <cpuid.h>],
   [[unsigned int exx[4] = {0, 0, 0, 0};
@@ -2063,17 +2135,30 @@ AC_CACHE_CHECK([for __get_cpuid_count], [pgac_cv__get_cpuid_count],
   [pgac_cv__get_cpuid_count="no"])])
 if test x"$pgac_cv__get_cpuid_count" = x"yes"; then
   AC_DEFINE(HAVE__GET_CPUID_COUNT, 1, [Define to 1 if you have __get_cpuid_count.])
-else
-  # __cpuidex()
-  AC_CACHE_CHECK([for __cpuidex], [pgac_cv__cpuidex],
-  [AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <intrin.h>],
-    [[unsigned int exx[4] = {0, 0, 0, 0};
-    __cpuidex(exx, 7, 0);
-    ]])],
-    [pgac_cv__cpuidex="yes"],
-    [pgac_cv__cpuidex="no"])])
-  if test x"$pgac_cv__cpuidex" = x"yes"; then
-    AC_DEFINE(HAVE__CPUIDEX, 1, [Define to 1 if you have __cpuidex.])
+fi
+
+# Check for __cpuidex()
+AC_CACHE_CHECK([for __cpuidex], [pgac_cv__cpuidex],
+[AC_LINK_IFELSE([AC_LANG_PROGRAM([#ifdef _MSC_VER
+    #include <intrin.h>
+    #else
+    #include <cpuid.h>
+    #endif],
+  [[unsigned int exx[4] = {0, 0, 0, 0};
+  __cpuidex((int *) exx, 7, 0);
+  ]])],
+  [pgac_cv__cpuidex="yes"],
+  [pgac_cv__cpuidex="no"])])
+if test x"$pgac_cv__cpuidex" = x"yes"; then
+  AC_DEFINE(HAVE__CPUIDEX, 1, [Define to 1 if you have __cpuidex.])
+fi
+
+# Check for AVX2 target support
+#
+if test x"$host_cpu" = x"x86_64"; then
+  PGAC_AVX2_SUPPORT()
+  if test x"$pgac_avx2_support" = x"yes"; then
+    AC_DEFINE(USE_AVX2_WITH_RUNTIME_CHECK, 1, [Define to 1 to use AVX2 instructions with a runtime check.])
   fi
 fi
 
@@ -2200,17 +2285,17 @@ fi
 AC_MSG_CHECKING([which CRC-32C implementation to use])
 if test x"$USE_SSE42_CRC32C" = x"1"; then
   AC_DEFINE(USE_SSE42_CRC32C, 1, [Define to 1 use Intel SSE 4.2 CRC instructions.])
-  PG_CRC32C_OBJS="pg_crc32c_sse42.o pg_crc32c_sse42_choose.o"
+  PG_CRC32C_OBJS="pg_crc32c_sse42.o"
   AC_MSG_RESULT(SSE 4.2)
 else
   if test x"$USE_SSE42_CRC32C_WITH_RUNTIME_CHECK" = x"1"; then
     AC_DEFINE(USE_SSE42_CRC32C_WITH_RUNTIME_CHECK, 1, [Define to 1 to use Intel SSE 4.2 CRC instructions with a runtime check.])
-    PG_CRC32C_OBJS="pg_crc32c_sse42.o pg_crc32c_sb8.o pg_crc32c_sse42_choose.o"
+    PG_CRC32C_OBJS="pg_crc32c_sse42.o pg_crc32c_sb8.o"
     AC_MSG_RESULT(SSE 4.2 with runtime check)
   else
     if test x"$USE_ARMV8_CRC32C" = x"1"; then
       AC_DEFINE(USE_ARMV8_CRC32C, 1, [Define to 1 to use ARMv8 CRC Extension.])
-      PG_CRC32C_OBJS="pg_crc32c_armv8.o"
+      PG_CRC32C_OBJS="pg_crc32c_armv8.o pg_crc32c_armv8_choose.o"
       AC_MSG_RESULT(ARMv8 CRC instructions)
     else
       if test x"$USE_ARMV8_CRC32C_WITH_RUNTIME_CHECK" = x"1"; then
@@ -2237,6 +2322,10 @@ AC_SUBST(PG_CRC32C_OBJS)
 #
 if test x"$host_cpu" = x"x86_64"; then
   PGAC_AVX512_PCLMUL_INTRINSICS()
+else
+  if test x"$host_cpu" = x"aarch64"; then
+    PGAC_ARM_PLMULL()
+  fi
 fi
 
 AC_MSG_CHECKING([for vectorized CRC-32C])
@@ -2244,7 +2333,12 @@ if test x"$pgac_avx512_pclmul_intrinsics" = x"yes"; then
   AC_DEFINE(USE_AVX512_CRC32C_WITH_RUNTIME_CHECK, 1, [Define to 1 to use AVX-512 CRC algorithms with a runtime check.])
   AC_MSG_RESULT(AVX-512 with runtime check)
 else
-  AC_MSG_RESULT(none)
+  if test x"$pgac_arm_pmull" = x"yes"; then
+    AC_DEFINE(USE_PMULL_CRC32C_WITH_RUNTIME_CHECK, 1, [Define to 1 to use Arm PMULL CRC algorithms with a runtime check.])
+    AC_MSG_RESULT(CRYPTO PMULL with runtime check)
+  else
+    AC_MSG_RESULT(none)
+  fi
 fi
 
 # Select semaphore implementation type.

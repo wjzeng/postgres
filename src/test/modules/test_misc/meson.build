@@ -18,6 +18,12 @@ tests += {
       't/007_catcache_inval.pl',
       't/008_replslot_single_user.pl',
       't/009_log_temp_files.pl',
+      't/010_index_concurrently_upsert.pl',
+      't/011_lock_stats.pl',
+      't/012_ddlutils.pl',
+      't/013_temp_obj_multisession.pl',
     ],
+    # The injection points are cluster-wide, so disable installcheck
+    'runningcheck': false,
   },
 }

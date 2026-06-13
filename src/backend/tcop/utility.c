@@ -26,7 +26,6 @@
 #include "catalog/toasting.h"
 #include "commands/alter.h"
 #include "commands/async.h"
-#include "commands/cluster.h"
 #include "commands/collationcmds.h"
 #include "commands/comment.h"
 #include "commands/conversioncmds.h"
@@ -44,7 +43,9 @@
 #include "commands/portalcmds.h"
 #include "commands/prepare.h"
 #include "commands/proclang.h"
+#include "commands/propgraphcmds.h"
 #include "commands/publicationcmds.h"
+#include "commands/repack.h"
 #include "commands/schemacmds.h"
 #include "commands/seclabel.h"
 #include "commands/sequence.h"
@@ -149,6 +150,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 		case T_AlterOperatorStmt:
 		case T_AlterOwnerStmt:
 		case T_AlterPolicyStmt:
+		case T_AlterPropGraphStmt:
 		case T_AlterPublicationStmt:
 		case T_AlterRoleSetStmt:
 		case T_AlterRoleStmt:
@@ -179,6 +181,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 		case T_CreateOpFamilyStmt:
 		case T_CreatePLangStmt:
 		case T_CreatePolicyStmt:
+		case T_CreatePropGraphStmt:
 		case T_CreatePublicationStmt:
 		case T_CreateRangeStmt:
 		case T_CreateRoleStmt:
@@ -279,9 +282,9 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 				return COMMAND_OK_IN_RECOVERY | COMMAND_OK_IN_READ_ONLY_TXN;
 			}
 
-		case T_ClusterStmt:
 		case T_ReindexStmt:
 		case T_VacuumStmt:
+		case T_RepackStmt:
 			{
 				/*
 				 * These commands write WAL, so they're not strictly
@@ -290,9 +293,9 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 				 *
 				 * However, they don't change the database state in a way that
 				 * would affect pg_dump output, so it's fine to run them in a
-				 * read-only transaction. (CLUSTER might change the order of
-				 * rows on disk, which could affect the ordering of pg_dump
-				 * output, but that's not semantically significant.)
+				 * read-only transaction. (REPACK/CLUSTER might change the
+				 * order of rows on disk, which could affect the ordering of
+				 * pg_dump output, but that's not semantically significant.)
 				 */
 				return COMMAND_OK_IN_READ_ONLY_TXN;
 			}
@@ -856,12 +859,12 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			ExecuteCallStmt(castNode(CallStmt, parsetree), params, isAtomicContext, dest);
 			break;
 
-		case T_ClusterStmt:
-			cluster(pstate, (ClusterStmt *) parsetree, isTopLevel);
-			break;
-
 		case T_VacuumStmt:
 			ExecVacuum(pstate, (VacuumStmt *) parsetree, isTopLevel);
+			break;
+
+		case T_RepackStmt:
+			ExecRepack(pstate, (RepackStmt *) parsetree, isTopLevel);
 			break;
 
 		case T_ExplainStmt:
@@ -1059,7 +1062,8 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 
 		case T_WaitStmt:
 			{
-				ExecWaitStmt(pstate, (WaitStmt *) parsetree, dest);
+				ExecWaitStmt(pstate, (WaitStmt *) parsetree, isTopLevel,
+							 dest);
 			}
 			break;
 
@@ -1119,8 +1123,8 @@ ProcessUtilitySlow(ParseState *pstate,
 				 * relation and attribute manipulation
 				 */
 			case T_CreateSchemaStmt:
-				CreateSchemaCommand((CreateSchemaStmt *) parsetree,
-									queryString,
+				CreateSchemaCommand(pstate,
+									(CreateSchemaStmt *) parsetree,
 									pstmt->stmt_location,
 									pstmt->stmt_len);
 
@@ -1541,7 +1545,8 @@ ProcessUtilitySlow(ParseState *pstate,
 					/* ... and do it */
 					EventTriggerAlterTableStart(parsetree);
 					address =
-						DefineIndex(relid,	/* OID of heap relation */
+						DefineIndex(pstate,
+									relid,	/* OID of heap relation */
 									stmt,
 									InvalidOid, /* no predefined OID */
 									InvalidOid, /* no parent index */
@@ -1736,6 +1741,14 @@ ProcessUtilitySlow(ParseState *pstate,
 				 * directly.
 				 */
 				commandCollected = true;
+				break;
+
+			case T_CreatePropGraphStmt:
+				address = CreatePropGraph(pstate, (CreatePropGraphStmt *) parsetree);
+				break;
+
+			case T_AlterPropGraphStmt:
+				address = AlterPropGraph(pstate, (AlterPropGraphStmt *) parsetree);
 				break;
 
 			case T_CreateTransformStmt:
@@ -2000,13 +2013,14 @@ ExecDropStmt(DropStmt *stmt, bool isTopLevel)
 			if (stmt->concurrent)
 				PreventInTransactionBlock(isTopLevel,
 										  "DROP INDEX CONCURRENTLY");
-			/* fall through */
+			pg_fallthrough;
 
 		case OBJECT_TABLE:
 		case OBJECT_SEQUENCE:
 		case OBJECT_VIEW:
 		case OBJECT_MATVIEW:
 		case OBJECT_FOREIGN_TABLE:
+		case OBJECT_PROPGRAPH:
 			RemoveRelations(stmt);
 			break;
 		default:
@@ -2289,6 +2303,9 @@ AlterObjectTypeCommandTag(ObjectType objtype)
 		case OBJECT_PROCEDURE:
 			tag = CMDTAG_ALTER_PROCEDURE;
 			break;
+		case OBJECT_PROPGRAPH:
+			tag = CMDTAG_ALTER_PROPERTY_GRAPH;
+			break;
 		case OBJECT_ROLE:
 			tag = CMDTAG_ALTER_ROLE;
 			break;
@@ -2564,6 +2581,9 @@ CreateCommandTag(Node *parsetree)
 					break;
 				case OBJECT_INDEX:
 					tag = CMDTAG_DROP_INDEX;
+					break;
+				case OBJECT_PROPGRAPH:
+					tag = CMDTAG_DROP_PROPERTY_GRAPH;
 					break;
 				case OBJECT_TYPE:
 					tag = CMDTAG_DROP_TYPE;
@@ -2864,15 +2884,18 @@ CreateCommandTag(Node *parsetree)
 			tag = CMDTAG_CALL;
 			break;
 
-		case T_ClusterStmt:
-			tag = CMDTAG_CLUSTER;
-			break;
-
 		case T_VacuumStmt:
 			if (((VacuumStmt *) parsetree)->is_vacuumcmd)
 				tag = CMDTAG_VACUUM;
 			else
 				tag = CMDTAG_ANALYZE;
+			break;
+
+		case T_RepackStmt:
+			if (((RepackStmt *) parsetree)->command == REPACK_COMMAND_CLUSTER)
+				tag = CMDTAG_CLUSTER;
+			else
+				tag = CMDTAG_REPACK;
 			break;
 
 		case T_ExplainStmt:
@@ -2944,6 +2967,14 @@ CreateCommandTag(Node *parsetree)
 				default:
 					tag = CMDTAG_UNKNOWN;
 			}
+			break;
+
+		case T_CreatePropGraphStmt:
+			tag = CMDTAG_CREATE_PROPERTY_GRAPH;
+			break;
+
+		case T_AlterPropGraphStmt:
+			tag = CMDTAG_ALTER_PROPERTY_GRAPH;
 			break;
 
 		case T_CreateTransformStmt:
@@ -3516,7 +3547,7 @@ GetCommandLogLevel(Node *parsetree)
 			lev = LOGSTMT_ALL;
 			break;
 
-		case T_ClusterStmt:
+		case T_RepackStmt:
 			lev = LOGSTMT_DDL;
 			break;
 
@@ -3644,6 +3675,14 @@ GetCommandLogLevel(Node *parsetree)
 			break;
 
 		case T_CreateOpFamilyStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_CreatePropGraphStmt:
+			lev = LOGSTMT_DDL;
+			break;
+
+		case T_AlterPropGraphStmt:
 			lev = LOGSTMT_DDL;
 			break;
 

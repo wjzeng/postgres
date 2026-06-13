@@ -37,7 +37,9 @@
 #include "catalog/objectaccess.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_proc.h"
+#include "common/int.h"
 #include "executor/executor.h"
+#include "executor/instrument.h"
 #include "executor/nodeWindowAgg.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
@@ -53,6 +55,7 @@
 #include "utils/memutils.h"
 #include "utils/regproc.h"
 #include "utils/syscache.h"
+#include "utils/tuplestore.h"
 #include "windowapi.h"
 
 /*
@@ -73,6 +76,7 @@ typedef struct WindowObjectData
 	int64	   *num_notnull_info;	/* track size (number of tuples in
 									 * partition) of the notnull_info array
 									 * for each func args */
+	bool	   *notnull_info_cacheable; /* can we cache notnull_info? */
 
 	/*
 	 * Null treatment options. One of: NO_NULLTREATMENT, PARSER_IGNORE_NULLS,
@@ -1532,12 +1536,21 @@ row_is_in_frame(WindowObject winobj, int64 pos, TupleTableSlot *slot,
 		if (frameOptions & FRAMEOPTION_ROWS)
 		{
 			int64		offset = DatumGetInt64(winstate->endOffsetValue);
+			int64		frameendpos = 0;
 
 			/* rows after current row + offset are out of frame */
 			if (frameOptions & FRAMEOPTION_END_OFFSET_PRECEDING)
 				offset = -offset;
 
-			if (pos > winstate->currentpos + offset)
+			/*
+			 * If we have an overflow, it means the frame end is beyond the
+			 * range of int64.  Since currentpos >= 0, this can only be a
+			 * positive overflow.  We treat this as meaning that the frame
+			 * extends to end of partition.
+			 */
+			if (!pg_add_s64_overflow(winstate->currentpos, offset,
+									 &frameendpos) &&
+				pos > frameendpos)
 				return -1;
 		}
 		else if (frameOptions & (FRAMEOPTION_RANGE | FRAMEOPTION_GROUPS))
@@ -1672,7 +1685,16 @@ update_frameheadpos(WindowAggState *winstate)
 			if (frameOptions & FRAMEOPTION_START_OFFSET_PRECEDING)
 				offset = -offset;
 
-			winstate->frameheadpos = winstate->currentpos + offset;
+			/*
+			 * If we have an overflow, it means the frame head is beyond the
+			 * range of int64.  Since currentpos >= 0, this can only be a
+			 * positive overflow.  We treat this as being beyond end of
+			 * partition.
+			 */
+			if (pg_add_s64_overflow(winstate->currentpos, offset,
+									&winstate->frameheadpos))
+				winstate->frameheadpos = PG_INT64_MAX;
+
 			/* frame head can't go before first row */
 			if (winstate->frameheadpos < 0)
 				winstate->frameheadpos = 0;
@@ -1784,12 +1806,21 @@ update_frameheadpos(WindowAggState *winstate)
 			 * framehead_slot empty.
 			 */
 			int64		offset = DatumGetInt64(winstate->startOffsetValue);
-			int64		minheadgroup;
+			int64		minheadgroup = 0;
 
 			if (frameOptions & FRAMEOPTION_START_OFFSET_PRECEDING)
 				minheadgroup = winstate->currentgroup - offset;
 			else
-				minheadgroup = winstate->currentgroup + offset;
+			{
+				/*
+				 * If we have an overflow, it means the target group is beyond
+				 * the range of int64.  We treat this as "infinity", which
+				 * ensures the loop below advances to end of partition.
+				 */
+				if (pg_add_s64_overflow(winstate->currentgroup, offset,
+										&minheadgroup))
+					minheadgroup = PG_INT64_MAX;
+			}
 
 			tuplestore_select_read_pointer(winstate->buffer,
 										   winstate->framehead_ptr);
@@ -1926,7 +1957,18 @@ update_frametailpos(WindowAggState *winstate)
 			if (frameOptions & FRAMEOPTION_END_OFFSET_PRECEDING)
 				offset = -offset;
 
-			winstate->frametailpos = winstate->currentpos + offset + 1;
+			/*
+			 * If we have an overflow, it means the frame tail is beyond the
+			 * range of int64.  Since currentpos >= 0, this can only be a
+			 * positive overflow.  We treat this as being beyond end of
+			 * partition.
+			 */
+			if (pg_add_s64_overflow(winstate->currentpos, offset,
+									&winstate->frametailpos) ||
+				pg_add_s64_overflow(winstate->frametailpos, 1,
+									&winstate->frametailpos))
+				winstate->frametailpos = PG_INT64_MAX;
+
 			/* smallest allowable value of frametailpos is 0 */
 			if (winstate->frametailpos < 0)
 				winstate->frametailpos = 0;
@@ -2038,12 +2080,21 @@ update_frametailpos(WindowAggState *winstate)
 			 * leave frametailpos = end+1 and frametail_slot empty.
 			 */
 			int64		offset = DatumGetInt64(winstate->endOffsetValue);
-			int64		maxtailgroup;
+			int64		maxtailgroup = 0;
 
 			if (frameOptions & FRAMEOPTION_END_OFFSET_PRECEDING)
 				maxtailgroup = winstate->currentgroup - offset;
 			else
-				maxtailgroup = winstate->currentgroup + offset;
+			{
+				/*
+				 * If we have an overflow, it means the target group is beyond
+				 * the range of int64.  We treat this as "infinity", which
+				 * ensures the loop below advances to end of partition.
+				 */
+				if (pg_add_s64_overflow(winstate->currentgroup, offset,
+										&maxtailgroup))
+					maxtailgroup = PG_INT64_MAX;
+			}
 
 			tuplestore_select_read_pointer(winstate->buffer,
 										   winstate->frametail_ptr);
@@ -3286,7 +3337,8 @@ window_gettupleslot(WindowObject winobj, int64 pos, TupleTableSlot *slot)
 	return true;
 }
 
-/* gettuple_eval_partition
+/*
+ * gettuple_eval_partition
  * get tuple in a partition and evaluate the window function's argument
  * expression on it.
  */
@@ -3467,8 +3519,23 @@ init_notnull_info(WindowObject winobj, WindowStatePerFunc perfuncstate)
 
 	if (winobj->ignore_nulls == PARSER_IGNORE_NULLS)
 	{
+		int			argno = 0;
+		ListCell   *lc;
+
 		winobj->notnull_info = palloc0_array(uint8 *, numargs);
 		winobj->num_notnull_info = palloc0_array(int64, numargs);
+		winobj->notnull_info_cacheable = palloc_array(bool, numargs);
+
+		foreach(lc, perfuncstate->wfunc->args)
+		{
+			Node	   *arg = (Node *) lfirst(lc);
+
+			winobj->notnull_info_cacheable[argno] =
+				!contain_volatile_functions(arg) &&
+				!contain_subplans(arg);
+
+			argno++;
+		}
 	}
 }
 
@@ -3477,7 +3544,7 @@ init_notnull_info(WindowObject winobj, WindowStatePerFunc perfuncstate)
  * expand notnull_info if necessary.
  * pos: not null info position
  * argno: argument number
-*/
+ */
 static void
 grow_notnull_info(WindowObject winobj, int64 pos, int argno)
 {
@@ -3529,6 +3596,9 @@ get_notnull_info(WindowObject winobj, int64 pos, int argno)
 	uint8		mb;
 	int64		bpos;
 
+	if (!winobj->notnull_info_cacheable[argno])
+		return NN_UNKNOWN;
+
 	grow_notnull_info(winobj, pos, argno);
 	bpos = NN_POS_TO_BYTES(pos);
 	mbp = winobj->notnull_info[argno];
@@ -3551,6 +3621,9 @@ put_notnull_info(WindowObject winobj, int64 pos, int argno, bool isnull)
 	int64		bpos;
 	uint8		val = isnull ? NN_NULL : NN_NOTNULL;
 	int			shift;
+
+	if (!winobj->notnull_info_cacheable[argno])
+		return;
 
 	grow_notnull_info(winobj, pos, argno);
 	bpos = NN_POS_TO_BYTES(pos);
@@ -3761,6 +3834,7 @@ WinGetFuncArgInPartition(WindowObject winobj, int argno,
 	int			notnull_relpos;
 	int			forward;
 	bool		myisout;
+	bool		got_datum;
 
 	Assert(WindowObjectIsValid(winobj));
 	winstate = winobj->winstate;
@@ -3809,6 +3883,7 @@ WinGetFuncArgInPartition(WindowObject winobj, int argno,
 	notnull_relpos = abs(relpos);
 	forward = relpos > 0 ? 1 : -1;
 	myisout = false;
+	got_datum = false;
 	datum = 0;
 
 	/*
@@ -3854,25 +3929,29 @@ WinGetFuncArgInPartition(WindowObject winobj, int argno,
 		{
 			/*
 			 * NOT NULL info does not exist yet.  Get tuple and evaluate func
-			 * arg in partition. We ignore the return value from
-			 * gettuple_eval_partition because we are just interested in
-			 * whether we are inside or outside of partition, NULL or NOT
-			 * NULL.
+			 * arg in partition. Keep the return value in case this row is the
+			 * target; re-evaluating a volatile argument could give a
+			 * different nullness status.
 			 */
-			(void) gettuple_eval_partition(winobj, argno,
-										   abs_pos, isnull, &myisout);
+			datum = gettuple_eval_partition(winobj, argno,
+											abs_pos, isnull, &myisout);
 			if (myisout)		/* out of partition? */
 				break;
 			if (!*isnull)
+			{
 				notnull_offset++;
+				if (notnull_offset >= notnull_relpos)
+					got_datum = true;
+			}
 			/* record the row status */
 			put_notnull_info(winobj, abs_pos, argno, *isnull);
 		}
 	} while (notnull_offset < notnull_relpos);
 
 	/* get tuple and evaluate func arg in partition */
-	datum = gettuple_eval_partition(winobj, argno,
-									abs_pos, isnull, &myisout);
+	if (!got_datum)
+		datum = gettuple_eval_partition(winobj, argno,
+										abs_pos, isnull, &myisout);
 	if (!myisout && set_mark)
 		WinSetMarkPosition(winobj, mark_pos);
 	if (isout)

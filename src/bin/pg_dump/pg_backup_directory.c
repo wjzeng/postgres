@@ -140,7 +140,7 @@ InitArchiveFmt_Directory(ArchiveHandle *AH)
 	AH->WorkerJobDumpPtr = _WorkerJobDumpDirectory;
 
 	/* Set up our private context */
-	ctx = (lclContext *) pg_malloc0(sizeof(lclContext));
+	ctx = pg_malloc0_object(lclContext);
 	AH->formatData = ctx;
 
 	ctx->dataFH = NULL;
@@ -193,14 +193,14 @@ InitArchiveFmt_Directory(ArchiveHandle *AH)
  * Called by the Archiver when the dumper creates a new TOC entry.
  *
  * We determine the filename for this entry.
-*/
+ */
 static void
 _ArchiveEntry(ArchiveHandle *AH, TocEntry *te)
 {
 	lclTocEntry *tctx;
 	char		fn[MAXPGPATH];
 
-	tctx = (lclTocEntry *) pg_malloc0(sizeof(lclTocEntry));
+	tctx = pg_malloc0_object(lclTocEntry);
 	if (strcmp(te->desc, "BLOBS") == 0)
 	{
 		snprintf(fn, MAXPGPATH, "blobs_%d.toc", te->dumpId);
@@ -252,7 +252,7 @@ _ReadExtraToc(ArchiveHandle *AH, TocEntry *te)
 
 	if (tctx == NULL)
 	{
-		tctx = (lclTocEntry *) pg_malloc0(sizeof(lclTocEntry));
+		tctx = pg_malloc0_object(lclTocEntry);
 		te->formatData = tctx;
 	}
 
@@ -372,7 +372,7 @@ _PrintFileData(ArchiveHandle *AH, char *filename)
 
 /*
  * Print data for a given TOC entry
-*/
+ */
 static void
 _PrintTocData(ArchiveHandle *AH, TocEntry *te)
 {
@@ -769,7 +769,7 @@ _Clone(ArchiveHandle *AH)
 {
 	lclContext *ctx = (lclContext *) AH->formatData;
 
-	AH->formatData = (lclContext *) pg_malloc(sizeof(lclContext));
+	AH->formatData = pg_malloc_object(lclContext);
 	memcpy(AH->formatData, ctx, sizeof(lclContext));
 	ctx = (lclContext *) AH->formatData;
 

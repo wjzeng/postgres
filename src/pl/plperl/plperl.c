@@ -35,6 +35,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/tuplestore.h"
 #include "utils/typcache.h"
 
 /* define our text domain for translations */
@@ -247,7 +248,7 @@ static plperl_call_data *current_call_data = NULL;
  **********************************************************************/
 
 static PerlInterpreter *plperl_init_interp(void);
-static void plperl_destroy_interp(PerlInterpreter **);
+static void plperl_destroy_interp(PerlInterpreter **interp);
 static void plperl_fini(int code, Datum arg);
 static void set_interp_require(bool trusted);
 
@@ -283,12 +284,14 @@ static Datum plperl_hash_to_datum(SV *src, TupleDesc td);
 static void plperl_init_shared_libs(pTHX);
 static void plperl_trusted_init(void);
 static void plperl_untrusted_init(void);
-static HV  *plperl_spi_execute_fetch_result(SPITupleTable *, uint64, int);
+static HV  *plperl_spi_execute_fetch_result(SPITupleTable *tuptable,
+											uint64 processed, int status);
 static void plperl_return_next_internal(SV *sv);
 static char *hek2cstr(HE *he);
 static SV **hv_store_string(HV *hv, const char *key, SV *val);
 static SV **hv_fetch_string(HV *hv, const char *key);
-static void plperl_create_sub(plperl_proc_desc *desc, const char *s, Oid fn_oid);
+static void plperl_create_sub(plperl_proc_desc *prodesc, const char *s,
+							  Oid fn_oid);
 static SV  *plperl_call_perl_func(plperl_proc_desc *desc,
 								  FunctionCallInfo fcinfo);
 static void plperl_compile_callback(void *arg);
@@ -1092,7 +1095,7 @@ plperl_build_tuple_result(HV *perlhash, TupleDesc td)
 		SV		   *val = HeVAL(he);
 		char	   *key = hek2cstr(he);
 		int			attn = SPI_fnumber(td, key);
-		Form_pg_attribute attr = TupleDescAttr(td, attn - 1);
+		Form_pg_attribute attr;
 
 		if (attn == SPI_ERROR_NOATTRIBUTE)
 			ereport(ERROR,
@@ -1105,6 +1108,7 @@ plperl_build_tuple_result(HV *perlhash, TupleDesc td)
 					 errmsg("cannot set system attribute \"%s\"",
 							key)));
 
+		attr = TupleDescAttr(td, attn - 1);
 		values[attn - 1] = plperl_sv_to_datum(val,
 											  attr->atttypid,
 											  attr->atttypmod,
@@ -1798,7 +1802,7 @@ plperl_modify_tuple(HV *hvTD, TriggerData *tdata, HeapTuple otup)
 		char	   *key = hek2cstr(he);
 		SV		   *val = HeVAL(he);
 		int			attn = SPI_fnumber(tupdesc, key);
-		Form_pg_attribute attr = TupleDescAttr(tupdesc, attn - 1);
+		Form_pg_attribute attr;
 
 		if (attn == SPI_ERROR_NOATTRIBUTE)
 			ereport(ERROR,
@@ -1810,6 +1814,8 @@ plperl_modify_tuple(HV *hvTD, TriggerData *tdata, HeapTuple otup)
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("cannot set system attribute \"%s\"",
 							key)));
+
+		attr = TupleDescAttr(tupdesc, attn - 1);
 		if (attr->attgenerated)
 			ereport(ERROR,
 					(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),

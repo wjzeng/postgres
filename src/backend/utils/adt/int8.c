@@ -44,7 +44,8 @@ typedef struct
  * Formatting and conversion routines.
  *---------------------------------------------------------*/
 
-/* int8in()
+/*
+ * int8in()
  */
 Datum
 int8in(PG_FUNCTION_ARGS)
@@ -55,7 +56,8 @@ int8in(PG_FUNCTION_ARGS)
 }
 
 
-/* int8out()
+/*
+ * int8out()
  */
 Datum
 int8out(PG_FUNCTION_ARGS)
@@ -106,7 +108,8 @@ int8send(PG_FUNCTION_ARGS)
  *	Relational operators for int8s, including cross-data-type comparisons.
  *---------------------------------------------------------*/
 
-/* int8relop()
+/*
+ * int8relop()
  * Is val1 relop val2?
  */
 Datum
@@ -163,7 +166,8 @@ int8ge(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(val1 >= val2);
 }
 
-/* int84relop()
+/*
+ * int84relop()
  * Is 64-bit val1 relop 32-bit val2?
  */
 Datum
@@ -220,7 +224,8 @@ int84ge(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(val1 >= val2);
 }
 
-/* int48relop()
+/*
+ * int48relop()
  * Is 32-bit val1 relop 64-bit val2?
  */
 Datum
@@ -277,7 +282,8 @@ int48ge(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(val1 >= val2);
 }
 
-/* int82relop()
+/*
+ * int82relop()
  * Is 64-bit val1 relop 16-bit val2?
  */
 Datum
@@ -334,7 +340,8 @@ int82ge(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(val1 >= val2);
 }
 
-/* int28relop()
+/*
+ * int28relop()
  * Is 16-bit val1 relop 64-bit val2?
  */
 Datum
@@ -539,7 +546,8 @@ int8div(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(result);
 }
 
-/* int8abs()
+/*
+ * int8abs()
  * Absolute value
  */
 Datum
@@ -556,7 +564,8 @@ int8abs(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(result);
 }
 
-/* int8mod()
+/*
+ * int8mod()
  * Modulo operation.
  */
 Datum
@@ -834,7 +843,7 @@ int8inc_support(PG_FUNCTION_ARGS)
 				PG_RETURN_POINTER(NULL);
 
 			/* If the arg isn't NULLable, do the conversion */
-			if (expr_is_nonnullable(req->root, arg, false))
+			if (expr_is_nonnullable(req->root, arg, NOTNULL_SOURCE_HASHTABLE))
 			{
 				Aggref	   *newagg;
 
@@ -1170,7 +1179,8 @@ int28div(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64((int64) arg1 / arg2);
 }
 
-/* Binary arithmetics
+/*
+ * Binary arithmetics
  *
  *		int8and		- returns arg1 & arg2
  *		int8or		- returns arg1 | arg2
@@ -1251,7 +1261,7 @@ int84(PG_FUNCTION_ARGS)
 	int64		arg = PG_GETARG_INT64(0);
 
 	if (unlikely(arg < PG_INT32_MIN) || unlikely(arg > PG_INT32_MAX))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("integer out of range")));
 
@@ -1272,7 +1282,7 @@ int82(PG_FUNCTION_ARGS)
 	int64		arg = PG_GETARG_INT64(0);
 
 	if (unlikely(arg < PG_INT16_MIN) || unlikely(arg > PG_INT16_MAX))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("smallint out of range")));
 
@@ -1290,7 +1300,8 @@ i8tod(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(result);
 }
 
-/* dtoi8()
+/*
+ * dtoi8()
  * Convert float8 to 8-byte integer.
  */
 Datum
@@ -1307,7 +1318,7 @@ dtoi8(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT8_FITS_IN_INT64(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("bigint out of range")));
 
@@ -1325,7 +1336,8 @@ i8tof(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT4(result);
 }
 
-/* ftoi8()
+/*
+ * ftoi8()
  * Convert float4 to 8-byte integer.
  */
 Datum
@@ -1342,7 +1354,7 @@ ftoi8(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT4_FITS_IN_INT64(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("bigint out of range")));
 
@@ -1355,7 +1367,7 @@ i8tooid(PG_FUNCTION_ARGS)
 	int64		arg = PG_GETARG_INT64(0);
 
 	if (unlikely(arg < 0) || unlikely(arg > PG_UINT32_MAX))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("OID out of range")));
 
@@ -1368,6 +1380,14 @@ oidtoi8(PG_FUNCTION_ARGS)
 	Oid			arg = PG_GETARG_OID(0);
 
 	PG_RETURN_INT64((int64) arg);
+}
+
+Datum
+oidtooid8(PG_FUNCTION_ARGS)
+{
+	Oid			arg = PG_GETARG_OID(0);
+
+	PG_RETURN_OID8((Oid8) arg);
 }
 
 /*

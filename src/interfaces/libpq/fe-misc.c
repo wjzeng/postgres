@@ -1372,7 +1372,7 @@ libpq_ngettext(const char *msgid, const char *msgid_plural, unsigned long n)
  * newline.
  */
 void
-libpq_append_error(PQExpBuffer errorMessage, const char *fmt,...)
+libpq_append_error(PQExpBuffer errorMessage, const char *fmt, ...)
 {
 	int			save_errno = errno;
 	bool		done;
@@ -1401,7 +1401,7 @@ libpq_append_error(PQExpBuffer errorMessage, const char *fmt,...)
  * format should not end with a newline.
  */
 void
-libpq_append_conn_error(PGconn *conn, const char *fmt,...)
+libpq_append_conn_error(PGconn *conn, const char *fmt, ...)
 {
 	int			save_errno = errno;
 	bool		done;
@@ -1422,4 +1422,22 @@ libpq_append_conn_error(PGconn *conn, const char *fmt,...)
 	} while (!done);
 
 	appendPQExpBufferChar(&conn->errorMessage, '\n');
+}
+
+/*
+ * For 19beta only, some protocol errors will have additional information
+ * appended to help with the "grease" campaign.
+ */
+void
+libpq_append_grease_info(PGconn *conn)
+{
+	/* translator: %s is a URL */
+	libpq_append_conn_error(conn,
+							"\tThis indicates a bug in either the server being contacted\n"
+							"\tor a proxy handling the connection. Please consider\n"
+							"\treporting this to the maintainers of that software.\n"
+							"\tFor more information, including instructions on how to\n"
+							"\twork around this issue for now, visit\n"
+							"\t\t%s",
+							"https://wiki.postgresql.org/wiki/Grease");
 }

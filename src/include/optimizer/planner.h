@@ -35,6 +35,7 @@ extern PGDLLIMPORT planner_hook_type planner_hook;
 /* Hook for plugins to get control after PlannerGlobal is initialized */
 typedef void (*planner_setup_hook_type) (PlannerGlobal *glob, Query *parse,
 										 const char *query_string,
+										 int cursorOptions,
 										 double *tuple_fraction,
 										 ExplainState *es);
 extern PGDLLIMPORT planner_setup_hook_type planner_setup_hook;
@@ -62,6 +63,7 @@ extern PlannedStmt *standard_planner(Query *parse, const char *query_string,
 extern PlannerInfo *subquery_planner(PlannerGlobal *glob, Query *parse,
 									 char *plan_name,
 									 PlannerInfo *parent_root,
+									 PlannerInfo *alternative_root,
 									 bool hasRecursion, double tuple_fraction,
 									 SetOperationStmt *setops);
 

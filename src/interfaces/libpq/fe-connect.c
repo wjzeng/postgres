@@ -91,8 +91,9 @@ static int	ldapServiceLookup(const char *purl, PQconninfoOption *options,
 
 /* This is part of the protocol so just define it */
 #define ERRCODE_INVALID_PASSWORD "28P01"
-/* This too */
+/* These too */
 #define ERRCODE_CANNOT_CONNECT_NOW "57P03"
+#define ERRCODE_PROTOCOL_VIOLATION "08P01"
 
 /*
  * Cope with the various platform-specific ways to spell TCP keepalive socket
@@ -411,6 +412,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	{"oauth_scope", NULL, NULL, NULL,
 		"OAuth-Scope", "", 15,
 	offsetof(struct pg_conn, oauth_scope)},
+
+	{"oauth_ca_file", "PGOAUTHCAFILE", NULL, NULL,
+		"OAuth-CA-File", "", 64,
+	offsetof(struct pg_conn, oauth_ca_file)},
 
 	{"sslkeylogfile", NULL, NULL, NULL,
 		"SSL-Key-Log-File", "D", 64,
@@ -2142,15 +2147,13 @@ pqConnectOptions2(PGconn *conn)
 	else
 	{
 		/*
-		 * To not break connecting to older servers/poolers that do not yet
-		 * support NegotiateProtocolVersion, default to the 3.0 protocol at
-		 * least for a while longer. Except when min_protocol_version is set
-		 * to something larger, then we might as well default to the latest.
+		 * Default to PG_PROTOCOL_GREASE, which is larger than all real
+		 * versions, to test negotiation. The server should automatically
+		 * downgrade to a supported version.
+		 *
+		 * This behavior is for 19beta only. It will be reverted before RC1.
 		 */
-		if (conn->min_pversion > PG_PROTOCOL(3, 0))
-			conn->max_pversion = PG_PROTOCOL_LATEST;
-		else
-			conn->max_pversion = PG_PROTOCOL(3, 0);
+		conn->max_pversion = PG_PROTOCOL_GREASE;
 	}
 
 	if (conn->min_pversion > conn->max_pversion)
@@ -4156,6 +4159,32 @@ keep_going:						/* We will come back to here until there is
 					/* Check to see if we should mention pgpassfile */
 					pgpassfileWarning(conn);
 
+					/*
+					 * ...and whether we should mention grease. If the error
+					 * message contains the PG_PROTOCOL_GREASE number (in
+					 * major.minor, decimal, or hex format) or a complaint
+					 * about a protocol violation before we've even started an
+					 * authentication exchange, it's probably caused by a
+					 * grease interaction.
+					 */
+					if (conn->max_pversion == PG_PROTOCOL_GREASE &&
+						!conn->auth_req_received)
+					{
+						const char *sqlstate = PQresultErrorField(conn->result,
+																  PG_DIAG_SQLSTATE);
+
+						if ((sqlstate &&
+							 strcmp(sqlstate, ERRCODE_PROTOCOL_VIOLATION) == 0) ||
+							(conn->errorMessage.len > 0 &&
+							 (strstr(conn->errorMessage.data, "3.9999") ||
+							  strstr(conn->errorMessage.data, "206607") ||
+							  strstr(conn->errorMessage.data, "3270F") ||
+							  strstr(conn->errorMessage.data, "3270f"))))
+						{
+							libpq_append_grease_info(conn);
+						}
+					}
+
 					CONNECTION_FAILED();
 				}
 				/* Handle NegotiateProtocolVersion */
@@ -4383,6 +4412,14 @@ keep_going:						/* We will come back to here until there is
 						conn->errorMessage.data[conn->errorMessage.len - 1] != '\n')
 						appendPQExpBufferChar(&conn->errorMessage, '\n');
 					PQclear(res);
+					goto error_return;
+				}
+
+				if (conn->max_pversion == PG_PROTOCOL_GREASE &&
+					conn->pversion == PG_PROTOCOL_GREASE)
+				{
+					libpq_append_conn_error(conn, "server incorrectly accepted \"grease\" protocol version 3.9999 without negotiation");
+					libpq_append_grease_info(conn);
 					goto error_return;
 				}
 
@@ -5125,6 +5162,7 @@ freePGconn(PGconn *conn)
 	free(conn->oauth_discovery_uri);
 	free(conn->oauth_client_id);
 	free(conn->oauth_client_secret);
+	free(conn->oauth_ca_file);
 	free(conn->oauth_scope);
 	/* Note that conn->Pfdebug is not ours to close or free */
 	free(conn->events);
@@ -6011,6 +6049,18 @@ next_file:
 	status = parseServiceFile(serviceFile, service, options, errorMessage, &group_found);
 	if (status != 0)
 		return status;
+
+	/* Update servicefile to the file that actually supplied the service */
+	if (group_found && service_fname != NULL &&
+		conninfo_storeval(options, "servicefile", serviceFile,
+						  errorMessage, false, false) == NULL)
+	{
+		/*
+		 * conninfo_storeval already set an error message, that could be only
+		 * an OOM.
+		 */
+		return 3;
+	}
 
 last_file:
 	if (!group_found)
@@ -8380,4 +8430,11 @@ PQregisterThreadLock(pgthreadlock_t newhandler)
 		pg_g_threadlock = default_threadlock;
 
 	return prev;
+}
+
+pgthreadlock_t
+PQgetThreadLock(void)
+{
+	Assert(pg_g_threadlock);
+	return pg_g_threadlock;
 }

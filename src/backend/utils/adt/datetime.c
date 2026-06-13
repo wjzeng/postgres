@@ -30,6 +30,7 @@
 #include "utils/date.h"
 #include "utils/datetime.h"
 #include "utils/guc.h"
+#include "utils/tuplestore.h"
 #include "utils/tzparser.h"
 
 static int	DecodeNumber(int flen, char *str, bool haveTextMonth,
@@ -738,7 +739,8 @@ ParseFractionalSecond(char *cp, fsec_t *fsec)
 }
 
 
-/* ParseDateTime()
+/*
+ * ParseDateTime()
  *	Break string into tokens based on a date/time context.
  *	Returns 0 if successful, DTERR code if bogus input detected.
  *
@@ -966,7 +968,8 @@ ParseDateTime(const char *timestr, char *workbuf, size_t buflen,
 }
 
 
-/* DecodeDateTime()
+/*
+ * DecodeDateTime()
  * Interpret previously parsed fields for general date and time.
  * Return 0 if full date, 1 if only time, and negative DTERR code if problems.
  * (Currently, all callers treat 1 as an error return too.)
@@ -1588,7 +1591,8 @@ DecodeDateTime(char **field, int *ftype, int nf,
 }
 
 
-/* DetermineTimeZoneOffset()
+/*
+ * DetermineTimeZoneOffset()
  *
  * Given a struct pg_tm in which tm_year, tm_mon, tm_mday, tm_hour, tm_min,
  * and tm_sec fields are set, and a zic-style time zone definition, determine
@@ -1609,7 +1613,8 @@ DetermineTimeZoneOffset(struct pg_tm *tm, pg_tz *tzp)
 }
 
 
-/* DetermineTimeZoneOffsetInternal()
+/*
+ * DetermineTimeZoneOffsetInternal()
  *
  * As above, but also return the actual UTC time imputed to the date/time
  * into *tp.
@@ -1747,7 +1752,8 @@ overflow:
 }
 
 
-/* DetermineTimeZoneAbbrevOffset()
+/*
+ * DetermineTimeZoneAbbrevOffset()
  *
  * Determine the GMT offset and DST flag to be attributed to a dynamic
  * time zone abbreviation, that is one whose meaning has changed over time.
@@ -1794,7 +1800,8 @@ DetermineTimeZoneAbbrevOffset(struct pg_tm *tm, const char *abbr, pg_tz *tzp)
 }
 
 
-/* DetermineTimeZoneAbbrevOffsetTS()
+/*
+ * DetermineTimeZoneAbbrevOffsetTS()
  *
  * As above but the probe time is specified as a TimestampTz (hence, UTC time),
  * and DST status is returned into *isdst rather than into tm->tm_isdst.
@@ -1831,7 +1838,8 @@ DetermineTimeZoneAbbrevOffsetTS(TimestampTz ts, const char *abbr,
 }
 
 
-/* DetermineTimeZoneAbbrevOffsetInternal()
+/*
+ * DetermineTimeZoneAbbrevOffsetInternal()
  *
  * Workhorse for above two functions: work from a pg_time_t probe instant.
  * On success, return GMT offset and DST status into *offset and *isdst.
@@ -1864,7 +1872,8 @@ DetermineTimeZoneAbbrevOffsetInternal(pg_time_t t, const char *abbr, pg_tz *tzp,
 }
 
 
-/* TimeZoneAbbrevIsKnown()
+/*
+ * TimeZoneAbbrevIsKnown()
  *
  * Detect whether the given string is a time zone abbreviation that's known
  * in the specified TZDB timezone, and if so whether it's fixed or varying
@@ -1898,7 +1907,8 @@ TimeZoneAbbrevIsKnown(const char *abbr, pg_tz *tzp,
 }
 
 
-/* DecodeTimeOnly()
+/*
+ * DecodeTimeOnly()
  * Interpret parsed string as time fields only.
  * Returns 0 if successful, DTERR code if bogus input detected.
  *
@@ -2437,7 +2447,8 @@ DecodeTimeOnly(char **field, int *ftype, int nf,
 	return 0;
 }
 
-/* DecodeDate()
+/*
+ * DecodeDate()
  * Decode date string which includes delimiters.
  * Return 0 if okay, a DTERR code if not.
  *
@@ -2553,7 +2564,8 @@ DecodeDate(char *str, int fmask, int *tmask, bool *is2digits,
 	return 0;
 }
 
-/* ValidateDate()
+/*
+ * ValidateDate()
  * Check valid year/month/day values, handle BC and DOY cases
  * Return 0 if okay, a DTERR code if not.
  */
@@ -2629,7 +2641,8 @@ ValidateDate(int fmask, bool isjulian, bool is2digits, bool bc,
 }
 
 
-/* DecodeTimeCommon()
+/*
+ * DecodeTimeCommon()
  * Decode time string which includes delimiters.
  * Return 0 if okay, a DTERR code if not.
  * tmask and itm are output parameters.
@@ -2714,7 +2727,8 @@ DecodeTimeCommon(char *str, int fmask, int range,
 	return 0;
 }
 
-/* DecodeTime()
+/*
+ * DecodeTime()
  * Decode time string which includes delimiters.
  * Return 0 if okay, a DTERR code if not.
  *
@@ -2743,7 +2757,8 @@ DecodeTime(char *str, int fmask, int range,
 	return 0;
 }
 
-/* DecodeTimeForInterval()
+/*
+ * DecodeTimeForInterval()
  * Decode time string which includes delimiters.
  * Return 0 if okay, a DTERR code if not.
  *
@@ -2772,7 +2787,8 @@ DecodeTimeForInterval(char *str, int fmask, int range,
 }
 
 
-/* DecodeNumber()
+/*
+ * DecodeNumber()
  * Interpret plain numeric field as a date value in context.
  * Return 0 if okay, a DTERR code if not.
  */
@@ -2954,7 +2970,8 @@ DecodeNumber(int flen, char *str, bool haveTextMonth, int fmask,
 }
 
 
-/* DecodeNumberField()
+/*
+ * DecodeNumberField()
  * Interpret numeric string as a concatenated date or time field.
  * Return a DTK token (>= 0) if successful, a DTERR code (< 0) if not.
  *
@@ -3048,7 +3065,8 @@ DecodeNumberField(int len, char *str, int fmask,
 }
 
 
-/* DecodeTimezone()
+/*
+ * DecodeTimezone()
  * Interpret string as a numeric timezone.
  *
  * Return 0 if okay (and set *tzp), a DTERR code if not okay.
@@ -3117,7 +3135,8 @@ DecodeTimezone(const char *str, int *tzp)
 }
 
 
-/* DecodeTimezoneAbbrev()
+/*
+ * DecodeTimezoneAbbrev()
  * Interpret string as a timezone abbreviation, if possible.
  *
  * Sets *ftype to an abbreviation type (TZ, DTZ, or DYNTZ), or UNKNOWN_FIELD if
@@ -3230,7 +3249,8 @@ ClearTimeZoneAbbrevCache(void)
 }
 
 
-/* DecodeSpecial()
+/*
+ * DecodeSpecial()
  * Decode text string using lookup table.
  *
  * Recognizes the keywords listed in datetktbl.
@@ -3270,7 +3290,8 @@ DecodeSpecial(int field, const char *lowtoken, int *val)
 }
 
 
-/* DecodeTimezoneName()
+/*
+ * DecodeTimezoneName()
  * Interpret string as a timezone abbreviation or name.
  * Throw error if the name is not recognized.
  *
@@ -3332,7 +3353,8 @@ DecodeTimezoneName(const char *tzname, int *offset, pg_tz **tz)
 	}
 }
 
-/* DecodeTimezoneNameToTz()
+/*
+ * DecodeTimezoneNameToTz()
  * Interpret string as a timezone abbreviation or name.
  * Throw error if the name is not recognized.
  *
@@ -3353,7 +3375,8 @@ DecodeTimezoneNameToTz(const char *tzname)
 	return result;
 }
 
-/* DecodeTimezoneAbbrevPrefix()
+/*
+ * DecodeTimezoneAbbrevPrefix()
  * Interpret prefix of string as a timezone abbreviation, if possible.
  *
  * This has roughly the same functionality as DecodeTimezoneAbbrev(),
@@ -3454,7 +3477,8 @@ DecodeTimezoneAbbrevPrefix(const char *str, int *offset, pg_tz **tz)
 }
 
 
-/* ClearPgItmIn
+/*
+ * ClearPgItmIn
  *
  * Zero out a pg_itm_in
  */
@@ -3468,7 +3492,8 @@ ClearPgItmIn(struct pg_itm_in *itm_in)
 }
 
 
-/* DecodeInterval()
+/*
+ * DecodeInterval()
  * Interpret previously parsed fields for general time interval.
  * Returns 0 if successful, DTERR code if bogus input detected.
  * dtype and itm_in are output parameters.
@@ -3594,7 +3619,7 @@ DecodeInterval(char **field, int *ftype, int nf, int range,
 				 * handle signed float numbers and signed year-month values.
 				 */
 
-				/* FALLTHROUGH */
+				pg_fallthrough;
 
 			case DTK_DATE:
 			case DTK_NUMBER:
@@ -3930,7 +3955,8 @@ ISO8601IntegerWidth(char *fieldstart)
 }
 
 
-/* DecodeISO8601Interval()
+/*
+ * DecodeISO8601Interval()
  *	Decode an ISO 8601 time interval of the "format with designators"
  *	(section 4.4.3.2) or "alternative format" (section 4.4.3.3)
  *	Examples:  P1D	for 1 day
@@ -4028,7 +4054,7 @@ DecodeISO8601Interval(char *str,
 						continue;
 					}
 					/* Else fall through to extended alternative format */
-					/* FALLTHROUGH */
+					pg_fallthrough;
 				case '-':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)
@@ -4111,7 +4137,7 @@ DecodeISO8601Interval(char *str,
 						return 0;
 					}
 					/* Else fall through to extended alternative format */
-					/* FALLTHROUGH */
+					pg_fallthrough;
 				case ':':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)
@@ -4155,7 +4181,8 @@ DecodeISO8601Interval(char *str,
 }
 
 
-/* DecodeUnits()
+/*
+ * DecodeUnits()
  * Decode text string using lookup table.
  *
  * This routine recognizes keywords associated with time interval units.
@@ -4267,7 +4294,8 @@ DateTimeParseError(int dterr, DateTimeErrorExtra *extra,
 	}
 }
 
-/* datebsearch()
+/*
+ * datebsearch()
  * Binary search -- from Knuth (6.2.1) Algorithm B.  Special case like this
  * is WAY faster than the generic bsearch().
  */
@@ -4301,7 +4329,8 @@ datebsearch(const char *key, const datetkn *base, int nel)
 	return NULL;
 }
 
-/* EncodeTimezone()
+/*
+ * EncodeTimezone()
  *		Copies representation of a numeric timezone offset to str.
  *
  * Returns a pointer to the new end of string.  No NUL terminator is put
@@ -4342,7 +4371,8 @@ EncodeTimezone(char *str, int tz, int style)
 	return str;
 }
 
-/* EncodeDateOnly()
+/*
+ * EncodeDateOnly()
  * Encode date as local time.
  */
 void
@@ -4422,7 +4452,8 @@ EncodeDateOnly(struct pg_tm *tm, int style, char *str)
 }
 
 
-/* EncodeTimeOnly()
+/*
+ * EncodeTimeOnly()
  * Encode time fields only.
  *
  * tm and fsec are the value to encode, print_tz determines whether to include
@@ -4444,7 +4475,8 @@ EncodeTimeOnly(struct pg_tm *tm, fsec_t fsec, bool print_tz, int tz, int style, 
 }
 
 
-/* EncodeDateTime()
+/*
+ * EncodeDateTime()
  * Encode date and time interpreted as local time.
  *
  * tm and fsec are the value to encode, print_tz determines whether to include
@@ -4684,7 +4716,8 @@ AddVerboseIntPart(char *cp, int64 value, const char *units,
 }
 
 
-/* EncodeInterval()
+/*
+ * EncodeInterval()
  * Interpret time structure as a delta time and convert to string.
  *
  * Support "traditional Postgres" and ISO-8601 styles.

@@ -20,7 +20,9 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/table.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
@@ -58,6 +60,7 @@
 #include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
@@ -112,6 +115,7 @@ static bool contain_context_dependent_node_walker(Node *node, int *flags);
 static bool contain_leaked_vars_walker(Node *node, void *context);
 static Relids find_nonnullable_rels_walker(Node *node, bool top_level);
 static List *find_nonnullable_vars_walker(Node *node, bool top_level);
+static void find_subquery_safe_quals(Node *jtnode, List **safe_quals);
 static bool is_strict_saop(ScalarArrayOpExpr *expr, bool falseOK);
 static bool convert_saop_to_hashed_saop_walker(Node *node, void *context);
 static Node *eval_const_expressions_mutator(Node *node,
@@ -261,13 +265,10 @@ find_window_functions_walker(Node *node, WindowFuncLists *lists)
 		if (wfunc->winref > lists->maxWinRef)
 			elog(ERROR, "WindowFunc contains out-of-range winref %u",
 				 wfunc->winref);
-		/* eliminate duplicates, so that we avoid repeated computation */
-		if (!list_member(lists->windowFuncs[wfunc->winref], wfunc))
-		{
-			lists->windowFuncs[wfunc->winref] =
-				lappend(lists->windowFuncs[wfunc->winref], wfunc);
-			lists->numWindowFuncs++;
-		}
+
+		lists->windowFuncs[wfunc->winref] =
+			lappend(lists->windowFuncs[wfunc->winref], wfunc);
+		lists->numWindowFuncs++;
 
 		/*
 		 * We assume that the parser checked that there are no window
@@ -1436,6 +1437,10 @@ contain_leaked_vars_walker(Node *node, void *context)
 								  context);
 }
 
+/*****************************************************************************
+ *		  Nullability analysis
+ *****************************************************************************/
+
 /*
  * find_nonnullable_rels
  *		Determine which base rels are forced nonnullable by given clause.
@@ -1550,7 +1555,7 @@ find_nonnullable_rels_walker(Node *node, bool top_level)
 				 * the intersection of the sets of nonnullable rels, just as
 				 * for OR.  Fall through to share code.
 				 */
-				/* FALL THRU */
+				pg_fallthrough;
 			case OR_EXPR:
 
 				/*
@@ -1704,7 +1709,7 @@ find_nonnullable_rels_walker(Node *node, bool top_level)
  * but here we assume that the input is a Boolean expression, and wish to
  * see if NULL inputs will provably cause a FALSE-or-NULL result.  We expect
  * the expression to have been AND/OR flattened and converted to implicit-AND
- * format.
+ * format (but the results are still good if it wasn't AND/OR flattened).
  *
  * Attnos of the identified Vars are returned in a multibitmapset (a List of
  * Bitmapsets).  List indexes correspond to relids (varnos), while the per-rel
@@ -1808,7 +1813,7 @@ find_nonnullable_vars_walker(Node *node, bool top_level)
 				 * the intersection of the sets of nonnullable vars, just as
 				 * for OR.  Fall through to share code.
 				 */
-				/* FALL THRU */
+				pg_fallthrough;
 			case OR_EXPR:
 
 				/*
@@ -2022,6 +2027,231 @@ find_forced_null_var(Node *node)
 		}
 	}
 	return NULL;
+}
+
+/*
+ * query_outputs_are_not_nullable
+ *		Returns TRUE if the output values of the Query are certainly not NULL.
+ *		All output columns must return non-NULL to answer TRUE.
+ *
+ * The reason this takes a Query, and not just an individual tlist expression,
+ * is so that we can make use of the query's WHERE/ON clauses to prove it does
+ * not return nulls.
+ *
+ * In current usage, the passed sub-Query hasn't yet been through any planner
+ * processing.  This means that applying find_nonnullable_vars() to its WHERE
+ * clauses isn't really ideal: for lack of const-simplification, we might be
+ * unable to prove not-nullness in some cases where we could have proved it
+ * afterwards.  However, we should not get any false positive results.
+ *
+ * Like the other forms of nullability analysis above, we can err on the
+ * side of conservatism: if we're not sure, it's okay to return FALSE.
+ */
+bool
+query_outputs_are_not_nullable(Query *query)
+{
+	PlannerInfo subroot;
+	List	   *safe_quals = NIL;
+	List	   *nonnullable_vars = NIL;
+	bool		computed_nonnullable_vars = false;
+
+	/*
+	 * If the query contains set operations, punt.  The set ops themselves
+	 * couldn't introduce nulls that weren't in their inputs, but the tlist
+	 * present in the top-level query is just dummy and won't give us useful
+	 * info.  We could get an answer by recursing to examine each leaf query,
+	 * but for the moment it doesn't seem worth the extra complication.
+	 */
+	if (query->setOperations)
+		return false;
+
+	/*
+	 * If the query contains grouping sets, punt.  Grouping sets can introduce
+	 * NULL values, and we currently lack the PlannerInfo needed to flatten
+	 * grouping Vars in the query's outputs.
+	 */
+	if (query->groupingSets)
+		return false;
+
+	/*
+	 * We need a PlannerInfo to pass to expr_is_nonnullable.  Fortunately, we
+	 * can cons up an entirely dummy one, because only the "parse" link in the
+	 * struct is used by expr_is_nonnullable.
+	 */
+	MemSet(&subroot, 0, sizeof(subroot));
+	subroot.parse = query;
+
+	/*
+	 * Examine each targetlist entry to prove that it can't produce NULL.
+	 */
+	foreach_node(TargetEntry, tle, query->targetList)
+	{
+		Expr	   *expr = tle->expr;
+
+		/* Resjunk columns can be ignored: they don't produce output values */
+		if (tle->resjunk)
+			continue;
+
+		/*
+		 * Look through binary relabelings, since we know those don't
+		 * introduce nulls.
+		 */
+		while (expr && IsA(expr, RelabelType))
+			expr = ((RelabelType *) expr)->arg;
+
+		if (expr == NULL)		/* paranoia */
+			return false;
+
+		/*
+		 * Since the subquery hasn't yet been through expression
+		 * preprocessing, we must explicitly flatten grouping Vars and join
+		 * alias Vars in the given expression.  Note that flatten_group_exprs
+		 * must be applied before flatten_join_alias_vars, as grouping Vars
+		 * can wrap join alias Vars.
+		 *
+		 * We must also apply flatten_join_alias_vars to the quals extracted
+		 * by find_subquery_safe_quals.  We do not need to apply
+		 * flatten_group_exprs to these quals, though, because grouping Vars
+		 * cannot appear in jointree quals.
+		 */
+
+		/*
+		 * We have verified that the query does not contain grouping sets,
+		 * meaning the grouping Vars will not have varnullingrels that need
+		 * preserving, so it's safe to use NULL as the root here.
+		 */
+		if (query->hasGroupRTE)
+			expr = (Expr *) flatten_group_exprs(NULL, query, (Node *) expr);
+
+		/*
+		 * We won't be dealing with arbitrary expressions, so it's safe to use
+		 * NULL as the root, so long as adjust_standard_join_alias_expression
+		 * can handle everything the parser would make as a join alias
+		 * expression.
+		 */
+		expr = (Expr *) flatten_join_alias_vars(NULL, query, (Node *) expr);
+
+		/*
+		 * Check to see if the expr cannot be NULL.  Since we're on a raw
+		 * parse tree, we need to look up the not-null constraints from the
+		 * system catalogs.
+		 */
+		if (expr_is_nonnullable(&subroot, expr, NOTNULL_SOURCE_CATALOG))
+			continue;
+
+		if (IsA(expr, Var))
+		{
+			Var		   *var = (Var *) expr;
+
+			/*
+			 * For a plain Var, even if that didn't work, we can conclude that
+			 * the Var is not nullable if find_nonnullable_vars can find a
+			 * "var IS NOT NULL" or similarly strict condition among the quals
+			 * on non-outerjoined-rels.  Compute the list of Vars having such
+			 * quals if we didn't already.
+			 */
+			if (!computed_nonnullable_vars)
+			{
+				find_subquery_safe_quals((Node *) query->jointree, &safe_quals);
+				safe_quals = (List *)
+					flatten_join_alias_vars(NULL, query, (Node *) safe_quals);
+				nonnullable_vars = find_nonnullable_vars((Node *) safe_quals);
+				computed_nonnullable_vars = true;
+			}
+
+			if (!mbms_is_member(var->varno,
+								var->varattno - FirstLowInvalidHeapAttributeNumber,
+								nonnullable_vars))
+				return false;	/* we failed to prove the Var non-null */
+		}
+		else
+		{
+			/* Punt otherwise */
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/*
+ * find_subquery_safe_quals
+ *		Traverse jointree to locate quals on non-outerjoined-rels.
+ *
+ * We locate all WHERE and JOIN/ON quals that constrain the rels that are not
+ * below the nullable side of any outer join, and add them to the *safe_quals
+ * list (forming a list with implicit-AND semantics).  These quals can be used
+ * to prove non-nullability of the subquery's outputs.
+ *
+ * Top-level caller must initialize *safe_quals to NIL.
+ */
+static void
+find_subquery_safe_quals(Node *jtnode, List **safe_quals)
+{
+	if (jtnode == NULL)
+		return;
+	if (IsA(jtnode, RangeTblRef))
+	{
+		/* Leaf node: nothing to do */
+		return;
+	}
+	else if (IsA(jtnode, FromExpr))
+	{
+		FromExpr   *f = (FromExpr *) jtnode;
+
+		/* All elements of the FROM list are allowable */
+		foreach_ptr(Node, child_node, f->fromlist)
+			find_subquery_safe_quals(child_node, safe_quals);
+		/* ... and its WHERE quals are too */
+		if (f->quals)
+			*safe_quals = lappend(*safe_quals, f->quals);
+	}
+	else if (IsA(jtnode, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) jtnode;
+
+		switch (j->jointype)
+		{
+			case JOIN_INNER:
+				/* visit both children */
+				find_subquery_safe_quals(j->larg, safe_quals);
+				find_subquery_safe_quals(j->rarg, safe_quals);
+				/* and grab the ON quals too */
+				if (j->quals)
+					*safe_quals = lappend(*safe_quals, j->quals);
+				break;
+
+			case JOIN_LEFT:
+			case JOIN_SEMI:
+			case JOIN_ANTI:
+
+				/*
+				 * Only the left input is possibly non-nullable; furthermore,
+				 * the quals of this join don't constrain the left input.
+				 * Note: we probably can't see SEMI or ANTI joins at this
+				 * point, but if we do, we can treat them like LEFT joins.
+				 */
+				find_subquery_safe_quals(j->larg, safe_quals);
+				break;
+
+			case JOIN_RIGHT:
+				/* Reverse of the above case */
+				find_subquery_safe_quals(j->rarg, safe_quals);
+				break;
+
+			case JOIN_FULL:
+				/* Neither side is non-nullable, so stop descending */
+				break;
+
+			default:
+				elog(ERROR, "unrecognized join type: %d",
+					 (int) j->jointype);
+				break;
+		}
+	}
+	else
+		elog(ERROR, "unrecognized node type: %d",
+			 (int) nodeTag(jtnode));
 }
 
 /*
@@ -2314,7 +2544,8 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
 	if (IsA(node, ScalarArrayOpExpr))
 	{
 		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) node;
-		Expr	   *arrayarg = (Expr *) lsecond(saop->args);
+		Node	   *leftarg = (Node *) linitial(saop->args);
+		Node	   *arrayarg = (Node *) lsecond(saop->args);
 		Oid			lefthashfunc;
 		Oid			righthashfunc;
 
@@ -2323,7 +2554,8 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
 		{
 			if (saop->useOr)
 			{
-				if (get_op_hash_functions(saop->opno, &lefthashfunc, &righthashfunc) &&
+				if (get_op_hash_functions_ext(saop->opno, exprType(leftarg),
+											  &lefthashfunc, &righthashfunc) &&
 					lefthashfunc == righthashfunc)
 				{
 					Datum		arrdatum = ((Const *) arrayarg)->constvalue;
@@ -2355,7 +2587,8 @@ convert_saop_to_hashed_saop_walker(Node *node, void *context)
 				 * just ensure the lookup items are not in the hash table.
 				 */
 				if (OidIsValid(negator) &&
-					get_op_hash_functions(negator, &lefthashfunc, &righthashfunc) &&
+					get_op_hash_functions_ext(negator, exprType(leftarg),
+											  &lefthashfunc, &righthashfunc) &&
 					lefthashfunc == righthashfunc)
 				{
 					Datum		arrdatum = ((Const *) arrayarg)->constvalue;
@@ -2708,6 +2941,7 @@ eval_const_expressions_mutator(Node *node,
 				bool		has_null_input = false;
 				bool		all_null_input = true;
 				bool		has_nonconst_input = false;
+				bool		has_nullable_nonconst = false;
 				Expr	   *simple;
 				DistinctExpr *newexpr;
 
@@ -2724,7 +2958,8 @@ eval_const_expressions_mutator(Node *node,
 				/*
 				 * We must do our own check for NULLs because DistinctExpr has
 				 * different results for NULL input than the underlying
-				 * operator does.
+				 * operator does.  We also check if any non-constant input is
+				 * potentially nullable.
 				 */
 				foreach(arg, args)
 				{
@@ -2734,12 +2969,25 @@ eval_const_expressions_mutator(Node *node,
 						all_null_input &= ((Const *) lfirst(arg))->constisnull;
 					}
 					else
+					{
 						has_nonconst_input = true;
+						all_null_input = false;
+
+						if (!has_nullable_nonconst &&
+							!expr_is_nonnullable(context->root,
+												 (Expr *) lfirst(arg),
+												 NOTNULL_SOURCE_HASHTABLE))
+							has_nullable_nonconst = true;
+					}
 				}
 
-				/* all constants? then can optimize this out */
 				if (!has_nonconst_input)
 				{
+					/*
+					 * All inputs are constants.  We can optimize this out
+					 * completely.
+					 */
+
 					/* all nulls? then not distinct */
 					if (all_null_input)
 						return makeBoolConst(false, false);
@@ -2783,6 +3031,72 @@ eval_const_expressions_mutator(Node *node,
 							BoolGetDatum(!DatumGetBool(csimple->constvalue));
 						return (Node *) csimple;
 					}
+				}
+				else if (!has_nullable_nonconst)
+				{
+					/*
+					 * There are non-constant inputs, but since all of them
+					 * are proven non-nullable, "IS DISTINCT FROM" semantics
+					 * are much simpler.
+					 */
+
+					OpExpr	   *eqexpr;
+
+					/*
+					 * If one input is an explicit NULL constant, and the
+					 * other is a non-nullable expression, the result is
+					 * always TRUE.
+					 */
+					if (has_null_input)
+						return makeBoolConst(true, false);
+
+					/*
+					 * Otherwise, both inputs are known non-nullable.  In this
+					 * case, "IS DISTINCT FROM" is equivalent to the standard
+					 * inequality operator (usually "<>").  We convert this to
+					 * an OpExpr, which is a more efficient representation for
+					 * the planner.  It can enable the use of partial indexes
+					 * and constraint exclusion.  Furthermore, if the clause
+					 * is negated (ie, "IS NOT DISTINCT FROM"), the resulting
+					 * "=" operator can allow the planner to use index scans,
+					 * merge joins, hash joins, and EC-based qual deductions.
+					 */
+					eqexpr = makeNode(OpExpr);
+					eqexpr->opno = expr->opno;
+					eqexpr->opfuncid = expr->opfuncid;
+					eqexpr->opresulttype = BOOLOID;
+					eqexpr->opretset = expr->opretset;
+					eqexpr->opcollid = expr->opcollid;
+					eqexpr->inputcollid = expr->inputcollid;
+					eqexpr->args = args;
+					eqexpr->location = expr->location;
+
+					return eval_const_expressions_mutator(negate_clause((Node *) eqexpr),
+														  context);
+				}
+				else if (has_null_input)
+				{
+					/*
+					 * One input is a nullable non-constant expression, and
+					 * the other is an explicit NULL constant.  We can
+					 * transform this to a NullTest with !argisrow, which is
+					 * much more amenable to optimization.
+					 */
+
+					NullTest   *nt = makeNode(NullTest);
+
+					nt->arg = (Expr *) (IsA(linitial(args), Const) ?
+										lsecond(args) : linitial(args));
+					nt->nulltesttype = IS_NOT_NULL;
+
+					/*
+					 * argisrow = false is correct whether or not arg is
+					 * composite
+					 */
+					nt->argisrow = false;
+					nt->location = expr->location;
+
+					return eval_const_expressions_mutator((Node *) nt, context);
 				}
 
 				/*
@@ -2933,7 +3247,6 @@ eval_const_expressions_mutator(Node *node,
 				}
 				break;
 			}
-
 		case T_JsonValueExpr:
 			{
 				JsonValueExpr *jve = (JsonValueExpr *) node;
@@ -2957,7 +3270,21 @@ eval_const_expressions_mutator(Node *node,
 												  (Expr *) formatted_expr,
 												  copyObject(jve->format));
 			}
+		case T_JsonConstructorExpr:
+			{
+				JsonConstructorExpr *jce = (JsonConstructorExpr *) node;
 
+				/*
+				 * JSCTOR_JSON_ARRAY_QUERY carries a pre-built executable form
+				 * in its func field (a COALESCE-wrapped JSON_ARRAYAGG
+				 * subquery, constructed during parse analysis).  Replace the
+				 * node with that expression and continue simplifying.
+				 */
+				if (jce->type == JSCTOR_JSON_ARRAY_QUERY)
+					return eval_const_expressions_mutator((Node *) jce->func,
+														  context);
+			}
+			break;
 		case T_SubPlan:
 		case T_AlternativeSubPlan:
 
@@ -3341,7 +3668,8 @@ eval_const_expressions_mutator(Node *node,
 						newargs = lappend(newargs, e);
 						break;
 					}
-					if (expr_is_nonnullable(context->root, (Expr *) e, false))
+					if (expr_is_nonnullable(context->root, (Expr *) e,
+											NOTNULL_SOURCE_HASHTABLE))
 					{
 						if (newargs == NIL)
 							return e;	/* first expr */
@@ -3535,7 +3863,7 @@ eval_const_expressions_mutator(Node *node,
 						 */
 						if (relem &&
 							expr_is_nonnullable(context->root, (Expr *) relem,
-												false))
+												NOTNULL_SOURCE_HASHTABLE))
 						{
 							if (ntest->nulltesttype == IS_NULL)
 								return makeBoolConst(false, false);
@@ -3587,7 +3915,8 @@ eval_const_expressions_mutator(Node *node,
 					return makeBoolConst(result, false);
 				}
 				if (!ntest->argisrow && arg &&
-					expr_is_nonnullable(context->root, (Expr *) arg, false))
+					expr_is_nonnullable(context->root, (Expr *) arg,
+										NOTNULL_SOURCE_HASHTABLE))
 				{
 					bool		result;
 
@@ -3633,6 +3962,9 @@ eval_const_expressions_mutator(Node *node,
 													 context);
 				if (arg && IsA(arg, Const))
 				{
+					/*
+					 * If arg is Const, simplify to constant.
+					 */
 					Const	   *carg = (Const *) arg;
 					bool		result;
 
@@ -3669,6 +4001,36 @@ eval_const_expressions_mutator(Node *node,
 
 					return makeBoolConst(result, false);
 				}
+				if (arg &&
+					expr_is_nonnullable(context->root, (Expr *) arg,
+										NOTNULL_SOURCE_HASHTABLE))
+				{
+					/*
+					 * If arg is proven non-nullable, simplify to boolean
+					 * expression or constant.
+					 */
+					switch (btest->booltesttype)
+					{
+						case IS_TRUE:
+						case IS_NOT_FALSE:
+							return arg;
+
+						case IS_FALSE:
+						case IS_NOT_TRUE:
+							return (Node *) make_notclause((Expr *) arg);
+
+						case IS_UNKNOWN:
+							return makeBoolConst(false, false);
+
+						case IS_NOT_UNKNOWN:
+							return makeBoolConst(true, false);
+
+						default:
+							elog(ERROR, "unrecognized booltesttype: %d",
+								 (int) btest->booltesttype);
+							break;
+					}
+				}
 
 				newbtest = makeNode(BooleanTest);
 				newbtest->arg = (Expr *) arg;
@@ -3695,7 +4057,7 @@ eval_const_expressions_mutator(Node *node,
 				arg = eval_const_expressions_mutator((Node *) cdomain->arg,
 													 context);
 				if (context->estimate ||
-					!DomainHasConstraints(cdomain->resulttype))
+					!DomainHasConstraints(cdomain->resulttype, NULL))
 				{
 					/* Record dependency, if this isn't estimation mode */
 					if (context->root && !context->estimate)
@@ -4276,14 +4638,11 @@ simplify_aggref(Aggref *aggref, eval_const_expressions_context *context)
  * If the Var is defined NOT NULL and meanwhile is not nulled by any outer
  * joins or grouping sets, then we can know that it cannot be NULL.
  *
- * use_rel_info indicates whether the corresponding RelOptInfo is available for
- * use.
+ * "source" specifies where we should look for NOT NULL proofs.
  */
 bool
-var_is_nonnullable(PlannerInfo *root, Var *var, bool use_rel_info)
+var_is_nonnullable(PlannerInfo *root, Var *var, NotNullSource source)
 {
-	Bitmapset  *notnullattnums = NULL;
-
 	Assert(IsA(var, Var));
 
 	/* skip upper-level Vars */
@@ -4294,39 +4653,114 @@ var_is_nonnullable(PlannerInfo *root, Var *var, bool use_rel_info)
 	if (!bms_is_empty(var->varnullingrels))
 		return false;
 
+	/*
+	 * If the Var has a non-default returning type, it could be NULL
+	 * regardless of any NOT NULL constraint.  For example, OLD.col is NULL
+	 * for INSERT, and NEW.col is NULL for DELETE.
+	 */
+	if (var->varreturningtype != VAR_RETURNING_DEFAULT)
+		return false;
+
 	/* system columns cannot be NULL */
 	if (var->varattno < 0)
 		return true;
 
-	/*
-	 * Check if the Var is defined as NOT NULL.  We retrieve the column NOT
-	 * NULL constraint information from the corresponding RelOptInfo if it is
-	 * available; otherwise, we search the hash table for this information.
-	 */
-	if (use_rel_info)
+	/* we don't trust whole-row Vars */
+	if (var->varattno == 0)
+		return false;
+
+	/* Check if the Var is defined as NOT NULL. */
+	switch (source)
 	{
-		RelOptInfo *rel = find_base_rel(root, var->varno);
+		case NOTNULL_SOURCE_RELOPT:
+			{
+				/*
+				 * We retrieve the column NOT NULL constraint information from
+				 * the corresponding RelOptInfo.
+				 */
+				RelOptInfo *rel;
+				Bitmapset  *notnullattnums;
 
-		notnullattnums = rel->notnullattnums;
+				rel = find_base_rel(root, var->varno);
+				notnullattnums = rel->notnullattnums;
+
+				return bms_is_member(var->varattno, notnullattnums);
+			}
+		case NOTNULL_SOURCE_HASHTABLE:
+			{
+				/*
+				 * We retrieve the column NOT NULL constraint information from
+				 * the hash table.
+				 */
+				RangeTblEntry *rte;
+				Bitmapset  *notnullattnums;
+
+				rte = planner_rt_fetch(var->varno, root);
+
+				/* We can only reason about ordinary relations */
+				if (rte->rtekind != RTE_RELATION)
+					return false;
+
+				/*
+				 * We must skip inheritance parent tables, as some child
+				 * tables may have a NOT NULL constraint for a column while
+				 * others may not.  This cannot happen with partitioned
+				 * tables, though.
+				 */
+				if (rte->inh && rte->relkind != RELKIND_PARTITIONED_TABLE)
+					return false;
+
+				notnullattnums = find_relation_notnullatts(root, rte->relid);
+
+				return bms_is_member(var->varattno, notnullattnums);
+			}
+		case NOTNULL_SOURCE_CATALOG:
+			{
+				/*
+				 * We check the attnullability field in the tuple descriptor.
+				 * This is necessary rather than checking the attnotnull field
+				 * from the attribute relation, because attnotnull is also set
+				 * for invalid (NOT VALID) NOT NULL constraints, which do not
+				 * guarantee the absence of NULLs.
+				 */
+				RangeTblEntry *rte;
+				Relation	rel;
+				CompactAttribute *attr;
+				bool		result;
+
+				rte = planner_rt_fetch(var->varno, root);
+
+				/* We can only reason about ordinary relations */
+				if (rte->rtekind != RTE_RELATION)
+					return false;
+
+				/*
+				 * We must skip inheritance parent tables, as some child
+				 * tables may have a NOT NULL constraint for a column while
+				 * others may not.  This cannot happen with partitioned
+				 * tables, though.
+				 *
+				 * Note that we need to check if the relation actually has any
+				 * children, as we might not have done that yet.
+				 */
+				if (rte->inh && has_subclass(rte->relid) &&
+					rte->relkind != RELKIND_PARTITIONED_TABLE)
+					return false;
+
+				/* We need not lock the relation since it was already locked */
+				rel = table_open(rte->relid, NoLock);
+				attr = TupleDescCompactAttr(RelationGetDescr(rel),
+											var->varattno - 1);
+				result = (attr->attnullability == ATTNULLABLE_VALID);
+				table_close(rel, NoLock);
+
+				return result;
+			}
+		default:
+			elog(ERROR, "unrecognized NotNullSource: %d",
+				 (int) source);
+			break;
 	}
-	else
-	{
-		RangeTblEntry *rte = planner_rt_fetch(var->varno, root);
-
-		/*
-		 * We must skip inheritance parent tables, as some child tables may
-		 * have a NOT NULL constraint for a column while others may not.  This
-		 * cannot happen with partitioned tables, though.
-		 */
-		if (rte->inh && rte->relkind != RELKIND_PARTITIONED_TABLE)
-			return false;
-
-		notnullattnums = find_relation_notnullatts(root, rte->relid);
-	}
-
-	if (var->varattno > 0 &&
-		bms_is_member(var->varattno, notnullattnums))
-		return true;
 
 	return false;
 }
@@ -4336,16 +4770,22 @@ var_is_nonnullable(PlannerInfo *root, Var *var, bool use_rel_info)
  *
  * Returns true iff the given 'expr' cannot produce SQL NULLs.
  *
- * If 'use_rel_info' is true, nullability of Vars is checked via the
- * corresponding RelOptInfo for the given Var.  Some callers require
- * nullability information before RelOptInfos are generated.  These should
- * pass 'use_rel_info' as false.
+ * source: specifies where we should look for NOT NULL proofs for Vars.
+ *	- NOTNULL_SOURCE_RELOPT: Used when RelOptInfos have been generated.  We
+ *	retrieve nullability information directly from the RelOptInfo corresponding
+ *	to the Var.
+ *	- NOTNULL_SOURCE_HASHTABLE: Used when RelOptInfos are not yet available,
+ *	but we have already collected relation-level not-null constraints into the
+ *	global hash table.
+ *	- NOTNULL_SOURCE_CATALOG: Used for raw parse trees where neither
+ *	RelOptInfos nor the hash table are available.  In this case, we check the
+ *	column's attnullability in the tuple descriptor.
  *
  * For now, we support only a limited set of expression types.  Support for
  * additional node types can be added in the future.
  */
 bool
-expr_is_nonnullable(PlannerInfo *root, Expr *expr, bool use_rel_info)
+expr_is_nonnullable(PlannerInfo *root, Expr *expr, NotNullSource source)
 {
 	/* since this function recurses, it could be driven to stack overflow */
 	check_stack_depth();
@@ -4355,7 +4795,7 @@ expr_is_nonnullable(PlannerInfo *root, Expr *expr, bool use_rel_info)
 		case T_Var:
 			{
 				if (root)
-					return var_is_nonnullable(root, (Var *) expr, use_rel_info);
+					return var_is_nonnullable(root, (Var *) expr, source);
 			}
 			break;
 		case T_Const:
@@ -4372,7 +4812,7 @@ expr_is_nonnullable(PlannerInfo *root, Expr *expr, bool use_rel_info)
 
 				foreach_ptr(Expr, arg, coalesceexpr->args)
 				{
-					if (expr_is_nonnullable(root, arg, use_rel_info))
+					if (expr_is_nonnullable(root, arg, source))
 						return true;
 				}
 			}
@@ -4387,7 +4827,7 @@ expr_is_nonnullable(PlannerInfo *root, Expr *expr, bool use_rel_info)
 
 				foreach_ptr(Expr, arg, minmaxexpr->args)
 				{
-					if (expr_is_nonnullable(root, arg, use_rel_info))
+					if (expr_is_nonnullable(root, arg, source))
 						return true;
 				}
 			}
@@ -4403,13 +4843,13 @@ expr_is_nonnullable(PlannerInfo *root, Expr *expr, bool use_rel_info)
 
 				/* The default result must be present and non-nullable */
 				if (caseexpr->defresult == NULL ||
-					!expr_is_nonnullable(root, caseexpr->defresult, use_rel_info))
+					!expr_is_nonnullable(root, caseexpr->defresult, source))
 					return false;
 
 				/* All branch results must be non-nullable */
 				foreach_ptr(CaseWhen, casewhen, caseexpr->args)
 				{
-					if (!expr_is_nonnullable(root, casewhen->result, use_rel_info))
+					if (!expr_is_nonnullable(root, casewhen->result, source))
 						return false;
 				}
 
@@ -4457,7 +4897,7 @@ expr_is_nonnullable(PlannerInfo *root, Expr *expr, bool use_rel_info)
 				 * non-nullable.
 				 */
 				return expr_is_nonnullable(root, ((RelabelType *) expr)->arg,
-										   use_rel_info);
+										   source);
 			}
 		default:
 			break;

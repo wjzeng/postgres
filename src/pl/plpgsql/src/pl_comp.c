@@ -1912,6 +1912,8 @@ build_row_from_vars(PLpgSQL_variable **vars, int numvars)
 		TupleDescInitEntryCollation(row->rowtupdesc, i + 1, typcoll);
 	}
 
+	TupleDescFinalize(row->rowtupdesc);
+
 	return row;
 }
 
@@ -2333,6 +2335,7 @@ plpgsql_add_initdatums(int **varnos)
 					case PLPGSQL_DTYPE_VAR:
 					case PLPGSQL_DTYPE_REC:
 						(*varnos)[n++] = plpgsql_Datums[i]->dno;
+						break;
 
 					default:
 						break;

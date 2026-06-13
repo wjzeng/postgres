@@ -1515,8 +1515,8 @@ record_image_cmp(FunctionCallInfo fcinfo)
 			{
 				Size		len1,
 							len2;
-				struct varlena *arg1val;
-				struct varlena *arg2val;
+				varlena    *arg1val;
+				varlena    *arg2val;
 
 				len1 = toast_raw_datum_size(values1[i1]);
 				len2 = toast_raw_datum_size(values2[i2]);
@@ -2030,7 +2030,7 @@ hash_record_extended(PG_FUNCTION_ARGS)
 			locfcinfo->args[0].value = values[i];
 			locfcinfo->args[0].isnull = false;
 			locfcinfo->args[1].value = Int64GetDatum(seed);
-			locfcinfo->args[0].isnull = false;
+			locfcinfo->args[1].isnull = false;
 			element_hash = DatumGetUInt64(FunctionCallInvoke(locfcinfo));
 
 			/* We don't expect hash support functions to return null */

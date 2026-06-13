@@ -45,8 +45,10 @@
 #include "storage/dsm_registry.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "storage/subsystems.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/tuplestore.h"
 
 typedef struct DSMRegistryCtxStruct
 {
@@ -55,6 +57,14 @@ typedef struct DSMRegistryCtxStruct
 } DSMRegistryCtxStruct;
 
 static DSMRegistryCtxStruct *DSMRegistryCtx;
+
+static void DSMRegistryShmemRequest(void *arg);
+static void DSMRegistryShmemInit(void *arg);
+
+const ShmemCallbacks DSMRegistryShmemCallbacks = {
+	.request_fn = DSMRegistryShmemRequest,
+	.init_fn = DSMRegistryShmemInit,
+};
 
 typedef struct NamedDSMState
 {
@@ -113,27 +123,20 @@ static const dshash_parameters dsh_params = {
 static dsa_area *dsm_registry_dsa;
 static dshash_table *dsm_registry_table;
 
-Size
-DSMRegistryShmemSize(void)
+static void
+DSMRegistryShmemRequest(void *arg)
 {
-	return MAXALIGN(sizeof(DSMRegistryCtxStruct));
+	ShmemRequestStruct(.name = "DSM Registry Data",
+					   .size = sizeof(DSMRegistryCtxStruct),
+					   .ptr = (void **) &DSMRegistryCtx,
+		);
 }
 
-void
-DSMRegistryShmemInit(void)
+static void
+DSMRegistryShmemInit(void *arg)
 {
-	bool		found;
-
-	DSMRegistryCtx = (DSMRegistryCtxStruct *)
-		ShmemInitStruct("DSM Registry Data",
-						DSMRegistryShmemSize(),
-						&found);
-
-	if (!found)
-	{
-		DSMRegistryCtx->dsah = DSA_HANDLE_INVALID;
-		DSMRegistryCtx->dshh = DSHASH_HANDLE_INVALID;
-	}
+	DSMRegistryCtx->dsah = DSA_HANDLE_INVALID;
+	DSMRegistryCtx->dshh = DSHASH_HANDLE_INVALID;
 }
 
 /*
@@ -476,7 +479,7 @@ pg_get_dsm_registry_allocations(PG_FUNCTION_ARGS)
 				 entry->dsa.handle != DSA_HANDLE_INVALID)
 			vals[2] = Int64GetDatum(dsa_get_total_size_from_handle(entry->dsa.handle));
 		else if (entry->type == DSMR_ENTRY_TYPE_DSH &&
-				 entry->dsh.dsa_handle !=DSA_HANDLE_INVALID)
+				 entry->dsh.dsa_handle != DSA_HANDLE_INVALID)
 			vals[2] = Int64GetDatum(dsa_get_total_size_from_handle(entry->dsh.dsa_handle));
 		else
 			nulls[2] = true;

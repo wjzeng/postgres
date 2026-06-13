@@ -19,8 +19,23 @@ use File::Temp;
 use IO::Handle;
 use Getopt::Long;
 
+# By default Perl's SIGINT/SIGTERM kill the process without running
+# END blocks, so File::Temp never gets to clean up.  Converting the
+# signal into an exit() makes END-block cleanup run.  See:
+# <http://www.perlmonks.org/?node_id=714225>.  Exit codes use the
+# 128+signum convention so callers can tell the process was killed by
+# a signal.
+$SIG{INT} = sub { exit 130; };     # 128 + 2 (SIGINT)
+$SIG{TERM} = sub { exit 143; };    # 128 + 15 (SIGTERM)
+
+# pg_bsd_indent creates a .BAK file that File::Temp doesn't know about. This
+# END block makes sure that that file is cleaned up in case someone presses
+# Ctrl+C during pgindent.
+my $bak_to_cleanup;
+END { unlink $bak_to_cleanup if defined $bak_to_cleanup; }
+
 # Update for pg_bsd_indent version
-my $INDENT_VERSION = "2.1.2";
+my $INDENT_VERSION = "2.1.3";
 
 # Our standard indent settings
 my $indent_opts =
@@ -224,6 +239,9 @@ sub pre_indent
 {
 	my $source = shift;
 
+	## Ensure file ends with a newline (pg_bsd_indent messes up otherwise)
+	$source .= "\n" unless substr($source, -1) eq "\n";
+
 	## Comments
 
 	# Convert // comments to /* */
@@ -267,10 +285,55 @@ sub post_indent
 	# Fix run-together comments to have a tab between them
 	$source =~ s!\*/(/\*.*\*/)$!*/\t$1!gm;
 
+	# Postprocess multiline comments except for /**... and /*-... ones
+	$source =~ s!^(/\*[^\*\-].*?\*/)!postprocess_multiline_comment($1)!mgse;
+
 	## Functions
 
 	# Use a single space before '*' in function return types
 	$source =~ s!^([A-Za-z_]\S*)[ \t]+\*$!$1 *!gm;
+
+	return $source;
+}
+
+sub postprocess_multiline_comment
+{
+	my $source = shift;
+	my @lines = split "\n", $source;
+
+	# Only reformat comments that actually span more than one line
+	if (scalar @lines < 2)
+	{
+		return $source;
+	}
+
+	# Split any text on the first line onto a separate line,
+	# but keep /* === and /* --- lines as is
+	if ($lines[0] !~ m!^/\*\s+[=-]+$!)
+	{
+		$lines[0] =~ s!/\*\s*(.+)!/\*\n * $1!;
+	}
+
+	# Apply these steps to all lines but the first
+	for my $i (1 .. scalar @lines - 1)
+	{
+		# Insert ' * ' if first non-white-space character is not '*'
+		$lines[$i] =~ s/^\s*/ \* / if $lines[$i] !~ /^\s*\*/;
+		# ... but that might leave us with trailing space
+		$lines[$i] =~ s/\s+$//;
+		# Require exactly one leading '*', and one space before it
+		$lines[$i] =~ s/^\s*\*+/ \*/;
+	}
+
+	# Split trailing "*/" onto its own line if not that already,
+	# but keep === */ and --- */ lines as is
+	if ($lines[-1] !~ m!^\s*[=-]+\s+\*/$!)
+	{
+		# this also removes any trailing whitespace
+		$lines[-1] =~ s!(.+?)\s+\*/!$1\n \*/!;
+	}
+
+	$source = join "\n", @lines;
 
 	return $source;
 }
@@ -287,11 +350,14 @@ sub run_indent
 	print $tmp_fh $source;
 	$tmp_fh->close();
 
+	$bak_to_cleanup = "$filename.BAK";
+
 	$$error_message = `$cmd $filename 2>&1`;
 
 	return "" if ($? || length($$error_message) > 0);
 
-	unlink "$filename.BAK";
+	unlink $bak_to_cleanup;
+	$bak_to_cleanup = undef;
 
 	open(my $src_out, '<', $filename) || die $!;
 	local ($/) = undef;

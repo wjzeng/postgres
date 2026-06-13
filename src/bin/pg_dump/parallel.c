@@ -334,6 +334,20 @@ on_exit_close_archive(Archive *AHX)
 }
 
 /*
+ * Update the archive handle in the on_exit callback registered by
+ * on_exit_close_archive(). When pg_restore processes a pg_dumpall archive
+ * containing multiple databases, each database is restored from a separate
+ * archive. After closing one archive and opening the next, we update the
+ * shutdown_info to reference the new archive handle so the cleanup callback
+ * will close the correct archive on exit.
+ */
+void
+replace_on_exit_close_archive(Archive *AHX)
+{
+	shutdown_info.AHX = AHX;
+}
+
+/*
  * on_exit_nicely handler for shutting down database connections and
  * worker processes cleanly.
  */
@@ -469,7 +483,7 @@ WaitForTerminatingWorkers(ParallelState *pstate)
 		}
 #else							/* WIN32 */
 		/* On Windows, we must use WaitForMultipleObjects() */
-		HANDLE	   *lpHandles = pg_malloc(sizeof(HANDLE) * pstate->numWorkers);
+		HANDLE	   *lpHandles = pg_malloc_array(HANDLE, pstate->numWorkers);
 		int			nrun = 0;
 		DWORD		ret;
 		uintptr_t	hThread;
@@ -554,9 +568,9 @@ sigTermHandler(SIGNAL_ARGS)
 	 * signal handler.  That could muck up our attempt to send PQcancel, so
 	 * disable the signals that set_cancel_handler enabled.
 	 */
-	pqsignal(SIGINT, SIG_IGN);
-	pqsignal(SIGTERM, SIG_IGN);
-	pqsignal(SIGQUIT, SIG_IGN);
+	pqsignal(SIGINT, PG_SIG_IGN);
+	pqsignal(SIGTERM, PG_SIG_IGN);
+	pqsignal(SIGQUIT, PG_SIG_IGN);
 
 	/*
 	 * If we're in the leader, forward signal to all workers.  (It seems best
@@ -903,7 +917,7 @@ ParallelBackupStart(ArchiveHandle *AH)
 
 	Assert(AH->public.numWorkers > 0);
 
-	pstate = (ParallelState *) pg_malloc(sizeof(ParallelState));
+	pstate = pg_malloc_object(ParallelState);
 
 	pstate->numWorkers = AH->public.numWorkers;
 	pstate->te = NULL;
@@ -913,10 +927,10 @@ ParallelBackupStart(ArchiveHandle *AH)
 		return pstate;
 
 	/* Create status arrays, being sure to initialize all fields to 0 */
-	pstate->te = (TocEntry **)
-		pg_malloc0(pstate->numWorkers * sizeof(TocEntry *));
-	pstate->parallelSlot = (ParallelSlot *)
-		pg_malloc0(pstate->numWorkers * sizeof(ParallelSlot));
+	pstate->te =
+		pg_malloc0_array(TocEntry *, pstate->numWorkers);
+	pstate->parallelSlot =
+		pg_malloc0_array(ParallelSlot, pstate->numWorkers);
 
 #ifdef WIN32
 	/* Make fmtId() and fmtQualifiedId() use thread-local storage */
@@ -969,7 +983,7 @@ ParallelBackupStart(ArchiveHandle *AH)
 
 #ifdef WIN32
 		/* Create transient structure to pass args to worker function */
-		wi = (WorkerInfo *) pg_malloc(sizeof(WorkerInfo));
+		wi = pg_malloc_object(WorkerInfo);
 
 		wi->AH = AH;
 		wi->slot = slot;
@@ -1035,7 +1049,7 @@ ParallelBackupStart(ArchiveHandle *AH)
 	 * the workers to inherit this setting, though.
 	 */
 #ifndef WIN32
-	pqsignal(SIGPIPE, SIG_IGN);
+	pqsignal(SIGPIPE, PG_SIG_IGN);
 #endif
 
 	/*

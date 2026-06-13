@@ -90,6 +90,8 @@
 extern PGDLLIMPORT volatile sig_atomic_t InterruptPending;
 extern PGDLLIMPORT volatile sig_atomic_t QueryCancelPending;
 extern PGDLLIMPORT volatile sig_atomic_t ProcDiePending;
+extern PGDLLIMPORT volatile int ProcDieSenderPid;
+extern PGDLLIMPORT volatile int ProcDieSenderUid;
 extern PGDLLIMPORT volatile sig_atomic_t IdleInTransactionSessionTimeoutPending;
 extern PGDLLIMPORT volatile sig_atomic_t TransactionTimeoutPending;
 extern PGDLLIMPORT volatile sig_atomic_t IdleSessionTimeoutPending;
@@ -178,6 +180,7 @@ extern PGDLLIMPORT int MaxBackends;
 extern PGDLLIMPORT int MaxConnections;
 extern PGDLLIMPORT int max_worker_processes;
 extern PGDLLIMPORT int max_parallel_workers;
+extern PGDLLIMPORT int autovacuum_max_parallel_workers;
 
 extern PGDLLIMPORT int commit_timestamp_buffers;
 extern PGDLLIMPORT int multixact_member_buffers;
@@ -367,6 +370,9 @@ typedef enum BackendType
 	B_WAL_SUMMARIZER,
 	B_WAL_WRITER,
 
+	B_DATACHECKSUMSWORKER_LAUNCHER,
+	B_DATACHECKSUMSWORKER_WORKER,
+
 	/*
 	 * Logger is not connected to shared memory and does not have a PGPROC
 	 * entry.
@@ -392,6 +398,9 @@ extern PGDLLIMPORT BackendType MyBackendType;
 #define AmWalSummarizerProcess()	(MyBackendType == B_WAL_SUMMARIZER)
 #define AmWalWriterProcess()		(MyBackendType == B_WAL_WRITER)
 #define AmIoWorkerProcess()			(MyBackendType == B_IO_WORKER)
+#define AmDataChecksumsWorkerProcess() \
+	(MyBackendType == B_DATACHECKSUMSWORKER_LAUNCHER || \
+	 MyBackendType == B_DATACHECKSUMSWORKER_WORKER)
 
 #define AmSpecialWorkerProcess() \
 	(AmAutoVacuumLauncherProcess() || \
@@ -504,9 +513,12 @@ extern void InitializeMaxBackends(void);
 extern void InitializeFastPathLocks(void);
 extern void InitPostgres(const char *in_dbname, Oid dboid,
 						 const char *username, Oid useroid,
-						 bits32 flags,
+						 uint32 flags,
 						 char *out_dbname);
 extern void BaseInit(void);
+typedef bool (*ConnectionWarningFilter) (void);
+extern void StoreConnectionWarning(char *msg, char *detail,
+								   ConnectionWarningFilter filter);
 
 /* in utils/init/miscinit.c */
 extern PGDLLIMPORT bool IgnoreSystemIndexes;

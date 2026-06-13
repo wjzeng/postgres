@@ -12,6 +12,7 @@
 
 #include "access/parallel.h"
 #include "libpq/pqformat.h"
+#include "storage/proc.h"
 #include "utils/backend_progress.h"
 #include "utils/backend_status.h"
 
@@ -98,8 +99,6 @@ pgstat_progress_parallel_incr_param(int index, int64 incr)
 	if (IsParallelWorker())
 	{
 		static StringInfoData progress_message;
-
-		initStringInfo(&progress_message);
 
 		pq_beginmessage(&progress_message, PqMsg_Progress);
 		pq_sendint32(&progress_message, index);

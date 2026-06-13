@@ -68,17 +68,9 @@
 #include <math.h>
 #include <float.h>
 #include <limits.h>
-#include <wctype.h>
 
-#ifdef USE_ICU
-#include <unicode/ustring.h>
-#endif
-
-#include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
-#include "common/unicode_case.h"
-#include "common/unicode_category.h"
 #include "mb/pg_wchar.h"
 #include "nodes/miscnodes.h"
 #include "parser/scansup.h"
@@ -983,8 +975,8 @@ static const KeyWord NUM_keywords[] = {
  */
 static const int DCH_index[KeyWord_INDEX_SIZE] = {
 /*
-0	1	2	3	4	5	6	7	8	9
-*/
+ * 0	1	2	3	4	5	6	7	8	9
+ */
 	/*---- first 0..31 chars are skipped ----*/
 
 	-1, -1, -1, -1, -1, -1, -1, -1,
@@ -1006,8 +998,8 @@ static const int DCH_index[KeyWord_INDEX_SIZE] = {
  */
 static const int NUM_index[KeyWord_INDEX_SIZE] = {
 /*
-0	1	2	3	4	5	6	7	8	9
-*/
+ * 0	1	2	3	4	5	6	7	8	9
+ */
 	/*---- first 0..31 chars are skipped ----*/
 
 	-1, -1, -1, -1, -1, -1, -1, -1,
@@ -1122,6 +1114,7 @@ static void NUM_prepare_locale(NUMProc *Np);
 static const char *get_last_relevant_decnum(const char *num);
 static void NUM_numpart_from_char(NUMProc *Np, int id, size_t input_len);
 static void NUM_numpart_to_char(NUMProc *Np, int id);
+static void NUM_add_locale_symbol(NUMProc *Np, const char *pattern);
 static char *NUM_processor(FormatNode *node, NUMDesc *Num, char *inout,
 						   char *number, size_t input_len, int to_char_out_pre_spaces,
 						   int sign, bool is_to_char, Oid collid);
@@ -1244,7 +1237,7 @@ NUMDesc_prepare(NUMDesc *num, FormatNode *n)
 		case NUM_D:
 			num->flag |= NUM_F_LDECIMAL;
 			num->need_locale = true;
-			/* FALLTHROUGH */
+			pg_fallthrough;
 		case NUM_DEC:
 			if (IS_DECIMAL(num))
 				ereport(ERROR,
@@ -1446,7 +1439,7 @@ parse_format(FormatNode *node, const char *str, const KeyWord *kw,
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_DATETIME_FORMAT),
 							 errmsg("invalid datetime format separator: \"%s\"",
-									pnstrdup(str, pg_mblen(str)))));
+									pnstrdup(str, pg_mblen_cstr(str)))));
 
 				if (*str == ' ')
 					n->type = NODE_TYPE_SPACE;
@@ -1476,7 +1469,7 @@ parse_format(FormatNode *node, const char *str, const KeyWord *kw,
 					/* backslash quotes the next character, if any */
 					if (*str == '\\' && *(str + 1))
 						str++;
-					chlen = pg_mblen(str);
+					chlen = pg_mblen_cstr(str);
 					n->type = NODE_TYPE_CHAR;
 					memcpy(n->character, str, chlen);
 					n->character[chlen] = '\0';
@@ -1494,7 +1487,7 @@ parse_format(FormatNode *node, const char *str, const KeyWord *kw,
 				 */
 				if (*str == '\\' && *(str + 1) == '"')
 					str++;
-				chlen = pg_mblen(str);
+				chlen = pg_mblen_cstr(str);
 
 				if ((flags & DCH_FLAG) && is_separator_char(str))
 					n->type = NODE_TYPE_SEPARATOR;
@@ -1833,7 +1826,7 @@ str_casefold(const char *buff, size_t nbytes, Oid collid)
 		ereport(ERROR,
 				(errcode(ERRCODE_INDETERMINATE_COLLATION),
 				 errmsg("could not determine which collation to use for %s function",
-						"lower()"),
+						"casefold()"),
 				 errhint("Use the COLLATE clause to set the collation explicitly.")));
 	}
 
@@ -2000,8 +1993,8 @@ asc_toupper_z(const char *buff)
 	do { \
 		if (IS_SUFFIX_THth(_suf)) \
 		{ \
-			if (*(ptr)) (ptr) += pg_mblen(ptr); \
-			if (*(ptr)) (ptr) += pg_mblen(ptr); \
+			if (*(ptr)) (ptr) += pg_mblen_cstr(ptr); \
+			if (*(ptr)) (ptr) += pg_mblen_cstr(ptr); \
 		} \
 	} while (0)
 
@@ -3030,7 +3023,7 @@ DCH_to_char(FormatNode *node, bool is_interval, TmToChar *in, char *out, Oid col
 				s += strlen(s);
 				break;
 			case DCH_RM:
-				/* FALLTHROUGH */
+				pg_fallthrough;
 			case DCH_rm:
 
 				/*
@@ -3191,7 +3184,7 @@ DCH_from_char(FormatNode *node, const char *in, TmFromChar *out,
 				 * insist that the consumed character match the format's
 				 * character.
 				 */
-				s += pg_mblen(s);
+				s += pg_mblen_cstr(s);
 			}
 			continue;
 		}
@@ -3213,11 +3206,11 @@ DCH_from_char(FormatNode *node, const char *in, TmFromChar *out,
 				if (extra_skip > 0)
 					extra_skip--;
 				else
-					s += pg_mblen(s);
+					s += pg_mblen_cstr(s);
 			}
 			else
 			{
-				int			chlen = pg_mblen(s);
+				int			chlen = pg_mblen_cstr(s);
 
 				/*
 				 * Standard mode requires strict match of format characters.
@@ -3308,7 +3301,7 @@ DCH_from_char(FormatNode *node, const char *in, TmFromChar *out,
 			case DCH_FF5:
 			case DCH_FF6:
 				out->ff = n->key->id - DCH_FF1 + 1;
-				/* FALLTHROUGH */
+				pg_fallthrough;
 			case DCH_US:		/* microsecond */
 				len = from_char_parse_int_len(&out->us, &s,
 											  n->key->id == DCH_US ? 6 :
@@ -3362,7 +3355,7 @@ DCH_from_char(FormatNode *node, const char *in, TmFromChar *out,
 					}
 					/* otherwise parse it like OF */
 				}
-				/* FALLTHROUGH */
+				pg_fallthrough;
 			case DCH_OF:
 				/* OF is equivalent to TZH or TZH:TZM */
 				/* see TZH comments below */
@@ -3911,7 +3904,7 @@ datetime_to_char_body(TmToChar *tmtc, const text *fmt, bool is_interval, Oid col
 	/*
 	 * Allocate workspace for result as C string
 	 */
-	result = palloc((fmt_len * DCH_MAX_ITEM_SIZ) + 1);
+	result = palloc(mul_size(fmt_len, DCH_MAX_ITEM_SIZ) + 1);
 	*result = '\0';
 
 	if (fmt_len > DCH_CACHE_SIZE)
@@ -3922,7 +3915,7 @@ datetime_to_char_body(TmToChar *tmtc, const text *fmt, bool is_interval, Oid col
 		 */
 		incache = false;
 
-		format = (FormatNode *) palloc((fmt_len + 1) * sizeof(FormatNode));
+		format = palloc_array(FormatNode, fmt_len + 1);
 
 		parse_format(format, fmt_str, DCH_keywords,
 					 DCH_suff, DCH_index, DCH_FLAG, NULL);
@@ -4337,7 +4330,7 @@ datetime_format_has_tz(const char *fmt_str)
 		 */
 		incache = false;
 
-		format = (FormatNode *) palloc((fmt_len + 1) * sizeof(FormatNode));
+		format = palloc_array(FormatNode, fmt_len + 1);
 
 		parse_format(format, fmt_str, DCH_keywords,
 					 DCH_suff, DCH_index, DCH_FLAG, NULL);
@@ -4424,7 +4417,7 @@ do_to_timestamp(const text *date_txt, const text *fmt, Oid collid, bool std,
 			 * Allocate new memory if format picture is bigger than static
 			 * cache and do not use cache (call parser always)
 			 */
-			format = (FormatNode *) palloc((fmt_len + 1) * sizeof(FormatNode));
+			format = palloc_array(FormatNode, fmt_len + 1);
 
 			parse_format(format, fmt_str, DCH_keywords, DCH_suff, DCH_index,
 						 DCH_FLAG | (std ? STD_FLAG : 0), NULL);
@@ -4960,7 +4953,7 @@ NUM_cache(int len, NUMDesc *Num, const text *pars_str, bool *shouldFree)
 		 * Allocate new memory if format picture is bigger than static cache
 		 * and do not use cache (call parser always)
 		 */
-		format = (FormatNode *) palloc((len + 1) * sizeof(FormatNode));
+		format = palloc_array(FormatNode, len + 1);
 
 		*shouldFree = true;
 
@@ -5576,11 +5569,9 @@ NUM_numpart_to_char(NUMProc *Np, int id)
 		{
 			if (Np->Num->lsign == NUM_LSIGN_PRE)
 			{
-				if (Np->sign == '-')
-					strcpy(Np->inout_p, Np->L_negative_sign);
-				else
-					strcpy(Np->inout_p, Np->L_positive_sign);
-				Np->inout_p += strlen(Np->inout_p);
+				NUM_add_locale_symbol(Np, (Np->sign == '-') ?
+									  Np->L_negative_sign :
+									  Np->L_positive_sign);
 				Np->sign_wrote = true;
 			}
 		}
@@ -5645,8 +5636,7 @@ NUM_numpart_to_char(NUMProc *Np, int id)
 			{
 				if (!Np->last_relevant || *Np->last_relevant != '.')
 				{
-					strcpy(Np->inout_p, Np->decimal);	/* Write DEC/D */
-					Np->inout_p += strlen(Np->inout_p);
+					NUM_add_locale_symbol(Np, Np->decimal); /* Write DEC/D */
 				}
 
 				/*
@@ -5655,8 +5645,7 @@ NUM_numpart_to_char(NUMProc *Np, int id)
 				else if (IS_FILLMODE(Np->Num) &&
 						 Np->last_relevant && *Np->last_relevant == '.')
 				{
-					strcpy(Np->inout_p, Np->decimal);	/* Write DEC/D */
-					Np->inout_p += strlen(Np->inout_p);
+					NUM_add_locale_symbol(Np, Np->decimal); /* Write DEC/D */
 				}
 			}
 			else
@@ -5714,11 +5703,9 @@ NUM_numpart_to_char(NUMProc *Np, int id)
 			}
 			else if (IS_LSIGN(Np->Num) && Np->Num->lsign == NUM_LSIGN_POST)
 			{
-				if (Np->sign == '-')
-					strcpy(Np->inout_p, Np->L_negative_sign);
-				else
-					strcpy(Np->inout_p, Np->L_positive_sign);
-				Np->inout_p += strlen(Np->inout_p);
+				NUM_add_locale_symbol(Np, (Np->sign == '-') ?
+									  Np->L_negative_sign :
+									  Np->L_positive_sign);
 			}
 		}
 	}
@@ -5727,18 +5714,37 @@ NUM_numpart_to_char(NUMProc *Np, int id)
 }
 
 /*
+ * Append locale-specific symbol to Np->inout.
+ * Note we don't null-terminate the output
+ */
+static void
+NUM_add_locale_symbol(NUMProc *Np, const char *pattern)
+{
+	size_t		pattern_len = strlen(pattern);
+
+	/* Truncate symbol if it's potentially too long */
+	if (unlikely(pattern_len > NUM_MAX_ITEM_SIZ))
+		pattern_len = pg_mbcliplen(pattern, pattern_len,
+								   NUM_MAX_ITEM_SIZ);
+	memcpy(Np->inout_p, pattern, pattern_len);
+	Np->inout_p += pattern_len;
+}
+
+/*
  * Skip over "n" input characters, but only if they aren't numeric data
  */
 static void
 NUM_eat_non_data_chars(NUMProc *Np, int n, size_t input_len)
 {
+	const char *end = Np->inout + input_len;
+
 	while (n-- > 0)
 	{
 		if (OVERLOAD_TEST)
 			break;				/* end of input */
 		if (strchr("0123456789.,+-", *Np->inout_p) != NULL)
 			break;				/* it's a data character */
-		Np->inout_p += pg_mblen(Np->inout_p);
+		Np->inout_p += pg_mblen_range(Np->inout_p, end);
 	}
 }
 
@@ -5971,6 +5977,10 @@ NUM_processor(FormatNode *node, NUMDesc *Num, char *inout,
 					pattern_len = strlen(pattern);
 					if (Np->is_to_char)
 					{
+						/* Truncate symbol if it's potentially too long */
+						if (unlikely(pattern_len > NUM_MAX_ITEM_SIZ))
+							pattern_len = pg_mbcliplen(pattern, pattern_len,
+													   NUM_MAX_ITEM_SIZ);
 						if (!Np->num_in)
 						{
 							if (IS_FILLMODE(Np->Num))
@@ -5978,19 +5988,21 @@ NUM_processor(FormatNode *node, NUMDesc *Num, char *inout,
 							else
 							{
 								/* just in case there are MB chars */
-								pattern_len = pg_mbstrlen(pattern);
+								pattern_len = pg_mbstrlen_with_len(pattern,
+																   pattern_len);
 								memset(Np->inout_p, ' ', pattern_len);
 								Np->inout_p += pattern_len - 1;
 							}
 						}
 						else
 						{
-							strcpy(Np->inout_p, pattern);
+							memcpy(Np->inout_p, pattern, pattern_len);
 							Np->inout_p += pattern_len - 1;
 						}
 					}
 					else
 					{
+						/* Here we do not truncate the symbol ... */
 						if (!Np->num_in)
 						{
 							if (IS_FILLMODE(Np->Num))
@@ -6015,11 +6027,18 @@ NUM_processor(FormatNode *node, NUMDesc *Num, char *inout,
 					pattern = Np->L_currency_symbol;
 					if (Np->is_to_char)
 					{
-						strcpy(Np->inout_p, pattern);
-						Np->inout_p += strlen(pattern) - 1;
+						/* Truncate symbol if it's potentially too long */
+						pattern_len = strlen(pattern);
+						if (unlikely(pattern_len > NUM_MAX_ITEM_SIZ))
+							pattern_len = pg_mbcliplen(pattern, pattern_len,
+													   NUM_MAX_ITEM_SIZ);
+
+						memcpy(Np->inout_p, pattern, pattern_len);
+						Np->inout_p += pattern_len - 1;
 					}
 					else
 					{
+						/* Here we do not truncate the symbol ... */
 						NUM_eat_non_data_chars(Np, pg_mbstrlen(pattern), input_len);
 						continue;
 					}
@@ -6175,7 +6194,7 @@ NUM_processor(FormatNode *node, NUMDesc *Num, char *inout,
 			}
 			else
 			{
-				Np->inout_p += pg_mblen(Np->inout_p);
+				Np->inout_p += pg_mblen_range(Np->inout_p, Np->inout + input_len);
 			}
 			continue;
 		}

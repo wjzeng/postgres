@@ -47,6 +47,12 @@ typedef struct JoinHashEntry
 	RelOptInfo *join_rel;
 } JoinHashEntry;
 
+/* Hook for plugins to get control in build_simple_rel() */
+build_simple_rel_hook_type build_simple_rel_hook = NULL;
+
+/* Hook for plugins to get control during joinrel setup */
+joinrel_setup_hook_type joinrel_setup_hook = NULL;
+
 static void build_joinrel_tlist(PlannerInfo *root, RelOptInfo *joinrel,
 								RelOptInfo *input_rel,
 								SpecialJoinInfo *sjinfo,
@@ -225,6 +231,7 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptInfo *parent)
 	rel->consider_startup = (root->tuple_fraction > 0);
 	rel->consider_param_startup = false;	/* might get changed later */
 	rel->consider_parallel = false; /* might get changed later */
+	rel->pgs_mask = root->glob->default_pgs_mask;
 	rel->reltarget = create_empty_pathtarget();
 	rel->pathlist = NIL;
 	rel->ppilist = NIL;
@@ -391,20 +398,24 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptInfo *parent)
 	}
 
 	/*
-	 * We must apply the partially filled in RelOptInfo before calling
-	 * apply_child_basequals due to some transformations within that function
-	 * which require the RelOptInfo to be available in the simple_rel_array.
+	 * Allow a plugin to editorialize on the new RelOptInfo. This could
+	 * involve editorializing on the information which get_relation_info
+	 * obtained from the catalogs, such as altering the assumed relation size,
+	 * removing an index, or adding a hypothetical index to the indexlist.
+	 *
+	 * An extension can also modify rel->pgs_mask here to control path
+	 * generation.
 	 */
-	root->simple_rel_array[relid] = rel;
+	if (build_simple_rel_hook)
+		(*build_simple_rel_hook) (root, rel, rte);
 
 	/*
 	 * Apply the parent's quals to the child, with appropriate substitution of
-	 * variables.  If the resulting clause is constant-FALSE or NULL after
-	 * applying transformations, apply_child_basequals returns false to
-	 * indicate that scanning this relation won't yield any rows.  In this
-	 * case, we mark the child as dummy right away.  (We must do this
-	 * immediately so that pruning works correctly when recursing in
-	 * expand_partitioned_rtentry.)
+	 * variables.  If any resulting clause is reduced to constant FALSE or
+	 * NULL, apply_child_basequals returns false to indicate that scanning
+	 * this relation won't yield any rows.  In this case, we mark the child as
+	 * dummy right away.  (We must do this immediately so that pruning works
+	 * correctly when recursing in expand_partitioned_rtentry.)
 	 */
 	if (parent)
 	{
@@ -414,12 +425,16 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptInfo *parent)
 		if (!apply_child_basequals(root, parent, rel, rte, appinfo))
 		{
 			/*
-			 * Restriction clause reduced to constant FALSE or NULL.  Mark as
-			 * dummy so we won't scan this relation.
+			 * A restriction clause reduced to constant FALSE or NULL after
+			 * substitution.  Mark the child as dummy so that it need not be
+			 * scanned.
 			 */
 			mark_dummy_rel(rel);
 		}
 	}
+
+	/* Save the finished struct in the query's simple_rel_array */
+	root->simple_rel_array[relid] = rel;
 
 	return rel;
 }
@@ -822,6 +837,7 @@ build_join_rel(PlannerInfo *root,
 	joinrel->consider_startup = (root->tuple_fraction > 0);
 	joinrel->consider_param_startup = false;
 	joinrel->consider_parallel = false;
+	joinrel->pgs_mask = root->glob->default_pgs_mask;
 	joinrel->reltarget = create_empty_pathtarget();
 	joinrel->pathlist = NIL;
 	joinrel->ppilist = NIL;
@@ -934,10 +950,6 @@ build_join_rel(PlannerInfo *root,
 	 */
 	joinrel->has_eclass_joins = has_relevant_eclass_joinclause(root, joinrel);
 
-	/* Store the partition information. */
-	build_joinrel_partition_info(root, joinrel, outer_rel, inner_rel, sjinfo,
-								 restrictlist);
-
 	/*
 	 * Set estimates of the joinrel's size.
 	 */
@@ -962,6 +974,19 @@ build_join_rel(PlannerInfo *root,
 		is_parallel_safe(root, (Node *) restrictlist) &&
 		is_parallel_safe(root, (Node *) joinrel->reltarget->exprs))
 		joinrel->consider_parallel = true;
+
+	/*
+	 * Allow a plugin to editorialize on the new joinrel's properties. Actions
+	 * might include altering the size estimate, clearing consider_parallel,
+	 * or adjusting pgs_mask.
+	 */
+	if (joinrel_setup_hook)
+		(*joinrel_setup_hook) (root, joinrel, outer_rel, inner_rel, sjinfo,
+							   restrictlist);
+
+	/* Store the partition information. */
+	build_joinrel_partition_info(root, joinrel, outer_rel, inner_rel, sjinfo,
+								 restrictlist);
 
 	/* Add the joinrel to the PlannerInfo. */
 	add_join_rel(root, joinrel);
@@ -1019,6 +1044,7 @@ build_child_join_rel(PlannerInfo *root, RelOptInfo *outer_rel,
 	joinrel->consider_startup = (root->tuple_fraction > 0);
 	joinrel->consider_param_startup = false;
 	joinrel->consider_parallel = false;
+	joinrel->pgs_mask = root->glob->default_pgs_mask;
 	joinrel->reltarget = create_empty_pathtarget();
 	joinrel->pathlist = NIL;
 	joinrel->ppilist = NIL;
@@ -1102,16 +1128,26 @@ build_child_join_rel(PlannerInfo *root, RelOptInfo *outer_rel,
 	 */
 	joinrel->has_eclass_joins = parent_joinrel->has_eclass_joins;
 
-	/* Is the join between partitions itself partitioned? */
-	build_joinrel_partition_info(root, joinrel, outer_rel, inner_rel, sjinfo,
-								 restrictlist);
-
 	/* Child joinrel is parallel safe if parent is parallel safe. */
 	joinrel->consider_parallel = parent_joinrel->consider_parallel;
 
 	/* Set estimates of the child-joinrel's size. */
 	set_joinrel_size_estimates(root, joinrel, outer_rel, inner_rel,
 							   sjinfo, restrictlist);
+
+	/*
+	 * Allow a plugin to editorialize on the new joinrel's properties. Actions
+	 * might include altering the size estimate, clearing consider_parallel,
+	 * or adjusting pgs_mask. (However, note that clearing consider_parallel
+	 * would be better done in the parent joinrel rather than here.)
+	 */
+	if (joinrel_setup_hook)
+		(*joinrel_setup_hook) (root, joinrel, outer_rel, inner_rel, sjinfo,
+							   restrictlist);
+
+	/* Is the join between partitions itself partitioned? */
+	build_joinrel_partition_info(root, joinrel, outer_rel, inner_rel, sjinfo,
+								 restrictlist);
 
 	/* We build the join only once. */
 	Assert(!find_join_rel(root, joinrel->relids));
@@ -1602,6 +1638,7 @@ fetch_upper_rel(PlannerInfo *root, UpperRelationKind kind, Relids relids)
 	upperrel = makeNode(RelOptInfo);
 	upperrel->reloptkind = RELOPT_UPPER_REL;
 	upperrel->relids = bms_copy(relids);
+	upperrel->pgs_mask = root->glob->default_pgs_mask;
 
 	/* cheap startup cost is interesting iff not all tuples to be retrieved */
 	upperrel->consider_startup = (root->tuple_fraction > 0);
@@ -2118,7 +2155,7 @@ build_joinrel_partition_info(PlannerInfo *root,
 	PartitionScheme part_scheme;
 
 	/* Nothing to do if partitionwise join technique is disabled. */
-	if (!enable_partitionwise_join)
+	if ((joinrel->pgs_mask & PGS_CONSIDER_PARTITIONWISE) == 0)
 	{
 		Assert(!IS_PARTITIONED_REL(joinrel));
 		return;
@@ -2809,6 +2846,32 @@ eager_aggregation_possible_for_relation(PlannerInfo *root, RelOptInfo *rel)
 	}
 
 	/*
+	 * Similarly, we cannot push a partial aggregation down to a relation on
+	 * the inner (RHS) side of a semi/anti join.  A semi/anti join does not
+	 * preserve its inner rows in the join output, so a partial aggregate
+	 * computed on the inner side would not survive the join and could not be
+	 * combined by the final aggregation.
+	 *
+	 * Note that an anti join reduced from an outer join null-extends its
+	 * inner side, so that inner relation already carries nulling_relids and
+	 * is handled by the outer-join check above.  The case this check adds is
+	 * a semi/anti join that does not null-extend its inner side, such as one
+	 * formed from an EXISTS, IN, NOT EXISTS, or NOT IN sublink.
+	 */
+	foreach(lc, root->join_info_list)
+	{
+		SpecialJoinInfo *sjinfo = lfirst_node(SpecialJoinInfo, lc);
+
+		if (sjinfo->jointype != JOIN_SEMI && sjinfo->jointype != JOIN_ANTI)
+			continue;
+
+		/* rel includes inner-side rels of this join but not its outer side */
+		if (bms_overlap(rel->relids, sjinfo->min_righthand) &&
+			!bms_is_subset(sjinfo->min_lefthand, rel->relids))
+			return false;
+	}
+
+	/*
 	 * For now we don't try to support PlaceHolderVars.
 	 */
 	foreach(lc, rel->reltarget->exprs)
@@ -2967,9 +3030,17 @@ init_grouping_targets(PlannerInfo *root, RelOptInfo *rel,
 											   tce->btree_opintype,
 											   tce->btree_opintype,
 											   BTEQUALIMAGE_PROC);
+
+			/*
+			 * If there is no BTEQUALIMAGE_PROC, eager aggregation is assumed
+			 * to be unsafe.  Otherwise, we call the procedure to check.  We
+			 * must be careful to pass the expression's actual collation,
+			 * rather than the data type's default collation, to ensure that
+			 * non-deterministic collations are correctly handled.
+			 */
 			if (!OidIsValid(equalimageproc) ||
 				!DatumGetBool(OidFunctionCall1Coll(equalimageproc,
-												   tce->typcollation,
+												   exprCollation((Node *) expr),
 												   ObjectIdGetDatum(tce->btree_opintype))))
 				return false;
 

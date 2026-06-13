@@ -48,6 +48,7 @@
 #include "utils/rel.h"
 #include "utils/relfilenumbermap.h"
 #include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 #define AUTOPREWARM_FILE "autoprewarm.blocks"
 
@@ -703,7 +704,7 @@ apw_dump_now(bool is_bgworker, bool dump_unlogged)
 
 	for (num_blocks = 0, i = 0; i < NBuffers; i++)
 	{
-		uint32		buf_state;
+		uint64		buf_state;
 
 		CHECK_FOR_INTERRUPTS();
 

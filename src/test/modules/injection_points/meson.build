@@ -45,17 +45,19 @@ tests += {
     'specs': [
       'basic',
       'inplace',
+      'repack',
+      'repack_temporal',
+      'repack_temporal_multirange',
+      'repack_toast',
       'syscache-update-pruned',
       'heap_lock_update',
-      # temporarily disabled because of flakiness
-      # 'index-concurrently-upsert',
-      # 'index-concurrently-upsert-predicate',
-      # 'reindex-concurrently-upsert',
-      # 'reindex-concurrently-upsert-on-constraint',
-      # 'reindex-concurrently-upsert-partitioned',
     ],
     'runningcheck': false, # see syscache-update-pruned
     # Some tests wait for all snapshots, so avoid parallel execution
     'runningcheck-parallel': false,
+    # some tests require wal_level=replica
+    'regress_args': [
+      '--temp-config', files('extra.conf'),
+    ],
   },
 }

@@ -62,7 +62,7 @@ format_type(PG_FUNCTION_ARGS)
 	Oid			type_oid;
 	int32		typemod;
 	char	   *result;
-	bits16		flags = FORMAT_TYPE_ALLOW_INVALID;
+	uint16		flags = FORMAT_TYPE_ALLOW_INVALID;
 
 	/* Since this function is not strict, we must test for null args */
 	if (PG_ARGISNULL(0))
@@ -109,7 +109,7 @@ format_type(PG_FUNCTION_ARGS)
  * Returns a palloc'd string, or NULL.
  */
 char *
-format_type_extended(Oid type_oid, int32 typemod, bits16 flags)
+format_type_extended(Oid type_oid, int32 typemod, uint16 flags)
 {
 	HeapTuple	tuple;
 	Form_pg_type typeform;
@@ -448,10 +448,14 @@ oidvectortypes(PG_FUNCTION_ARGS)
 {
 	oidvector  *oidArray = (oidvector *) PG_GETARG_POINTER(0);
 	char	   *result;
-	int			numargs = oidArray->dim1;
+	int			numargs;
 	int			num;
 	size_t		total;
 	size_t		left;
+
+	/* validate input before fetching dim1 */
+	check_valid_oidvector(oidArray);
+	numargs = oidArray->dim1;
 
 	total = 20 * numargs + 1;
 	result = palloc(total);

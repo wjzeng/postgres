@@ -15,6 +15,7 @@
 #define PARSE_RELATION_H
 
 #include "parser/parse_node.h"
+#include "storage/lockdefs.h"
 
 
 extern ParseNamespaceItem *refnameNamespaceItem(ParseState *pstate,
@@ -31,6 +32,7 @@ extern void checkNameSpaceConflicts(ParseState *pstate, List *namespace1,
 extern ParseNamespaceItem *GetNSItemByRangeTablePosn(ParseState *pstate,
 													 int varno,
 													 int sublevels_up);
+extern ParseNamespaceItem *GetNSItemByVar(ParseState *pstate, Var *var);
 extern RangeTblEntry *GetRTEByRangeTablePosn(ParseState *pstate,
 											 int varno,
 											 int sublevels_up);
@@ -44,7 +46,7 @@ extern Node *colNameToVar(ParseState *pstate, const char *colname, bool localonl
 extern void markNullableIfNeeded(ParseState *pstate, Var *var);
 extern void markVarForSelectPriv(ParseState *pstate, Var *var);
 extern Relation parserOpenTable(ParseState *pstate, const RangeVar *relation,
-								int lockmode);
+								LOCKMODE lockmode);
 extern ParseNamespaceItem *addRangeTableEntry(ParseState *pstate,
 											  RangeVar *relation,
 											  Alias *alias,
@@ -52,7 +54,7 @@ extern ParseNamespaceItem *addRangeTableEntry(ParseState *pstate,
 											  bool inFromCl);
 extern ParseNamespaceItem *addRangeTableEntryForRelation(ParseState *pstate,
 														 Relation rel,
-														 int lockmode,
+														 LOCKMODE lockmode,
 														 Alias *alias,
 														 bool inh,
 														 bool inFromCl);
@@ -81,6 +83,14 @@ extern ParseNamespaceItem *addRangeTableEntryForTableFunc(ParseState *pstate,
 														  Alias *alias,
 														  bool lateral,
 														  bool inFromCl);
+extern ParseNamespaceItem *addRangeTableEntryForGraphTable(ParseState *pstate,
+														   Oid graphid,
+														   GraphPattern *graph_pattern,
+														   List *columns,
+														   List *colnames,
+														   Alias *alias,
+														   bool lateral,
+														   bool inFromCl);
 extern ParseNamespaceItem *addRangeTableEntryForJoin(ParseState *pstate,
 													 List *colnames,
 													 ParseNamespaceColumn *nscolumns,

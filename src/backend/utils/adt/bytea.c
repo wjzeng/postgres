@@ -28,6 +28,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/sortsupport.h"
+#include "utils/uuid.h"
 #include "varatt.h"
 
 /* GUC variable */
@@ -40,7 +41,6 @@ static bytea *bytea_overlay(bytea *t1, bytea *t2, int sp, int sl);
 
 typedef struct
 {
-	bool		abbreviate;		/* Should we abbreviate keys? */
 	hyperLogLogState abbr_card; /* Abbreviated key cardinality state */
 	hyperLogLogState full_card; /* Full key cardinality state */
 	double		prop_card;		/* Required cardinality proportion */
@@ -1228,7 +1228,6 @@ bytea_sortsupport(PG_FUNCTION_ARGS)
 		ByteaSortSupport *bss;
 
 		bss = palloc_object(ByteaSortSupport);
-		bss->abbreviate = true;
 		bss->prop_card = 0.20;
 		initHyperLogLog(&bss->abbr_card, 10);
 		initHyperLogLog(&bss->full_card, 10);
@@ -1255,7 +1254,7 @@ bytea_int2(PG_FUNCTION_ARGS)
 
 	/* Check that the byte array is not too long */
 	if (len > sizeof(result))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				errmsg("smallint out of range"));
 
@@ -1280,7 +1279,7 @@ bytea_int4(PG_FUNCTION_ARGS)
 
 	/* Check that the byte array is not too long */
 	if (len > sizeof(result))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				errmsg("integer out of range"));
 
@@ -1305,7 +1304,7 @@ bytea_int8(PG_FUNCTION_ARGS)
 
 	/* Check that the byte array is not too long */
 	if (len > sizeof(result))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				errmsg("bigint out of range"));
 
@@ -1339,4 +1338,30 @@ Datum
 int8_bytea(PG_FUNCTION_ARGS)
 {
 	return int8send(fcinfo);
+}
+
+/* Cast bytea -> uuid */
+Datum
+bytea_uuid(PG_FUNCTION_ARGS)
+{
+	bytea	   *v = PG_GETARG_BYTEA_PP(0);
+	int			len = VARSIZE_ANY_EXHDR(v);
+	pg_uuid_t  *uuid;
+
+	if (len != UUID_LEN)
+		ereturn(fcinfo->context, (Datum) 0,
+				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				 errmsg("invalid input length for type %s", "uuid"),
+				 errdetail("Expected %d bytes, got %d.", UUID_LEN, len)));
+
+	uuid = palloc_object(pg_uuid_t);
+	memcpy(uuid->data, VARDATA_ANY(v), UUID_LEN);
+	PG_RETURN_UUID_P(uuid);
+}
+
+/* Cast uuid -> bytea; can just use uuid_send() */
+Datum
+uuid_bytea(PG_FUNCTION_ARGS)
+{
+	return uuid_send(fcinfo);
 }

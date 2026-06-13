@@ -2,6 +2,17 @@
 -- SUBSCRIPTION
 --
 
+-- directory paths and dlsuffix are passed to us in environment variables
+\getenv libdir PG_LIBDIR
+\getenv dlsuffix PG_DLSUFFIX
+
+\set regresslib :libdir '/regress' :dlsuffix
+
+CREATE FUNCTION test_fdw_connection(oid, oid, internal)
+    RETURNS text
+    AS :'regresslib', 'test_fdw_connection'
+    LANGUAGE C;
+
 CREATE ROLE regress_subscription_user LOGIN SUPERUSER;
 CREATE ROLE regress_subscription_user2;
 CREATE ROLE regress_subscription_user3 IN ROLE pg_create_subscription;
@@ -30,6 +41,17 @@ CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUB
 
 COMMENT ON SUBSCRIPTION regress_testsub IS 'test subscription';
 SELECT obj_description(s.oid, 'pg_subscription') FROM pg_subscription s;
+
+-- Check that only subconninfo is not publicly readable in pg_subscription.
+SELECT count(*) = 0 AS ok
+    FROM pg_attribute
+    WHERE attrelid = 'pg_catalog.pg_subscription'::regclass AND attnum > 0 AND NOT attisdropped
+        AND ((attname = 'subconninfo'
+	        AND has_column_privilege('regress_subscription_user_dummy',
+		    'pg_catalog.pg_subscription', attname, 'SELECT'))
+            OR (attname <> 'subconninfo'
+	        AND NOT has_column_privilege('regress_subscription_user_dummy',
+		    'pg_catalog.pg_subscription', attname, 'SELECT')));
 
 -- Check if the subscription stats are created and stats_reset is updated
 -- by pg_stat_reset_subscription_stats().
@@ -85,6 +107,58 @@ CREATE SUBSCRIPTION regress_testsub5 CONNECTION 'i_dont_exist=param' PUBLICATION
 -- connecting, so this is reliable and safe)
 CREATE SUBSCRIPTION regress_testsub5 CONNECTION 'port=-1' PUBLICATION testpub;
 
+CREATE FOREIGN DATA WRAPPER test_fdw;
+CREATE SERVER test_server FOREIGN DATA WRAPPER test_fdw;
+
+GRANT CREATE ON DATABASE REGRESSION TO regress_subscription_user3;
+SET SESSION AUTHORIZATION regress_subscription_user3;
+
+-- fail, need USAGE privileges on server
+CREATE SUBSCRIPTION regress_testsub6 SERVER test_server PUBLICATION testpub WITH (slot_name = NONE, connect = false);
+
+RESET SESSION AUTHORIZATION;
+GRANT USAGE ON FOREIGN SERVER test_server TO regress_subscription_user3;
+SET SESSION AUTHORIZATION regress_subscription_user3;
+
+-- fail, need user mapping
+CREATE SUBSCRIPTION regress_testsub6 SERVER test_server PUBLICATION testpub WITH (slot_name = NONE, connect = false);
+
+CREATE USER MAPPING FOR regress_subscription_user3 SERVER test_server OPTIONS(user 'foo', password 'secret');
+
+-- fail, need CONNECTION clause
+CREATE SUBSCRIPTION regress_testsub6 SERVER test_server PUBLICATION testpub WITH (slot_name = NONE, connect = false);
+
+RESET SESSION AUTHORIZATION;
+ALTER FOREIGN DATA WRAPPER test_fdw CONNECTION test_fdw_connection;
+SET SESSION AUTHORIZATION regress_subscription_user3;
+
+CREATE SUBSCRIPTION regress_testsub6 SERVER test_server PUBLICATION testpub WITH (slot_name = 'dummy', connect = false);
+
+DROP USER MAPPING FOR regress_subscription_user3 SERVER test_server;
+RESET SESSION AUTHORIZATION;
+REVOKE USAGE ON FOREIGN SERVER test_server FROM regress_subscription_user3;
+SET SESSION AUTHORIZATION regress_subscription_user3;
+
+-- fail, must connect but lacks USAGE on server, as well as user mapping
+DROP SUBSCRIPTION regress_testsub6;
+
+ALTER SUBSCRIPTION regress_testsub6 SET (slot_name = NONE);
+DROP SUBSCRIPTION regress_testsub6;
+
+SET SESSION AUTHORIZATION regress_subscription_user;
+REVOKE CREATE ON DATABASE REGRESSION FROM regress_subscription_user3;
+
+DROP SERVER test_server;
+
+-- fail, FDW is dependent
+DROP FUNCTION test_fdw_connection(oid, oid, internal);
+-- warn
+ALTER FOREIGN DATA WRAPPER test_fdw NO CONNECTION;
+
+DROP FUNCTION test_fdw_connection(oid, oid, internal);
+
+DROP FOREIGN DATA WRAPPER test_fdw;
+
 -- fail - invalid connection string during ALTER
 ALTER SUBSCRIPTION regress_testsub CONNECTION 'foobar';
 
@@ -139,6 +213,9 @@ RESET ROLE;
 ALTER SUBSCRIPTION regress_testsub RENAME TO regress_testsub_foo;
 ALTER SUBSCRIPTION regress_testsub_foo SET (synchronous_commit = local);
 ALTER SUBSCRIPTION regress_testsub_foo SET (synchronous_commit = foobar);
+ALTER SUBSCRIPTION regress_testsub_foo SET (wal_receiver_timeout = '-1');
+ALTER SUBSCRIPTION regress_testsub_foo SET (wal_receiver_timeout = '80s');
+ALTER SUBSCRIPTION regress_testsub_foo SET (wal_receiver_timeout = 'foobar');
 
 \dRs+
 
@@ -301,10 +378,16 @@ DROP SUBSCRIPTION regress_testsub;
 -- fail - max_retention_duration must be integer
 CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (connect = false, max_retention_duration = foo);
 
+-- fail - max_retention_duration must be non-negative
+CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (connect = false, max_retention_duration = -1);
+
 -- ok
 CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (connect = false, max_retention_duration = 1000);
 
 \dRs+
+
+-- fail - max_retention_duration must be non-negative
+ALTER SUBSCRIPTION regress_testsub SET (max_retention_duration = -1);
 
 -- ok
 ALTER SUBSCRIPTION regress_testsub SET (max_retention_duration = 0);

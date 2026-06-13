@@ -311,6 +311,8 @@ typedef struct ForeignKeyCacheInfo
 typedef struct AutoVacOpts
 {
 	bool		enabled;
+
+	int			autovacuum_parallel_workers;
 	int			vacuum_threshold;
 	int			vacuum_max_threshold;
 	int			vacuum_ins_threshold;
@@ -347,8 +349,7 @@ typedef struct StdRdOptions
 	bool		user_catalog_table; /* use as an additional catalog relation */
 	int			parallel_workers;	/* max number of parallel workers */
 	StdRdOptIndexCleanup vacuum_index_cleanup;	/* controls index vacuuming */
-	bool		vacuum_truncate;	/* enables vacuum to truncate a relation */
-	bool		vacuum_truncate_set;	/* whether vacuum_truncate is set */
+	pg_ternary	vacuum_truncate;	/* enables vacuum to truncate a relation */
 
 	/*
 	 * Fraction of pages in a relation that vacuum can eagerly scan and fail
@@ -662,6 +663,15 @@ RelationCloseSmgr(Relation relation)
 /*
  * RELATION_IS_OTHER_TEMP
  *		Test for a temporary relation that belongs to some other session.
+ *
+ * Reading another session's temp-table data through never works right:
+ * the owning session keeps the data in its private local buffer pool,
+ * which we cannot access.  Existing buffer-manager entry points
+ * (ReadBuffer_common(), StartReadBuffersImpl(), read_stream_begin_impl(),
+ * and PrefetchBuffer()) already enforce this; any new buffer-access entry
+ * points must do the same.  Command-level code (TRUNCATE, ALTER TABLE,
+ * VACUUM, CLUSTER, REINDEX, ...) additionally uses this macro for
+ * command-specific error messages.
  *
  * Beware of multiple eval of argument
  */

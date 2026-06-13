@@ -1056,7 +1056,7 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 					success = describeTableDetails(pattern, show_verbose, show_system);
 				else
 					/* standard listing of interesting things */
-					success = listTables("tvmsE", NULL, show_verbose, show_system);
+					success = listTables("tvmsEG", NULL, show_verbose, show_system);
 				break;
 			case 'A':
 				{
@@ -1190,6 +1190,7 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 			case 'i':
 			case 's':
 			case 'E':
+			case 'G':
 				success = listTables(&cmd[1], pattern, show_verbose, show_system);
 				break;
 			case 'r':
@@ -1277,7 +1278,7 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 					success = listExtensions(pattern);
 				break;
 			case 'X':			/* Extended Statistics */
-				success = listExtendedStats(pattern);
+				success = listExtendedStats(pattern, show_verbose);
 				break;
 			case 'y':			/* Event Triggers */
 				success = listEventTriggers(pattern, show_verbose);
@@ -4168,8 +4169,8 @@ do_connect(enum trivalue reuse_previous_specification,
 	/* Loop till we have a connection or fail, which we might've already */
 	while (success)
 	{
-		const char **keywords = pg_malloc((nconnopts + 1) * sizeof(*keywords));
-		const char **values = pg_malloc((nconnopts + 1) * sizeof(*values));
+		const char **keywords = pg_malloc_array(const char *, nconnopts + 1);
+		const char **values = pg_malloc_array(const char *, nconnopts + 1);
 		int			paramnum = 0;
 		PQconninfoOption *ci;
 
@@ -5665,7 +5666,7 @@ savePsetInfo(const printQueryOpt *popt)
 {
 	printQueryOpt *save;
 
-	save = (printQueryOpt *) pg_malloc(sizeof(printQueryOpt));
+	save = pg_malloc_object(printQueryOpt);
 
 	/* Flat-copy all the scalar fields, then duplicate sub-structures. */
 	memcpy(save, popt, sizeof(printQueryOpt));
@@ -5679,6 +5680,10 @@ savePsetInfo(const printQueryOpt *popt)
 		save->topt.tableAttr = pg_strdup(popt->topt.tableAttr);
 	if (popt->nullPrint)
 		save->nullPrint = pg_strdup(popt->nullPrint);
+	if (popt->truePrint)
+		save->truePrint = pg_strdup(popt->truePrint);
+	if (popt->falsePrint)
+		save->falsePrint = pg_strdup(popt->falsePrint);
 	if (popt->title)
 		save->title = pg_strdup(popt->title);
 
@@ -5706,6 +5711,8 @@ restorePsetInfo(printQueryOpt *popt, printQueryOpt *save)
 	free(popt->topt.recordSep.separator);
 	free(popt->topt.tableAttr);
 	free(popt->nullPrint);
+	free(popt->truePrint);
+	free(popt->falsePrint);
 	free(popt->title);
 
 	/*
@@ -6157,14 +6164,14 @@ echo_hidden_command(const char *query)
 {
 	if (pset.echo_hidden != PSQL_ECHO_HIDDEN_OFF)
 	{
-		printf(_("/******** QUERY *********/\n"
+		printf(_("/**** INTERNAL QUERY ****/\n"
 				 "%s\n"
 				 "/************************/\n\n"), query);
 		fflush(stdout);
 		if (pset.logfile)
 		{
 			fprintf(pset.logfile,
-					_("/******** QUERY *********/\n"
+					_("/**** INTERNAL QUERY ****/\n"
 					  "%s\n"
 					  "/************************/\n\n"), query);
 			fflush(pset.logfile);
@@ -6201,6 +6208,7 @@ lookup_object_oid(EditableObjectType obj_type, const char *desc,
 			 * query to retrieve the function's OID using a cast to regproc or
 			 * regprocedure (as appropriate).
 			 */
+			printfPQExpBuffer(query, "/* %s */\n", _("Get function's OID"));
 			appendPQExpBufferStr(query, "SELECT ");
 			appendStringLiteralConn(query, desc, pset.db);
 			appendPQExpBuffer(query, "::pg_catalog.%s::pg_catalog.oid",
@@ -6214,6 +6222,7 @@ lookup_object_oid(EditableObjectType obj_type, const char *desc,
 			 * this code doesn't check if the relation is actually a view.
 			 * We'll detect that in get_create_object_cmd().
 			 */
+			printfPQExpBuffer(query, "/* %s */\n", _("Get view's OID"));
 			appendPQExpBufferStr(query, "SELECT ");
 			appendStringLiteralConn(query, desc, pset.db);
 			appendPQExpBufferStr(query, "::pg_catalog.regclass::pg_catalog.oid");
@@ -6255,7 +6264,8 @@ get_create_object_cmd(EditableObjectType obj_type, Oid oid,
 	switch (obj_type)
 	{
 		case EditableFunction:
-			printfPQExpBuffer(query,
+			printfPQExpBuffer(query, "/* %s */\n", _("Get function's definition"));
+			appendPQExpBuffer(query,
 							  "SELECT pg_catalog.pg_get_functiondef(%u)",
 							  oid);
 			break;
@@ -6274,9 +6284,10 @@ get_create_object_cmd(EditableObjectType obj_type, Oid oid,
 			 * separately.  Materialized views (introduced in 9.3) may have
 			 * arbitrary storage parameter reloptions.
 			 */
+			printfPQExpBuffer(query, "/* %s */\n", _("Get view's definition and details"));
 			if (pset.sversion >= 90400)
 			{
-				printfPQExpBuffer(query,
+				appendPQExpBuffer(query,
 								  "SELECT nspname, relname, relkind, "
 								  "pg_catalog.pg_get_viewdef(c.oid, true), "
 								  "pg_catalog.array_remove(pg_catalog.array_remove(c.reloptions,'check_option=local'),'check_option=cascaded') AS reloptions, "
@@ -6289,7 +6300,7 @@ get_create_object_cmd(EditableObjectType obj_type, Oid oid,
 			}
 			else
 			{
-				printfPQExpBuffer(query,
+				appendPQExpBuffer(query,
 								  "SELECT nspname, relname, relkind, "
 								  "pg_catalog.pg_get_viewdef(c.oid, true), "
 								  "c.reloptions AS reloptions, "

@@ -58,6 +58,7 @@ extern void make_native_path(char *filename);
 extern void cleanup_path(char *path);
 extern bool path_contains_parent_reference(const char *path);
 extern bool path_is_relative_and_below_cwd(const char *path);
+extern bool path_is_safe_for_extraction(const char *path);
 extern bool path_is_prefix_of_path(const char *path1, const char *path2);
 extern char *make_absolute_path(const char *path);
 extern const char *get_progname(const char *argv0);
@@ -231,13 +232,13 @@ pg_ascii_tolower(unsigned char ch)
 #endif
 
 extern int	pg_vsnprintf(char *str, size_t count, const char *fmt, va_list args) pg_attribute_printf(3, 0);
-extern int	pg_snprintf(char *str, size_t count, const char *fmt,...) pg_attribute_printf(3, 4);
+extern int	pg_snprintf(char *str, size_t count, const char *fmt, ...) pg_attribute_printf(3, 4);
 extern int	pg_vsprintf(char *str, const char *fmt, va_list args) pg_attribute_printf(2, 0);
-extern int	pg_sprintf(char *str, const char *fmt,...) pg_attribute_printf(2, 3);
+extern int	pg_sprintf(char *str, const char *fmt, ...) pg_attribute_printf(2, 3);
 extern int	pg_vfprintf(FILE *stream, const char *fmt, va_list args) pg_attribute_printf(2, 0);
-extern int	pg_fprintf(FILE *stream, const char *fmt,...) pg_attribute_printf(2, 3);
+extern int	pg_fprintf(FILE *stream, const char *fmt, ...) pg_attribute_printf(2, 3);
 extern int	pg_vprintf(const char *fmt, va_list args) pg_attribute_printf(1, 0);
-extern int	pg_printf(const char *fmt,...) pg_attribute_printf(1, 2);
+extern int	pg_printf(const char *fmt, ...) pg_attribute_printf(1, 2);
 
 #ifndef WIN32
 /*
@@ -360,7 +361,7 @@ extern bool rmtree(const char *path, bool rmtopdir);
  * passing of other special options.
  */
 extern HANDLE pgwin32_open_handle(const char *, int, bool);
-extern int	pgwin32_open(const char *, int,...);
+extern int	pgwin32_open(const char *, int, ...);
 extern FILE *pgwin32_fopen(const char *, const char *);
 #define		open(a,b,c) pgwin32_open(a,b,c)
 #define		fopen(a,b) pgwin32_fopen(a,b)
@@ -476,16 +477,12 @@ extern size_t strlcat(char *dst, const char *src, size_t siz);
 extern size_t strlcpy(char *dst, const char *src, size_t siz);
 #endif
 
-#if !HAVE_DECL_STRNLEN
-extern size_t strnlen(const char *str, size_t maxlen);
-#endif
-
 #if !HAVE_DECL_STRSEP
 extern char *strsep(char **stringp, const char *delim);
 #endif
 
 #if !HAVE_DECL_TIMINGSAFE_BCMP
-extern int	timingsafe_bcmp(const void *b1, const void *b2, size_t len);
+extern int	timingsafe_bcmp(const void *b1, const void *b2, size_t n);
 #endif
 
 /*
@@ -550,6 +547,9 @@ extern int	pg_mkdir_p(char *path, int omode);
 #else
 #define pqsignal pqsignal_be
 #endif
+
+#define PG_SIG_DFL (pqsigfunc) (pg_funcptr_t) SIG_DFL
+#define PG_SIG_IGN (pqsigfunc) (pg_funcptr_t) SIG_IGN
 typedef void (*pqsigfunc) (SIGNAL_ARGS);
 extern void pqsignal(int signo, pqsigfunc func);
 

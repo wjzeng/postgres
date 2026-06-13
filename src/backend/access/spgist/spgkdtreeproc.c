@@ -27,7 +27,9 @@
 Datum
 spg_kd_config(PG_FUNCTION_ARGS)
 {
-	/* spgConfigIn *cfgin = (spgConfigIn *) PG_GETARG_POINTER(0); */
+#ifdef NOT_USED
+	spgConfigIn *cfgin = (spgConfigIn *) PG_GETARG_POINTER(0);
+#endif
 	spgConfigOut *cfg = (spgConfigOut *) PG_GETARG_POINTER(1);
 
 	cfg->prefixType = FLOAT8OID;
@@ -84,8 +86,8 @@ typedef struct SortedPoint
 static int
 x_cmp(const void *a, const void *b)
 {
-	SortedPoint *pa = (SortedPoint *) a;
-	SortedPoint *pb = (SortedPoint *) b;
+	const SortedPoint *pa = a;
+	const SortedPoint *pb = b;
 
 	if (pa->p->x == pb->p->x)
 		return 0;
@@ -95,8 +97,8 @@ x_cmp(const void *a, const void *b)
 static int
 y_cmp(const void *a, const void *b)
 {
-	SortedPoint *pa = (SortedPoint *) a;
-	SortedPoint *pb = (SortedPoint *) b;
+	const SortedPoint *pa = a;
+	const SortedPoint *pb = b;
 
 	if (pa->p->y == pb->p->y)
 		return 0;

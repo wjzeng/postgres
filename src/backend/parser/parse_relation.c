@@ -509,6 +509,9 @@ check_lateral_ref_ok(ParseState *pstate, ParseNamespaceItem *nsitem,
 /*
  * Given an RT index and nesting depth, find the corresponding
  * ParseNamespaceItem (there must be one).
+ *
+ * NB: Callers starting from a Var should consider using GetNSItemByVar()
+ * instead, to find the namespace item with matching varreturningtype.
  */
 ParseNamespaceItem *
 GetNSItemByRangeTablePosn(ParseState *pstate,
@@ -527,6 +530,35 @@ GetNSItemByRangeTablePosn(ParseState *pstate,
 		ParseNamespaceItem *nsitem = (ParseNamespaceItem *) lfirst(lc);
 
 		if (nsitem->p_rtindex == varno)
+			return nsitem;
+	}
+	elog(ERROR, "nsitem not found (internal error)");
+	return NULL;				/* keep compiler quiet */
+}
+
+/*
+ * Given a Var, find the corresponding ParseNamespaceItem (there must be one).
+ *
+ * Like GetNSItemByRangeTablePosn(), but uses the Var's varreturningtype in
+ * addition to its varno and varlevelsup to find the namespace item.
+ */
+ParseNamespaceItem *
+GetNSItemByVar(ParseState *pstate, Var *var)
+{
+	int			sublevels_up = var->varlevelsup;
+	ListCell   *lc;
+
+	while (sublevels_up-- > 0)
+	{
+		pstate = pstate->parentParseState;
+		Assert(pstate != NULL);
+	}
+	foreach(lc, pstate->p_namespace)
+	{
+		ParseNamespaceItem *nsitem = (ParseNamespaceItem *) lfirst(lc);
+
+		if (nsitem->p_rtindex == var->varno &&
+			nsitem->p_returning_type == var->varreturningtype)
 			return nsitem;
 	}
 	elog(ERROR, "nsitem not found (internal error)");
@@ -1422,13 +1454,9 @@ buildNSItemFromLists(RangeTblEntry *rte, Index rtindex,
  * This is essentially just the same as table_openrv(), except that it caters
  * to some parser-specific error reporting needs, notably that it arranges
  * to include the RangeVar's parse location in any resulting error.
- *
- * Note: properly, lockmode should be declared LOCKMODE not int, but that
- * would require importing storage/lock.h into parse_relation.h.  Since
- * LOCKMODE is typedef'd as int anyway, that seems like overkill.
  */
 Relation
-parserOpenTable(ParseState *pstate, const RangeVar *relation, int lockmode)
+parserOpenTable(ParseState *pstate, const RangeVar *relation, LOCKMODE lockmode)
 {
 	Relation	rel;
 	ParseCallbackState pcbstate;
@@ -1571,15 +1599,11 @@ addRangeTableEntry(ParseState *pstate,
  * of AccessShareLock, RowShareLock, or RowExclusiveLock depending on the
  * RTE's role within the query.  The caller must hold that lock mode
  * or a stronger one.
- *
- * Note: properly, lockmode should be declared LOCKMODE not int, but that
- * would require importing storage/lock.h into parse_relation.h.  Since
- * LOCKMODE is typedef'd as int anyway, that seems like overkill.
  */
 ParseNamespaceItem *
 addRangeTableEntryForRelation(ParseState *pstate,
 							  Relation rel,
-							  int lockmode,
+							  LOCKMODE lockmode,
 							  Alias *alias,
 							  bool inh,
 							  bool inFromCl)
@@ -1891,6 +1915,7 @@ addRangeTableEntryForFunction(ParseState *pstate,
 			TupleDescInitEntryCollation(tupdesc,
 										(AttrNumber) 1,
 										exprCollation(funcexpr));
+			TupleDescFinalize(tupdesc);
 		}
 		else if (functypclass == TYPEFUNC_RECORD)
 		{
@@ -1948,6 +1973,7 @@ addRangeTableEntryForFunction(ParseState *pstate,
 
 				i++;
 			}
+			TupleDescFinalize(tupdesc);
 
 			/*
 			 * Ensure that the coldeflist defines a legal set of names (no
@@ -2016,7 +2042,7 @@ addRangeTableEntryForFunction(ParseState *pstate,
 							   0);
 			/* no need to set collation */
 		}
-
+		TupleDescFinalize(tupdesc);
 		Assert(natts == totalatts);
 	}
 	else
@@ -2135,6 +2161,99 @@ addRangeTableEntryForTableFunc(ParseState *pstate,
 	return buildNSItemFromLists(rte, list_length(pstate->p_rtable),
 								rte->coltypes, rte->coltypmods,
 								rte->colcollations);
+}
+
+ParseNamespaceItem *
+addRangeTableEntryForGraphTable(ParseState *pstate,
+								Oid graphid,
+								GraphPattern *graph_pattern,
+								List *columns,
+								List *colnames,
+								Alias *alias,
+								bool lateral,
+								bool inFromCl)
+{
+	RangeTblEntry *rte = makeNode(RangeTblEntry);
+	char	   *refname = alias ? alias->aliasname : pstrdup("graph_table");
+	Alias	   *eref;
+	int			numaliases;
+	int			varattno;
+	ListCell   *lc;
+	List	   *coltypes = NIL;
+	List	   *coltypmods = NIL;
+	List	   *colcollations = NIL;
+	RTEPermissionInfo *perminfo;
+	ParseNamespaceItem *nsitem;
+
+	Assert(pstate != NULL);
+
+	rte->rtekind = RTE_GRAPH_TABLE;
+	rte->relid = graphid;
+	rte->relkind = RELKIND_PROPGRAPH;
+	rte->graph_pattern = graph_pattern;
+	rte->graph_table_columns = columns;
+	rte->alias = alias;
+	rte->rellockmode = AccessShareLock;
+
+	eref = alias ? copyObject(alias) : makeAlias(refname, NIL);
+
+	if (!eref->colnames)
+		eref->colnames = colnames;
+
+	numaliases = list_length(eref->colnames);
+
+	/* fill in any unspecified alias columns */
+	varattno = 0;
+	foreach(lc, colnames)
+	{
+		varattno++;
+		if (varattno > numaliases)
+			eref->colnames = lappend(eref->colnames, lfirst(lc));
+	}
+	if (varattno < numaliases)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
+				 errmsg("GRAPH_TABLE \"%s\" has %d columns available but %d columns specified",
+						refname, varattno, numaliases)));
+
+	rte->eref = eref;
+
+	foreach(lc, columns)
+	{
+		TargetEntry *te = lfirst_node(TargetEntry, lc);
+		Node	   *colexpr = (Node *) te->expr;
+
+		coltypes = lappend_oid(coltypes, exprType(colexpr));
+		coltypmods = lappend_int(coltypmods, exprTypmod(colexpr));
+		colcollations = lappend_oid(colcollations, exprCollation(colexpr));
+	}
+
+	/*
+	 * Set flags and access permissions.
+	 */
+	rte->lateral = lateral;
+	rte->inFromCl = inFromCl;
+
+	perminfo = addRTEPermissionInfo(&pstate->p_rteperminfos, rte);
+	perminfo->requiredPerms = ACL_SELECT;
+
+	/*
+	 * Add completed RTE to pstate's range table list, so that we know its
+	 * index.  But we don't add it to the join list --- caller must do that if
+	 * appropriate.
+	 */
+	pstate->p_rtable = lappend(pstate->p_rtable, rte);
+
+	/*
+	 * Build a ParseNamespaceItem, but don't add it to the pstate's namespace
+	 * list --- caller must do that if appropriate.
+	 */
+	nsitem = buildNSItemFromLists(rte, list_length(pstate->p_rtable),
+								  coltypes, coltypmods, colcollations);
+
+	nsitem->p_perminfo = perminfo;
+
+	return nsitem;
 }
 
 /*
@@ -3035,6 +3154,7 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 		case RTE_VALUES:
 		case RTE_CTE:
 		case RTE_NAMEDTUPLESTORE:
+		case RTE_GRAPH_TABLE:
 			{
 				/* Tablefunc, Values, CTE, or ENR RTE */
 				ListCell   *aliasp_item = list_head(rte->eref->colnames);
@@ -3419,10 +3539,11 @@ get_rte_attribute_is_dropped(RangeTblEntry *rte, AttrNumber attnum)
 		case RTE_VALUES:
 		case RTE_CTE:
 		case RTE_GROUP:
+		case RTE_GRAPH_TABLE:
 
 			/*
-			 * Subselect, Table Functions, Values, CTE, GROUP RTEs never have
-			 * dropped columns
+			 * Subselect, Table Functions, Values, CTE, GROUP RTEs, Property
+			 * graph references never have dropped columns
 			 */
 			result = false;
 			break;
@@ -3604,7 +3725,8 @@ attnameAttNum(Relation rd, const char *attname, bool sysColOK)
 	return InvalidAttrNumber;
 }
 
-/* specialAttNum()
+/*
+ * specialAttNum()
  *
  * Check attribute name to see if it is "special", e.g. "xmin".
  * - thomas 2000-02-07

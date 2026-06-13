@@ -134,9 +134,27 @@ typedef struct
 								 * subquery belonging to a set operation */
 } standard_qp_extra;
 
+/*
+ * Context for the find_having_collation_conflicts walker.
+ *
+ * ancestor_collids is a stack of inputcollids contributed by collation-aware
+ * ancestors of the current node.  Entries are pushed before recursing into a
+ * node's children and popped afterwards, so the stack reflects exactly the
+ * inputcollids on the current root-to-node path.
+ */
+typedef struct
+{
+	Index		group_rtindex;
+	List	   *ancestor_collids;
+} having_collation_ctx;
+
 /* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
+static Bitmapset *find_having_collation_conflicts(Query *parse,
+												  Index group_rtindex);
+static bool having_collation_conflict_walker(Node *node,
+											 having_collation_ctx *ctx);
 static void grouping_planner(PlannerInfo *root, double tuple_fraction,
 							 SetOperationStmt *setops);
 static grouping_sets_data *preprocess_grouping_sets(PlannerInfo *root);
@@ -341,7 +359,8 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	Path	   *best_path;
 	Plan	   *top_plan;
 	ListCell   *lp,
-			   *lr;
+			   *lr,
+			   *lc;
 
 	/*
 	 * Set up global state for this planner invocation.  This data is needed
@@ -462,13 +481,61 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 		tuple_fraction = 0.0;
 	}
 
+	/*
+	 * Compute the initial path generation strategy mask.
+	 *
+	 * Some strategies, such as PGS_FOREIGNJOIN, have no corresponding enable_*
+	 * GUC, and so the corresponding bits are always set in the default
+	 * strategy mask.
+	 *
+	 * It may seem surprising that enable_indexscan sets both PGS_INDEXSCAN
+	 * and PGS_INDEXONLYSCAN. However, the historical behavior of this GUC
+	 * corresponds to this exactly: enable_indexscan=off disables both
+	 * index-scan and index-only scan paths, whereas enable_indexonlyscan=off
+	 * converts the index-only scan paths that we would have considered into
+	 * index scan paths.
+	 */
+	glob->default_pgs_mask = PGS_APPEND | PGS_MERGE_APPEND | PGS_FOREIGNJOIN |
+		PGS_GATHER | PGS_CONSIDER_NONPARTIAL;
+	if (enable_tidscan)
+		glob->default_pgs_mask |= PGS_TIDSCAN;
+	if (enable_seqscan)
+		glob->default_pgs_mask |= PGS_SEQSCAN;
+	if (enable_indexscan)
+		glob->default_pgs_mask |= PGS_INDEXSCAN | PGS_INDEXONLYSCAN;
+	if (enable_indexonlyscan)
+		glob->default_pgs_mask |= PGS_CONSIDER_INDEXONLY;
+	if (enable_bitmapscan)
+		glob->default_pgs_mask |= PGS_BITMAPSCAN;
+	if (enable_mergejoin)
+	{
+		glob->default_pgs_mask |= PGS_MERGEJOIN_PLAIN;
+		if (enable_material)
+			glob->default_pgs_mask |= PGS_MERGEJOIN_MATERIALIZE;
+	}
+	if (enable_nestloop)
+	{
+		glob->default_pgs_mask |= PGS_NESTLOOP_PLAIN;
+		if (enable_material)
+			glob->default_pgs_mask |= PGS_NESTLOOP_MATERIALIZE;
+		if (enable_memoize)
+			glob->default_pgs_mask |= PGS_NESTLOOP_MEMOIZE;
+	}
+	if (enable_hashjoin)
+		glob->default_pgs_mask |= PGS_HASHJOIN;
+	if (enable_gathermerge)
+		glob->default_pgs_mask |= PGS_GATHER_MERGE;
+	if (enable_partitionwise_join)
+		glob->default_pgs_mask |= PGS_CONSIDER_PARTITIONWISE;
+
 	/* Allow plugins to take control after we've initialized "glob" */
 	if (planner_setup_hook)
-		(*planner_setup_hook) (glob, parse, query_string, &tuple_fraction, es);
+		(*planner_setup_hook) (glob, parse, query_string, cursorOptions,
+							   &tuple_fraction, es);
 
 	/* primary planning entry point (may recurse for subqueries) */
-	root = subquery_planner(glob, parse, NULL, NULL, false, tuple_fraction,
-							NULL);
+	root = subquery_planner(glob, parse, NULL, NULL, NULL, false,
+							tuple_fraction, NULL);
 
 	/* Select best Path and turn it into a Plan */
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
@@ -607,16 +674,29 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	result->unprunableRelids = bms_difference(glob->allRelids,
 											  glob->prunableRelids);
 	result->permInfos = glob->finalrteperminfos;
-	result->resultRelations = glob->resultRelations;
+	result->subrtinfos = glob->subrtinfos;
 	result->appendRelations = glob->appendRelations;
 	result->subplans = glob->subplans;
 	result->rewindPlanIDs = glob->rewindPlanIDs;
 	result->rowMarks = glob->finalrowmarks;
+
+	/*
+	 * Compute resultRelationRelids and rowMarkRelids from resultRelations and
+	 * rowMarks. These can be used for cheap membership checks.
+	 */
+	foreach(lc, glob->resultRelations)
+		result->resultRelationRelids = bms_add_member(result->resultRelationRelids,
+													  lfirst_int(lc));
+	foreach(lc, glob->finalrowmarks)
+		result->rowMarkRelids = bms_add_member(result->rowMarkRelids,
+											   ((PlanRowMark *) lfirst(lc))->rti);
+
 	result->relationOids = glob->relationOids;
 	result->invalItems = glob->invalItems;
 	result->paramExecTypes = glob->paramExecTypes;
 	/* utilityStmt should be null, but we might as well copy it */
 	result->utilityStmt = parse->utilityStmt;
+	result->elidedNodes = glob->elidedNodes;
 	result->stmt_location = parse->stmt_location;
 	result->stmt_len = parse->stmt_len;
 
@@ -665,6 +745,8 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
  * parse is the querytree produced by the parser & rewriter.
  * plan_name is the name to assign to this subplan (NULL at the top level).
  * parent_root is the immediate parent Query's info (NULL at the top level).
+ * alternative_root is a previously created PlannerInfo for which this query
+ * level is an alternative implementation, or else NULL.
  * hasRecursion is true if this is a recursive WITH query.
  * tuple_fraction is the fraction of tuples we expect will be retrieved.
  * tuple_fraction is interpreted as explained for grouping_planner, below.
@@ -691,12 +773,15 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
  */
 PlannerInfo *
 subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
-				 PlannerInfo *parent_root, bool hasRecursion,
-				 double tuple_fraction, SetOperationStmt *setops)
+				 PlannerInfo *parent_root, PlannerInfo *alternative_root,
+				 bool hasRecursion, double tuple_fraction,
+				 SetOperationStmt *setops)
 {
 	PlannerInfo *root;
 	List	   *newWithCheckOptions;
 	List	   *newHaving;
+	Bitmapset  *havingCollationConflicts;
+	int			havingIdx;
 	bool		hasOuterJoins;
 	bool		hasResultRTEs;
 	RelOptInfo *final_rel;
@@ -708,6 +793,10 @@ subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
 	root->glob = glob;
 	root->query_level = parent_root ? parent_root->query_level + 1 : 1;
 	root->plan_name = plan_name;
+	if (alternative_root != NULL)
+		root->alternative_plan_name = alternative_root->plan_name;
+	else
+		root->alternative_plan_name = plan_name;
 	root->parent_root = parent_root;
 	root->plan_params = NIL;
 	root->outer_params = NULL;
@@ -1107,6 +1196,27 @@ subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
 	}
 
 	/*
+	 * Before we flatten GROUP Vars, check which HAVING clauses have collation
+	 * conflicts.  When GROUP BY uses a nondeterministic collation, values
+	 * that are "equal" for grouping may be distinguishable under a different
+	 * collation.  If such a HAVING clause were moved to WHERE, it would
+	 * filter individual rows before grouping, potentially eliminating some
+	 * members of a group and thereby changing aggregate results.
+	 *
+	 * We do this check before flatten_group_exprs because we can easily
+	 * identify grouping expressions by checking whether a Var references
+	 * RTE_GROUP, and such Vars directly carry the GROUP BY collation as their
+	 * varcollid.  After flattening, these Vars are replaced by the underlying
+	 * expressions, and we would have to match expressions in the HAVING
+	 * clause back to grouping expressions, which is much more complex.
+	 */
+	if (parse->hasGroupRTE)
+		havingCollationConflicts =
+			find_having_collation_conflicts(parse, root->group_rtindex);
+	else
+		havingCollationConflicts = NULL;
+
+	/*
 	 * Replace any Vars in the subquery's targetlist and havingQual that
 	 * reference GROUP outputs with the underlying grouping expressions.
 	 *
@@ -1150,6 +1260,14 @@ subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
 	 * but it's okay: it's just an optimization to avoid running pull_varnos
 	 * when there cannot be any Vars in the HAVING clause.)
 	 *
+	 * We also cannot do this if the HAVING clause uses a different collation
+	 * than the GROUP BY for any grouping expression whose GROUP BY collation
+	 * is nondeterministic.  This is detected before flatten_group_exprs (see
+	 * find_having_collation_conflicts above) and recorded in the
+	 * havingCollationConflicts bitmapset.  The bitmapset indexes remain valid
+	 * here because flatten_group_exprs uses expression_tree_mutator, which
+	 * preserves the list length and ordering of havingQual.
+	 *
 	 * Also, it may be that the clause is so expensive to execute that we're
 	 * better off doing it only once per group, despite the loss of
 	 * selectivity.  This is hard to estimate short of doing the entire
@@ -1182,6 +1300,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
 	 * as Node *.
 	 */
 	newHaving = NIL;
+	havingIdx = 0;
 	foreach(l, (List *) parse->havingQual)
 	{
 		Node	   *havingclause = (Node *) lfirst(l);
@@ -1189,6 +1308,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
 		if (contain_agg_clause(havingclause) ||
 			contain_volatile_functions(havingclause) ||
 			contain_subplans(havingclause) ||
+			bms_is_member(havingIdx, havingCollationConflicts) ||
 			(parse->groupClause && parse->groupingSets &&
 			 bms_is_member(root->group_rtindex, pull_varnos(root, havingclause))))
 		{
@@ -1225,6 +1345,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse, char *plan_name,
 			/* ... and also keep it in HAVING */
 			newHaving = lappend(newHaving, havingclause);
 		}
+
+		havingIdx++;
 	}
 	parse->havingQual = (Node *) newHaving;
 
@@ -1414,6 +1536,195 @@ preprocess_qual_conditions(PlannerInfo *root, Node *jtnode)
 	else
 		elog(ERROR, "unrecognized node type: %d",
 			 (int) nodeTag(jtnode));
+}
+
+/*
+ * find_having_collation_conflicts
+ *	  Identify HAVING clauses that must not be moved to WHERE due to collation
+ *	  mismatches with GROUP BY.
+ *
+ * This must be called before flatten_group_exprs, while the HAVING clause
+ * still contains GROUP Vars (Vars referencing RTE_GROUP).  These GROUP Vars
+ * carry the GROUP BY collation as their varcollid.  A GROUP Var with a
+ * nondeterministic varcollid conflicts whenever some collation-aware ancestor
+ * on its path applies a different inputcollid: that operator would distinguish
+ * values which the GROUP BY considers equal, so the clause is unsafe to push
+ * to WHERE.
+ *
+ * Returns a Bitmapset of zero-based indexes into the havingQual list for
+ * clauses that have collation conflicts and must stay in HAVING.
+ */
+static Bitmapset *
+find_having_collation_conflicts(Query *parse, Index group_rtindex)
+{
+	Bitmapset  *result = NULL;
+	having_collation_ctx ctx;
+	int			idx;
+
+	if (parse->havingQual == NULL)
+		return NULL;
+
+	ctx.group_rtindex = group_rtindex;
+	ctx.ancestor_collids = NIL;
+
+	idx = 0;
+	foreach_ptr(Node, clause, (List *) parse->havingQual)
+	{
+		if (having_collation_conflict_walker(clause, &ctx))
+			result = bms_add_member(result, idx);
+		idx++;
+		Assert(ctx.ancestor_collids == NIL);
+	}
+
+	return result;
+}
+
+/*
+ * Walker function for find_having_collation_conflicts.
+ *
+ * Walk the clause top-down, maintaining a stack of inputcollids contributed
+ * by collation-aware ancestors.  At each GROUP Var with a nondeterministic
+ * varcollid, the clause has a conflict if any ancestor's inputcollid differs
+ * from the GROUP Var's varcollid.  Most collation-aware nodes expose their
+ * inputcollid through exprInputCollation().  Two structural exceptions need
+ * special handling:
+ *
+ * - RowCompareExpr carries one inputcollid per column in inputcollids[], so we
+ *   descend into its (largs[i], rargs[i]) pairs explicitly with the matching
+ *   collation pushed onto the stack.
+ *
+ * - A simple CASE (CaseExpr with a non-NULL arg) holds the arg outside the
+ *   WHEN's OpExpr, even though the WHEN's OpExpr is the place where the
+ *   comparison's inputcollid lives.  Parse analysis builds each WHEN as
+ *   "OpExpr(CaseTestExpr op val)" -- the CaseTestExpr is a placeholder for
+ *   the arg.  Before walking cexpr->arg we therefore push every WHEN's
+ *   inputcollid onto the ancestor stack, so a GROUP Var at the arg is
+ *   checked against the same collations the WHEN comparisons would apply.
+ *   The WHEN bodies and defresult are then walked under the unchanged stack
+ *   so their own collation contexts are picked up by the default path.
+ */
+static bool
+having_collation_conflict_walker(Node *node, having_collation_ctx *ctx)
+{
+	Oid			this_collid;
+	bool		result;
+
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+
+		/* We should not see any upper-level Vars here */
+		Assert(var->varlevelsup == 0);
+
+		if (var->varno == ctx->group_rtindex &&
+			OidIsValid(var->varcollid) &&
+			!get_collation_isdeterministic(var->varcollid))
+		{
+			foreach_oid(collid, ctx->ancestor_collids)
+			{
+				if (collid != var->varcollid)
+					return true;
+			}
+		}
+		return false;
+	}
+
+	if (IsA(node, RowCompareExpr))
+	{
+		RowCompareExpr *rcexpr = (RowCompareExpr *) node;
+		ListCell   *lc_l;
+		ListCell   *lc_r;
+		ListCell   *lc_c;
+
+		/*
+		 * Each column of a row comparison is compared under its own
+		 * inputcollids[i].  Walk each (largs[i], rargs[i]) pair with that
+		 * collation pushed, so a Var in column i is checked against the
+		 * collation that actually applies to it.
+		 */
+		forthree(lc_l, rcexpr->largs,
+				 lc_r, rcexpr->rargs,
+				 lc_c, rcexpr->inputcollids)
+		{
+			Oid			collid = lfirst_oid(lc_c);
+			bool		found;
+
+			if (OidIsValid(collid))
+				ctx->ancestor_collids = lappend_oid(ctx->ancestor_collids,
+													collid);
+
+			found = having_collation_conflict_walker((Node *) lfirst(lc_l),
+													 ctx) ||
+				having_collation_conflict_walker((Node *) lfirst(lc_r),
+												 ctx);
+
+			if (OidIsValid(collid))
+				ctx->ancestor_collids =
+					list_delete_last(ctx->ancestor_collids);
+
+			if (found)
+				return true;
+		}
+		return false;
+	}
+
+	if (IsA(node, CaseExpr) && ((CaseExpr *) node)->arg != NULL)
+	{
+		CaseExpr   *cexpr = (CaseExpr *) node;
+		int			saved_len = list_length(ctx->ancestor_collids);
+		bool		found;
+
+		/*
+		 * Push every WHEN's inputcollid before walking cexpr->arg, since each
+		 * WHEN implicitly compares the arg under that inputcollid.
+		 */
+		foreach_node(CaseWhen, cw, cexpr->args)
+		{
+			Oid			collid = exprInputCollation((Node *) cw->expr);
+
+			if (OidIsValid(collid))
+				ctx->ancestor_collids = lappend_oid(ctx->ancestor_collids,
+													collid);
+		}
+
+		found = having_collation_conflict_walker((Node *) cexpr->arg, ctx);
+
+		ctx->ancestor_collids = list_truncate(ctx->ancestor_collids,
+											  saved_len);
+
+		if (found)
+			return true;
+
+		/*
+		 * Walk the WHEN bodies and defresult under the unchanged ancestor
+		 * stack; any inputcollids inside them are picked up by the default
+		 * path.
+		 */
+		foreach_node(CaseWhen, cw, cexpr->args)
+		{
+			if (having_collation_conflict_walker((Node *) cw->expr, ctx) ||
+				having_collation_conflict_walker((Node *) cw->result, ctx))
+				return true;
+		}
+		return having_collation_conflict_walker((Node *) cexpr->defresult,
+												ctx);
+	}
+
+	this_collid = exprInputCollation(node);
+	if (OidIsValid(this_collid))
+		ctx->ancestor_collids = lappend_oid(ctx->ancestor_collids,
+											this_collid);
+
+	result = expression_tree_walker(node, having_collation_conflict_walker,
+									ctx);
+
+	if (OidIsValid(this_collid))
+		ctx->ancestor_collids = list_delete_last(ctx->ancestor_collids);
+
+	return result;
 }
 
 /*
@@ -2152,6 +2463,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction,
 										parse->onConflict,
 										mergeActionLists,
 										mergeJoinConditions,
+										parse->forPortionOf,
 										assign_special_exec_param(root));
 		}
 
@@ -3414,11 +3726,11 @@ adjust_group_pathkeys_for_groupagg(PlannerInfo *root)
 					case PATHKEYS_BETTER2:
 						/* 'pathkeys' are stronger, use these ones instead */
 						currpathkeys = pathkeys;
-						/* FALLTHROUGH */
+						pg_fallthrough;
 
 					case PATHKEYS_BETTER1:
 						/* 'pathkeys' are less strict */
-						/* FALLTHROUGH */
+						pg_fallthrough;
 
 					case PATHKEYS_EQUAL:
 						/* mark this aggregate as covered by 'currpathkeys' */
@@ -3953,6 +4265,9 @@ make_grouping_rel(PlannerInfo *root, RelOptInfo *input_rel,
 		is_parallel_safe(root, havingQual))
 		grouped_rel->consider_parallel = true;
 
+	/* Assume that the same path generation strategies are allowed */
+	grouped_rel->pgs_mask = input_rel->pgs_mask;
+
 	/*
 	 * If the input rel belongs to a single FDW, so does the grouped rel.
 	 */
@@ -4010,7 +4325,7 @@ create_degenerate_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 		 * might get between 0 and N output rows. Offhand I think that's
 		 * desired.)
 		 */
-		List	   *paths = NIL;
+		AppendPathInput append = {0};
 
 		while (--nrows >= 0)
 		{
@@ -4018,13 +4333,12 @@ create_degenerate_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 				create_group_result_path(root, grouped_rel,
 										 grouped_rel->reltarget,
 										 (List *) parse->havingQual);
-			paths = lappend(paths, path);
+			append.subpaths = lappend(append.subpaths, path);
 		}
 		path = (Path *)
 			create_append_path(root,
 							   grouped_rel,
-							   paths,
-							   NIL,
+							   append,
 							   NIL,
 							   NULL,
 							   0,
@@ -5345,6 +5659,9 @@ create_ordered_paths(PlannerInfo *root,
 	 */
 	if (input_rel->consider_parallel && target_parallel_safe)
 		ordered_rel->consider_parallel = true;
+
+	/* Assume that the same path generation strategies are allowed. */
+	ordered_rel->pgs_mask = input_rel->pgs_mask;
 
 	/*
 	 * If the input rel belongs to a single FDW, so does the ordered_rel.
@@ -7426,6 +7743,7 @@ create_partial_grouping_paths(PlannerInfo *root,
 											grouped_rel->relids);
 	partially_grouped_rel->consider_parallel =
 		grouped_rel->consider_parallel;
+	partially_grouped_rel->pgs_mask = grouped_rel->pgs_mask;
 	partially_grouped_rel->reloptkind = grouped_rel->reloptkind;
 	partially_grouped_rel->serverid = grouped_rel->serverid;
 	partially_grouped_rel->userid = grouped_rel->userid;
@@ -7922,7 +8240,7 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 	 * However, there are several cases when this optimization is not safe. If
 	 * the rel isn't partitioned, then none of the paths will be Append or
 	 * MergeAppend paths, so we should definitely not do this. If it is
-	 * parititoned but is a joinrel, it may have Append and MergeAppend paths,
+	 * partitioned but is a joinrel, it may have Append and MergeAppend paths,
 	 * but it can also have join paths that we can't afford to discard.
 	 *
 	 * Some care is needed, because we have to allow

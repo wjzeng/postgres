@@ -12,7 +12,15 @@ libpq_oauth_sources = files(
 libpq_oauth_so_sources = files(
   'oauth-utils.c',
 )
-libpq_oauth_so_c_args = ['-DUSE_DYNAMIC_OAUTH']
+libpq_oauth_so_c_args = [
+  '-DUSE_DYNAMIC_OAUTH',
+
+  # A bit of forward-looking paranoia: don't allow anyone to accidentally depend
+  # on the encoding IDs coming from libpq. They're not guaranteed to match the
+  # IDs in use by our version of pgcommon, now that we allow the major version
+  # of libpq to differ from the major version of libpq-oauth.
+  '-DUSE_PRIVATE_ENCODING_FUNCS',
+]
 
 export_file = custom_target('libpq-oauth.exports',
   kwargs: gen_export_kwargs,
@@ -21,6 +29,7 @@ export_file = custom_target('libpq-oauth.exports',
 # port needs to be in include path due to pthread-win32.h
 libpq_oauth_inc = include_directories('.', '../libpq', '../../port')
 
+if build_static_lib
 libpq_oauth_st = static_library('libpq-oauth',
   libpq_oauth_sources,
   include_directories: [libpq_oauth_inc, postgres_inc],
@@ -32,12 +41,13 @@ libpq_oauth_st = static_library('libpq-oauth',
   ],
   kwargs: default_lib_args,
 )
+libpq_targets += libpq_oauth_st
+endif
 
 # This is an internal module; we don't want an SONAME and therefore do not set
 # SO_MAJOR_VERSION.
-libpq_oauth_name = 'libpq-oauth-@0@'.format(pg_version_major)
-
-libpq_oauth_so = shared_module(libpq_oauth_name,
+if build_shared_lib
+libpq_oauth_so = shared_module('libpq-oauth',
   libpq_oauth_sources + libpq_oauth_so_sources,
   include_directories: [libpq_oauth_inc, postgres_inc],
   c_args: libpq_oauth_so_c_args,
@@ -47,6 +57,8 @@ libpq_oauth_so = shared_module(libpq_oauth_name,
   link_args: export_fmt.format(export_file.full_path()),
   kwargs: default_lib_args,
 )
+libpq_targets += libpq_oauth_so
+endif
 
 libpq_oauth_test_deps = []
 

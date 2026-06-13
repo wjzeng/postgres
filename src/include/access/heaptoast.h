@@ -95,7 +95,7 @@
  * ----------
  */
 extern HeapTuple heap_toast_insert_or_update(Relation rel, HeapTuple newtup,
-											 HeapTuple oldtup, int options);
+											 HeapTuple oldtup, uint32 options);
 
 /* ----------
  * heap_toast_delete -
@@ -144,6 +144,6 @@ extern HeapTuple toast_build_flattened_tuple(TupleDesc tupleDesc,
  */
 extern void heap_fetch_toast_slice(Relation toastrel, Oid valueid,
 								   int32 attrsize, int32 sliceoffset,
-								   int32 slicelength, struct varlena *result);
+								   int32 slicelength, varlena *result);
 
 #endif							/* HEAPTOAST_H */

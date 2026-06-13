@@ -13,6 +13,7 @@
  */
 #include "postgres.h"
 
+#include "access/relscan.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "commands/createas.h"
@@ -42,6 +43,7 @@
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
+#include "utils/tuplestore.h"
 #include "utils/typcache.h"
 #include "utils/xml.h"
 
@@ -138,6 +140,8 @@ static void show_hashagg_info(AggState *aggstate, ExplainState *es);
 static void show_indexsearches_info(PlanState *planstate, ExplainState *es);
 static void show_tidbitmap_info(BitmapHeapScanState *planstate,
 								ExplainState *es);
+static void show_scan_io_usage(ScanState *planstate,
+							   ExplainState *es);
 static void show_instrumentation_count(const char *qlabel, int which,
 									   PlanState *planstate, ExplainState *es);
 static void show_foreignscan_info(ForeignScanState *fsstate, ExplainState *es);
@@ -281,6 +285,7 @@ ExplainResultDesc(ExplainStmt *stmt)
 	tupdesc = CreateTemplateTupleDesc(1);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "QUERY PLAN",
 					   result_type, -1, 0);
+	TupleDescFinalize(tupdesc);
 	return tupdesc;
 }
 
@@ -517,6 +522,8 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 		instrument_option |= INSTRUMENT_BUFFERS;
 	if (es->wal)
 		instrument_option |= INSTRUMENT_WAL;
+	if (es->io)
+		instrument_option |= INSTRUMENT_IO;
 
 	/*
 	 * We always collect timing for the entire statement, even when node-level
@@ -1099,18 +1106,15 @@ report_triggers(ResultRelInfo *rInfo, bool show_relname, ExplainState *es)
 	for (nt = 0; nt < rInfo->ri_TrigDesc->numtriggers; nt++)
 	{
 		Trigger    *trig = rInfo->ri_TrigDesc->triggers + nt;
-		Instrumentation *instr = rInfo->ri_TrigInstrument + nt;
+		TriggerInstrumentation *tginstr = rInfo->ri_TrigInstrument + nt;
 		char	   *relname;
 		char	   *conname = NULL;
-
-		/* Must clean up instrumentation state */
-		InstrEndLoop(instr);
 
 		/*
 		 * We ignore triggers that were never invoked; they likely aren't
 		 * relevant to the current query type.
 		 */
-		if (instr->ntuples == 0)
+		if (tginstr->firings == 0)
 			continue;
 
 		ExplainOpenGroup("Trigger", NULL, true, es);
@@ -1135,10 +1139,12 @@ report_triggers(ResultRelInfo *rInfo, bool show_relname, ExplainState *es)
 			if (show_relname)
 				appendStringInfo(es->str, " on %s", relname);
 			if (es->timing)
-				appendStringInfo(es->str, ": time=%.3f calls=%.0f\n",
-								 1000.0 * instr->total, instr->ntuples);
+				appendStringInfo(es->str, ": time=%.3f calls=%" PRId64 "\n",
+								 INSTR_TIME_GET_MILLISEC(tginstr->instr.total),
+								 tginstr->firings);
 			else
-				appendStringInfo(es->str, ": calls=%.0f\n", instr->ntuples);
+				appendStringInfo(es->str, ": calls=%" PRId64 "\n",
+								 tginstr->firings);
 		}
 		else
 		{
@@ -1147,9 +1153,10 @@ report_triggers(ResultRelInfo *rInfo, bool show_relname, ExplainState *es)
 				ExplainPropertyText("Constraint Name", conname, es);
 			ExplainPropertyText("Relation", relname, es);
 			if (es->timing)
-				ExplainPropertyFloat("Time", "ms", 1000.0 * instr->total, 3,
+				ExplainPropertyFloat("Time", "ms",
+									 INSTR_TIME_GET_MILLISEC(tginstr->instr.total), 3,
 									 es);
-			ExplainPropertyFloat("Calls", NULL, instr->ntuples, 0, es);
+			ExplainPropertyInteger("Calls", NULL, tginstr->firings, es);
 		}
 
 		if (conname)
@@ -1834,10 +1841,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	if (es->analyze &&
 		planstate->instrument && planstate->instrument->nloops > 0)
 	{
-		double		nloops = planstate->instrument->nloops;
-		double		startup_ms = 1000.0 * planstate->instrument->startup / nloops;
-		double		total_ms = 1000.0 * planstate->instrument->total / nloops;
-		double		rows = planstate->instrument->ntuples / nloops;
+		NodeInstrumentation *instr = planstate->instrument;
+		double		nloops = instr->nloops;
+		double		startup_ms = INSTR_TIME_GET_MILLISEC(instr->startup) / nloops;
+		double		total_ms = INSTR_TIME_GET_MILLISEC(instr->instr.total) / nloops;
+		double		rows = instr->ntuples / nloops;
 
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
@@ -1889,11 +1897,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	/* prepare per-worker general execution details */
 	if (es->workers_state && es->verbose)
 	{
-		WorkerInstrumentation *w = planstate->worker_instrument;
+		WorkerNodeInstrumentation *w = planstate->worker_instrument;
 
 		for (int n = 0; n < w->num_workers; n++)
 		{
-			Instrumentation *instrument = &w->instrument[n];
+			NodeInstrumentation *instrument = &w->instrument[n];
 			double		nloops = instrument->nloops;
 			double		startup_ms;
 			double		total_ms;
@@ -1901,8 +1909,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 			if (nloops <= 0)
 				continue;
-			startup_ms = 1000.0 * instrument->startup / nloops;
-			total_ms = 1000.0 * instrument->total / nloops;
+			startup_ms = INSTR_TIME_GET_MILLISEC(instrument->startup) / nloops;
+			total_ms = INSTR_TIME_GET_MILLISEC(instrument->instr.total) / nloops;
 			rows = instrument->ntuples / nloops;
 
 			ExplainOpenWorker(n, es);
@@ -2005,12 +2013,13 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			show_tidbitmap_info((BitmapHeapScanState *) planstate, es);
+			show_scan_io_usage((ScanState *) planstate, es);
 			break;
 		case T_SampleScan:
 			show_tablesample(((SampleScan *) plan)->tablesample,
 							 planstate, ancestors, es);
 			/* fall through to print additional fields the same as SeqScan */
-			/* FALLTHROUGH */
+			pg_fallthrough;
 		case T_SeqScan:
 		case T_ValuesScan:
 		case T_CteScan:
@@ -2023,6 +2032,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 										   planstate, es);
 			if (IsA(plan, CteScan))
 				show_ctescan_info(castNode(CteScanState, planstate), es);
+			show_scan_io_usage((ScanState *) planstate, es);
 			break;
 		case T_Gather:
 			{
@@ -2139,6 +2149,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				if (plan->qual)
 					show_instrumentation_count("Rows Removed by Filter", 1,
 											   planstate, es);
+				show_scan_io_usage((ScanState *) planstate, es);
 			}
 			break;
 		case T_ForeignScan:
@@ -2289,18 +2300,18 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 	/* Show buffer/WAL usage */
 	if (es->buffers && planstate->instrument)
-		show_buffer_usage(es, &planstate->instrument->bufusage);
+		show_buffer_usage(es, &planstate->instrument->instr.bufusage);
 	if (es->wal && planstate->instrument)
-		show_wal_usage(es, &planstate->instrument->walusage);
+		show_wal_usage(es, &planstate->instrument->instr.walusage);
 
 	/* Prepare per-worker buffer/WAL usage */
 	if (es->workers_state && (es->buffers || es->wal) && es->verbose)
 	{
-		WorkerInstrumentation *w = planstate->worker_instrument;
+		WorkerNodeInstrumentation *w = planstate->worker_instrument;
 
 		for (int n = 0; n < w->num_workers; n++)
 		{
-			Instrumentation *instrument = &w->instrument[n];
+			NodeInstrumentation *instrument = &w->instrument[n];
 			double		nloops = instrument->nloops;
 
 			if (nloops <= 0)
@@ -2308,9 +2319,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 			ExplainOpenWorker(n, es);
 			if (es->buffers)
-				show_buffer_usage(es, &instrument->bufusage);
+				show_buffer_usage(es, &instrument->instr.bufusage);
 			if (es->wal)
-				show_wal_usage(es, &instrument->walusage);
+				show_wal_usage(es, &instrument->instr.walusage);
 			ExplainCloseWorker(n, es);
 		}
 	}
@@ -3876,7 +3887,7 @@ show_indexsearches_info(PlanState *planstate, ExplainState *es)
 			{
 				IndexScanState *indexstate = ((IndexScanState *) planstate);
 
-				nsearches = indexstate->iss_Instrument.nsearches;
+				nsearches = indexstate->iss_Instrument->nsearches;
 				SharedInfo = indexstate->iss_SharedInfo;
 				break;
 			}
@@ -3884,7 +3895,7 @@ show_indexsearches_info(PlanState *planstate, ExplainState *es)
 			{
 				IndexOnlyScanState *indexstate = ((IndexOnlyScanState *) planstate);
 
-				nsearches = indexstate->ioss_Instrument.nsearches;
+				nsearches = indexstate->ioss_Instrument->nsearches;
 				SharedInfo = indexstate->ioss_SharedInfo;
 				break;
 			}
@@ -3892,7 +3903,7 @@ show_indexsearches_info(PlanState *planstate, ExplainState *es)
 			{
 				BitmapIndexScanState *indexstate = ((BitmapIndexScanState *) planstate);
 
-				nsearches = indexstate->biss_Instrument.nsearches;
+				nsearches = indexstate->biss_Instrument->nsearches;
 				SharedInfo = indexstate->biss_SharedInfo;
 				break;
 			}
@@ -3945,7 +3956,7 @@ show_tidbitmap_info(BitmapHeapScanState *planstate, ExplainState *es)
 	}
 
 	/* Display stats for each parallel worker */
-	if (planstate->pstate != NULL)
+	if (planstate->sinstrument != NULL)
 	{
 		for (int n = 0; n < planstate->sinstrument->num_workers; n++)
 		{
@@ -3979,6 +3990,176 @@ show_tidbitmap_info(BitmapHeapScanState *planstate, ExplainState *es)
 				ExplainCloseWorker(n, es);
 		}
 	}
+}
+
+/*
+ * Print I/O stats - prefetching and I/O performed
+ *
+ * This prints two types of stats - "prefetch" about the prefetching done by
+ * ReadStream, and "I/O" issued by the stream. The prefetch stats are based
+ * on buffers pulled from the stream (even if no I/O is needed). The I/O
+ * information is related to I/O requests issued by the stream.
+ *
+ * The prefetch stats are printed if any buffer was pulled from the stream.
+ * For the I/O stats it depend on the output format. In non-text formats the
+ * information is printed if prefetch stats were printed. In text format it
+ * gets printed only if there were any I/O requests.
+ */
+static void
+print_io_usage(ExplainState *es, IOStats *stats)
+{
+	/* don't print prefetch stats if there's nothing to report */
+	if (stats->prefetch_count > 0)
+	{
+		if (es->format == EXPLAIN_FORMAT_TEXT)
+		{
+			/* prefetch distance info */
+			ExplainIndentText(es);
+			appendStringInfo(es->str, "Prefetch: avg=%.2f max=%d capacity=%d\n",
+							 (stats->distance_sum * 1.0 / stats->prefetch_count),
+							 stats->distance_max,
+							 stats->distance_capacity);
+
+			/* prefetch I/O info (only if there were actual I/Os) */
+			if (stats->io_count > 0)
+			{
+				ExplainIndentText(es);
+				appendStringInfo(es->str, "I/O: count=%" PRIu64 " waits=%" PRIu64
+								 " size=%.2f in-progress=%.2f\n",
+								 stats->io_count, stats->wait_count,
+								 (stats->io_nblocks * 1.0 / stats->io_count),
+								 (stats->io_in_progress * 1.0 / stats->io_count));
+			}
+		}
+		else
+		{
+			ExplainPropertyFloat("Average Prefetch Distance", NULL,
+								 (stats->distance_sum * 1.0 / stats->prefetch_count), 3, es);
+			ExplainPropertyInteger("Max Prefetch Distance", NULL,
+								   stats->distance_max, es);
+			ExplainPropertyInteger("Prefetch Capacity", NULL,
+								   stats->distance_capacity, es);
+
+			ExplainPropertyUInteger("I/O Count", NULL,
+									stats->io_count, es);
+			ExplainPropertyUInteger("I/O Waits", NULL,
+									stats->wait_count, es);
+			ExplainPropertyFloat("Average I/O Size", NULL,
+								 (stats->io_nblocks * 1.0 / Max(1, stats->io_count)), 3, es);
+			ExplainPropertyFloat("Average I/Os In Progress", NULL,
+								 (stats->io_in_progress * 1.0 / Max(1, stats->io_count)), 3, es);
+		}
+	}
+}
+
+/*
+ * Show information about prefetch and I/O in a scan node.
+ */
+static void
+show_scan_io_usage(ScanState *planstate, ExplainState *es)
+{
+	Plan	   *plan = planstate->ps.plan;
+	IOStats		stats = {0};
+
+	if (!es->io)
+		return;
+
+	/*
+	 * Initialize counters with stats from the local process first.
+	 *
+	 * The scan descriptor may not exist, e.g. if the scan did not start, or
+	 * because of debug_parallel_query=regress. We still want to collect data
+	 * from workers.
+	 */
+	if (planstate->ss_currentScanDesc &&
+		planstate->ss_currentScanDesc->rs_instrument)
+	{
+		stats = planstate->ss_currentScanDesc->rs_instrument->io;
+	}
+
+	/*
+	 * Accumulate data from parallel workers (if any).
+	 */
+	switch (nodeTag(plan))
+	{
+		case T_BitmapHeapScan:
+			{
+				SharedBitmapHeapInstrumentation *sinstrument
+				= ((BitmapHeapScanState *) planstate)->sinstrument;
+
+				if (sinstrument)
+				{
+					for (int i = 0; i < sinstrument->num_workers; ++i)
+					{
+						BitmapHeapScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
+
+						AccumulateIOStats(&stats, &winstrument->stats.io);
+
+						if (!es->workers_state)
+							continue;
+
+						ExplainOpenWorker(i, es);
+						print_io_usage(es, &winstrument->stats.io);
+						ExplainCloseWorker(i, es);
+					}
+				}
+
+				break;
+			}
+		case T_SeqScan:
+			{
+				SharedSeqScanInstrumentation *sinstrument
+				= ((SeqScanState *) planstate)->sinstrument;
+
+				if (sinstrument)
+				{
+					for (int i = 0; i < sinstrument->num_workers; ++i)
+					{
+						SeqScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
+
+						AccumulateIOStats(&stats, &winstrument->stats.io);
+
+						if (!es->workers_state)
+							continue;
+
+						ExplainOpenWorker(i, es);
+						print_io_usage(es, &winstrument->stats.io);
+						ExplainCloseWorker(i, es);
+					}
+				}
+
+				break;
+			}
+		case T_TidRangeScan:
+			{
+				SharedTidRangeScanInstrumentation *sinstrument
+				= ((TidRangeScanState *) planstate)->trss_sinstrument;
+
+				if (sinstrument)
+				{
+					for (int i = 0; i < sinstrument->num_workers; ++i)
+					{
+						TidRangeScanInstrumentation *winstrument = &sinstrument->sinstrument[i];
+
+						AccumulateIOStats(&stats, &winstrument->stats.io);
+
+						if (!es->workers_state)
+							continue;
+
+						ExplainOpenWorker(i, es);
+						print_io_usage(es, &winstrument->stats.io);
+						ExplainCloseWorker(i, es);
+					}
+				}
+
+				break;
+			}
+		default:
+			/* ignore other plans */
+			return;
+	}
+
+	print_io_usage(es, &stats);
 }
 
 /*
@@ -4670,10 +4851,36 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 
 	if (node->onConflictAction != ONCONFLICT_NONE)
 	{
-		ExplainPropertyText("Conflict Resolution",
-							node->onConflictAction == ONCONFLICT_NOTHING ?
-							"NOTHING" : "UPDATE",
-							es);
+		const char *resolution = NULL;
+
+		if (node->onConflictAction == ONCONFLICT_NOTHING)
+			resolution = "NOTHING";
+		else if (node->onConflictAction == ONCONFLICT_UPDATE)
+			resolution = "UPDATE";
+		else
+		{
+			Assert(node->onConflictAction == ONCONFLICT_SELECT);
+			switch (node->onConflictLockStrength)
+			{
+				case LCS_NONE:
+					resolution = "SELECT";
+					break;
+				case LCS_FORKEYSHARE:
+					resolution = "SELECT FOR KEY SHARE";
+					break;
+				case LCS_FORSHARE:
+					resolution = "SELECT FOR SHARE";
+					break;
+				case LCS_FORNOKEYUPDATE:
+					resolution = "SELECT FOR NO KEY UPDATE";
+					break;
+				case LCS_FORUPDATE:
+					resolution = "SELECT FOR UPDATE";
+					break;
+			}
+		}
+
+		ExplainPropertyText("Conflict Resolution", resolution, es);
 
 		/*
 		 * Don't display arbiter indexes at all when DO NOTHING variant
@@ -4682,7 +4889,7 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 		if (idxNames)
 			ExplainPropertyList("Conflict Arbiter Indexes", idxNames, es);
 
-		/* ON CONFLICT DO UPDATE WHERE qual is specially displayed */
+		/* ON CONFLICT DO SELECT/UPDATE WHERE qual is specially displayed */
 		if (node->onConflictWhere)
 		{
 			show_upper_qual((List *) node->onConflictWhere, "Conflict Filter",

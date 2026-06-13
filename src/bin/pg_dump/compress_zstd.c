@@ -219,7 +219,7 @@ InitCompressorZstd(CompressorState *cs,
 
 	cs->compression_spec = compression_spec;
 
-	zstdcs = (ZstdCompressorState *) pg_malloc0(sizeof(*zstdcs));
+	zstdcs = pg_malloc0_object(ZstdCompressorState);
 	cs->private_data = zstdcs;
 
 	/* We expect that exactly one of readF/writeF is specified */
@@ -523,14 +523,30 @@ Zstd_open(const char *path, int fd, const char *mode,
 	}
 
 	if (fd >= 0)
-		fp = fdopen(dup(fd), mode);
-	else
-		fp = fopen(path, mode);
-
-	if (fp == NULL)
 	{
-		pg_free(zstdcs);
-		return false;
+		int			dup_fd = dup(fd);
+
+		if (dup_fd < 0)
+		{
+			pg_free(zstdcs);
+			return false;
+		}
+		fp = fdopen(dup_fd, mode);
+		if (fp == NULL)
+		{
+			close(dup_fd);
+			pg_free(zstdcs);
+			return false;
+		}
+	}
+	else
+	{
+		fp = fopen(path, mode);
+		if (fp == NULL)
+		{
+			pg_free(zstdcs);
+			return false;
+		}
 	}
 
 	zstdcs->fp = fp;

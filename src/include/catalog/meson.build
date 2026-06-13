@@ -69,6 +69,11 @@ catalog_headers = [
   'pg_publication_rel.h',
   'pg_subscription.h',
   'pg_subscription_rel.h',
+  'pg_propgraph_element.h',
+  'pg_propgraph_element_label.h',
+  'pg_propgraph_label.h',
+  'pg_propgraph_label_property.h',
+  'pg_propgraph_property.h',
 ]
 
 # The .dat files we need can just be listed alphabetically.
@@ -78,6 +83,7 @@ bki_data = [
   'pg_amop.dat',
   'pg_amproc.dat',
   'pg_authid.dat',
+  'pg_auth_members.dat',
   'pg_cast.dat',
   'pg_class.dat',
   'pg_collation.dat',
@@ -115,7 +121,7 @@ output_install = [
   dir_data,
   dir_include_server / 'catalog',
   dir_include_server / 'catalog',
-  false,
+  dir_include_server / 'catalog',
   dir_include_server / 'catalog',
 ]
 

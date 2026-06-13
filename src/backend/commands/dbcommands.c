@@ -60,6 +60,7 @@
 #include "storage/lmgr.h"
 #include "storage/md.h"
 #include "storage/procarray.h"
+#include "storage/procsignal.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -69,6 +70,7 @@
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/wait_event.h"
 
 /*
  * Create database strategy.
@@ -742,6 +744,12 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	CreateDBStrategy dbstrategy = CREATEDB_WAL_LOG;
 	createdb_failure_params fparms;
 
+	/* Report error if name has \n or \r character. */
+	if (strpbrk(dbname, "\n\r"))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("database name \"%s\" contains a newline or carriage return character", dbname)));
+
 	/* Extract options from the statement node tree */
 	foreach(option, stmt->options)
 	{
@@ -1036,7 +1044,14 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		if (pg_strcasecmp(strategy, "wal_log") == 0)
 			dbstrategy = CREATEDB_WAL_LOG;
 		else if (pg_strcasecmp(strategy, "file_copy") == 0)
+		{
+			if (DataChecksumsInProgressOn())
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("create database strategy \"%s\" not allowed when data checksums are being enabled",
+							   strategy));
 			dbstrategy = CREATEDB_FILE_COPY;
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1909,6 +1924,12 @@ RenameDatabase(const char *oldname, const char *newname)
 	int			notherbackends;
 	int			npreparedxacts;
 	ObjectAddress address;
+
+	/* Report error if name has \n or \r character. */
+	if (strpbrk(newname, "\n\r"))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("database name \"%s\" contains a newline or carriage return character", newname)));
 
 	/*
 	 * Look up the target database's OID, and get exclusive lock on it. We

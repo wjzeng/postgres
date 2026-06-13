@@ -14,6 +14,7 @@ program_version_ok('pg_createsubscriber');
 program_options_handling_ok('pg_createsubscriber');
 
 my $datadir = PostgreSQL::Test::Utils::tempdir;
+my $logdir = PostgreSQL::Test::Utils::tempdir;
 
 # Generate a database with a name made of a range of ASCII characters.
 # Extracted from 002_pg_upgrade.pl.
@@ -66,18 +67,6 @@ command_fails(
 		'--database' => 'pg1',
 	],
 	'duplicate database name');
-command_fails(
-	[
-		'pg_createsubscriber',
-		'--verbose',
-		'--pgdata' => $datadir,
-		'--publisher-server' => 'port=5432',
-		'--publication' => 'foo1',
-		'--publication' => 'foo1',
-		'--database' => 'pg1',
-		'--database' => 'pg2',
-	],
-	'duplicate publication name');
 command_fails(
 	[
 		'pg_createsubscriber',
@@ -160,6 +149,7 @@ primary_slot_name = '$slotname'
 primary_conninfo = '$pconnstr dbname=postgres'
 hot_standby_feedback = on
 ]);
+my $sconnstr = $node_s->connstr;
 $node_s->set_standby_mode();
 $node_s->start;
 
@@ -344,7 +334,8 @@ is($node_s->safe_psql($db1, "SELECT COUNT(*) FROM pg_publication"),
 
 $node_s->stop;
 
-# dry run mode on node S
+# dry run mode on node S. Use the same publication name for different
+# databases, since publication names are database-local.
 command_ok(
 	[
 		'pg_createsubscriber',
@@ -355,14 +346,40 @@ command_ok(
 		'--publisher-server' => $node_p->connstr($db1),
 		'--socketdir' => $node_s->host,
 		'--subscriber-port' => $node_s->port,
-		'--publication' => 'pub1',
-		'--publication' => 'pub2',
+		'--publication' => 'same_pub',
+		'--publication' => 'same_pub',
 		'--subscription' => 'sub1',
 		'--subscription' => 'sub2',
 		'--database' => $db1,
 		'--database' => $db2,
+		'--logdir' => $logdir,
 	],
 	'run pg_createsubscriber --dry-run on node S');
+
+# Check that the log files were created
+my @server_log_files = glob "$logdir/*/pg_createsubscriber_server.log";
+is(scalar(@server_log_files),
+	1, "pg_createsubscriber_server.log file was created");
+my $server_log_file_size = -s $server_log_files[0];
+isnt($server_log_file_size, 0,
+	"pg_createsubscriber_server.log file not empty");
+my $server_log = slurp_file($server_log_files[0]);
+like(
+	$server_log,
+	qr/consistent recovery state reached/,
+	"server reached consistent recovery state");
+
+my @internal_log_files = glob "$logdir/*/pg_createsubscriber_internal.log";
+is(scalar(@internal_log_files),
+	1, "pg_createsubscriber_internal.log file was created");
+my $internal_log_file_size = -s $internal_log_files[0];
+isnt($internal_log_file_size, 0,
+	"pg_createsubscriber_internal.log file not empty");
+my $internal_log = slurp_file($internal_log_files[0]);
+like(
+	$internal_log,
+	qr/target server reached the consistent state/,
+	"log shows consistent state reached");
 
 # Check if node S is still a standby
 $node_s->start;
@@ -443,7 +460,8 @@ is(scalar(() = $stderr =~ /would create subscription/g),
 
 # Create a user-defined publication, and a table that is not a member of that
 # publication.
-$node_p->safe_psql($db1, qq(
+$node_p->safe_psql(
+	$db1, qq(
 	CREATE PUBLICATION test_pub3 FOR TABLE tbl1;
 	CREATE TABLE not_replicated (a int);
 ));
@@ -471,6 +489,11 @@ command_ok(
 		'--clean' => 'publications',
 	],
 	'run pg_createsubscriber on node S');
+
+# Check that included file is renamed after success.
+my $node_s_datadir = $node_s->data_dir;
+ok( -f "$node_s_datadir/pg_createsubscriber.conf.disabled",
+	"pg_createsubscriber.conf.disabled exists in node S");
 
 # Confirm the physical replication slot has been removed
 $result = $node_p->safe_psql($db1,
@@ -534,8 +557,7 @@ second row
 third row),
 	"logical replication works in database $db1");
 $result = $node_s->safe_psql($db1, 'SELECT * FROM not_replicated');
-is($result, qq(),
-	"table is not replicated in database $db1");
+is($result, qq(), "table is not replicated in database $db1");
 
 # Check result in database $db2
 $result = $node_s->safe_psql($db2, 'SELECT * FROM tbl2');
@@ -549,8 +571,10 @@ my $sysid_s = $node_s->safe_psql('postgres',
 isnt($sysid_p, $sysid_s, 'system identifier was changed');
 
 # Verify that pub2 was created in $db2
-is($node_p->safe_psql($db2, "SELECT COUNT(*) FROM pg_publication WHERE pubname = 'pub2'"),
-	'1', "publication pub2 was created in $db2");
+is( $node_p->safe_psql(
+		$db2, "SELECT COUNT(*) FROM pg_publication WHERE pubname = 'pub2'"),
+	'1',
+	"publication pub2 was created in $db2");
 
 # Get subscription and publication names
 $result = $node_s->safe_psql(
@@ -575,9 +599,53 @@ $result = $node_s->safe_psql(
     )
 );
 
-is($result, qq($db1|{test_pub3}
+is( $result, qq($db1|{test_pub3}
 $db2|{pub2}),
 	"subscriptions use the correct publications");
+
+# Verify that node K, set as a standby, is able to start correctly without
+# the recovery configuration written by pg_createsubscriber interfering.
+# This node is created from node S, where pg_createsubscriber has been run.
+
+# Create a physical standby from the promoted subscriber
+$node_s->safe_psql('postgres',
+	"SELECT pg_create_physical_replication_slot('$slotname');");
+
+# Create backup from promoted subscriber
+$node_s->backup('backup_3');
+
+# Initialize new physical standby
+my $node_k = PostgreSQL::Test::Cluster->new('node_k');
+$node_k->init_from_backup($node_s, 'backup_3', has_streaming => 1);
+
+my $node_k_datadir = $node_k->data_dir;
+ok( -f "$node_k_datadir/pg_createsubscriber.conf.disabled",
+	"pg_createsubscriber.conf.disabled exists in node K");
+
+# Configure the new standby
+$node_k->append_conf(
+	'postgresql.conf', qq[
+primary_slot_name = '$slotname'
+primary_conninfo = '$sconnstr dbname=postgres'
+hot_standby_feedback = on
+]);
+
+$node_k->set_standby_mode();
+my $node_k_name = $node_s->name;
+command_ok(
+	[
+		'pg_ctl', '--wait',
+		'--pgdata' => $node_k->data_dir,
+		'--log' => $node_k->logfile,
+		'--options' => "--cluster-name=$node_k_name",
+		'start'
+	],
+	"node K has started");
+
+# Note that this uses a direct pg_ctl command rather than a teardown(),
+# because $node->stop() would not work due to the node's postmaster PID
+# not being tracked, something that is set within $node->start().
+system_log('pg_ctl', 'stop', '--pgdata', $node_k->data_dir);
 
 # clean up
 $node_p->teardown_node;

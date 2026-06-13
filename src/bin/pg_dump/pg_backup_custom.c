@@ -136,7 +136,7 @@ InitArchiveFmt_Custom(ArchiveHandle *AH)
 	AH->WorkerJobRestorePtr = _WorkerJobRestoreCustom;
 
 	/* Set up a private area. */
-	ctx = (lclContext *) pg_malloc0(sizeof(lclContext));
+	ctx = pg_malloc0_object(lclContext);
 	AH->formatData = ctx;
 
 	/*
@@ -193,13 +193,13 @@ InitArchiveFmt_Custom(ArchiveHandle *AH)
  * Optional.
  *
  * Set up extract format-related TOC data.
-*/
+ */
 static void
 _ArchiveEntry(ArchiveHandle *AH, TocEntry *te)
 {
 	lclTocEntry *ctx;
 
-	ctx = (lclTocEntry *) pg_malloc0(sizeof(lclTocEntry));
+	ctx = pg_malloc0_object(lclTocEntry);
 	if (te->dataDumper)
 		ctx->dataState = K_OFFSET_POS_NOT_SET;
 	else
@@ -240,7 +240,7 @@ _ReadExtraToc(ArchiveHandle *AH, TocEntry *te)
 
 	if (ctx == NULL)
 	{
-		ctx = (lclTocEntry *) pg_malloc0(sizeof(lclTocEntry));
+		ctx = pg_malloc0_object(lclTocEntry);
 		te->formatData = ctx;
 	}
 
@@ -563,7 +563,7 @@ _PrintTocData(ArchiveHandle *AH, TocEntry *te)
 
 /*
  * Print data from current file position.
-*/
+ */
 static void
 _PrintData(ArchiveHandle *AH)
 {
@@ -617,7 +617,7 @@ _skipLOs(ArchiveHandle *AH)
  * Skip data from current file position.
  * Data blocks are formatted as an integer length, followed by data.
  * A zero length indicates the end of the block.
-*/
+ */
 static void
 _skipData(ArchiveHandle *AH)
 {
@@ -893,7 +893,7 @@ _Clone(ArchiveHandle *AH)
 	/*
 	 * Each thread must have private lclContext working state.
 	 */
-	AH->formatData = (lclContext *) pg_malloc(sizeof(lclContext));
+	AH->formatData = pg_malloc_object(lclContext);
 	memcpy(AH->formatData, ctx, sizeof(lclContext));
 	ctx = (lclContext *) AH->formatData;
 

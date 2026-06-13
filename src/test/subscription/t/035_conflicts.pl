@@ -78,12 +78,10 @@ $node_publisher->safe_psql('postgres',
 # Confirm that this causes an error on the subscriber
 $node_subscriber->wait_for_log(
 	qr/conflict detected on relation \"public.conf_tab\": conflict=multiple_unique_conflicts.*
-.*Key already exists in unique index \"conf_tab_pkey\".*
-.*Key \(a\)=\(2\); existing local row \(2, 2, 2\); remote row \(2, 3, 4\).*
-.*Key already exists in unique index \"conf_tab_b_key\".*
-.*Key \(b\)=\(3\); existing local row \(3, 3, 3\); remote row \(2, 3, 4\).*
-.*Key already exists in unique index \"conf_tab_c_key\".*
-.*Key \(c\)=\(4\); existing local row \(4, 4, 4\); remote row \(2, 3, 4\)./,
+.*Could not apply remote change: remote row \(2, 3, 4\).*
+.*Key already exists in unique index \"conf_tab_pkey\", modified in transaction .*: key \(a\)=\(2\), local row \(2, 2, 2\).*
+.*Key already exists in unique index \"conf_tab_b_key\", modified in transaction .*: key \(b\)=\(3\), local row \(3, 3, 3\).*
+.*Key already exists in unique index \"conf_tab_c_key\", modified in transaction .*: key \(c\)=\(4\), local row \(4, 4, 4\)./,
 	$log_offset);
 
 pass('multiple_unique_conflicts detected during insert');
@@ -110,12 +108,10 @@ $node_publisher->safe_psql('postgres',
 # Confirm that this causes an error on the subscriber
 $node_subscriber->wait_for_log(
 	qr/conflict detected on relation \"public.conf_tab\": conflict=multiple_unique_conflicts.*
-.*Key already exists in unique index \"conf_tab_pkey\".*
-.*Key \(a\)=\(6\); existing local row \(6, 6, 6\); remote row \(6, 7, 8\).*
-.*Key already exists in unique index \"conf_tab_b_key\".*
-.*Key \(b\)=\(7\); existing local row \(7, 7, 7\); remote row \(6, 7, 8\).*
-.*Key already exists in unique index \"conf_tab_c_key\".*
-.*Key \(c\)=\(8\); existing local row \(8, 8, 8\); remote row \(6, 7, 8\)./,
+.*Could not apply remote change: remote row \(6, 7, 8\), replica identity \(a\)=\(5\).*
+.*Key already exists in unique index \"conf_tab_pkey\", modified in transaction .*: key \(a\)=\(6\), local row \(6, 6, 6\).*
+.*Key already exists in unique index \"conf_tab_b_key\", modified in transaction .*: key \(b\)=\(7\), local row \(7, 7, 7\).*
+.*Key already exists in unique index \"conf_tab_c_key\", modified in transaction .*: key \(c\)=\(8\), local row \(8, 8, 8\)./,
 	$log_offset);
 
 pass('multiple_unique_conflicts detected during update');
@@ -138,10 +134,9 @@ $node_publisher->safe_psql('postgres',
 
 $node_subscriber->wait_for_log(
 	qr/conflict detected on relation \"public.conf_tab_2_p1\": conflict=multiple_unique_conflicts.*
-.*Key already exists in unique index \"conf_tab_2_p1_pkey\".*
-.*Key \(a\)=\(55\); existing local row \(55, 2, 3\); remote row \(55, 2, 3\).*
-.*Key already exists in unique index \"conf_tab_2_p1_a_b_key\".*
-.*Key \(a, b\)=\(55, 2\); existing local row \(55, 2, 3\); remote row \(55, 2, 3\)./,
+.*Could not apply remote change: remote row \(55, 2, 3\).*
+.*Key already exists in unique index \"conf_tab_2_p1_pkey\", modified in transaction .*: key \(a\)=\(55\), local row \(55, 2, 3\).*
+.*Key already exists in unique index \"conf_tab_2_p1_a_b_key\", modified in transaction .*: key \(a, b\)=\(55, 2\), local row \(55, 2, 3\)./,
 	$log_offset);
 
 pass('multiple_unique_conflicts detected on a leaf partition during insert');
@@ -286,7 +281,7 @@ $node_A->safe_psql('postgres', "INSERT INTO tab VALUES (1, 1), (2, 2);");
 $node_A->wait_for_catchup($subname_BA);
 
 my $result = $node_B->safe_psql('postgres', "SELECT * FROM tab;");
-is($result, qq(1|1
+is( $result, qq(1|1
 2|2), 'check replicated insert on node B');
 
 # Disable the logical replication from node B to node A
@@ -302,9 +297,8 @@ my $log_location = -s $node_B->logfile;
 $node_B->safe_psql('postgres', "UPDATE tab SET b = 3 WHERE a = 1;");
 $node_A->safe_psql('postgres', "DELETE FROM tab WHERE a = 1;");
 
-($cmdret, $stdout, $stderr) = $node_A->psql(
-	'postgres', qq(VACUUM (verbose) public.tab;)
-);
+($cmdret, $stdout, $stderr) =
+  $node_A->psql('postgres', qq(VACUUM (verbose) public.tab;));
 
 like(
 	$stderr,
@@ -319,22 +313,20 @@ my $logfile = slurp_file($node_B->logfile(), $log_location);
 like(
 	$logfile,
 	qr/conflict detected on relation "public.tab": conflict=delete_origin_differs.*
-.*DETAIL:.* Deleting the row that was modified locally in transaction [0-9]+ at .*
-.*Existing local row \(1, 3\); replica identity \(a\)=\(1\)/,
+.*DETAIL:.* Deleting the row that was modified locally in transaction [0-9]+ at .*: local row \(1, 3\), replica identity \(a\)=\(1\)./,
 	'delete target row was modified in tab');
 
 $log_location = -s $node_A->logfile;
 
-$node_A->safe_psql(
-	'postgres', "ALTER SUBSCRIPTION $subname_AB ENABLE;");
+$node_A->safe_psql('postgres', "ALTER SUBSCRIPTION $subname_AB ENABLE;");
 $node_B->wait_for_catchup($subname_AB);
 
 $logfile = slurp_file($node_A->logfile(), $log_location);
 like(
 	$logfile,
 	qr/conflict detected on relation "public.tab": conflict=update_deleted.*
-.*DETAIL:.* The row to be updated was deleted locally in transaction [0-9]+ at .*
-.*Remote row \(1, 3\); replica identity \(a\)=\(1\)/,
+.*DETAIL:.* Could not find the row to be updated: remote row \(1, 3\), replica identity \(a\)=\(1\).
+.*The row to be updated was deleted locally in transaction [0-9]+ at .*/,
 	'update target row was deleted in tab');
 
 # Remember the next transaction ID to be assigned
@@ -373,16 +365,15 @@ $node_A->safe_psql('postgres', "DELETE FROM tab WHERE a = 2;");
 
 $log_location = -s $node_A->logfile;
 
-$node_A->safe_psql(
-	'postgres', "ALTER SUBSCRIPTION $subname_AB ENABLE;");
+$node_A->safe_psql('postgres', "ALTER SUBSCRIPTION $subname_AB ENABLE;");
 $node_B->wait_for_catchup($subname_AB);
 
 $logfile = slurp_file($node_A->logfile(), $log_location);
 like(
 	$logfile,
 	qr/conflict detected on relation "public.tab": conflict=update_deleted.*
-.*DETAIL:.* The row to be updated was deleted locally in transaction [0-9]+ at .*
-.*Remote row \(2, 4\); replica identity full \(2, 2\)/,
+.*DETAIL:.* Could not find the row to be updated: remote row \(2, 4\), replica identity full \(2, 2\).*
+.*The row to be updated was deleted locally in transaction [0-9]+ at .*/,
 	'update target row was deleted in tab');
 
 ###############################################################################
@@ -412,7 +403,8 @@ ok( $node_A->poll_query_until(
 $node_B->safe_psql('postgres', "ALTER PUBLICATION tap_pub_B ADD TABLE tab");
 
 $node_A->safe_psql('postgres',
-	"ALTER SUBSCRIPTION $subname_AB REFRESH PUBLICATION WITH (copy_data = false)");
+	"ALTER SUBSCRIPTION $subname_AB REFRESH PUBLICATION WITH (copy_data = false)"
+);
 
 ###############################################################################
 # Test that publisher's transactions marked with DELAY_CHKPT_IN_COMMIT prevent
@@ -428,7 +420,8 @@ my $injection_points_supported = $node_B->check_extension('injection_points');
 # commit after marking DELAY_CHKPT_IN_COMMIT flag.
 if ($injection_points_supported != 0)
 {
-	$node_B->append_conf('postgresql.conf',
+	$node_B->append_conf(
+		'postgresql.conf',
 		"shared_preload_libraries = 'injection_points'
 		max_prepared_transactions = 1");
 	$node_B->restart;
@@ -475,11 +468,11 @@ if ($injection_points_supported != 0)
 	);
 
 	# Wait until the backend enters the injection point
-	$node_B->wait_for_event('client backend', 'commit-after-delay-checkpoint');
+	$node_B->wait_for_event('client backend',
+		'commit-after-delay-checkpoint');
 
 	# Confirm the update is suspended
-	$result =
-	  $node_B->safe_psql('postgres', 'SELECT * FROM tab WHERE a = 1');
+	$result = $node_B->safe_psql('postgres', 'SELECT * FROM tab WHERE a = 1');
 	is($result, qq(1|1), 'publisher sees the old row');
 
 	# Delete the row on the subscriber. The deleted row should be retained due to a
@@ -496,14 +489,12 @@ if ($injection_points_supported != 0)
 	# Confirm that the apply worker keeps requesting publisher status, while
 	# awaiting the prepared transaction to commit. Thus, the request log should
 	# appear more than once.
-	$node_A->wait_for_log(
-		qr/sending publisher status request message/,
+	$node_A->wait_for_log(qr/sending publisher status request message/,
 		$log_location);
 
 	$log_location = -s $node_A->logfile;
 
-	$node_A->wait_for_log(
-		qr/sending publisher status request message/,
+	$node_A->wait_for_log(qr/sending publisher status request message/,
 		$log_location);
 
 	# Confirm that the dead tuple cannot be removed
@@ -529,8 +520,7 @@ if ($injection_points_supported != 0)
 	ok($pub_session->quit, "close publisher session");
 
 	# Confirm that the transaction committed
-	$result =
-	  $node_B->safe_psql('postgres', 'SELECT * FROM tab WHERE a = 1');
+	$result = $node_B->safe_psql('postgres', 'SELECT * FROM tab WHERE a = 1');
 	is($result, qq(1|2), 'publisher sees the new row');
 
 	# Ensure the UPDATE is replayed on subscriber
@@ -540,13 +530,12 @@ if ($injection_points_supported != 0)
 	like(
 		$logfile,
 		qr/conflict detected on relation "public.tab": conflict=update_deleted.*
-.*DETAIL:.* The row to be updated was deleted locally in transaction [0-9]+ at .*
-.*Remote row \(1, 2\); replica identity full \(1, 1\)/,
+.*DETAIL:.* Could not find the row to be updated: remote row \(1, 2\), replica identity full \(1, 1\).*
+.*The row to be updated was deleted locally in transaction [0-9]+ at .*/,
 		'update target row was deleted in tab');
 
 	# Remember the next transaction ID to be assigned
-	$next_xid =
-	  $node_A->safe_psql('postgres', "SELECT txid_current() + 1;");
+	$next_xid = $node_A->safe_psql('postgres', "SELECT txid_current() + 1;");
 
 	# Confirm that the xmin value is advanced to the latest nextXid after the
 	# prepared transaction on the publisher has been committed.
@@ -589,7 +578,8 @@ $node_B->reload;
 
 # Enable failover to activate the synchronized_standby_slots setting
 $node_A->safe_psql('postgres', "ALTER SUBSCRIPTION $subname_AB DISABLE;");
-$node_A->safe_psql('postgres', "ALTER SUBSCRIPTION $subname_AB SET (failover = true);");
+$node_A->safe_psql('postgres',
+	"ALTER SUBSCRIPTION $subname_AB SET (failover = true);");
 $node_A->safe_psql('postgres', "ALTER SUBSCRIPTION $subname_AB ENABLE;");
 
 # Insert a record
@@ -617,7 +607,8 @@ ok( $node_A->poll_query_until(
 	"the xmin value of slot 'pg_conflict_detection' is invalid on Node A");
 
 $result = $node_A->safe_psql('postgres',
-	"SELECT subretentionactive FROM pg_subscription WHERE subname='$subname_AB';");
+	"SELECT subretentionactive FROM pg_subscription WHERE subname='$subname_AB';"
+);
 is($result, qq(f), 'retention is inactive');
 
 ###############################################################################
@@ -654,7 +645,8 @@ ok( $node_A->poll_query_until(
 	"the xmin value of slot 'pg_conflict_detection' is valid on Node A");
 
 $result = $node_A->safe_psql('postgres',
-	"SELECT subretentionactive FROM pg_subscription WHERE subname='$subname_AB';");
+	"SELECT subretentionactive FROM pg_subscription WHERE subname='$subname_AB';"
+);
 is($result, qq(t), 'retention is active');
 
 ###############################################################################
@@ -662,8 +654,7 @@ is($result, qq(t), 'retention is active');
 # removing all the subscriptions.
 ###############################################################################
 
-$node_B->safe_psql(
-	'postgres', "DROP SUBSCRIPTION $subname_BA");
+$node_B->safe_psql('postgres', "DROP SUBSCRIPTION $subname_BA");
 
 ok( $node_B->poll_query_until(
 		'postgres',
@@ -671,8 +662,7 @@ ok( $node_B->poll_query_until(
 	),
 	"the slot 'pg_conflict_detection' has been dropped on Node B");
 
-$node_A->safe_psql(
-	'postgres', "DROP SUBSCRIPTION $subname_AB");
+$node_A->safe_psql('postgres', "DROP SUBSCRIPTION $subname_AB");
 
 ok( $node_A->poll_query_until(
 		'postgres',

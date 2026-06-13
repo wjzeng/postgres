@@ -59,7 +59,7 @@ static void pgoutput_message(LogicalDecodingContext *ctx,
 							 bool transactional, const char *prefix,
 							 Size sz, const char *message);
 static bool pgoutput_origin_filter(LogicalDecodingContext *ctx,
-								   RepOriginId origin_id);
+								   ReplOriginId origin_id);
 static void pgoutput_begin_prepare_txn(LogicalDecodingContext *ctx,
 									   ReorderBufferTXN *txn);
 static void pgoutput_prepare_txn(LogicalDecodingContext *ctx,
@@ -86,10 +86,10 @@ static void pgoutput_stream_prepare_txn(LogicalDecodingContext *ctx,
 static bool publications_valid;
 
 static List *LoadPublications(List *pubnames);
-static void publication_invalidation_cb(Datum arg, int cacheid,
+static void publication_invalidation_cb(Datum arg, SysCacheIdentifier cacheid,
 										uint32 hashvalue);
 static void send_repl_origin(LogicalDecodingContext *ctx,
-							 RepOriginId origin_id, XLogRecPtr origin_lsn,
+							 ReplOriginId origin_id, XLogRecPtr origin_lsn,
 							 bool send_origin);
 
 /*
@@ -227,7 +227,7 @@ static void send_relation_and_attrs(Relation relation, TransactionId xid,
 									LogicalDecodingContext *ctx,
 									RelationSyncEntry *relentry);
 static void rel_sync_cache_relation_cb(Datum arg, Oid relid);
-static void rel_sync_cache_publication_cb(Datum arg, int cacheid,
+static void rel_sync_cache_publication_cb(Datum arg, SysCacheIdentifier cacheid,
 										  uint32 hashvalue);
 static void set_schema_sent_in_streamed_txn(RelationSyncEntry *entry,
 											TransactionId xid);
@@ -346,7 +346,11 @@ parse_output_parameters(List *options, PGOutputData *data)
 						 errmsg("conflicting or redundant options")));
 			publication_names_given = true;
 
-			if (!SplitIdentifierString(strVal(defel->arg), ',',
+			/*
+			 * Pass a copy of the DefElem->arg since SplitIdentifierString
+			 * modifies its input.
+			 */
+			if (!SplitIdentifierString(pstrdup(strVal(defel->arg)), ',',
 									   &data->publication_names))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_NAME),
@@ -605,7 +609,7 @@ pgoutput_begin_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 static void
 pgoutput_send_begin(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 {
-	bool		send_replication_origin = txn->origin_id != InvalidRepOriginId;
+	bool		send_replication_origin = txn->origin_id != InvalidReplOriginId;
 	PGOutputTxnData *txndata = (PGOutputTxnData *) txn->output_plugin_private;
 
 	Assert(txndata);
@@ -659,7 +663,7 @@ pgoutput_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 static void
 pgoutput_begin_prepare_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn)
 {
-	bool		send_replication_origin = txn->origin_id != InvalidRepOriginId;
+	bool		send_replication_origin = txn->origin_id != InvalidReplOriginId;
 
 	OutputPluginPrepareWrite(ctx, !send_replication_origin);
 	logicalrep_write_begin_prepare(ctx->out, txn);
@@ -1555,7 +1559,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		if (relentry->attrmap)
 		{
 			TupleTableSlot *slot = MakeTupleTableSlot(RelationGetDescr(targetrel),
-													  &TTSOpsVirtual);
+													  &TTSOpsVirtual, 0);
 
 			old_slot = execute_attr_map_slot(relentry->attrmap, old_slot, slot);
 		}
@@ -1570,7 +1574,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		if (relentry->attrmap)
 		{
 			TupleTableSlot *slot = MakeTupleTableSlot(RelationGetDescr(targetrel),
-													  &TTSOpsVirtual);
+													  &TTSOpsVirtual, 0);
 
 			new_slot = execute_attr_map_slot(relentry->attrmap, new_slot, slot);
 		}
@@ -1763,11 +1767,11 @@ pgoutput_message(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
  */
 static bool
 pgoutput_origin_filter(LogicalDecodingContext *ctx,
-					   RepOriginId origin_id)
+					   ReplOriginId origin_id)
 {
 	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
 
-	if (data->publish_no_origin && origin_id != InvalidRepOriginId)
+	if (data->publish_no_origin && origin_id != InvalidReplOriginId)
 		return true;
 
 	return false;
@@ -1824,7 +1828,8 @@ LoadPublications(List *pubnames)
  * Called for invalidations on pg_publication.
  */
 static void
-publication_invalidation_cb(Datum arg, int cacheid, uint32 hashvalue)
+publication_invalidation_cb(Datum arg, SysCacheIdentifier cacheid,
+							uint32 hashvalue)
 {
 	publications_valid = false;
 }
@@ -1837,7 +1842,7 @@ pgoutput_stream_start(struct LogicalDecodingContext *ctx,
 					  ReorderBufferTXN *txn)
 {
 	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
-	bool		send_replication_origin = txn->origin_id != InvalidRepOriginId;
+	bool		send_replication_origin = txn->origin_id != InvalidReplOriginId;
 
 	/* we can't nest streaming of transactions */
 	Assert(!data->in_streaming);
@@ -2084,7 +2089,7 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 	if (!entry->replicate_valid)
 	{
 		Oid			schemaId = get_rel_namespace(relid);
-		List	   *pubids = GetRelationPublications(relid);
+		List	   *pubids = GetRelationIncludedPublications(relid);
 
 		/*
 		 * We don't acquire a lock on the namespace system table as we build
@@ -2201,14 +2206,47 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 			 */
 			if (pub->alltables)
 			{
-				publish = true;
-				if (pub->pubviaroot && am_partition)
+				List	   *exceptpubids = NIL;
+
+				if (am_partition)
 				{
 					List	   *ancestors = get_partition_ancestors(relid);
+					Oid			last_ancestor_relid = llast_oid(ancestors);
 
-					pub_relid = llast_oid(ancestors);
-					ancestor_level = list_length(ancestors);
+					/*
+					 * For a partition, changes are published via top-most
+					 * ancestor when pubviaroot is true, so populate pub_relid
+					 * accordingly.
+					 */
+					if (pub->pubviaroot)
+					{
+						pub_relid = last_ancestor_relid;
+						ancestor_level = list_length(ancestors);
+					}
+
+					/*
+					 * Only the top-most ancestor can appear in the EXCEPT
+					 * clause. Therefore, for a partition, exclusion must be
+					 * evaluated at the top-most ancestor.
+					 */
+					exceptpubids = GetRelationExcludedPublications(last_ancestor_relid);
 				}
+				else
+				{
+					/*
+					 * For a regular table or a root partitioned table, check
+					 * exclusion on table itself.
+					 */
+					exceptpubids = GetRelationExcludedPublications(pub_relid);
+				}
+
+				if (!list_member_oid(exceptpubids, pub->oid))
+					publish = true;
+
+				list_free(exceptpubids);
+
+				if (!publish)
+					continue;
 			}
 
 			if (!publish)
@@ -2427,7 +2465,8 @@ rel_sync_cache_relation_cb(Datum arg, Oid relid)
  * Called for invalidations on pg_namespace.
  */
 static void
-rel_sync_cache_publication_cb(Datum arg, int cacheid, uint32 hashvalue)
+rel_sync_cache_publication_cb(Datum arg, SysCacheIdentifier cacheid,
+							  uint32 hashvalue)
 {
 	HASH_SEQ_STATUS status;
 	RelationSyncEntry *entry;
@@ -2453,7 +2492,7 @@ rel_sync_cache_publication_cb(Datum arg, int cacheid, uint32 hashvalue)
 
 /* Send Replication origin */
 static void
-send_repl_origin(LogicalDecodingContext *ctx, RepOriginId origin_id,
+send_repl_origin(LogicalDecodingContext *ctx, ReplOriginId origin_id,
 				 XLogRecPtr origin_lsn, bool send_origin)
 {
 	if (send_origin)

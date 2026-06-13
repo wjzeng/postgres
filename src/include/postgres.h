@@ -135,16 +135,6 @@ CharGetDatum(char X)
 }
 
 /*
- * Int8GetDatum
- *		Returns datum representation for an 8-bit integer.
- */
-static inline Datum
-Int8GetDatum(int8 X)
-{
-	return (Datum) X;
-}
-
-/*
  * DatumGetUInt8
  *		Returns 8-bit unsigned integer value of a datum.
  */
@@ -265,6 +255,26 @@ ObjectIdGetDatum(Oid X)
 }
 
 /*
+ * DatumGetObjectId8
+ *		Returns 8-byte object identifier value of a datum.
+ */
+static inline Oid8
+DatumGetObjectId8(Datum X)
+{
+	return (Oid8) X;
+}
+
+/*
+ * ObjectId8GetDatum
+ *		Returns datum representation for an 8-byte object identifier
+ */
+static inline Datum
+ObjectId8GetDatum(Oid8 X)
+{
+	return (Datum) X;
+}
+
+/*
  * DatumGetTransactionId
  *		Returns transaction identifier value of a datum.
  */
@@ -327,12 +337,22 @@ DatumGetPointer(Datum X)
 /*
  * PointerGetDatum
  *		Returns datum representation for a pointer.
+ *
+ * This used to be defined as "static inline Datum PointerGetDatum(const void
+ * *X) ", but it had the problem that the compiler would see the const
+ * attribute, and could rightly assume that the function won't modify *X.
+ * While PointerGetDatum() itself doesn't modify *X, the resulting Datum could
+ * later be passed to a function that converts it back to a non-const pointer
+ * and modifies it.  Most functions don't modify their arguments passed by
+ * reference - that would be very bogus for any operators or functions exposed
+ * in SQL - but some functions like GIN support functions do have output
+ * arguments that are pointer Datums.
+ *
+ * The odd-looking "true ? (X) : NULL" conditional expression has the effect
+ * of producing a compiler error if X is not a pointer.
  */
-static inline Datum
-PointerGetDatum(const void *X)
-{
-	return (Datum) (uintptr_t) X;
-}
+#define PointerGetDatum(X) \
+	((Datum) (uintptr_t) (true ? (X) : NULL))
 
 /*
  * DatumGetCString
@@ -350,6 +370,9 @@ DatumGetCString(Datum X)
 /*
  * CStringGetDatum
  *		Returns datum representation for a C string (null-terminated string).
+ *
+ * We assume that the resulting Datum is not used to modify the string, hence
+ * the argument can be marked as const.
  *
  * Note: C string is not a full-fledged Postgres type at present,
  * but type output functions use this conversion for their outputs.
@@ -513,15 +536,29 @@ Float8GetDatum(float8 X)
  */
 
 #define Int64GetDatumFast(X) \
-	(AssertVariableIsOfTypeMacro(X, int64), Int64GetDatum(X))
+	(StaticAssertVariableIsOfTypeMacro(X, int64), Int64GetDatum(X))
 #define Float8GetDatumFast(X) \
-	(AssertVariableIsOfTypeMacro(X, double), Float8GetDatum(X))
+	(StaticAssertVariableIsOfTypeMacro(X, double), Float8GetDatum(X))
 
 
 /* ----------------------------------------------------------------
  *				Section 2:	miscellaneous
  * ----------------------------------------------------------------
  */
+
+/*
+ * pg_ternary
+ *		Boolean value with an extra "unset" value
+ *
+ * This enum can be used for values that want to distinguish between true,
+ * false, and unset.
+ */
+typedef enum pg_ternary
+{
+	PG_TERNARY_FALSE = 0,
+	PG_TERNARY_TRUE = 1,
+	PG_TERNARY_UNSET = -1
+} pg_ternary;
 
 /*
  * NON_EXEC_STATIC: It's sometimes useful to define a variable or function

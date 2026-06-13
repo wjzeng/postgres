@@ -25,10 +25,11 @@
  * Report a subscription error.
  */
 void
-pgstat_report_subscription_error(Oid subid, LogicalRepWorkerType wtype)
+pgstat_report_subscription_error(Oid subid)
 {
 	PgStat_EntryRef *entry_ref;
 	PgStat_BackendSubEntry *pending;
+	LogicalRepWorkerType wtype = get_logical_worker_type();
 
 	entry_ref = pgstat_prep_pending_entry(PGSTAT_KIND_SUBSCRIPTION,
 										  InvalidOid, subid, NULL);
@@ -106,7 +107,7 @@ PgStat_StatSubEntry *
 pgstat_fetch_stat_subscription(Oid subid)
 {
 	return (PgStat_StatSubEntry *)
-		pgstat_fetch_entry(PGSTAT_KIND_SUBSCRIPTION, InvalidOid, subid);
+		pgstat_fetch_entry(PGSTAT_KIND_SUBSCRIPTION, InvalidOid, subid, NULL);
 }
 
 /*

@@ -51,6 +51,7 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/table.h"
 #include "catalog/pg_sequence.h"
 #include "catalog/pg_subscription_rel.h"
@@ -59,6 +60,7 @@
 #include "postmaster/interrupt.h"
 #include "replication/logicalworker.h"
 #include "replication/worker_internal.h"
+#include "storage/lwlock.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -172,45 +174,45 @@ static void
 report_sequence_errors(List *mismatched_seqs_idx, List *insuffperm_seqs_idx,
 					   List *missing_seqs_idx)
 {
-	StringInfo	seqstr;
+	StringInfoData seqstr;
 
 	/* Quick exit if there are no errors to report */
 	if (!mismatched_seqs_idx && !insuffperm_seqs_idx && !missing_seqs_idx)
 		return;
 
-	seqstr = makeStringInfo();
+	initStringInfo(&seqstr);
 
 	if (mismatched_seqs_idx)
 	{
-		get_sequences_string(mismatched_seqs_idx, seqstr);
+		get_sequences_string(mismatched_seqs_idx, &seqstr);
 		ereport(WARNING,
 				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				errmsg_plural("mismatched or renamed sequence on subscriber (%s)",
 							  "mismatched or renamed sequences on subscriber (%s)",
 							  list_length(mismatched_seqs_idx),
-							  seqstr->data));
+							  seqstr.data));
 	}
 
 	if (insuffperm_seqs_idx)
 	{
-		get_sequences_string(insuffperm_seqs_idx, seqstr);
+		get_sequences_string(insuffperm_seqs_idx, &seqstr);
 		ereport(WARNING,
 				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				errmsg_plural("insufficient privileges on sequence (%s)",
 							  "insufficient privileges on sequences (%s)",
 							  list_length(insuffperm_seqs_idx),
-							  seqstr->data));
+							  seqstr.data));
 	}
 
 	if (missing_seqs_idx)
 	{
-		get_sequences_string(missing_seqs_idx, seqstr);
+		get_sequences_string(missing_seqs_idx, &seqstr);
 		ereport(WARNING,
 				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				errmsg_plural("missing sequence on publisher (%s)",
 							  "missing sequences on publisher (%s)",
 							  list_length(missing_seqs_idx),
-							  seqstr->data));
+							  seqstr.data));
 	}
 
 	ereport(ERROR,
@@ -232,6 +234,7 @@ get_and_validate_seq_info(TupleTableSlot *slot, Relation *sequence_rel,
 {
 	bool		isnull;
 	int			col = 0;
+	Datum		datum;
 	Oid			remote_typid;
 	int64		remote_start;
 	int64		remote_increment;
@@ -250,8 +253,14 @@ get_and_validate_seq_info(TupleTableSlot *slot, Relation *sequence_rel,
 	*seqinfo = seqinfo_local =
 		(LogicalRepSequenceInfo *) list_nth(seqinfos, *seqidx);
 
-	seqinfo_local->last_value = DatumGetInt64(slot_getattr(slot, ++col, &isnull));
-	Assert(!isnull);
+	/*
+	 * The sequence data can be NULL due to insufficient privileges or if the
+	 * sequence was dropped concurrently (see pg_get_sequence_data()).
+	 */
+	datum = slot_getattr(slot, ++col, &isnull);
+	if (isnull)
+		return COPYSEQ_SKIPPED;
+	seqinfo_local->last_value = DatumGetInt64(datum);
 
 	seqinfo_local->is_called = DatumGetBool(slot_getattr(slot, ++col, &isnull));
 	Assert(!isnull);
@@ -379,9 +388,12 @@ copy_sequences(WalReceiverConn *conn)
 	List	   *mismatched_seqs_idx = NIL;
 	List	   *missing_seqs_idx = NIL;
 	List	   *insuffperm_seqs_idx = NIL;
-	StringInfo	seqstr = makeStringInfo();
-	StringInfo	cmd = makeStringInfo();
+	StringInfoData seqstr;
+	StringInfoData cmd;
 	MemoryContext oldctx;
+
+	initStringInfo(&seqstr);
+	initStringInfo(&cmd);
 
 #define MAX_SEQUENCES_SYNC_PER_BATCH 100
 
@@ -399,7 +411,6 @@ copy_sequences(WalReceiverConn *conn)
 		int			batch_skipped_count = 0;
 		int			batch_insuffperm_count = 0;
 		int			batch_missing_count;
-		Relation	sequence_rel;
 
 		WalRcvExecResult *res;
 		TupleTableSlot *slot;
@@ -414,13 +425,13 @@ copy_sequences(WalReceiverConn *conn)
 			LogicalRepSequenceInfo *seqinfo =
 				(LogicalRepSequenceInfo *) list_nth(seqinfos, idx);
 
-			if (seqstr->len > 0)
-				appendStringInfoString(seqstr, ", ");
+			if (seqstr.len > 0)
+				appendStringInfoString(&seqstr, ", ");
 
 			nspname_literal = quote_literal_cstr(seqinfo->nspname);
 			seqname_literal = quote_literal_cstr(seqinfo->seqname);
 
-			appendStringInfo(seqstr, "(%s, %s, %d)",
+			appendStringInfo(&seqstr, "(%s, %s, %d)",
 							 nspname_literal, seqname_literal, idx);
 
 			if (++batch_size == MAX_SEQUENCES_SYNC_PER_BATCH)
@@ -459,7 +470,7 @@ copy_sequences(WalReceiverConn *conn)
 		 * corresponding local entries without relying on result order or name
 		 * matching.
 		 */
-		appendStringInfo(cmd,
+		appendStringInfo(&cmd,
 						 "SELECT s.seqidx, ps.*, seq.seqtypid,\n"
 						 "       seq.seqstart, seq.seqincrement, seq.seqmin,\n"
 						 "       seq.seqmax, seq.seqcycle\n"
@@ -468,9 +479,9 @@ copy_sequences(WalReceiverConn *conn)
 						 "JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = s.seqname\n"
 						 "JOIN pg_sequence seq ON seq.seqrelid = c.oid\n"
 						 "JOIN LATERAL pg_get_sequence_data(seq.seqrelid) AS ps ON true\n",
-						 seqstr->data);
+						 seqstr.data);
 
-		res = walrcv_exec(conn, cmd->data, lengthof(seqRow), seqRow);
+		res = walrcv_exec(conn, cmd.data, lengthof(seqRow), seqRow);
 		if (res->status != WALRCV_OK_TUPLES)
 			ereport(ERROR,
 					errcode(ERRCODE_CONNECTION_FAILURE),
@@ -482,6 +493,7 @@ copy_sequences(WalReceiverConn *conn)
 		{
 			CopySeqResult sync_status;
 			LogicalRepSequenceInfo *seqinfo;
+			Relation	sequence_rel = NULL;
 			int			seqidx;
 
 			CHECK_FOR_INTERRUPTS();
@@ -534,11 +546,21 @@ copy_sequences(WalReceiverConn *conn)
 					batch_insuffperm_count++;
 					break;
 				case COPYSEQ_SKIPPED:
-					ereport(LOG,
-							errmsg("skip synchronization of sequence \"%s.%s\" because it has been dropped concurrently",
-								   seqinfo->nspname,
-								   seqinfo->seqname));
-					batch_skipped_count++;
+
+					/*
+					 * Concurrent removal of a sequence on the subscriber is
+					 * treated as success, since the only viable action is to
+					 * skip the corresponding sequence data. Missing sequences
+					 * on the publisher are treated as ERROR.
+					 */
+					if (seqinfo->found_on_pub)
+					{
+						ereport(LOG,
+								errmsg("skip synchronization of sequence \"%s.%s\" because it has been dropped concurrently",
+									   seqinfo->nspname,
+									   seqinfo->seqname));
+						batch_skipped_count++;
+					}
 					break;
 			}
 
@@ -548,8 +570,8 @@ copy_sequences(WalReceiverConn *conn)
 
 		ExecDropSingleTupleTableSlot(slot);
 		walrcv_clear_result(res);
-		resetStringInfo(seqstr);
-		resetStringInfo(cmd);
+		resetStringInfo(&seqstr);
+		resetStringInfo(&cmd);
 
 		batch_missing_count = batch_size - (batch_succeeded_count +
 											batch_mismatched_count +
@@ -732,8 +754,7 @@ start_sequence_sync(void)
 			 * idle state.
 			 */
 			AbortOutOfAnyTransaction();
-			pgstat_report_subscription_error(MySubscription->oid,
-											 WORKERTYPE_SEQUENCESYNC);
+			pgstat_report_subscription_error(MySubscription->oid);
 
 			PG_RE_THROW();
 		}

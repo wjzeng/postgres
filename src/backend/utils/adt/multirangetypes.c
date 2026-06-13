@@ -340,7 +340,7 @@ multirange_recv(PG_FUNCTION_ARGS)
 	Oid			mltrngtypoid = PG_GETARG_OID(1);
 	int32		typmod = PG_GETARG_INT32(2);
 	MultirangeIOData *cache;
-	uint32		range_count;
+	int32		range_count;
 	RangeType **ranges;
 	MultirangeType *ret;
 	StringInfoData tmpbuf;
@@ -348,6 +348,7 @@ multirange_recv(PG_FUNCTION_ARGS)
 	cache = get_multirange_io_data(fcinfo, mltrngtypoid, IOFunc_receive);
 
 	range_count = pq_getmsgint(buf, 4);
+	/* palloc_array will enforce a more-or-less-sane range_count value */
 	ranges = palloc_array(RangeType *, range_count);
 
 	initStringInfo(&tmpbuf);
@@ -485,8 +486,9 @@ multirange_canonicalize(TypeCacheEntry *rangetyp, int32 input_range_count,
 	int32		output_range_count = 0;
 
 	/* Sort the ranges so we can find the ones that overlap/meet. */
-	qsort_arg(ranges, input_range_count, sizeof(RangeType *), range_compare,
-			  rangetyp);
+	if (ranges != NULL)
+		qsort_arg(ranges, input_range_count, sizeof(RangeType *),
+				  range_compare, rangetyp);
 
 	/* Now merge where possible: */
 	for (i = 0; i < input_range_count; i++)
@@ -572,21 +574,22 @@ multirange_size_estimate(TypeCacheEntry *rangetyp, int32 range_count,
 						 RangeType **ranges)
 {
 	char		elemalign = rangetyp->rngelemtype->typalign;
+	uint8		elemalignby = typalign_to_alignby(elemalign);
 	Size		size;
 	int32		i;
 
 	/*
 	 * Count space for MultirangeType struct, items and flags.
 	 */
-	size = att_align_nominal(sizeof(MultirangeType) +
-							 Max(range_count - 1, 0) * sizeof(uint32) +
-							 range_count * sizeof(uint8), elemalign);
+	size = att_nominal_alignby(sizeof(MultirangeType) +
+							   Max(range_count - 1, 0) * sizeof(uint32) +
+							   range_count * sizeof(uint8), elemalignby);
 
 	/* Count space for range bounds */
 	for (i = 0; i < range_count; i++)
-		size += att_align_nominal(VARSIZE(ranges[i]) -
-								  sizeof(RangeType) -
-								  sizeof(char), elemalign);
+		size += att_nominal_alignby(VARSIZE(ranges[i]) -
+									sizeof(RangeType) -
+									sizeof(char), elemalignby);
 
 	return size;
 }
@@ -605,6 +608,7 @@ write_multirange_data(MultirangeType *multirange, TypeCacheEntry *rangetyp,
 	const char *begin;
 	char	   *ptr;
 	char		elemalign = rangetyp->rngelemtype->typalign;
+	uint8		elemalignby = typalign_to_alignby(elemalign);
 
 	items = MultirangeGetItemsPtr(multirange);
 	flags = MultirangeGetFlagsPtr(multirange);
@@ -630,7 +634,7 @@ write_multirange_data(MultirangeType *multirange, TypeCacheEntry *rangetyp,
 		flags[i] = *((char *) ranges[i] + VARSIZE(ranges[i]) - sizeof(char));
 		len = VARSIZE(ranges[i]) - sizeof(RangeType) - sizeof(char);
 		memcpy(ptr, ranges[i] + 1, len);
-		ptr += att_align_nominal(len, elemalign);
+		ptr += att_nominal_alignby(len, elemalignby);
 	}
 }
 

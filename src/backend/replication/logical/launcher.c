@@ -38,12 +38,14 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/wait_event.h"
 
 /* max sleep time between cycles (3min) */
 #define DEFAULT_NAPTIME_PER_CYCLE 180000L
@@ -69,6 +71,14 @@ typedef struct LogicalRepCtxStruct
 } LogicalRepCtxStruct;
 
 static LogicalRepCtxStruct *LogicalRepCtx;
+
+static void ApplyLauncherShmemRequest(void *arg);
+static void ApplyLauncherShmemInit(void *arg);
+
+const ShmemCallbacks ApplyLauncherShmemCallbacks = {
+	.request_fn = ApplyLauncherShmemRequest,
+	.init_fn = ApplyLauncherShmemInit,
+};
 
 /* an entry in the last-start-times shared hash table */
 typedef struct LauncherLastStartTimesEntry
@@ -971,11 +981,11 @@ logicalrep_pa_worker_count(Oid subid)
 }
 
 /*
- * ApplyLauncherShmemSize
- *		Compute space needed for replication launcher shared memory
+ * ApplyLauncherShmemRequest
+ *		Register shared memory space needed for replication launcher
  */
-Size
-ApplyLauncherShmemSize(void)
+static void
+ApplyLauncherShmemRequest(void *arg)
 {
 	Size		size;
 
@@ -986,7 +996,10 @@ ApplyLauncherShmemSize(void)
 	size = MAXALIGN(size);
 	size = add_size(size, mul_size(max_logical_replication_workers,
 								   sizeof(LogicalRepWorker)));
-	return size;
+	ShmemRequestStruct(.name = "Logical Replication Launcher Data",
+					   .size = size,
+					   .ptr = (void **) &LogicalRepCtx,
+		);
 }
 
 /*
@@ -1027,35 +1040,23 @@ ApplyLauncherRegister(void)
 
 /*
  * ApplyLauncherShmemInit
- *		Allocate and initialize replication launcher shared memory
+ *		Initialize replication launcher shared memory
  */
-void
-ApplyLauncherShmemInit(void)
+static void
+ApplyLauncherShmemInit(void *arg)
 {
-	bool		found;
+	int			slot;
 
-	LogicalRepCtx = (LogicalRepCtxStruct *)
-		ShmemInitStruct("Logical Replication Launcher Data",
-						ApplyLauncherShmemSize(),
-						&found);
+	LogicalRepCtx->last_start_dsa = DSA_HANDLE_INVALID;
+	LogicalRepCtx->last_start_dsh = DSHASH_HANDLE_INVALID;
 
-	if (!found)
+	/* Initialize memory and spin locks for each worker slot. */
+	for (slot = 0; slot < max_logical_replication_workers; slot++)
 	{
-		int			slot;
+		LogicalRepWorker *worker = &LogicalRepCtx->workers[slot];
 
-		memset(LogicalRepCtx, 0, ApplyLauncherShmemSize());
-
-		LogicalRepCtx->last_start_dsa = DSA_HANDLE_INVALID;
-		LogicalRepCtx->last_start_dsh = DSHASH_HANDLE_INVALID;
-
-		/* Initialize memory and spin locks for each worker slot. */
-		for (slot = 0; slot < max_logical_replication_workers; slot++)
-		{
-			LogicalRepWorker *worker = &LogicalRepCtx->workers[slot];
-
-			memset(worker, 0, sizeof(LogicalRepWorker));
-			SpinLockInit(&worker->relmutex);
-		}
+		memset(worker, 0, sizeof(LogicalRepWorker));
+		SpinLockInit(&worker->relmutex);
 	}
 }
 
@@ -1179,7 +1180,7 @@ AtEOXact_ApplyLauncher(bool isCommit)
  * This is used to send launcher signal to stop sleeping and process the
  * subscriptions when current transaction commits. Should be used when new
  * tuple was added to the pg_subscription catalog.
-*/
+ */
 void
 ApplyLauncherWakeupAtCommit(void)
 {
@@ -1213,7 +1214,6 @@ ApplyLauncherMain(Datum main_arg)
 
 	/* Establish signal handlers. */
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
 	/*
@@ -1406,7 +1406,8 @@ ApplyLauncherMain(Datum main_arg)
 		if (MyReplicationSlot)
 		{
 			if (!retain_dead_tuples)
-				ReplicationSlotDropAcquired();
+				/* XXX unclear why we don't request logical decoding disable */
+				ReplicationSlotDropAcquired(false);
 			else if (can_update_xmin)
 				update_conflict_slot_xmin(xmin);
 		}
@@ -1575,7 +1576,7 @@ CreateConflictDetectionSlot(void)
 			errmsg("creating replication conflict detection slot"));
 
 	ReplicationSlotCreate(CONFLICT_DETECTION_SLOT, false, RS_PERSISTENT, false,
-						  false, false);
+						  false, false, false);
 
 	init_conflict_slot_xmin();
 }

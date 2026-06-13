@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/commit_ts.h"
+#include "access/genam.h"
 #include "access/tableam.h"
 #include "executor/executor.h"
 #include "pgstat.h"
@@ -42,14 +43,14 @@ static void errdetail_apply_conflict(EState *estate,
 									 TupleTableSlot *localslot,
 									 TupleTableSlot *remoteslot,
 									 Oid indexoid, TransactionId localxmin,
-									 RepOriginId localorigin,
+									 ReplOriginId localorigin,
 									 TimestampTz localts, StringInfo err_msg);
-static char *build_tuple_value_details(EState *estate, ResultRelInfo *relinfo,
-									   ConflictType type,
-									   TupleTableSlot *searchslot,
-									   TupleTableSlot *localslot,
-									   TupleTableSlot *remoteslot,
-									   Oid indexoid);
+static void get_tuple_desc(EState *estate, ResultRelInfo *relinfo,
+						   ConflictType type, char **key_desc,
+						   TupleTableSlot *localslot, char **local_desc,
+						   TupleTableSlot *remoteslot, char **remote_desc,
+						   TupleTableSlot *searchslot, char **search_desc,
+						   Oid indexoid);
 static char *build_index_value_desc(EState *estate, Relation localrel,
 									TupleTableSlot *slot, Oid indexoid);
 
@@ -61,7 +62,7 @@ static char *build_index_value_desc(EState *estate, Relation localrel,
  */
 bool
 GetTupleTransactionInfo(TupleTableSlot *localslot, TransactionId *xmin,
-						RepOriginId *localorigin, TimestampTz *localts)
+						ReplOriginId *localorigin, TimestampTz *localts)
 {
 	Datum		xminDatum;
 	bool		isnull;
@@ -77,7 +78,7 @@ GetTupleTransactionInfo(TupleTableSlot *localslot, TransactionId *xmin,
 	 */
 	if (!track_commit_timestamp)
 	{
-		*localorigin = InvalidRepOriginId;
+		*localorigin = InvalidReplOriginId;
 		*localts = 0;
 		return false;
 	}
@@ -187,13 +188,43 @@ errcode_apply_conflict(ConflictType type)
 }
 
 /*
+ * Helper function to build the additional details for conflicting key,
+ * local row, remote row, and replica identity columns.
+ */
+static void
+append_tuple_value_detail(StringInfo buf, List *tuple_values)
+{
+	bool		first = true;
+
+	Assert(buf != NULL && tuple_values != NIL);
+
+	foreach_ptr(char, tuple_value, tuple_values)
+	{
+		/*
+		 * Skip if the value is NULL. This means the current user does not
+		 * have enough permissions to see all columns in the table. See
+		 * get_tuple_desc().
+		 */
+		if (!tuple_value)
+			continue;
+
+		/* standard SQL punctuation, not translated */
+		if (!first)
+			appendStringInfoString(buf, ", ");
+
+		appendStringInfoString(buf, tuple_value);
+		first = false;
+	}
+}
+
+/*
  * Add an errdetail() line showing conflict detail.
  *
  * The DETAIL line comprises of two parts:
  * 1. Explanation of the conflict type, including the origin and commit
- *    timestamp of the existing local row.
- * 2. Display of conflicting key, existing local row, remote new row, and
- *    replica identity columns, if any. The remote old row is excluded as its
+ *    timestamp of the local row.
+ * 2. Display of conflicting key, local row, remote new row, and replica
+ *    identity columns, if any. The remote old row is excluded as its
  *    information is covered in the replica identity columns.
  */
 static void
@@ -201,16 +232,28 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 						 ConflictType type, TupleTableSlot *searchslot,
 						 TupleTableSlot *localslot, TupleTableSlot *remoteslot,
 						 Oid indexoid, TransactionId localxmin,
-						 RepOriginId localorigin, TimestampTz localts,
+						 ReplOriginId localorigin, TimestampTz localts,
 						 StringInfo err_msg)
 {
 	StringInfoData err_detail;
-	char	   *val_desc;
+	StringInfoData tuple_buf;
 	char	   *origin_name;
+	char	   *key_desc = NULL;
+	char	   *local_desc = NULL;
+	char	   *remote_desc = NULL;
+	char	   *search_desc = NULL;
+
+	/* Get key, replica identity, remote, and local value data */
+	get_tuple_desc(estate, relinfo, type, &key_desc,
+				   localslot, &local_desc,
+				   remoteslot, &remote_desc,
+				   searchslot, &search_desc,
+				   indexoid);
 
 	initStringInfo(&err_detail);
+	initStringInfo(&tuple_buf);
 
-	/* First, construct a detailed message describing the type of conflict */
+	/* Construct a detailed message describing the type of conflict */
 	switch (type)
 	{
 		case CT_INSERT_EXISTS:
@@ -219,16 +262,50 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 			Assert(OidIsValid(indexoid) &&
 				   CheckRelationOidLockedByMe(indexoid, RowExclusiveLock, true));
 
+			if (err_msg->len == 0)
+			{
+				append_tuple_value_detail(&tuple_buf,
+										  list_make2(remote_desc, search_desc));
+
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Could not apply remote change: %s.\n"),
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Could not apply remote change.\n"));
+
+
+				resetStringInfo(&tuple_buf);
+			}
+
+			append_tuple_value_detail(&tuple_buf,
+									  list_make2(key_desc, local_desc));
+
 			if (localts)
 			{
-				if (localorigin == InvalidRepOriginId)
-					appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified locally in transaction %u at %s."),
-									 get_rel_name(indexoid),
-									 localxmin, timestamptz_to_str(localts));
+				if (localorigin == InvalidReplOriginId)
+				{
+					if (tuple_buf.len)
+						appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified locally in transaction %u at %s: %s."),
+										 get_rel_name(indexoid),
+										 localxmin, timestamptz_to_str(localts),
+										 tuple_buf.data);
+					else
+						appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified locally in transaction %u at %s."),
+										 get_rel_name(indexoid),
+										 localxmin, timestamptz_to_str(localts));
+				}
 				else if (replorigin_by_oid(localorigin, true, &origin_name))
-					appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified by origin \"%s\" in transaction %u at %s."),
-									 get_rel_name(indexoid), origin_name,
-									 localxmin, timestamptz_to_str(localts));
+				{
+					if (tuple_buf.len)
+						appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified by origin \"%s\" in transaction %u at %s: %s."),
+										 get_rel_name(indexoid), origin_name,
+										 localxmin, timestamptz_to_str(localts),
+										 tuple_buf.data);
+					else
+						appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified by origin \"%s\" in transaction %u at %s."),
+										 get_rel_name(indexoid), origin_name,
+										 localxmin, timestamptz_to_str(localts));
+				}
 
 				/*
 				 * The origin that modified this row has been removed. This
@@ -238,86 +315,170 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 				 * manually dropped by the user.
 				 */
 				else
-					appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified by a non-existent origin in transaction %u at %s."),
-									 get_rel_name(indexoid),
-									 localxmin, timestamptz_to_str(localts));
+				{
+					if (tuple_buf.len)
+						appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified by a non-existent origin in transaction %u at %s: %s."),
+										 get_rel_name(indexoid),
+										 localxmin, timestamptz_to_str(localts),
+										 tuple_buf.data);
+					else
+						appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified by a non-existent origin in transaction %u at %s."),
+										 get_rel_name(indexoid),
+										 localxmin, timestamptz_to_str(localts));
+				}
 			}
 			else
-				appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified in transaction %u."),
-								 get_rel_name(indexoid), localxmin);
+			{
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified in transaction %u: %s."),
+									 get_rel_name(indexoid), localxmin,
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Key already exists in unique index \"%s\", modified in transaction %u."),
+									 get_rel_name(indexoid), localxmin);
+			}
 
 			break;
 
 		case CT_UPDATE_ORIGIN_DIFFERS:
-			if (localorigin == InvalidRepOriginId)
-				appendStringInfo(&err_detail, _("Updating the row that was modified locally in transaction %u at %s."),
-								 localxmin, timestamptz_to_str(localts));
+			append_tuple_value_detail(&tuple_buf,
+									  list_make3(local_desc, remote_desc,
+												 search_desc));
+
+			if (localorigin == InvalidReplOriginId)
+			{
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Updating the row that was modified locally in transaction %u at %s: %s."),
+									 localxmin, timestamptz_to_str(localts),
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Updating the row that was modified locally in transaction %u at %s."),
+									 localxmin, timestamptz_to_str(localts));
+			}
 			else if (replorigin_by_oid(localorigin, true, &origin_name))
-				appendStringInfo(&err_detail, _("Updating the row that was modified by a different origin \"%s\" in transaction %u at %s."),
-								 origin_name, localxmin, timestamptz_to_str(localts));
+			{
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Updating the row that was modified by a different origin \"%s\" in transaction %u at %s: %s."),
+									 origin_name, localxmin,
+									 timestamptz_to_str(localts),
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Updating the row that was modified by a different origin \"%s\" in transaction %u at %s."),
+									 origin_name, localxmin,
+									 timestamptz_to_str(localts));
+			}
 
 			/* The origin that modified this row has been removed. */
 			else
-				appendStringInfo(&err_detail, _("Updating the row that was modified by a non-existent origin in transaction %u at %s."),
-								 localxmin, timestamptz_to_str(localts));
+			{
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Updating the row that was modified by a non-existent origin in transaction %u at %s: %s."),
+									 localxmin, timestamptz_to_str(localts),
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Updating the row that was modified by a non-existent origin in transaction %u at %s."),
+									 localxmin, timestamptz_to_str(localts));
+			}
 
 			break;
 
 		case CT_UPDATE_DELETED:
+			append_tuple_value_detail(&tuple_buf,
+									  list_make2(remote_desc, search_desc));
+
+			if (tuple_buf.len)
+				appendStringInfo(&err_detail, _("Could not find the row to be updated: %s.\n"),
+								 tuple_buf.data);
+			else
+				appendStringInfo(&err_detail, _("Could not find the row to be updated.\n"));
+
 			if (localts)
 			{
-				if (localorigin == InvalidRepOriginId)
-					appendStringInfo(&err_detail, _("The row to be updated was deleted locally in transaction %u at %s."),
+				if (localorigin == InvalidReplOriginId)
+					appendStringInfo(&err_detail, _("The row to be updated was deleted locally in transaction %u at %s"),
 									 localxmin, timestamptz_to_str(localts));
 				else if (replorigin_by_oid(localorigin, true, &origin_name))
-					appendStringInfo(&err_detail, _("The row to be updated was deleted by a different origin \"%s\" in transaction %u at %s."),
+					appendStringInfo(&err_detail, _("The row to be updated was deleted by a different origin \"%s\" in transaction %u at %s"),
 									 origin_name, localxmin, timestamptz_to_str(localts));
 
 				/* The origin that modified this row has been removed. */
 				else
-					appendStringInfo(&err_detail, _("The row to be updated was deleted by a non-existent origin in transaction %u at %s."),
+					appendStringInfo(&err_detail, _("The row to be updated was deleted by a non-existent origin in transaction %u at %s"),
 									 localxmin, timestamptz_to_str(localts));
 			}
 			else
-				appendStringInfo(&err_detail, _("The row to be updated was deleted."));
+				appendStringInfoString(&err_detail, _("The row to be updated was deleted"));
 
 			break;
 
 		case CT_UPDATE_MISSING:
-			appendStringInfoString(&err_detail, _("Could not find the row to be updated."));
+			append_tuple_value_detail(&tuple_buf,
+									  list_make2(remote_desc, search_desc));
+
+			if (tuple_buf.len)
+				appendStringInfo(&err_detail, _("Could not find the row to be updated: %s."),
+								 tuple_buf.data);
+			else
+				appendStringInfo(&err_detail, _("Could not find the row to be updated."));
+
 			break;
 
 		case CT_DELETE_ORIGIN_DIFFERS:
-			if (localorigin == InvalidRepOriginId)
-				appendStringInfo(&err_detail, _("Deleting the row that was modified locally in transaction %u at %s."),
-								 localxmin, timestamptz_to_str(localts));
+			append_tuple_value_detail(&tuple_buf,
+									  list_make3(local_desc, remote_desc,
+												 search_desc));
+
+			if (localorigin == InvalidReplOriginId)
+			{
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Deleting the row that was modified locally in transaction %u at %s: %s."),
+									 localxmin, timestamptz_to_str(localts),
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Deleting the row that was modified locally in transaction %u at %s."),
+									 localxmin, timestamptz_to_str(localts));
+			}
 			else if (replorigin_by_oid(localorigin, true, &origin_name))
-				appendStringInfo(&err_detail, _("Deleting the row that was modified by a different origin \"%s\" in transaction %u at %s."),
-								 origin_name, localxmin, timestamptz_to_str(localts));
+			{
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Deleting the row that was modified by a different origin \"%s\" in transaction %u at %s: %s."),
+									 origin_name, localxmin,
+									 timestamptz_to_str(localts),
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Deleting the row that was modified by a different origin \"%s\" in transaction %u at %s."),
+									 origin_name, localxmin,
+									 timestamptz_to_str(localts));
+			}
 
 			/* The origin that modified this row has been removed. */
 			else
-				appendStringInfo(&err_detail, _("Deleting the row that was modified by a non-existent origin in transaction %u at %s."),
-								 localxmin, timestamptz_to_str(localts));
+			{
+				if (tuple_buf.len)
+					appendStringInfo(&err_detail, _("Deleting the row that was modified by a non-existent origin in transaction %u at %s: %s."),
+									 localxmin, timestamptz_to_str(localts),
+									 tuple_buf.data);
+				else
+					appendStringInfo(&err_detail, _("Deleting the row that was modified by a non-existent origin in transaction %u at %s."),
+									 localxmin, timestamptz_to_str(localts));
+			}
 
 			break;
 
 		case CT_DELETE_MISSING:
-			appendStringInfoString(&err_detail, _("Could not find the row to be deleted."));
+			append_tuple_value_detail(&tuple_buf,
+									  list_make1(search_desc));
+
+			if (tuple_buf.len)
+				appendStringInfo(&err_detail, _("Could not find the row to be deleted: %s."),
+								 tuple_buf.data);
+			else
+				appendStringInfo(&err_detail, _("Could not find the row to be deleted."));
+
 			break;
 	}
 
 	Assert(err_detail.len > 0);
-
-	val_desc = build_tuple_value_details(estate, relinfo, type, searchslot,
-										 localslot, remoteslot, indexoid);
-
-	/*
-	 * Next, append the key values, existing local row, remote row, and
-	 * replica identity columns after the message.
-	 */
-	if (val_desc)
-		appendStringInfo(&err_detail, "\n%s", val_desc);
 
 	/*
 	 * Insert a blank line to visually separate the new detail line from the
@@ -330,29 +491,27 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 }
 
 /*
- * Helper function to build the additional details for conflicting key,
- * existing local row, remote row, and replica identity columns.
+ * Extract conflicting key, local row, remote row, and replica identity
+ * columns. Results are set at xxx_desc.
  *
- * If the return value is NULL, it indicates that the current user lacks
- * permissions to view the columns involved.
+ * If the output is NULL, it indicates that the current user lacks permissions
+ * to view the columns involved.
  */
-static char *
-build_tuple_value_details(EState *estate, ResultRelInfo *relinfo,
-						  ConflictType type,
-						  TupleTableSlot *searchslot,
-						  TupleTableSlot *localslot,
-						  TupleTableSlot *remoteslot,
-						  Oid indexoid)
+static void
+get_tuple_desc(EState *estate, ResultRelInfo *relinfo, ConflictType type,
+			   char **key_desc,
+			   TupleTableSlot *localslot, char **local_desc,
+			   TupleTableSlot *remoteslot, char **remote_desc,
+			   TupleTableSlot *searchslot, char **search_desc,
+			   Oid indexoid)
 {
 	Relation	localrel = relinfo->ri_RelationDesc;
 	Oid			relid = RelationGetRelid(localrel);
 	TupleDesc	tupdesc = RelationGetDescr(localrel);
-	StringInfoData tuple_value;
 	char	   *desc = NULL;
 
-	Assert(searchslot || localslot || remoteslot);
-
-	initStringInfo(&tuple_value);
+	Assert((localslot && local_desc) || (remoteslot && remote_desc) ||
+		   (searchslot && search_desc));
 
 	/*
 	 * Report the conflicting key values in the case of a unique constraint
@@ -363,35 +522,24 @@ build_tuple_value_details(EState *estate, ResultRelInfo *relinfo,
 	{
 		Assert(OidIsValid(indexoid) && localslot);
 
-		desc = build_index_value_desc(estate, localrel, localslot, indexoid);
+		desc = build_index_value_desc(estate, localrel, localslot,
+									  indexoid);
 
 		if (desc)
-			appendStringInfo(&tuple_value, _("Key %s"), desc);
+			*key_desc = psprintf(_("key %s"), desc);
 	}
 
 	if (localslot)
 	{
 		/*
 		 * The 'modifiedCols' only applies to the new tuple, hence we pass
-		 * NULL for the existing local row.
+		 * NULL for the local row.
 		 */
 		desc = ExecBuildSlotValueDescription(relid, localslot, tupdesc,
 											 NULL, 64);
 
 		if (desc)
-		{
-			if (tuple_value.len > 0)
-			{
-				appendStringInfoString(&tuple_value, "; ");
-				appendStringInfo(&tuple_value, _("existing local row %s"),
-								 desc);
-			}
-			else
-			{
-				appendStringInfo(&tuple_value, _("Existing local row %s"),
-								 desc);
-			}
-		}
+			*local_desc = psprintf(_("local row %s"), desc);
 	}
 
 	if (remoteslot)
@@ -407,21 +555,12 @@ build_tuple_value_details(EState *estate, ResultRelInfo *relinfo,
 		 */
 		modifiedCols = bms_union(ExecGetInsertedCols(relinfo, estate),
 								 ExecGetUpdatedCols(relinfo, estate));
-		desc = ExecBuildSlotValueDescription(relid, remoteslot, tupdesc,
-											 modifiedCols, 64);
+		desc = ExecBuildSlotValueDescription(relid, remoteslot,
+											 tupdesc, modifiedCols,
+											 64);
 
 		if (desc)
-		{
-			if (tuple_value.len > 0)
-			{
-				appendStringInfoString(&tuple_value, "; ");
-				appendStringInfo(&tuple_value, _("remote row %s"), desc);
-			}
-			else
-			{
-				appendStringInfo(&tuple_value, _("Remote row %s"), desc);
-			}
-		}
+			*remote_desc = psprintf(_("remote row %s"), desc);
 	}
 
 	if (searchslot)
@@ -449,27 +588,12 @@ build_tuple_value_details(EState *estate, ResultRelInfo *relinfo,
 
 		if (desc)
 		{
-			if (tuple_value.len > 0)
-			{
-				appendStringInfoString(&tuple_value, "; ");
-				appendStringInfo(&tuple_value, OidIsValid(replica_index)
-								 ? _("replica identity %s")
-								 : _("replica identity full %s"), desc);
-			}
+			if (OidIsValid(replica_index))
+				*search_desc = psprintf(_("replica identity %s"), desc);
 			else
-			{
-				appendStringInfo(&tuple_value, OidIsValid(replica_index)
-								 ? _("Replica identity %s")
-								 : _("Replica identity full %s"), desc);
-			}
+				*search_desc = psprintf(_("replica identity full %s"), desc);
 		}
 	}
-
-	if (tuple_value.len == 0)
-		return NULL;
-
-	appendStringInfoChar(&tuple_value, '.');
-	return tuple_value.data;
 }
 
 /*

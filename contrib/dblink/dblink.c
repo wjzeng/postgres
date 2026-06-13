@@ -59,9 +59,11 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/tuplestore.h"
 #include "utils/varlena.h"
 #include "utils/wait_event.h"
 
@@ -122,7 +124,7 @@ static bool dblink_connstr_has_pw(const char *connstr);
 static void dblink_security_check(PGconn *conn, const char *connname,
 								  const char *connstr);
 static void dblink_res_error(PGconn *conn, const char *conname, PGresult *res,
-							 bool fail, const char *fmt,...) pg_attribute_printf(5, 6);
+							 bool fail, const char *fmt, ...) pg_attribute_printf(5, 6);
 static char *get_connect_string(const char *servername);
 static char *escape_param_str(const char *str);
 static void validate_pkattnums(Relation rel,
@@ -220,7 +222,10 @@ dblink_get_conn(char *conname_or_str,
 			dblink_we_get_conn = WaitEventExtensionNew("DblinkGetConnect");
 
 		/* OK to make connection */
-		conn = libpqsrv_connect(connstr, dblink_we_get_conn);
+		conn = libpqsrv_connect_start(connstr);
+		PQsetNoticeReceiver(conn, libpqsrv_notice_receiver,
+							"received message via remote connection");
+		libpqsrv_connect_complete(conn, dblink_we_get_conn);
 
 		if (PQstatus(conn) == CONNECTION_BAD)
 		{
@@ -232,9 +237,6 @@ dblink_get_conn(char *conname_or_str,
 					 errmsg("could not establish connection"),
 					 errdetail_internal("%s", msg)));
 		}
-
-		PQsetNoticeReceiver(conn, libpqsrv_notice_receiver,
-							"received message via remote connection");
 
 		dblink_security_check(conn, NULL, connstr);
 		if (PQclientEncoding(conn) != GetDatabaseEncoding())
@@ -319,7 +321,11 @@ dblink_connect(PG_FUNCTION_ARGS)
 	}
 
 	/* OK to make connection */
-	conn = libpqsrv_connect(connstr, dblink_we_connect);
+	conn = libpqsrv_connect_start(connstr);
+	if (conn != NULL)
+		PQsetNoticeReceiver(conn, libpqsrv_notice_receiver,
+							"received message via remote connection");
+	libpqsrv_connect_complete(conn, dblink_we_connect);
 
 	if (PQstatus(conn) == CONNECTION_BAD)
 	{
@@ -333,9 +339,6 @@ dblink_connect(PG_FUNCTION_ARGS)
 				 errmsg("could not establish connection"),
 				 errdetail_internal("%s", msg)));
 	}
-
-	PQsetNoticeReceiver(conn, libpqsrv_notice_receiver,
-						"received message via remote connection");
 
 	/* check password actually used if not superuser */
 	dblink_security_check(conn, connname, connstr);
@@ -881,6 +884,7 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 		tupdesc = CreateTemplateTupleDesc(1);
 		TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
 						   TEXTOID, -1, 0);
+		TupleDescFinalize(tupdesc);
 		ntuples = 1;
 		nfields = 1;
 	}
@@ -1044,6 +1048,7 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 			tupdesc = CreateTemplateTupleDesc(1);
 			TupleDescInitEntry(tupdesc, (AttrNumber) 1, "status",
 							   TEXTOID, -1, 0);
+			TupleDescFinalize(tupdesc);
 			attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
 			oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
@@ -1529,6 +1534,8 @@ dblink_get_pkey(PG_FUNCTION_ARGS)
 		TupleDescInitEntry(tupdesc, (AttrNumber) 2, "colname",
 						   TEXTOID, -1, 0);
 
+		TupleDescFinalize(tupdesc);
+
 		/*
 		 * Generate attribute metadata needed later to produce tuples from raw
 		 * C strings
@@ -1988,6 +1995,9 @@ dblink_fdw_validator(PG_FUNCTION_ARGS)
 							 closest_match) : 0 :
 					 errhint("There are no valid options in this context.")));
 		}
+
+		if (strcmp(def->defname, "use_scram_passthrough") == 0)
+			(void) defGetBoolean(def);	/* accept only boolean values */
 	}
 
 	PG_RETURN_VOID();
@@ -2069,9 +2079,10 @@ get_text_array_contents(ArrayType *array, int *numitems)
 	int16		typlen;
 	bool		typbyval;
 	char		typalign;
+	uint8		typalignby;
 	char	  **values;
 	char	   *ptr;
-	bits8	   *bitmap;
+	uint8	   *bitmap;
 	int			bitmask;
 	int			i;
 
@@ -2081,6 +2092,7 @@ get_text_array_contents(ArrayType *array, int *numitems)
 
 	get_typlenbyvalalign(ARR_ELEMTYPE(array),
 						 &typlen, &typbyval, &typalign);
+	typalignby = typalign_to_alignby(typalign);
 
 	values = palloc_array(char *, nitems);
 
@@ -2098,7 +2110,7 @@ get_text_array_contents(ArrayType *array, int *numitems)
 		{
 			values[i] = TextDatumGetCString(PointerGetDatum(ptr));
 			ptr = att_addlength_pointer(ptr, typlen, ptr);
-			ptr = (char *) att_align_nominal(ptr, typalign);
+			ptr = (char *) att_nominal_alignby(ptr, typalignby);
 		}
 
 		/* advance bitmap pointer if any */
@@ -2785,7 +2797,7 @@ dblink_connstr_check(const char *connstr)
  */
 static void
 dblink_res_error(PGconn *conn, const char *conname, PGresult *res,
-				 bool fail, const char *fmt,...)
+				 bool fail, const char *fmt, ...)
 {
 	int			level;
 	char	   *pg_diag_sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
@@ -3107,8 +3119,15 @@ static bool
 is_valid_dblink_fdw_option(const PQconninfoOption *options, const char *option,
 						   Oid context)
 {
-	if (strcmp(option, "use_scram_passthrough") == 0)
-		return true;
+	/*
+	 * These options are only valid for foreign server or user mapping
+	 * contexts
+	 */
+	if (context == ForeignServerRelationId || context == UserMappingRelationId)
+	{
+		if (strcmp(option, "use_scram_passthrough") == 0)
+			return true;
+	}
 
 	return is_valid_dblink_option(options, option, context);
 }
@@ -3222,12 +3241,18 @@ appendSCRAMKeysInfo(StringInfo buf)
 }
 
 
+/*
+ * Return whether SCRAM pass-through is enabled.
+ *
+ * If use_scram_passthrough is specified in both the foreign server
+ * and the user mapping, the user mapping setting takes precedence.
+ */
 static bool
 UseScramPassthrough(ForeignServer *foreign_server, UserMapping *user)
 {
 	ListCell   *cell;
 
-	foreach(cell, foreign_server->options)
+	foreach(cell, user->options)
 	{
 		DefElem    *def = lfirst(cell);
 
@@ -3235,7 +3260,7 @@ UseScramPassthrough(ForeignServer *foreign_server, UserMapping *user)
 			return defGetBoolean(def);
 	}
 
-	foreach(cell, user->options)
+	foreach(cell, foreign_server->options)
 	{
 		DefElem    *def = (DefElem *) lfirst(cell);
 

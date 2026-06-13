@@ -199,7 +199,7 @@ pg_vsnprintf(char *str, size_t count, const char *fmt, va_list args)
 }
 
 int
-pg_snprintf(char *str, size_t count, const char *fmt,...)
+pg_snprintf(char *str, size_t count, const char *fmt, ...)
 {
 	int			len;
 	va_list		args;
@@ -227,7 +227,7 @@ pg_vsprintf(char *str, const char *fmt, va_list args)
 }
 
 int
-pg_sprintf(char *str, const char *fmt,...)
+pg_sprintf(char *str, const char *fmt, ...)
 {
 	int			len;
 	va_list		args;
@@ -261,7 +261,7 @@ pg_vfprintf(FILE *stream, const char *fmt, va_list args)
 }
 
 int
-pg_fprintf(FILE *stream, const char *fmt,...)
+pg_fprintf(FILE *stream, const char *fmt, ...)
 {
 	int			len;
 	va_list		args;
@@ -279,7 +279,7 @@ pg_vprintf(const char *fmt, va_list args)
 }
 
 int
-pg_printf(const char *fmt,...)
+pg_printf(const char *fmt, ...)
 {
 	int			len;
 	va_list		args;
@@ -462,7 +462,7 @@ nextch2:
 				/* set zero padding if no nonzero digits yet */
 				if (accum == 0 && !pointflag)
 					zpad = '0';
-				/* FALL THRU */
+				pg_fallthrough;
 			case '1':
 			case '2':
 			case '3':

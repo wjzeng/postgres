@@ -23,6 +23,7 @@
 #include "postgres.h"
 
 #include "access/timeline.h"
+#include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xlogrecovery.h"
@@ -46,6 +47,7 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/shmem.h"
+#include "storage/subsystems.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
@@ -108,6 +110,14 @@ typedef struct
 /* Pointer to shared memory state. */
 static WalSummarizerData *WalSummarizerCtl;
 
+static void WalSummarizerShmemRequest(void *arg);
+static void WalSummarizerShmemInit(void *arg);
+
+const ShmemCallbacks WalSummarizerShmemCallbacks = {
+	.request_fn = WalSummarizerShmemRequest,
+	.init_fn = WalSummarizerShmemInit,
+};
+
 /*
  * When we reach end of WAL and need to read more, we sleep for a number of
  * milliseconds that is an integer multiple of MS_PER_SLEEP_QUANTUM. This is
@@ -167,43 +177,34 @@ static void summarizer_wait_for_wal(void);
 static void MaybeRemoveOldWalSummaries(void);
 
 /*
- * Amount of shared memory required for this module.
+ * Register shared memory space needed by this module.
  */
-Size
-WalSummarizerShmemSize(void)
+static void
+WalSummarizerShmemRequest(void *arg)
 {
-	return sizeof(WalSummarizerData);
+	ShmemRequestStruct(.name = "Wal Summarizer Ctl",
+					   .size = sizeof(WalSummarizerData),
+					   .ptr = (void **) &WalSummarizerCtl,
+		);
 }
 
 /*
- * Create or attach to shared memory segment for this module.
+ * Initialize shared memory for this module.
  */
-void
-WalSummarizerShmemInit(void)
+static void
+WalSummarizerShmemInit(void *arg)
 {
-	bool		found;
-
-	WalSummarizerCtl = (WalSummarizerData *)
-		ShmemInitStruct("Wal Summarizer Ctl", WalSummarizerShmemSize(),
-						&found);
-
-	if (!found)
-	{
-		/*
-		 * First time through, so initialize.
-		 *
-		 * We're just filling in dummy values here -- the real initialization
-		 * will happen when GetOldestUnsummarizedLSN() is called for the first
-		 * time.
-		 */
-		WalSummarizerCtl->initialized = false;
-		WalSummarizerCtl->summarized_tli = 0;
-		WalSummarizerCtl->summarized_lsn = InvalidXLogRecPtr;
-		WalSummarizerCtl->lsn_is_exact = false;
-		WalSummarizerCtl->summarizer_pgprocno = INVALID_PROC_NUMBER;
-		WalSummarizerCtl->pending_lsn = InvalidXLogRecPtr;
-		ConditionVariableInit(&WalSummarizerCtl->summary_file_cv);
-	}
+	/*
+	 * We're just filling in dummy values here -- the real initialization will
+	 * happen when GetOldestUnsummarizedLSN() is called for the first time.
+	 */
+	WalSummarizerCtl->initialized = false;
+	WalSummarizerCtl->summarized_tli = 0;
+	WalSummarizerCtl->summarized_lsn = InvalidXLogRecPtr;
+	WalSummarizerCtl->lsn_is_exact = false;
+	WalSummarizerCtl->summarizer_pgprocno = INVALID_PROC_NUMBER;
+	WalSummarizerCtl->pending_lsn = InvalidXLogRecPtr;
+	ConditionVariableInit(&WalSummarizerCtl->summary_file_cv);
 }
 
 /*
@@ -234,7 +235,6 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 
 	Assert(startup_data_len == 0);
 
-	MyBackendType = B_WAL_SUMMARIZER;
 	AuxiliaryProcessMainCommon();
 
 	ereport(DEBUG1,
@@ -242,18 +242,15 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 
 	/*
 	 * Properly accept or ignore signals the postmaster might send us
-	 *
-	 * We have no particular use for SIGINT at the moment, but seems
-	 * reasonable to treat like SIGTERM.
 	 */
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, SignalHandlerForShutdownRequest);
+	pqsignal(SIGINT, PG_SIG_IGN);	/* no query to cancel */
 	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
 	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, SIG_IGN);
-	pqsignal(SIGPIPE, SIG_IGN);
+	pqsignal(SIGALRM, PG_SIG_IGN);
+	pqsignal(SIGPIPE, PG_SIG_IGN);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, SIG_IGN); /* not used */
+	pqsignal(SIGUSR2, PG_SIG_IGN);	/* not used */
 
 	/* Advertise ourselves. */
 	on_shmem_exit(WalSummarizerShutdown, (Datum) 0);
@@ -270,7 +267,7 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
-	pqsignal(SIGCHLD, SIG_DFL);
+	pqsignal(SIGCHLD, PG_SIG_DFL);
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -649,7 +646,7 @@ WakeupWalSummarizer(void)
 	LWLockRelease(WALSummarizerLock);
 
 	if (pgprocno != INVALID_PROC_NUMBER)
-		SetLatch(&ProcGlobal->allProcs[pgprocno].procLatch);
+		SetLatch(&GetPGProcByNumber(pgprocno)->procLatch);
 }
 
 /*
@@ -918,6 +915,7 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
 	WalSummaryIO io;
 	BlockRefTable *brtab = CreateEmptyBlockRefTable();
 	bool		fast_forward = true;
+	char	   *errormsg;
 
 	/* Initialize private data for xlogreader. */
 	private_data = palloc0_object(SummarizerReadLocalXLogPrivate);
@@ -969,7 +967,7 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
 	}
 	else
 	{
-		summary_start_lsn = XLogFindNextRecord(xlogreader, start_lsn);
+		summary_start_lsn = XLogFindNextRecord(xlogreader, start_lsn, &errormsg);
 		if (!XLogRecPtrIsValid(summary_start_lsn))
 		{
 			/*
@@ -998,9 +996,16 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
 				switch_lsn = xlogreader->EndRecPtr;
 			}
 			else
-				ereport(ERROR,
-						errmsg("could not find a valid record after %X/%08X",
-							   LSN_FORMAT_ARGS(start_lsn)));
+			{
+				if (errormsg)
+					ereport(ERROR,
+							errmsg("could not find a valid record after %X/%08X: %s",
+								   LSN_FORMAT_ARGS(start_lsn), errormsg));
+				else
+					ereport(ERROR,
+							errmsg("could not find a valid record after %X/%08X",
+								   LSN_FORMAT_ARGS(start_lsn)));
+			}
 		}
 
 		/* We shouldn't go backward. */
@@ -1013,7 +1018,6 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
 	while (1)
 	{
 		int			block_id;
-		char	   *errormsg;
 		XLogRecord *record;
 		uint8		rmid;
 
@@ -1355,7 +1359,8 @@ SummarizeSmgrRecord(XLogReaderState *xlogreader, BlockRefTable *brtab)
 									   MAIN_FORKNUM, xlrec->blkno);
 		if ((xlrec->flags & SMGR_TRUNCATE_VM) != 0)
 			BlockRefTableSetLimitBlock(brtab, &xlrec->rlocator,
-									   VISIBILITYMAP_FORKNUM, xlrec->blkno);
+									   VISIBILITYMAP_FORKNUM,
+									   visibilitymap_truncation_length(xlrec->blkno));
 	}
 }
 
@@ -1430,8 +1435,11 @@ SummarizeXlogRecord(XLogReaderState *xlogreader, bool *new_fast_forward)
 
 	if (info == XLOG_CHECKPOINT_REDO)
 	{
+		xl_checkpoint_redo xlrec;
+
 		/* Payload is wal_level at the time record was written. */
-		memcpy(&record_wal_level, XLogRecGetData(xlogreader), sizeof(int));
+		memcpy(&xlrec, XLogRecGetData(xlogreader), sizeof(xl_checkpoint_redo));
+		record_wal_level = xlrec.wal_level;
 	}
 	else if (info == XLOG_CHECKPOINT_SHUTDOWN)
 	{

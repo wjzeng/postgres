@@ -235,8 +235,8 @@ shared_record_table_compare(const void *a, const void *b, size_t size,
 							void *arg)
 {
 	dsa_area   *area = (dsa_area *) arg;
-	SharedRecordTableKey *k1 = (SharedRecordTableKey *) a;
-	SharedRecordTableKey *k2 = (SharedRecordTableKey *) b;
+	const SharedRecordTableKey *k1 = a;
+	const SharedRecordTableKey *k2 = b;
 	TupleDesc	t1;
 	TupleDesc	t2;
 
@@ -259,8 +259,8 @@ shared_record_table_compare(const void *a, const void *b, size_t size,
 static uint32
 shared_record_table_hash(const void *a, size_t size, void *arg)
 {
-	dsa_area   *area = (dsa_area *) arg;
-	SharedRecordTableKey *k = (SharedRecordTableKey *) a;
+	dsa_area   *area = arg;
+	const SharedRecordTableKey *k = a;
 	TupleDesc	t;
 
 	if (k->shared)
@@ -337,9 +337,12 @@ static bool multirange_element_has_hashing(TypeCacheEntry *typentry);
 static bool multirange_element_has_extended_hashing(TypeCacheEntry *typentry);
 static void cache_multirange_element_properties(TypeCacheEntry *typentry);
 static void TypeCacheRelCallback(Datum arg, Oid relid);
-static void TypeCacheTypCallback(Datum arg, int cacheid, uint32 hashvalue);
-static void TypeCacheOpcCallback(Datum arg, int cacheid, uint32 hashvalue);
-static void TypeCacheConstrCallback(Datum arg, int cacheid, uint32 hashvalue);
+static void TypeCacheTypCallback(Datum arg, SysCacheIdentifier cacheid,
+								 uint32 hashvalue);
+static void TypeCacheOpcCallback(Datum arg, SysCacheIdentifier cacheid,
+								 uint32 hashvalue);
+static void TypeCacheConstrCallback(Datum arg, SysCacheIdentifier cacheid,
+									uint32 hashvalue);
 static void load_enum_cache_data(TypeCacheEntry *tcache);
 static EnumItem *find_enumitem(TypeCacheEnumData *enumdata, Oid arg);
 static int	enum_oid_cmp(const void *left, const void *right);
@@ -776,8 +779,9 @@ lookup_type_cache(Oid type_id, int flags)
 										  HASHSTANDARD_PROC);
 
 		/*
-		 * As above, make sure hash_array, hash_record, or hash_range will
-		 * succeed.
+		 * As above, make sure hash_array, hash_record, hash_range, or
+		 * hash_multirange will succeed.  Here we do need to check the range
+		 * cases.
 		 */
 		if (hash_proc == F_HASH_ARRAY &&
 			!array_element_has_hashing(typentry))
@@ -788,12 +792,8 @@ lookup_type_cache(Oid type_id, int flags)
 		else if (hash_proc == F_HASH_RANGE &&
 				 !range_element_has_hashing(typentry))
 			hash_proc = InvalidOid;
-
-		/*
-		 * Likewise for hash_multirange.
-		 */
-		if (hash_proc == F_HASH_MULTIRANGE &&
-			!multirange_element_has_hashing(typentry))
+		else if (hash_proc == F_HASH_MULTIRANGE &&
+				 !multirange_element_has_hashing(typentry))
 			hash_proc = InvalidOid;
 
 		/* Force update of hash_proc_finfo only if we're changing state */
@@ -825,8 +825,8 @@ lookup_type_cache(Oid type_id, int flags)
 												   HASHEXTENDED_PROC);
 
 		/*
-		 * As above, make sure hash_array_extended, hash_record_extended, or
-		 * hash_range_extended will succeed.
+		 * As above, make sure hash_array_extended, hash_record_extended,
+		 * hash_range_extended, or hash_multirange_extended will succeed.
 		 */
 		if (hash_extended_proc == F_HASH_ARRAY_EXTENDED &&
 			!array_element_has_extended_hashing(typentry))
@@ -837,12 +837,8 @@ lookup_type_cache(Oid type_id, int flags)
 		else if (hash_extended_proc == F_HASH_RANGE_EXTENDED &&
 				 !range_element_has_extended_hashing(typentry))
 			hash_extended_proc = InvalidOid;
-
-		/*
-		 * Likewise for hash_multirange_extended.
-		 */
-		if (hash_extended_proc == F_HASH_MULTIRANGE_EXTENDED &&
-			!multirange_element_has_extended_hashing(typentry))
+		else if (hash_extended_proc == F_HASH_MULTIRANGE_EXTENDED &&
+				 !multirange_element_has_extended_hashing(typentry))
 			hash_extended_proc = InvalidOid;
 
 		/* Force update of proc finfo only if we're changing state */
@@ -1482,10 +1478,14 @@ UpdateDomainConstraintRef(DomainConstraintRef *ref)
 /*
  * DomainHasConstraints --- utility routine to check if a domain has constraints
  *
+ * Returns true if the domain has any constraints at all.  If has_volatile
+ * is not NULL, also checks whether any CHECK constraint contains a volatile
+ * expression and sets *has_volatile accordingly.
+ *
  * This is defined to return false, not fail, if type is not a domain.
  */
 bool
-DomainHasConstraints(Oid type_id)
+DomainHasConstraints(Oid type_id, bool *has_volatile)
 {
 	TypeCacheEntry *typentry;
 
@@ -1495,7 +1495,26 @@ DomainHasConstraints(Oid type_id)
 	 */
 	typentry = lookup_type_cache(type_id, TYPECACHE_DOMAIN_CONSTR_INFO);
 
-	return (typentry->domainData != NULL);
+	if (typentry->domainData == NULL)
+		return false;
+
+	if (has_volatile)
+	{
+		*has_volatile = false;
+
+		foreach_node(DomainConstraintState, constrstate,
+					 typentry->domainData->constraints)
+		{
+			if (constrstate->constrainttype == DOM_CONSTRAINT_CHECK &&
+				contain_volatile_functions((Node *) constrstate->check_expr))
+			{
+				*has_volatile = true;
+				break;
+			}
+		}
+	}
+
+	return true;
 }
 
 
@@ -2013,7 +2032,7 @@ lookup_rowtype_tupdesc_domain(Oid type_id, int32 typmod, bool noError)
 static uint32
 record_type_typmod_hash(const void *data, size_t size)
 {
-	RecordCacheEntry *entry = (RecordCacheEntry *) data;
+	const RecordCacheEntry *entry = data;
 
 	return hashRowType(entry->tupdesc);
 }
@@ -2024,8 +2043,8 @@ record_type_typmod_hash(const void *data, size_t size)
 static int
 record_type_typmod_compare(const void *a, const void *b, size_t size)
 {
-	RecordCacheEntry *left = (RecordCacheEntry *) a;
-	RecordCacheEntry *right = (RecordCacheEntry *) b;
+	const RecordCacheEntry *left = a;
+	const RecordCacheEntry *right = b;
 
 	return equalRowTypes(left->tupdesc, right->tupdesc) ? 0 : 1;
 }
@@ -2429,7 +2448,7 @@ TypeCacheRelCallback(Datum arg, Oid relid)
 		RelIdToTypeIdCacheEntry *relentry;
 
 		/*
-		 * Find an RelIdToTypeIdCacheHash entry, which should exist as soon as
+		 * Find a RelIdToTypeIdCacheHash entry, which should exist as soon as
 		 * corresponding typcache entry has something to clean.
 		 */
 		relentry = (RelIdToTypeIdCacheEntry *) hash_search(RelIdToTypeIdCacheHash,
@@ -2512,7 +2531,7 @@ TypeCacheRelCallback(Datum arg, Oid relid)
  * it as needing to be reloaded.
  */
 static void
-TypeCacheTypCallback(Datum arg, int cacheid, uint32 hashvalue)
+TypeCacheTypCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 {
 	HASH_SEQ_STATUS status;
 	TypeCacheEntry *typentry;
@@ -2569,7 +2588,7 @@ TypeCacheTypCallback(Datum arg, int cacheid, uint32 hashvalue)
  * of members are not going to get cached here.
  */
 static void
-TypeCacheOpcCallback(Datum arg, int cacheid, uint32 hashvalue)
+TypeCacheOpcCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 {
 	HASH_SEQ_STATUS status;
 	TypeCacheEntry *typentry;
@@ -2607,7 +2626,7 @@ TypeCacheOpcCallback(Datum arg, int cacheid, uint32 hashvalue)
  * approach to domain constraints.
  */
 static void
-TypeCacheConstrCallback(Datum arg, int cacheid, uint32 hashvalue)
+TypeCacheConstrCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 {
 	TypeCacheEntry *typentry;
 

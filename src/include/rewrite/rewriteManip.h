@@ -22,7 +22,7 @@ typedef struct AttrMap AttrMap; /* avoid including attmap.h here */
 
 typedef struct replace_rte_variables_context replace_rte_variables_context;
 
-typedef Node *(*replace_rte_variables_callback) (Var *var,
+typedef Node *(*replace_rte_variables_callback) (const Var *var,
 												 replace_rte_variables_context *context);
 
 struct replace_rte_variables_context
@@ -54,7 +54,7 @@ struct ChangeVarNodes_context
 	ChangeVarNodes_callback callback;
 };
 
-extern Relids adjust_relid_set(Relids relids, int oldrelid, int newrelid);
+pg_nodiscard extern Relids adjust_relid_set(Relids relids, int oldrelid, int newrelid);
 extern void CombineRangeTables(List **dst_rtable, List **dst_perminfos,
 							   List *src_rtable, List *src_perminfos);
 extern void OffsetVarNodes(Node *node, int offset, int sublevels_up);
@@ -104,7 +104,7 @@ extern Node *map_variable_attnos(Node *node,
 								 const AttrMap *attno_map,
 								 Oid to_rowtype, bool *found_whole_row);
 
-extern Node *ReplaceVarFromTargetList(Var *var,
+extern Node *ReplaceVarFromTargetList(const Var *var,
 									  RangeTblEntry *target_rte,
 									  List *targetlist,
 									  int result_relation,

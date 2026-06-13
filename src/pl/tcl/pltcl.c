@@ -31,11 +31,13 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/regproc.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/tuplestore.h"
 #include "utils/typcache.h"
 
 
@@ -2545,7 +2547,7 @@ pltcl_process_SPI_result(Tcl_Interp *interp,
 				break;
 			}
 			/* fall through for utility returning tuples */
-			/* FALLTHROUGH */
+			pg_fallthrough;
 
 		case SPI_OK_SELECT:
 		case SPI_OK_INSERT_RETURNING:

@@ -36,6 +36,7 @@
 #include "pgstat.h"
 #include "storage/ipc.h"
 #include "storage/predicate.h"
+#include "storage/proc.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/combocid.h"
@@ -44,6 +45,7 @@
 #include "utils/memutils.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
+#include "utils/wait_event.h"
 
 /*
  * We don't want to waste a lot of memory on an error queue which, most of
@@ -357,7 +359,7 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	fps->stmt_ts = GetCurrentStatementStartTimestamp();
 	fps->serializable_xact_handle = ShareSerializableXact();
 	SpinLockInit(&fps->mutex);
-	fps->last_xlog_end = 0;
+	fps->last_xlog_end = InvalidXLogRecPtr;
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_FIXED, fps);
 
 	/* We can skip the rest of this if we're not budgeting for any workers. */
@@ -530,7 +532,7 @@ ReinitializeParallelDSM(ParallelContext *pcxt)
 
 	/* Reset a few bits of fixed parallel state to a clean state. */
 	fps = shm_toc_lookup(pcxt->toc, PARALLEL_KEY_FIXED, false);
-	fps->last_xlog_end = 0;
+	fps->last_xlog_end = InvalidXLogRecPtr;
 
 	/* Recreate error queues (if they exist). */
 	if (pcxt->nworkers > 0)
@@ -884,7 +886,7 @@ WaitForParallelWorkersToFinish(ParallelContext *pcxt)
 				 * the worker writes messages and terminates after the
 				 * CHECK_FOR_INTERRUPTS() near the top of this function and
 				 * before the call to GetBackgroundWorkerPid().  In that case,
-				 * or latch should have been set as well and the right things
+				 * our latch should have been set as well and the right things
 				 * will happen on the next pass through the loop.
 				 */
 			}
@@ -1045,7 +1047,7 @@ HandleParallelMessageInterrupt(void)
 {
 	InterruptPending = true;
 	ParallelMessagePending = true;
-	SetLatch(MyLatch);
+	/* latch will be set by procsignal_sigusr1_handler */
 }
 
 /*
@@ -1327,7 +1329,6 @@ ParallelWorkerMain(Datum main_arg)
 	InitializingParallelWorker = true;
 
 	/* Establish signal handlers. */
-	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
 	/* Determine and set our parallel worker number. */

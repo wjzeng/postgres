@@ -31,6 +31,7 @@ OBJS = \
 	datetime.o \
 	datum.o \
 	dbsize.o \
+	ddlutils.o \
 	domains.o \
 	encode.o \
 	enum.o \
@@ -77,6 +78,7 @@ OBJS = \
 	numeric.o \
 	numutils.o \
 	oid.o \
+	oid8.o \
 	oracle_compat.o \
 	orderedsetaggs.o \
 	partitionfuncs.o \

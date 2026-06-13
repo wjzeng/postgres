@@ -66,7 +66,7 @@ typedef struct bbsink_copystream
  * frequently. Ideally, we'd like to send a message when the time since the
  * last message reaches PROGRESS_REPORT_MILLISECOND_THRESHOLD, but checking
  * the system time every time we send a tiny bit of data seems too expensive.
- * So we only check it after the number of bytes sine the last check reaches
+ * So we only check it after the number of bytes since the last check reaches
  * PROGRESS_REPORT_BYTE_INTERVAL.
  */
 #define	PROGRESS_REPORT_BYTE_INTERVAL				65536
@@ -357,6 +357,8 @@ SendXlogRecPtrResult(XLogRecPtr ptr, TimeLineID tli)
 	 */
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 2, "tli", INT8OID, -1, 0);
 
+	TupleDescFinalize(tupdesc);
+
 	/* send RowDescription */
 	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
 
@@ -388,6 +390,7 @@ SendTablespaceList(List *tablespaces)
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "spcoid", OIDOID, -1, 0);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 2, "spclocation", TEXTOID, -1, 0);
 	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 3, "size", INT8OID, -1, 0);
+	TupleDescFinalize(tupdesc);
 
 	/* send RowDescription */
 	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);

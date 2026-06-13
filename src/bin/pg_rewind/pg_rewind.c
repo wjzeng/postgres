@@ -377,7 +377,7 @@ main(int argc, char **argv)
 	{
 		pg_log_info("source and target cluster are on the same timeline");
 		rewind_needed = false;
-		target_wal_endrec = 0;
+		target_wal_endrec = InvalidXLogRecPtr;
 	}
 	else
 	{
@@ -874,7 +874,7 @@ getTimelineHistory(TimeLineID tli, bool is_source, int *nentries)
 	 */
 	if (tli == 1)
 	{
-		history = (TimeLineHistoryEntry *) pg_malloc(sizeof(TimeLineHistoryEntry));
+		history = pg_malloc_object(TimeLineHistoryEntry);
 		history->tli = tli;
 		history->begin = history->end = InvalidXLogRecPtr;
 		*nentries = 1;

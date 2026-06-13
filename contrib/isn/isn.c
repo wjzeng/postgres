@@ -837,6 +837,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 		case UPC:
 			buf[2] = '0';
 			valid = (valid && ((rcheck = checkdig(buf + 2, 13)) == check || magic));
+			break;
 		default:
 			break;
 	}
@@ -932,7 +933,8 @@ _PG_init(void)
 	MarkGUCPrefixReserved("isn");
 }
 
-/* isn_out
+/*
+ * isn_out
  */
 PG_FUNCTION_INFO_V1(isn_out);
 Datum
@@ -948,7 +950,8 @@ isn_out(PG_FUNCTION_ARGS)
 	PG_RETURN_CSTRING(result);
 }
 
-/* ean13_out
+/*
+ * ean13_out
  */
 PG_FUNCTION_INFO_V1(ean13_out);
 Datum
@@ -964,7 +967,8 @@ ean13_out(PG_FUNCTION_ARGS)
 	PG_RETURN_CSTRING(result);
 }
 
-/* ean13_in
+/*
+ * ean13_in
  */
 PG_FUNCTION_INFO_V1(ean13_in);
 Datum
@@ -978,7 +982,8 @@ ean13_in(PG_FUNCTION_ARGS)
 	PG_RETURN_EAN13(result);
 }
 
-/* isbn_in
+/*
+ * isbn_in
  */
 PG_FUNCTION_INFO_V1(isbn_in);
 Datum
@@ -992,7 +997,8 @@ isbn_in(PG_FUNCTION_ARGS)
 	PG_RETURN_EAN13(result);
 }
 
-/* ismn_in
+/*
+ * ismn_in
  */
 PG_FUNCTION_INFO_V1(ismn_in);
 Datum
@@ -1006,7 +1012,8 @@ ismn_in(PG_FUNCTION_ARGS)
 	PG_RETURN_EAN13(result);
 }
 
-/* issn_in
+/*
+ * issn_in
  */
 PG_FUNCTION_INFO_V1(issn_in);
 Datum
@@ -1020,7 +1027,8 @@ issn_in(PG_FUNCTION_ARGS)
 	PG_RETURN_EAN13(result);
 }
 
-/* upc_in
+/*
+ * upc_in
  */
 PG_FUNCTION_INFO_V1(upc_in);
 Datum
@@ -1034,8 +1042,9 @@ upc_in(PG_FUNCTION_ARGS)
 	PG_RETURN_EAN13(result);
 }
 
-/* casting functions
-*/
+/*
+ * casting functions
+ */
 PG_FUNCTION_INFO_V1(isbn_cast_from_ean13);
 Datum
 isbn_cast_from_ean13(PG_FUNCTION_ARGS)
@@ -1085,7 +1094,8 @@ upc_cast_from_ean13(PG_FUNCTION_ARGS)
 }
 
 
-/* is_valid - returns false if the "invalid-check-digit-on-input" is set
+/*
+ * is_valid - returns false if the "invalid-check-digit-on-input" is set
  */
 PG_FUNCTION_INFO_V1(is_valid);
 Datum
@@ -1096,7 +1106,8 @@ is_valid(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL((val & 1) == 0);
 }
 
-/* make_valid - unsets the "invalid-check-digit-on-input" flag
+/*
+ * make_valid - unsets the "invalid-check-digit-on-input" flag
  */
 PG_FUNCTION_INFO_V1(make_valid);
 Datum
@@ -1108,7 +1119,8 @@ make_valid(PG_FUNCTION_ARGS)
 	PG_RETURN_EAN13(val);
 }
 
-/* this function temporarily sets weak input flag
+/*
+ * this function temporarily sets weak input flag
  * (to lose the strictness of check digit acceptance)
  */
 PG_FUNCTION_INFO_V1(accept_weak_input);

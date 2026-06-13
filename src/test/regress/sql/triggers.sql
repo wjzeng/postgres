@@ -1148,7 +1148,7 @@ drop function trigger_ddl_func();
 
 --
 -- Verify behavior of before and after triggers with INSERT...ON CONFLICT
--- DO UPDATE
+-- DO UPDATE and DO SELECT
 --
 create table upsert (key int4 primary key, color text);
 
@@ -1197,6 +1197,7 @@ insert into upsert values(5, 'purple') on conflict (key) do update set color = '
 insert into upsert values(6, 'white') on conflict (key) do update set color = 'updated ' || upsert.color;
 insert into upsert values(7, 'pink') on conflict (key) do update set color = 'updated ' || upsert.color;
 insert into upsert values(8, 'yellow') on conflict (key) do update set color = 'updated ' || upsert.color;
+insert into upsert values(8, 'blue') on conflict (key) do select for update where upsert.color = 'yellow trig modified' returning old.*, new.*, upsert.*;
 
 select * from upsert;
 
@@ -2228,6 +2229,10 @@ with wcte as (insert into table1 values (42))
 with wcte as (insert into table1 values (43))
   insert into table1 values (44);
 
+with wcte as (insert into table1 values (45))
+  merge into table1 using (values (46)) as v(a) on table1.a = v.a
+    when not matched then insert values (v.a);
+
 select * from table1;
 select * from table2;
 
@@ -2783,3 +2788,26 @@ drop table defer_trig;
 drop function whoami();
 drop role regress_fn_owner;
 drop role regress_caller;
+
+--
+-- Test a recursive AFTER ROW trigger that nests after-trigger query levels
+-- deeply enough to grow query_stack mid-fire.  Outer levels then resume their
+-- post-loop cleanup against the relocated stack.
+--
+create table trigger_recursive (id int);
+create function trigger_recursive_fn() returns trigger language plpgsql as $$
+begin
+    if new.id < 10 then
+        insert into trigger_recursive values (new.id + 1);
+    end if;
+    return new;
+end$$;
+
+create trigger trigger_recursive after insert on trigger_recursive
+    for each row execute function trigger_recursive_fn();
+
+insert into trigger_recursive values (1);
+select count(*) from trigger_recursive;
+
+drop table trigger_recursive;
+drop function trigger_recursive_fn();

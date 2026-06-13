@@ -266,10 +266,10 @@ extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
 #define DEFAULT_DEBUG_COPY_PARSE_PLAN_TREES false
 #endif
 
-#ifdef READ_WRITE_PARSE_PLAN_TREES
-#define DEFAULT_DEBUG_READ_WRITE_PARSE_PLAN_TREES true
+#ifdef WRITE_READ_PARSE_PLAN_TREES
+#define DEFAULT_DEBUG_WRITE_READ_PARSE_PLAN_TREES true
 #else
-#define DEFAULT_DEBUG_READ_WRITE_PARSE_PLAN_TREES false
+#define DEFAULT_DEBUG_WRITE_READ_PARSE_PLAN_TREES false
 #endif
 
 #ifdef RAW_EXPRESSION_COVERAGE_TEST
@@ -295,7 +295,7 @@ extern PGDLLIMPORT bool log_duration;
 extern PGDLLIMPORT int log_parameter_max_length;
 extern PGDLLIMPORT int log_parameter_max_length_on_error;
 extern PGDLLIMPORT int log_min_error_statement;
-extern PGDLLIMPORT int log_min_messages;
+extern PGDLLIMPORT int log_min_messages[];
 extern PGDLLIMPORT int client_min_messages;
 extern PGDLLIMPORT int log_min_duration_sample;
 extern PGDLLIMPORT int log_min_duration_statement;
@@ -312,6 +312,7 @@ extern PGDLLIMPORT char *cluster_name;
 extern PGDLLIMPORT char *ConfigFileName;
 extern PGDLLIMPORT char *HbaFileName;
 extern PGDLLIMPORT char *IdentFileName;
+extern PGDLLIMPORT char *HostsFileName;
 extern PGDLLIMPORT char *external_pid_file;
 
 extern PGDLLIMPORT char *application_name;
@@ -344,6 +345,7 @@ extern PGDLLIMPORT const struct config_enum_entry archive_mode_options[];
 extern PGDLLIMPORT const struct config_enum_entry dynamic_shared_memory_options[];
 extern PGDLLIMPORT const struct config_enum_entry io_method_options[];
 extern PGDLLIMPORT const struct config_enum_entry recovery_target_action_options[];
+extern PGDLLIMPORT const struct config_enum_entry server_message_level_options[];
 extern PGDLLIMPORT const struct config_enum_entry wal_level_options[];
 extern PGDLLIMPORT const struct config_enum_entry wal_sync_method_options[];
 

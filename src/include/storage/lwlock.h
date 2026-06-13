@@ -73,14 +73,6 @@ typedef union LWLockPadded
 
 extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
 
-/* forward declaration of private type for use only by lwlock.c */
-typedef struct NamedLWLockTrancheRequest NamedLWLockTrancheRequest;
-
-extern PGDLLIMPORT char **LWLockTrancheNames;
-extern PGDLLIMPORT int NamedLWLockTrancheRequests;
-extern PGDLLIMPORT NamedLWLockTrancheRequest *NamedLWLockTrancheRequestArray;
-extern PGDLLIMPORT int *LWLockCounter;
-
 /*
  * It's a bit odd to declare NUM_BUFFER_PARTITIONS and NUM_LOCK_PARTITIONS
  * here, but we need them to figure out offsets within MainLWLockArray, and
@@ -127,10 +119,6 @@ extern bool LWLockAcquireOrWait(LWLock *lock, LWLockMode mode);
 extern void LWLockRelease(LWLock *lock);
 extern void LWLockReleaseClearVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val);
 extern void LWLockReleaseAll(void);
-extern void LWLockDisown(LWLock *lock);
-extern void LWLockReleaseDisowned(LWLock *lock, LWLockMode mode);
-extern void ForEachLWLockHeldByMe(void (*callback) (LWLock *, LWLockMode, void *),
-								  void *context);
 extern bool LWLockHeldByMe(LWLock *lock);
 extern bool LWLockAnyHeldByMe(LWLock *lock, int nlocks, size_t stride);
 extern bool LWLockHeldByMeInMode(LWLock *lock, LWLockMode mode);
@@ -138,8 +126,6 @@ extern bool LWLockHeldByMeInMode(LWLock *lock, LWLockMode mode);
 extern bool LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval, uint64 *newval);
 extern void LWLockUpdateVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val);
 
-extern Size LWLockShmemSize(void);
-extern void CreateLWLocks(void);
 extern void InitLWLockAccess(void);
 
 extern const char *GetLWLockIdentifier(uint32 classId, uint16 eventId);

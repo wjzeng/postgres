@@ -12,7 +12,8 @@
  *
  *-------------------------------------------------------------------------
  */
-/* INTERFACE ROUTINES
+/*
+ * INTERFACE ROUTINES
  *		ExecInitMergeAppend		- initialize the MergeAppend node
  *		ExecMergeAppend			- retrieve the next tuple from the node
  *		ExecEndMergeAppend		- shut down the MergeAppend node
@@ -43,6 +44,7 @@
 #include "executor/nodeMergeAppend.h"
 #include "lib/binaryheap.h"
 #include "miscadmin.h"
+#include "utils/sortsupport.h"
 
 /*
  * We have one slot for each item in the heap array.  We use SlotNumber

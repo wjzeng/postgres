@@ -4440,6 +4440,17 @@ a0ee-bc99-9c0b-4ef8-bb6d-6bb9-bd38-0a11
    </para>
 
    <para>
+    It is possible to cast <type>uuid</type> values to and from type
+    <type>bytea</type>. This is useful for using functions such as
+    <function>encode()</function> and <function>decode()</function>
+    with UUID values. For example:
+<programlisting>
+encode('1ea3d64c-bc40-4cc3-84bb-6b11ee31e5c2'::uuid::bytea, 'base64')
+decode('HqPWTLxATMOEu2sR7jHlwg==', 'base64')::uuid
+</programlisting>
+   </para>
+
+   <para>
     See <xref linkend="functions-uuid"/> for how to generate a UUID in
     <productname>PostgreSQL</productname>.
    </para>
@@ -4725,6 +4736,10 @@ INSERT INTO mytable VALUES(-1);  -- fails
    </indexterm>
 
    <indexterm zone="datatype-oid">
+    <primary>oid8</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-oid">
     <primary>regclass</primary>
    </indexterm>
 
@@ -4807,8 +4822,16 @@ INSERT INTO mytable VALUES(-1);  -- fails
    </para>
 
    <para>
-    The <type>oid</type> type itself has few operations beyond comparison.
-    It can be cast to integer, however, and then manipulated using the
+    In some contexts, a 64-bit variant <type>oid8</type> can be used.
+    It is implemented as an unsigned eight-byte integer. Unlike its
+    <type>oid</type> counterpart, it can ensure uniqueness in large
+    individual tables.
+   </para>
+
+   <para>
+    The <type>oid</type> and <type>oid8</type> types themselves have
+    few operations beyond comparison.
+    They can be cast to integer, however, and then manipulated using the
     standard integer operators.  (Beware of possible
     signed-versus-unsigned confusion if you do this.)
    </para>

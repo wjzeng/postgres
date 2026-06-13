@@ -19,6 +19,7 @@
 #include "catalog/pg_am_d.h"
 #include "fmgr.h"
 #include "lib/rbtree.h"
+#include "nodes/tidbitmap.h"
 #include "storage/bufmgr.h"
 
 /*
@@ -97,15 +98,9 @@ extern Buffer GinNewBuffer(Relation index);
 extern void GinInitBuffer(Buffer b, uint32 f);
 extern void GinInitPage(Page page, uint32 f, Size pageSize);
 extern void GinInitMetabuffer(Buffer b);
-extern int	ginCompareEntries(GinState *ginstate, OffsetNumber attnum,
-							  Datum a, GinNullCategory categorya,
-							  Datum b, GinNullCategory categoryb);
-extern int	ginCompareAttEntries(GinState *ginstate,
-								 OffsetNumber attnuma, Datum a, GinNullCategory categorya,
-								 OffsetNumber attnumb, Datum b, GinNullCategory categoryb);
 extern Datum *ginExtractEntries(GinState *ginstate, OffsetNumber attnum,
 								Datum value, bool isNull,
-								int32 *nentries, GinNullCategory **categories);
+								int32 *nentries_p, GinNullCategory **categories_p);
 
 extern OffsetNumber gintuple_get_attrnum(GinState *ginstate, IndexTuple tuple);
 extern Datum gintuple_get_key(GinState *ginstate, IndexTuple tuple,
@@ -494,12 +489,50 @@ extern ItemPointer ginMergeItemPointers(ItemPointerData *a, uint32 na,
  * so we want this to be inlined.
  */
 static inline int
-ginCompareItemPointers(ItemPointer a, ItemPointer b)
+ginCompareItemPointers(const ItemPointerData *a, const ItemPointerData *b)
 {
 	uint64		ia = (uint64) GinItemPointerGetBlockNumber(a) << 32 | GinItemPointerGetOffsetNumber(a);
 	uint64		ib = (uint64) GinItemPointerGetBlockNumber(b) << 32 | GinItemPointerGetOffsetNumber(b);
 
 	return pg_cmp_u64(ia, ib);
+}
+
+/*
+ * Compare two keys of the same index column
+ */
+static inline int
+ginCompareEntries(GinState *ginstate, OffsetNumber attnum,
+				  Datum a, GinNullCategory categorya,
+				  Datum b, GinNullCategory categoryb)
+{
+	/* if not of same null category, sort by that first */
+	if (categorya != categoryb)
+		return (categorya < categoryb) ? -1 : 1;
+
+	/* all null items in same category are equal */
+	if (categorya != GIN_CAT_NORM_KEY)
+		return 0;
+
+	/* both not null, so safe to call the compareFn */
+	return DatumGetInt32(FunctionCall2Coll(&ginstate->compareFn[attnum - 1],
+										   ginstate->supportCollation[attnum - 1],
+										   a, b));
+}
+
+/*
+ * Compare two keys of possibly different index columns
+ */
+static inline int
+ginCompareAttEntries(GinState *ginstate,
+					 OffsetNumber attnuma, Datum a, GinNullCategory categorya,
+					 OffsetNumber attnumb, Datum b, GinNullCategory categoryb)
+{
+	/* attribute number is the first sort key */
+	if (attnuma != attnumb)
+		return (attnuma < attnumb) ? -1 : 1;
+
+	return ginCompareEntries(ginstate, attnuma, a, categorya, b, categoryb);
+
 }
 
 extern int	ginTraverseLock(Buffer buffer, bool searchMode);

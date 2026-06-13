@@ -19,6 +19,7 @@
 
 #include "fmgr.h"
 #include "funcapi.h"
+#include "injection_points.h"
 #include "miscadmin.h"
 #include "nodes/pg_list.h"
 #include "nodes/value.h"
@@ -31,6 +32,7 @@
 #include "utils/guc.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
+#include "utils/tuplestore.h"
 #include "utils/wait_event.h"
 
 PG_MODULE_MAGIC;
@@ -38,30 +40,6 @@ PG_MODULE_MAGIC;
 /* Maximum number of waits usable in injection points at once */
 #define INJ_MAX_WAIT	8
 #define INJ_NAME_MAXLEN	64
-
-/*
- * Conditions related to injection points.  This tracks in shared memory the
- * runtime conditions under which an injection point is allowed to run,
- * stored as private_data when an injection point is attached, and passed as
- * argument to the callback.
- *
- * If more types of runtime conditions need to be tracked, this structure
- * should be expanded.
- */
-typedef enum InjectionPointConditionType
-{
-	INJ_CONDITION_ALWAYS = 0,	/* always run */
-	INJ_CONDITION_PID,			/* PID restriction */
-} InjectionPointConditionType;
-
-typedef struct InjectionPointCondition
-{
-	/* Type of the condition */
-	InjectionPointConditionType type;
-
-	/* ID of the process where the injection point is allowed to run */
-	int			pid;
-} InjectionPointCondition;
 
 /*
  * List of injection points stored in TopMemoryContext attached
@@ -106,9 +84,13 @@ extern PGDLLEXPORT void injection_wait(const char *name,
 /* track if injection points attached in this process are linked to it */
 static bool injection_point_local = false;
 
-/* Shared memory init callbacks */
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
-static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+static void injection_shmem_request(void *arg);
+static void injection_shmem_init(void *arg);
+
+static const ShmemCallbacks injection_shmem_callbacks = {
+	.request_fn = injection_shmem_request,
+	.init_fn = injection_shmem_init,
+};
 
 /*
  * Routine for shared memory area initialization, used as a callback
@@ -125,44 +107,23 @@ injection_point_init_state(void *ptr, void *arg)
 	ConditionVariableInit(&state->wait_point);
 }
 
-/* Shared memory initialization when loading module */
 static void
-injection_shmem_request(void)
+injection_shmem_request(void *arg)
 {
-	Size		size;
-
-	if (prev_shmem_request_hook)
-		prev_shmem_request_hook();
-
-	size = MAXALIGN(sizeof(InjectionPointSharedState));
-	RequestAddinShmemSpace(size);
+	ShmemRequestStruct(.name = "injection_points",
+					   .size = sizeof(InjectionPointSharedState),
+					   .ptr = (void **) &inj_state,
+		);
 }
 
 static void
-injection_shmem_startup(void)
+injection_shmem_init(void *arg)
 {
-	bool		found;
-
-	if (prev_shmem_startup_hook)
-		prev_shmem_startup_hook();
-
-	/* Create or attach to the shared memory state */
-	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
-
-	inj_state = ShmemInitStruct("injection_points",
-								sizeof(InjectionPointSharedState),
-								&found);
-
-	if (!found)
-	{
-		/*
-		 * First time through, so initialize.  This is shared with the dynamic
-		 * initialization using a DSM.
-		 */
-		injection_point_init_state(inj_state, NULL);
-	}
-
-	LWLockRelease(AddinShmemInitLock);
+	/*
+	 * First time through, so initialize.  This is shared with the dynamic
+	 * initialization using a DSM.
+	 */
+	injection_point_init_state(inj_state, NULL);
 }
 
 /*
@@ -189,7 +150,7 @@ injection_init_shmem(void)
  * otherwise.
  */
 static bool
-injection_point_allowed(InjectionPointCondition *condition)
+injection_point_allowed(const InjectionPointCondition *condition)
 {
 	bool		result = true;
 
@@ -232,8 +193,8 @@ injection_points_cleanup(int code, Datum arg)
 void
 injection_error(const char *name, const void *private_data, void *arg)
 {
-	InjectionPointCondition *condition = (InjectionPointCondition *) private_data;
-	char	   *argstr = (char *) arg;
+	const InjectionPointCondition *condition = private_data;
+	char	   *argstr = arg;
 
 	if (!injection_point_allowed(condition))
 		return;
@@ -248,8 +209,8 @@ injection_error(const char *name, const void *private_data, void *arg)
 void
 injection_notice(const char *name, const void *private_data, void *arg)
 {
-	InjectionPointCondition *condition = (InjectionPointCondition *) private_data;
-	char	   *argstr = (char *) arg;
+	const InjectionPointCondition *condition = private_data;
+	char	   *argstr = arg;
 
 	if (!injection_point_allowed(condition))
 		return;
@@ -268,7 +229,7 @@ injection_wait(const char *name, const void *private_data, void *arg)
 	uint32		old_wait_counts = 0;
 	int			index = -1;
 	uint32		injection_wait_event = 0;
-	InjectionPointCondition *condition = (InjectionPointCondition *) private_data;
+	const InjectionPointCondition *condition = private_data;
 
 	if (inj_state == NULL)
 		injection_init_shmem();
@@ -600,9 +561,5 @@ _PG_init(void)
 	if (!process_shared_preload_libraries_in_progress)
 		return;
 
-	/* Shared memory initialization */
-	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook = injection_shmem_request;
-	prev_shmem_startup_hook = shmem_startup_hook;
-	shmem_startup_hook = injection_shmem_startup;
+	RegisterShmemCallbacks(&injection_shmem_callbacks);
 }

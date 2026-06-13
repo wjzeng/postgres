@@ -112,6 +112,7 @@
 #include "replication/walreceiver.h"
 #include "replication/worker_internal.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "utils/acl.h"
 #include "utils/array.h"
@@ -121,6 +122,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/usercontext.h"
+#include "utils/wait_event.h"
 
 List	   *table_states_not_ready = NIL;
 
@@ -323,9 +325,7 @@ ProcessSyncingTablesForSync(XLogRecPtr current_lsn)
 		 * This is needed to allow the origin to be dropped.
 		 */
 		replorigin_session_reset();
-		replorigin_session_origin = InvalidRepOriginId;
-		replorigin_session_origin_lsn = InvalidXLogRecPtr;
-		replorigin_session_origin_timestamp = 0;
+		replorigin_xact_clear(true);
 
 		/*
 		 * Drop the tablesync's origin tracking if exists.
@@ -798,17 +798,35 @@ fetch_remote_table_info(char *nspname, char *relname, LogicalRepRelation *lrel,
 		 * publications).
 		 */
 		resetStringInfo(&cmd);
-		appendStringInfo(&cmd,
-						 "SELECT DISTINCT"
-						 "  (CASE WHEN (array_length(gpt.attrs, 1) = c.relnatts)"
-						 "   THEN NULL ELSE gpt.attrs END)"
-						 "  FROM pg_publication p,"
-						 "  LATERAL pg_get_publication_tables(p.pubname) gpt,"
-						 "  pg_class c"
-						 " WHERE gpt.relid = %u AND c.oid = gpt.relid"
-						 "   AND p.pubname IN ( %s )",
-						 lrel->remoteid,
-						 pub_names->data);
+
+		if (server_version >= 190000)
+		{
+			/*
+			 * We can pass both publication names and relid to
+			 * pg_get_publication_tables() since version 19.
+			 */
+			appendStringInfo(&cmd,
+							 "SELECT DISTINCT"
+							 "  (CASE WHEN (array_length(gpt.attrs, 1) = c.relnatts)"
+							 "   THEN NULL ELSE gpt.attrs END)"
+							 "  FROM pg_get_publication_tables(ARRAY[%s], %u) gpt,"
+							 "  pg_class c"
+							 " WHERE c.oid = gpt.relid",
+							 pub_names->data,
+							 lrel->remoteid);
+		}
+		else
+			appendStringInfo(&cmd,
+							 "SELECT DISTINCT"
+							 "  (CASE WHEN (array_length(gpt.attrs, 1) = c.relnatts)"
+							 "   THEN NULL ELSE gpt.attrs END)"
+							 "  FROM pg_publication p,"
+							 "  LATERAL pg_get_publication_tables(p.pubname) gpt,"
+							 "  pg_class c"
+							 " WHERE gpt.relid = %u AND c.oid = gpt.relid"
+							 "   AND p.pubname IN ( %s )",
+							 lrel->remoteid,
+							 pub_names->data);
 
 		pubres = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data,
 							 lengthof(attrsRow), attrsRow);
@@ -901,8 +919,8 @@ fetch_remote_table_info(char *nspname, char *relname, LogicalRepRelation *lrel,
 						nspname, relname, res->err)));
 
 	/* We don't know the number of rows coming, so allocate enough space. */
-	lrel->attnames = palloc0(MaxTupleAttributeNumber * sizeof(char *));
-	lrel->atttyps = palloc0(MaxTupleAttributeNumber * sizeof(Oid));
+	lrel->attnames = palloc0_array(char *, MaxTupleAttributeNumber);
+	lrel->atttyps = palloc0_array(Oid, MaxTupleAttributeNumber);
 	lrel->attkeys = NULL;
 
 	/*
@@ -982,14 +1000,28 @@ fetch_remote_table_info(char *nspname, char *relname, LogicalRepRelation *lrel,
 
 		/* Check for row filters. */
 		resetStringInfo(&cmd);
-		appendStringInfo(&cmd,
-						 "SELECT DISTINCT pg_get_expr(gpt.qual, gpt.relid)"
-						 "  FROM pg_publication p,"
-						 "  LATERAL pg_get_publication_tables(p.pubname) gpt"
-						 " WHERE gpt.relid = %u"
-						 "   AND p.pubname IN ( %s )",
-						 lrel->remoteid,
-						 pub_names->data);
+
+		if (server_version >= 190000)
+		{
+			/*
+			 * We can pass both publication names and relid to
+			 * pg_get_publication_tables() since version 19.
+			 */
+			appendStringInfo(&cmd,
+							 "SELECT DISTINCT pg_get_expr(gpt.qual, gpt.relid)"
+							 "  FROM pg_get_publication_tables(ARRAY[%s], %u) gpt",
+							 pub_names->data,
+							 lrel->remoteid);
+		}
+		else
+			appendStringInfo(&cmd,
+							 "SELECT DISTINCT pg_get_expr(gpt.qual, gpt.relid)"
+							 "  FROM pg_publication p,"
+							 "  LATERAL pg_get_publication_tables(p.pubname) gpt"
+							 " WHERE gpt.relid = %u"
+							 "   AND p.pubname IN ( %s )",
+							 lrel->remoteid,
+							 pub_names->data);
 
 		res = walrcv_exec(LogRepWorkerWalRcvConn, cmd.data, 1, qualRow);
 
@@ -1178,6 +1210,7 @@ copy_table(Relation rel)
 
 	/* Do the copy */
 	(void) CopyFrom(cstate);
+	EndCopyFrom(cstate);
 
 	logicalrep_rel_close(relmapentry, NoLock);
 }
@@ -1226,7 +1259,7 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	AclResult	aclresult;
 	WalRcvExecResult *res;
 	char		originname[NAMEDATALEN];
-	RepOriginId originid;
+	ReplOriginId originid;
 	UserContext ucxt;
 	bool		must_use_password;
 	bool		run_as_owner;
@@ -1320,7 +1353,7 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 		 */
 		originid = replorigin_by_name(originname, false);
 		replorigin_session_setup(originid, 0);
-		replorigin_session_origin = originid;
+		replorigin_xact_state.origin = originid;
 		*origin_startpos = replorigin_session_get_progress(false);
 
 		CommitTransactionCommand();
@@ -1407,7 +1440,7 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	UnlockRelationOid(ReplicationOriginRelationId, RowExclusiveLock);
 
 	replorigin_session_setup(originid, 0);
-	replorigin_session_origin = originid;
+	replorigin_xact_state.origin = originid;
 
 	/*
 	 * If the user did not opt to run as the owner of the subscription
@@ -1529,8 +1562,7 @@ start_table_sync(XLogRecPtr *origin_startpos, char **slotname)
 			 * idle state.
 			 */
 			AbortOutOfAnyTransaction();
-			pgstat_report_subscription_error(MySubscription->oid,
-											 WORKERTYPE_TABLESYNC);
+			pgstat_report_subscription_error(MySubscription->oid);
 
 			PG_RE_THROW();
 		}

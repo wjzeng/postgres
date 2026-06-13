@@ -40,6 +40,7 @@
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "access/tupconvert.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/partition.h"
@@ -47,6 +48,7 @@
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/execPartition.h"
+#include "executor/instrument.h"
 #include "executor/nodeSubplan.h"
 #include "foreign/fdwapi.h"
 #include "mb/pg_wchar.h"
@@ -249,6 +251,15 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	estate->es_jit_flags = queryDesc->plannedstmt->jitFlags;
 
 	/*
+	 * Set up query-level instrumentation if extensions have requested it via
+	 * query_instr_options. Ensure an extension has not allocated query_instr
+	 * itself.
+	 */
+	Assert(queryDesc->query_instr == NULL);
+	if (queryDesc->query_instr_options)
+		queryDesc->query_instr = InstrAlloc(queryDesc->query_instr_options);
+
+	/*
 	 * Set up an AFTER-trigger statement context, unless told not to, or
 	 * unless it's EXPLAIN-only mode (when ExecutorFinish won't be called).
 	 */
@@ -330,8 +341,8 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
 	/* Allow instrumentation of Executor overall runtime */
-	if (queryDesc->totaltime)
-		InstrStartNode(queryDesc->totaltime);
+	if (queryDesc->query_instr)
+		InstrStart(queryDesc->query_instr);
 
 	/*
 	 * extract information from the query descriptor and the query feature.
@@ -382,8 +393,8 @@ standard_ExecutorRun(QueryDesc *queryDesc,
 	if (sendTuples)
 		dest->rShutdown(dest);
 
-	if (queryDesc->totaltime)
-		InstrStopNode(queryDesc->totaltime, estate->es_processed);
+	if (queryDesc->query_instr)
+		InstrStop(queryDesc->query_instr);
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -432,8 +443,8 @@ standard_ExecutorFinish(QueryDesc *queryDesc)
 	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
 	/* Allow instrumentation of Executor overall runtime */
-	if (queryDesc->totaltime)
-		InstrStartNode(queryDesc->totaltime);
+	if (queryDesc->query_instr)
+		InstrStart(queryDesc->query_instr);
 
 	/* Run ModifyTable nodes to completion */
 	ExecPostprocessPlan(estate);
@@ -442,8 +453,8 @@ standard_ExecutorFinish(QueryDesc *queryDesc)
 	if (!(estate->es_top_eflags & EXEC_FLAG_SKIP_TRIGGERS))
 		AfterTriggerEndQuery(estate);
 
-	if (queryDesc->totaltime)
-		InstrStopNode(queryDesc->totaltime, 0);
+	if (queryDesc->query_instr)
+		InstrStop(queryDesc->query_instr);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -522,7 +533,7 @@ standard_ExecutorEnd(QueryDesc *queryDesc)
 	queryDesc->tupDesc = NULL;
 	queryDesc->estate = NULL;
 	queryDesc->planstate = NULL;
-	queryDesc->totaltime = NULL;
+	queryDesc->query_instr = NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -599,11 +610,11 @@ ExecCheckPermissions(List *rangeTable, List *rteperminfos,
 
 			/*
 			 * Only relation RTEs and subquery RTEs that were once relation
-			 * RTEs (views) have their perminfoindex set.
+			 * RTEs (views, property graphs) have their perminfoindex set.
 			 */
 			Assert(rte->rtekind == RTE_RELATION ||
 				   (rte->rtekind == RTE_SUBQUERY &&
-					rte->relkind == RELKIND_VIEW));
+					(rte->relkind == RELKIND_VIEW || rte->relkind == RELKIND_PROPGRAPH)));
 
 			(void) getRTEPermissionInfo(rteperminfos, rte);
 			/* Many-to-one mapping not allowed */
@@ -880,21 +891,25 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 		foreach(l, plannedstmt->rowMarks)
 		{
 			PlanRowMark *rc = (PlanRowMark *) lfirst(l);
+			RangeTblEntry *rte = exec_rt_fetch(rc->rti, estate);
 			Oid			relid;
 			Relation	relation;
 			ExecRowMark *erm;
 
+			/* ignore "parent" rowmarks; they are irrelevant at runtime */
+			if (rc->isParent)
+				continue;
+
 			/*
-			 * Ignore "parent" rowmarks, because they are irrelevant at
-			 * runtime.  Also ignore the rowmarks belonging to child tables
-			 * that have been pruned in ExecDoInitialPruning().
+			 * Also ignore rowmarks belonging to child tables that have been
+			 * pruned in ExecDoInitialPruning().
 			 */
-			if (rc->isParent ||
+			if (rte->rtekind == RTE_RELATION &&
 				!bms_is_member(rc->rti, estate->es_unpruned_relids))
 				continue;
 
 			/* get relation's OID (will produce InvalidOid if subquery) */
-			relid = exec_rt_fetch(rc->rti, estate)->relid;
+			relid = rte->relid;
 
 			/* open relation, if we need to access it for this mark type */
 			switch (rc->markType)
@@ -1159,6 +1174,12 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation,
 					break;
 			}
 			break;
+		case RELKIND_PROPGRAPH:
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("cannot change property graph \"%s\"",
+							RelationGetRelationName(resultRel))));
+			break;
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -1223,6 +1244,13 @@ CheckValidRowMarkRel(Relation rel, RowMarkType markType)
 						 errmsg("cannot lock rows in foreign table \"%s\"",
 								RelationGetRelationName(rel))));
 			break;
+		case RELKIND_PROPGRAPH:
+			/* Should not get here; rewriter should have expanded the graph */
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg_internal("cannot lock rows in property graph \"%s\"",
+									 RelationGetRelationName(rel))));
+			break;
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -1266,7 +1294,7 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 		resultRelInfo->ri_TrigWhenExprs = (ExprState **)
 			palloc0_array(ExprState *, n);
 		if (instrument_options)
-			resultRelInfo->ri_TrigInstrument = InstrAlloc(n, instrument_options, false);
+			resultRelInfo->ri_TrigInstrument = InstrAllocTrigger(n, instrument_options);
 	}
 	else
 	{
@@ -1295,6 +1323,7 @@ InitResultRelInfo(ResultRelInfo *resultRelInfo,
 	resultRelInfo->ri_projectReturning = NULL;
 	resultRelInfo->ri_onConflictArbiterIndexes = NIL;
 	resultRelInfo->ri_onConflict = NULL;
+	resultRelInfo->ri_forPortionOf = NULL;
 	resultRelInfo->ri_ReturningSlot = NULL;
 	resultRelInfo->ri_TrigOldSlot = NULL;
 	resultRelInfo->ri_TrigNewSlot = NULL;
@@ -1940,7 +1969,7 @@ ExecPartitionCheckEmitError(ResultRelInfo *resultRelInfo,
 		 */
 		if (map != NULL)
 			slot = execute_attr_map_slot(map, slot,
-										 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
+										 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual, 0));
 		modifiedCols = bms_union(ExecGetInsertedCols(rootrel, estate),
 								 ExecGetUpdatedCols(rootrel, estate));
 	}
@@ -2056,7 +2085,7 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 				 */
 				if (map != NULL)
 					slot = execute_attr_map_slot(map, slot,
-												 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
+												 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual, 0));
 				modifiedCols = bms_union(ExecGetInsertedCols(rootrel, estate),
 										 ExecGetUpdatedCols(rootrel, estate));
 				rel = rootrel->ri_RelationDesc;
@@ -2192,7 +2221,7 @@ ReportNotNullViolationError(ResultRelInfo *resultRelInfo, TupleTableSlot *slot,
 		 */
 		if (map != NULL)
 			slot = execute_attr_map_slot(map, slot,
-										 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
+										 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual, 0));
 		modifiedCols = bms_union(ExecGetInsertedCols(rootrel, estate),
 								 ExecGetUpdatedCols(rootrel, estate));
 		rel = rootrel->ri_RelationDesc;
@@ -2300,7 +2329,7 @@ ExecWithCheckOptions(WCOKind kind, ResultRelInfo *resultRelInfo,
 						 */
 						if (map != NULL)
 							slot = execute_attr_map_slot(map, slot,
-														 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual));
+														 MakeTupleTableSlot(tupdesc, &TTSOpsVirtual, 0));
 
 						modifiedCols = bms_union(ExecGetInsertedCols(rootrel, estate),
 												 ExecGetUpdatedCols(rootrel, estate));

@@ -38,6 +38,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "port/pg_bitutils.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
 #include "replication/slot.h"
@@ -70,6 +71,19 @@
 #include "utils/syscache.h"
 #include "utils/timeout.h"
 
+/* has this backend called EmitConnectionWarnings()? */
+static bool ConnectionWarningsEmitted;
+
+typedef struct ConnectionWarning
+{
+	char	   *message;
+	char	   *detail;
+	ConnectionWarningFilter filter;
+} ConnectionWarning;
+
+/* warnings to send via EmitConnectionWarnings() */
+static List *ConnectionWarnings;
+
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
 static void PerformAuthentication(Port *port);
@@ -85,6 +99,7 @@ static void ClientCheckTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
+static void EmitConnectionWarnings(void);
 
 
 /*** InitPostgres support ***/
@@ -418,7 +433,7 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 	ctype = TextDatumGetCString(datum);
 
 	/*
-	 * Historcally, we set LC_COLLATE from datcollate, as well. That's no
+	 * Historically, we set LC_COLLATE from datcollate, as well. That's no
 	 * longer necessary because all collation behavior is handled through
 	 * pg_locale_t.
 	 */
@@ -584,7 +599,7 @@ InitializeFastPathLocks(void)
 	 * value at FP_LOCK_GROUPS_PER_BACKEND_MAX and insist the value is at
 	 * least 1.
 	 *
-	 * The default max_locks_per_transaction = 64 means 4 groups by default.
+	 * The default max_locks_per_transaction = 128 means 8 groups by default.
 	 */
 	FastPathLockGroupsPerBackend =
 		Max(Min(pg_nextpower2_32(max_locks_per_xact) / FP_LOCK_SLOTS_PER_GROUP,
@@ -653,9 +668,6 @@ BaseInit(void)
 	/* Initialize lock manager's local structs */
 	InitLockManagerAccess();
 
-	/* Initialize logical info WAL logging state */
-	InitializeProcessXLogLogicalInfo();
-
 	/*
 	 * Initialize replication slots after pgstat. The exit hook might need to
 	 * drop ephemeral slots, which in turn triggers stats reporting.
@@ -709,7 +721,7 @@ BaseInit(void)
 void
 InitPostgres(const char *in_dbname, Oid dboid,
 			 const char *username, Oid useroid,
-			 bits32 flags,
+			 uint32 flags,
 			 char *out_dbname)
 {
 	bool		bootstrap = IsBootstrapProcessingMode();
@@ -747,7 +759,35 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	SharedInvalBackendInit(false);
 
+	/*
+	 * Prevent consuming interrupts between setting ProcSignalInit and setting
+	 * the initial local data checksum value.  If a barrier is emitted, and
+	 * absorbed, before local cached state is initialized the state transition
+	 * can be invalid.
+	 */
+	HOLD_INTERRUPTS();
+
 	ProcSignalInit(MyCancelKey, MyCancelKeyLength);
+
+	/*
+	 * Initialize a local cache of the data_checksum_version, to be updated by
+	 * the procsignal-based barriers.
+	 *
+	 * This intentionally happens after initializing the procsignal, otherwise
+	 * we might miss a state change. This means we can get a barrier for the
+	 * state we've just initialized.
+	 *
+	 * The postmaster (which is what gets forked into the new child process)
+	 * does not handle barriers, therefore it may not have the current value
+	 * of LocalDataChecksumState value (it'll have the value read from the
+	 * control file, which may be arbitrarily old).
+	 *
+	 * NB: Even if the postmaster handled barriers, the value might still be
+	 * stale, as it might have changed after this process forked.
+	 */
+	InitLocalDataChecksumState();
+
+	RESUME_INTERRUPTS();
 
 	/*
 	 * Also set up timeout handlers needed for backend operation.  We need
@@ -797,6 +837,16 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	}
 
 	/*
+	 * Initialize the process-local logical info WAL logging state.
+	 *
+	 * This must be called after ProcSignalInit() so that the process can
+	 * participate in procsignal-based barriers that update this state.
+	 * Furthermore, in !IsUnderPostmaster cases, this must occur after
+	 * StartupXLOG() where the shared state is first established.
+	 */
+	InitializeProcessXLogLogicalInfo();
+
+	/*
 	 * Initialize the relation cache and the system catalog caches.  Note that
 	 * no catalog access happens here; we only set up the hashtable structure.
 	 * We must do this before starting a transaction because transaction abort
@@ -816,9 +866,9 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	RelationCacheInitializePhase2();
 
 	/*
-	 * Set up process-exit callback to do pre-shutdown cleanup.  This is the
-	 * one of the first before_shmem_exit callbacks we register; thus, this
-	 * will be one the last things we do before low-level modules like the
+	 * Set up process-exit callback to do pre-shutdown cleanup.  This is one
+	 * of the first before_shmem_exit callbacks we register; thus, this will
+	 * be one of the last things we do before low-level modules like the
 	 * buffer manager begin to close down.  We need to have this in place
 	 * before we begin our first transaction --- if we fail during the
 	 * initialization transaction, as is entirely possible, we need the
@@ -877,7 +927,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 					 errhint("You should immediately run CREATE USER \"%s\" SUPERUSER;.",
 							 username != NULL ? username : "postgres")));
 	}
-	else if (AmBackgroundWorkerProcess())
+	else if (AmBackgroundWorkerProcess() || AmDataChecksumsWorkerProcess())
 	{
 		if (username == NULL && !OidIsValid(useroid))
 		{
@@ -986,6 +1036,9 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 		/* close the transaction we started above */
 		CommitTransactionCommand();
+
+		/* send any WARNINGs we've accumulated during initialization */
+		EmitConnectionWarnings();
 
 		return;
 	}
@@ -1232,6 +1285,9 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	/* close the transaction we started above */
 	if (!bootstrap)
 		CommitTransactionCommand();
+
+	/* send any WARNINGs we've accumulated during initialization */
+	EmitConnectionWarnings();
 }
 
 /*
@@ -1445,4 +1501,67 @@ ThereIsAtLeastOneRole(void)
 	table_close(pg_authid_rel, AccessShareLock);
 
 	return result;
+}
+
+/*
+ * Stores a warning message to be sent later via EmitConnectionWarnings().
+ * Both msg and detail must be non-NULL.  If filter is non-NULL, it is called
+ * just before the warning is emitted, after startup and role/database settings
+ * have been applied.
+ *
+ * NB: Caller should ensure the strings are palloc'd in a long-lived context
+ * like TopMemoryContext.  This function takes ownership of the strings, which
+ * will be pfree'd in EmitConnectionWarnings().
+ */
+void
+StoreConnectionWarning(char *msg, char *detail, ConnectionWarningFilter filter)
+{
+	MemoryContext oldcontext;
+	ConnectionWarning *warning;
+
+	Assert(msg);
+	Assert(detail);
+
+	if (ConnectionWarningsEmitted)
+		elog(ERROR, "StoreConnectionWarning() called after EmitConnectionWarnings()");
+
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
+	warning = palloc_object(ConnectionWarning);
+	warning->message = msg;
+	warning->detail = detail;
+	warning->filter = filter;
+	ConnectionWarnings = lappend(ConnectionWarnings, warning);
+
+	MemoryContextSwitchTo(oldcontext);
+}
+
+/*
+ * Sends the warning messages saved via StoreConnectionWarning() and frees the
+ * strings and lists.
+ *
+ * NB: This can only be called once per backend.
+ */
+static void
+EmitConnectionWarnings(void)
+{
+	if (ConnectionWarningsEmitted)
+		elog(ERROR, "EmitConnectionWarnings() called more than once");
+	else
+		ConnectionWarningsEmitted = true;
+
+	foreach_ptr(ConnectionWarning, warning, ConnectionWarnings)
+	{
+		if (warning->filter == NULL || warning->filter())
+			ereport(WARNING,
+					(errmsg("%s", warning->message),
+					 errdetail("%s", warning->detail)));
+
+		pfree(warning->message);
+		pfree(warning->detail);
+		pfree(warning);
+	}
+
+	list_free(ConnectionWarnings);
+	ConnectionWarnings = NIL;
 }

@@ -29,6 +29,7 @@
 
 #include "libpq/libpq.h"
 #include "miscadmin.h"
+#include "storage/latch.h"
 #include "tcop/tcopprot.h"
 #include "utils/injection_point.h"
 #include "utils/wait_event.h"
@@ -51,7 +52,7 @@ bool		ssl_loaded_verify_locations = false;
 char	   *SSLCipherSuites = NULL;
 char	   *SSLCipherList = NULL;
 
-/* GUC variable for default ECHD curve. */
+/* GUC variable for default ECDH curve. */
 char	   *SSLECDHCurve;
 
 /* GUC variable: if false, prefer client ciphers */
@@ -59,6 +60,9 @@ bool		SSLPreferServerCiphers;
 
 int			ssl_min_protocol_version = PG_TLS1_2_VERSION;
 int			ssl_max_protocol_version = PG_TLS_ANY;
+
+/* GUC variable: if false, discards hostname extensions in handshake */
+bool		ssl_sni = false;
 
 /* ------------------------------------------------------------ */
 /*			 Procedures common to all secure sessions			*/

@@ -52,7 +52,7 @@ bool		update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
 #define PS_USE_SETPROCTITLE_FAST
 #elif defined(HAVE_SETPROCTITLE)
 #define PS_USE_SETPROCTITLE
-#elif defined(__linux__) || defined(__sun) || defined(__darwin__) || defined(__GNU__)
+#elif defined(__linux__) || defined(_AIX) || defined(__sun) || defined(__darwin__) || defined(__GNU__)
 #define PS_USE_CLOBBER_ARGV
 #elif defined(WIN32)
 #define PS_USE_WIN32
@@ -62,7 +62,7 @@ bool		update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
 
 
 /* Different systems want the buffer padded differently */
-#if defined(__linux__) || defined(__darwin__) || defined(__GNU__)
+#if defined(_AIX) || defined(__linux__) || defined(__darwin__) || defined(__GNU__)
 #define PS_PADDING '\0'
 #else
 #define PS_PADDING ' '
@@ -234,7 +234,8 @@ save_ps_display_args(int argc, char **argv)
 	 * into the argv array, and will get horribly confused when it is
 	 * re-called to analyze a subprocess' argument string if the argv storage
 	 * has been clobbered meanwhile.  Other platforms have other dependencies
-	 * on argv[].
+	 * on argv[]. (We use custom pg_getopt_start/next() functions nowadays
+	 * that don't do that, but those other dependencies might still exist.)
 	 */
 	{
 		char	  **new_argv;

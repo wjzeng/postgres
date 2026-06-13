@@ -509,15 +509,15 @@ AddRelsyncInvalidationMessage(InvalidationMsgsGroup *group,
 
 	/* Don't add a duplicate item. */
 	ProcessMessageSubGroup(group, RelCacheMsgs,
-						   if (msg->rc.id == SHAREDINVALRELSYNC_ID &&
-							   (msg->rc.relId == relId ||
-								msg->rc.relId == InvalidOid))
+						   if (msg->rs.id == SHAREDINVALRELSYNC_ID &&
+							   (msg->rs.relid == relId ||
+								msg->rs.relid == InvalidOid))
 						   return);
 
 	/* OK, add the item */
-	msg.rc.id = SHAREDINVALRELSYNC_ID;
-	msg.rc.dbId = dbId;
-	msg.rc.relId = relId;
+	msg.rs.id = SHAREDINVALRELSYNC_ID;
+	msg.rs.dbId = dbId;
+	msg.rs.relid = relId;
 	/* check AddCatcacheInvalidationMessage() for an explanation */
 	VALGRIND_MAKE_MEM_DEFINED(&msg, sizeof(msg));
 
@@ -1191,9 +1191,6 @@ ProcessCommittedInvalidationMessages(SharedInvalidationMessage *msgs,
  * In any case, reset our state to empty.  We need not physically
  * free memory here, since TopTransactionContext is about to be emptied
  * anyway.
- *
- * Note:
- *		This should be called as the last step in processing a transaction.
  */
 void
 AtEOXact_Inval(bool isCommit)
@@ -1813,7 +1810,7 @@ CacheInvalidateRelmap(Oid databaseId)
  * flush all cached state anyway.
  */
 void
-CacheRegisterSyscacheCallback(int cacheid,
+CacheRegisterSyscacheCallback(SysCacheIdentifier cacheid,
 							  SyscacheCallbackFunction func,
 							  Datum arg)
 {
@@ -1895,7 +1892,7 @@ CacheRegisterRelSyncCallback(RelSyncCallbackFunction func,
  * this module from knowing which catcache IDs correspond to which catalogs.
  */
 void
-CallSyscacheCallbacks(int cacheid, uint32 hashvalue)
+CallSyscacheCallbacks(SysCacheIdentifier cacheid, uint32 hashvalue)
 {
 	int			i;
 

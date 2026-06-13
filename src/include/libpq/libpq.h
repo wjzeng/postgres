@@ -18,7 +18,10 @@
 
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
-#include "storage/latch.h"
+
+
+/* avoid including waiteventset.h */
+typedef struct WaitEventSet WaitEventSet;
 
 
 /*
@@ -110,6 +113,7 @@ extern PGDLLIMPORT int ssl_max_protocol_version;
 extern PGDLLIMPORT char *ssl_passphrase_command;
 extern PGDLLIMPORT bool ssl_passphrase_command_supports_reload;
 extern PGDLLIMPORT char *ssl_dh_params_file;
+extern PGDLLIMPORT bool ssl_sni;
 extern PGDLLIMPORT char *SSLCipherSuites;
 extern PGDLLIMPORT char *SSLCipherList;
 extern PGDLLIMPORT char *SSLECDHCurve;
@@ -152,12 +156,23 @@ enum ssl_protocol_versions
 	PG_TLS1_3_VERSION,
 };
 
+typedef enum HostsFileLoadResult
+{
+	HOSTSFILE_LOAD_OK = 0,
+	HOSTSFILE_LOAD_FAILED,
+	HOSTSFILE_EMPTY,
+	HOSTSFILE_MISSING,
+	HOSTSFILE_DISABLED,
+} HostsFileLoadResult;
+
 /*
  * prototypes for functions in be-secure-common.c
  */
-extern int	run_ssl_passphrase_command(const char *prompt, bool is_server_start,
+extern int	run_ssl_passphrase_command(const char *cmd, const char *prompt,
+									   bool is_server_start,
 									   char *buf, int size);
 extern bool check_ssl_key_file_permissions(const char *ssl_key_file,
 										   bool isServerStart);
+extern HostsFileLoadResult load_hosts(List **hosts, char **err_msg);
 
 #endif							/* LIBPQ_H */

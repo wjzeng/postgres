@@ -24,9 +24,11 @@
 #include "miscadmin.h"
 #include "storage/ipc.h"
 #include "utils/builtins.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
+#include "utils/tuplestore.h"
 
 /*
  * Estimate of the maximum number of open portals a user would have,
@@ -294,9 +296,8 @@ PortalDefineQuery(Portal portal,
 
 	portal->prepStmtName = prepStmtName;
 	portal->sourceText = sourceText;
-	portal->qc.commandTag = commandTag;
-	portal->qc.nprocessed = 0;
 	portal->commandTag = commandTag;
+	SetQueryCompletion(&portal->qc, commandTag, 0);
 	portal->stmts = stmts;
 	portal->cplan = cplan;
 	portal->status = PORTAL_DEFINED;

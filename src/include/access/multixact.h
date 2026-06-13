@@ -83,13 +83,11 @@ typedef struct xl_multixact_truncate
 {
 	Oid			oldestMultiDB;
 
-	/* to-be-truncated range of multixact offsets */
-	MultiXactId startTruncOff;	/* just for completeness' sake */
-	MultiXactId endTruncOff;
+	/* truncate multixact offsets older than this */
+	MultiXactId oldestMulti;
 
-	/* to-be-truncated range of multixact members */
-	MultiXactOffset startTruncMemb;
-	MultiXactOffset endTruncMemb;
+	/* truncate multixact members older than this */
+	MultiXactOffset oldestOffset;
 } xl_multixact_truncate;
 
 #define SizeOfMultiXactTruncate (sizeof(xl_multixact_truncate))
@@ -123,8 +121,6 @@ extern void AtEOXact_MultiXact(void);
 extern void AtPrepare_MultiXact(void);
 extern void PostPrepare_MultiXact(FullTransactionId fxid);
 
-extern Size MultiXactShmemSize(void);
-extern void MultiXactShmemInit(void);
 extern void BootStrapMultiXact(void);
 extern void StartupMultiXact(void);
 extern void TrimMultiXact(void);

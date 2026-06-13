@@ -52,7 +52,7 @@ struct ECPGgeneric_bytea
 struct ECPGtype_information_cache
 {
 	struct ECPGtype_information_cache *next;
-	int			oid;
+	Oid			oid;
 	enum ARRAY_TYPE isarray;
 };
 
@@ -214,11 +214,11 @@ void		ecpg_raise(int line, int code, const char *sqlstate, const char *str);
 void		ecpg_raise_backend(int line, PGresult *result, PGconn *conn, int compat);
 char	   *ecpg_prepared(const char *name, struct connection *con);
 bool		ecpg_deallocate_all_conn(int lineno, enum COMPAT_MODE c, struct connection *con);
-void		ecpg_log(const char *format,...) pg_attribute_printf(1, 2);
+void		ecpg_log(const char *format, ...) pg_attribute_printf(1, 2);
 bool		ecpg_auto_prepare(int lineno, const char *connection_name,
 							  const int compat, char **name, const char *query);
 bool		ecpg_register_prepared_stmt(struct statement *stmt);
-void		ecpg_init_sqlca(struct sqlca_t *sqlca);
+void		ecpg_init_sqlca(struct sqlca_t *sqlca_p);
 
 struct sqlda_compat *ecpg_build_compat_sqlda(int line, PGresult *res, int row,
 											 enum COMPAT_MODE compat);
@@ -239,8 +239,10 @@ extern char *ecpg_gettext(const char *msgid) pg_attribute_format_arg(1);
 #define ecpg_gettext(x) (x)
 #endif
 
-/* SQLSTATE values generated or processed by ecpglib (intentionally
- * not exported -- users should refer to the codes directly) */
+/*
+ * SQLSTATE values generated or processed by ecpglib (intentionally
+ * not exported -- users should refer to the codes directly)
+ */
 
 #define ECPG_SQLSTATE_NO_DATA				"02000"
 #define ECPG_SQLSTATE_USING_CLAUSE_DOES_NOT_MATCH_PARAMETERS	"07001"

@@ -372,6 +372,7 @@ xml_recv(PG_FUNCTION_ARGS)
 #ifdef USE_LIBXML
 	StringInfo	buf = (StringInfo) PG_GETARG_POINTER(0);
 	xmltype    *result;
+	const char *input;
 	char	   *str;
 	char	   *newstr;
 	int			nbytes;
@@ -385,7 +386,7 @@ xml_recv(PG_FUNCTION_ARGS)
 	 * parse that before converting to server encoding.
 	 */
 	nbytes = buf->len - buf->cursor;
-	str = (char *) pq_getmsgbytes(buf, nbytes);
+	input = pq_getmsgbytes(buf, nbytes);
 
 	/*
 	 * We need a null-terminated string to pass to parse_xml_decl().  Rather
@@ -394,7 +395,7 @@ xml_recv(PG_FUNCTION_ARGS)
 	 */
 	result = palloc(nbytes + 1 + VARHDRSZ);
 	SET_VARSIZE(result, nbytes + VARHDRSZ);
-	memcpy(VARDATA(result), str, nbytes);
+	memcpy(VARDATA(result), input, nbytes);
 	str = VARDATA(result);
 	str[nbytes] = '\0';
 
@@ -528,7 +529,7 @@ xmltext(PG_FUNCTION_ARGS)
 #ifdef USE_LIBXML
 	text	   *arg = PG_GETARG_TEXT_PP(0);
 	text	   *result;
-	volatile xmlChar *xmlbuf = NULL;
+	xmlChar    *volatile xmlbuf = NULL;
 	PgXmlErrorContext *xmlerrcxt;
 
 	/* First we gotta spin up some error handling. */
@@ -543,19 +544,19 @@ xmltext(PG_FUNCTION_ARGS)
 						"could not allocate xmlChar");
 
 		result = cstring_to_text_with_len((const char *) xmlbuf,
-										  xmlStrlen((const xmlChar *) xmlbuf));
+										  xmlStrlen(xmlbuf));
 	}
 	PG_CATCH();
 	{
 		if (xmlbuf)
-			xmlFree((xmlChar *) xmlbuf);
+			xmlFree(xmlbuf);
 
 		pg_xml_done(xmlerrcxt, true);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
-	xmlFree((xmlChar *) xmlbuf);
+	xmlFree(xmlbuf);
 	pg_xml_done(xmlerrcxt, false);
 
 	PG_RETURN_XML_P(result);
@@ -659,7 +660,7 @@ texttoxml(PG_FUNCTION_ARGS)
 {
 	text	   *data = PG_GETARG_TEXT_PP(0);
 
-	PG_RETURN_XML_P(xmlparse(data, xmloption, true));
+	PG_RETURN_XML_P(xmlparse(data, xmloption, true, fcinfo->context));
 }
 
 
@@ -1028,14 +1029,18 @@ xmlelement(XmlExpr *xexpr,
 
 
 xmltype *
-xmlparse(text *data, XmlOptionType xmloption_arg, bool preserve_whitespace)
+xmlparse(text *data, XmlOptionType xmloption_arg, bool preserve_whitespace, Node *escontext)
 {
 #ifdef USE_LIBXML
 	xmlDocPtr	doc;
 
 	doc = xml_parse(data, xmloption_arg, preserve_whitespace,
-					GetDatabaseEncoding(), NULL, NULL, NULL);
-	xmlFreeDoc(doc);
+					GetDatabaseEncoding(), NULL, NULL, escontext);
+	if (doc)
+		xmlFreeDoc(doc);
+
+	if (SOFT_ERROR_OCCURRED(escontext))
+		return NULL;
 
 	return (xmltype *) data;
 #else
@@ -2186,7 +2191,7 @@ xml_errorHandler(void *data, PgXmlErrorPtr error)
 			if (error->code == XML_ERR_NOT_WELL_BALANCED &&
 				xmlerrcxt->err_occurred)
 				return;
-			/* fall through */
+			pg_fallthrough;
 
 		case XML_FROM_NONE:
 		case XML_FROM_MEMORY:
@@ -2376,8 +2381,7 @@ sqlchar_to_unicode(const char *s)
 	char	   *utf8string;
 	pg_wchar	ret[2];			/* need space for trailing zero */
 
-	/* note we're not assuming s is null-terminated */
-	utf8string = pg_server_to_any(s, pg_mblen(s), PG_UTF8);
+	utf8string = pg_server_to_any(s, pg_mblen_cstr(s), PG_UTF8);
 
 	pg_encoding_mb2wchar_with_len(PG_UTF8, utf8string, ret,
 								  pg_encoding_mblen(PG_UTF8, utf8string));
@@ -2430,7 +2434,7 @@ map_sql_identifier_to_xml_name(const char *ident, bool fully_escaped,
 
 	initStringInfo(&buf);
 
-	for (p = ident; *p; p += pg_mblen(p))
+	for (p = ident; *p; p += pg_mblen_cstr(p))
 	{
 		if (*p == ':' && (p == ident || fully_escaped))
 			appendStringInfoString(&buf, "_x003A_");
@@ -2455,7 +2459,7 @@ map_sql_identifier_to_xml_name(const char *ident, bool fully_escaped,
 				: !is_valid_xml_namechar(u))
 				appendStringInfo(&buf, "_x%04X_", (unsigned int) u);
 			else
-				appendBinaryStringInfo(&buf, p, pg_mblen(p));
+				appendBinaryStringInfo(&buf, p, pg_mblen_cstr(p));
 		}
 	}
 
@@ -2478,7 +2482,7 @@ map_xml_name_to_sql_identifier(const char *name)
 
 	initStringInfo(&buf);
 
-	for (p = name; *p; p += pg_mblen(p))
+	for (p = name; *p; p += pg_mblen_cstr(p))
 	{
 		if (*p == '_' && *(p + 1) == 'x'
 			&& isxdigit((unsigned char) *(p + 2))
@@ -2496,7 +2500,7 @@ map_xml_name_to_sql_identifier(const char *name)
 			p += 6;
 		}
 		else
-			appendBinaryStringInfo(&buf, p, pg_mblen(p));
+			appendBinaryStringInfo(&buf, p, pg_mblen_cstr(p));
 	}
 
 	return buf.data;
@@ -4195,7 +4199,9 @@ xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 {
 	xmltype    *result = NULL;
 
-	if (cur->type != XML_ATTRIBUTE_NODE && cur->type != XML_TEXT_NODE)
+	if (cur->type != XML_ATTRIBUTE_NODE &&
+		cur->type != XML_TEXT_NODE &&
+		cur->type != XML_NAMESPACE_DECL)
 	{
 		void		(*volatile nodefree) (xmlNodePtr) = NULL;
 		volatile xmlBufferPtr buf = NULL;
@@ -4247,7 +4253,7 @@ xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 	}
 	else
 	{
-		volatile xmlChar *str = NULL;
+		xmlChar    *volatile str = NULL;
 
 		PG_TRY();
 		{
@@ -4267,7 +4273,7 @@ xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 		PG_FINALLY();
 		{
 			if (str)
-				xmlFree((xmlChar *) str);
+				xmlFree(str);
 		}
 		PG_END_TRY();
 	}

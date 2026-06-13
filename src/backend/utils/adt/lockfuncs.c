@@ -146,6 +146,7 @@ pg_lock_status(PG_FUNCTION_ARGS)
 		TupleDescInitEntry(tupdesc, (AttrNumber) 16, "waitstart",
 						   TIMESTAMPTZOID, -1, 0);
 
+		TupleDescFinalize(tupdesc);
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
 		/*
@@ -767,7 +768,7 @@ pg_try_advisory_xact_lock_shared_int8(PG_FUNCTION_ARGS)
  * pg_advisory_unlock(int8) - release exclusive lock on an int8 key
  *
  * Returns true if successful, false if lock was not held
-*/
+ */
 Datum
 pg_advisory_unlock_int8(PG_FUNCTION_ARGS)
 {
@@ -957,7 +958,7 @@ pg_try_advisory_xact_lock_shared_int4(PG_FUNCTION_ARGS)
  * pg_advisory_unlock(int4, int4) - release exclusive lock on 2 int4 keys
  *
  * Returns true if successful, false if lock was not held
-*/
+ */
 Datum
 pg_advisory_unlock_int4(PG_FUNCTION_ARGS)
 {

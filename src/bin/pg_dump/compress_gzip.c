@@ -57,8 +57,8 @@ DeflateCompressorInit(CompressorState *cs)
 	GzipCompressorState *gzipcs;
 	z_streamp	zp;
 
-	gzipcs = (GzipCompressorState *) pg_malloc0(sizeof(GzipCompressorState));
-	zp = gzipcs->zp = (z_streamp) pg_malloc(sizeof(z_stream));
+	gzipcs = pg_malloc0_object(GzipCompressorState);
+	zp = gzipcs->zp = pg_malloc_object(z_stream);
 	zp->zalloc = Z_NULL;
 	zp->zfree = Z_NULL;
 	zp->opaque = Z_NULL;
@@ -178,7 +178,7 @@ ReadDataFromArchiveGzip(ArchiveHandle *AH, CompressorState *cs)
 	char	   *buf;
 	size_t		buflen;
 
-	zp = (z_streamp) pg_malloc(sizeof(z_stream));
+	zp = pg_malloc_object(z_stream);
 	zp->zalloc = Z_NULL;
 	zp->zfree = Z_NULL;
 	zp->opaque = Z_NULL;
@@ -386,12 +386,24 @@ Gzip_open(const char *path, int fd, const char *mode, CompressFileHandle *CFH)
 		strcpy(mode_compression, mode);
 
 	if (fd >= 0)
-		gzfp = gzdopen(dup(fd), mode_compression);
-	else
-		gzfp = gzopen(path, mode_compression);
+	{
+		int			dup_fd = dup(fd);
 
-	if (gzfp == NULL)
-		return false;
+		if (dup_fd < 0)
+			return false;
+		gzfp = gzdopen(dup_fd, mode_compression);
+		if (gzfp == NULL)
+		{
+			close(dup_fd);
+			return false;
+		}
+	}
+	else
+	{
+		gzfp = gzopen(path, mode_compression);
+		if (gzfp == NULL)
+			return false;
+	}
 
 	CFH->private_data = gzfp;
 

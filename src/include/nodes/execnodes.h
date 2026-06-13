@@ -29,33 +29,47 @@
 #ifndef EXECNODES_H
 #define EXECNODES_H
 
-#include "access/tupconvert.h"
-#include "executor/instrument.h"
+#include "access/htup.h"
+#include "executor/instrument_node.h"
 #include "fmgr.h"
 #include "lib/ilist.h"
-#include "lib/pairingheap.h"
 #include "nodes/miscnodes.h"
 #include "nodes/params.h"
 #include "nodes/plannodes.h"
-#include "nodes/tidbitmap.h"
 #include "partitioning/partdefs.h"
-#include "storage/condition_variable.h"
-#include "utils/hsearch.h"
-#include "utils/queryenvironment.h"
+#include "storage/buf.h"
 #include "utils/reltrigger.h"
-#include "utils/sharedtuplestore.h"
-#include "utils/snapshot.h"
-#include "utils/sortsupport.h"
-#include "utils/tuplesort.h"
-#include "utils/tuplestore.h"
+#include "utils/typcache.h"
+
 
 /*
  * forward references in this file
  */
-typedef struct PlanState PlanState;
+typedef struct BufferUsage BufferUsage;
 typedef struct ExecRowMark ExecRowMark;
 typedef struct ExprState ExprState;
 typedef struct ExprContext ExprContext;
+typedef struct HTAB HTAB;
+typedef struct Instrumentation Instrumentation;
+typedef struct pairingheap pairingheap;
+typedef struct PlanState PlanState;
+typedef struct QueryEnvironment QueryEnvironment;
+typedef struct RelationData *Relation;
+typedef Relation *RelationPtr;
+typedef struct ScanKeyData ScanKeyData;
+typedef struct SnapshotData *Snapshot;
+typedef struct SortSupportData *SortSupport;
+typedef struct TIDBitmap TIDBitmap;
+typedef struct NodeInstrumentation NodeInstrumentation;
+typedef struct TriggerInstrumentation TriggerInstrumentation;
+typedef struct TupleConversionMap TupleConversionMap;
+typedef struct TupleDescData *TupleDesc;
+typedef struct Tuplesortstate Tuplesortstate;
+typedef struct Tuplestorestate Tuplestorestate;
+typedef struct TupleTableSlot TupleTableSlot;
+typedef struct TupleTableSlotOps TupleTableSlotOps;
+typedef struct WalUsage WalUsage;
+typedef struct WorkerNodeInstrumentation WorkerNodeInstrumentation;
 
 
 /* ----------------
@@ -422,19 +436,20 @@ typedef struct JunkFilter
 } JunkFilter;
 
 /*
- * OnConflictSetState
+ * OnConflictActionState
  *
- * Executor state of an ON CONFLICT DO UPDATE operation.
+ * Executor state of an ON CONFLICT DO SELECT/UPDATE operation.
  */
-typedef struct OnConflictSetState
+typedef struct OnConflictActionState
 {
 	NodeTag		type;
 
 	TupleTableSlot *oc_Existing;	/* slot to store existing target tuple in */
 	TupleTableSlot *oc_ProjSlot;	/* CONFLICT ... SET ... projection target */
 	ProjectionInfo *oc_ProjInfo;	/* for ON CONFLICT DO UPDATE SET */
+	LockClauseStrength oc_LockStrength; /* lock strength for DO SELECT */
 	ExprState  *oc_WhereClause; /* state for the WHERE clause */
-} OnConflictSetState;
+} OnConflictActionState;
 
 /* ----------------
  *	 MergeActionState information
@@ -451,6 +466,25 @@ typedef struct MergeActionState
 								 * this rel */
 	ExprState  *mas_whenqual;	/* WHEN [NOT] MATCHED AND conditions */
 } MergeActionState;
+
+/*
+ * ForPortionOfState
+ *
+ * Executor state of a FOR PORTION OF operation.
+ */
+typedef struct ForPortionOfState
+{
+	NodeTag		type;
+
+	char	   *fp_rangeName;	/* the column named in FOR PORTION OF */
+	Oid			fp_rangeType;	/* the base type (not domain) of the FOR
+								 * PORTION OF expression */
+	int			fp_rangeAttno;	/* the attno of the range column */
+	Datum		fp_targetRange; /* the range/multirange from FOR PORTION OF */
+	TypeCacheEntry *fp_leftoverstypcache;	/* type cache entry of the range */
+	TupleTableSlot *fp_Existing;	/* slot to store old tuple */
+	TupleTableSlot *fp_Leftover;	/* slot to store leftover */
+} ForPortionOfState;
 
 /*
  * ResultRelInfo
@@ -521,7 +555,7 @@ typedef struct ResultRelInfo
 	ExprState **ri_TrigWhenExprs;
 
 	/* optional runtime measurements for triggers */
-	Instrumentation *ri_TrigInstrument;
+	TriggerInstrumentation *ri_TrigInstrument;
 
 	/* On-demand created slots for triggers / returning processing */
 	TupleTableSlot *ri_ReturningSlot;	/* for trigger output tuples */
@@ -579,14 +613,17 @@ typedef struct ResultRelInfo
 	/* list of arbiter indexes to use to check conflicts */
 	List	   *ri_onConflictArbiterIndexes;
 
-	/* ON CONFLICT evaluation state */
-	OnConflictSetState *ri_onConflict;
+	/* ON CONFLICT evaluation state for DO SELECT/UPDATE */
+	OnConflictActionState *ri_onConflict;
 
 	/* for MERGE, lists of MergeActionState (one per MergeMatchKind) */
 	List	   *ri_MergeActions[NUM_MERGE_MATCH_KINDS];
 
 	/* for MERGE, expr state for checking the join condition */
 	ExprState  *ri_MergeJoinCondition;
+
+	/* FOR PORTION OF evaluation state */
+	ForPortionOfState *ri_forPortionOf;
 
 	/* partition check expression state (NULL if not set up yet) */
 	ExprState  *ri_PartitionCheckExpr;
@@ -1172,8 +1209,10 @@ typedef struct PlanState
 	ExecProcNodeMtd ExecProcNodeReal;	/* actual function, if above is a
 										 * wrapper */
 
-	Instrumentation *instrument;	/* Optional runtime stats for this node */
-	WorkerInstrumentation *worker_instrument;	/* per-worker instrumentation */
+	NodeInstrumentation *instrument;	/* Optional runtime stats for this
+										 * node */
+	WorkerNodeInstrumentation *worker_instrument;	/* per-worker
+													 * instrumentation */
 
 	/* Per-worker JIT instrumentation */
 	struct SharedJitInstrumentation *worker_jit_instrument;
@@ -1632,6 +1671,7 @@ typedef struct SeqScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	Size		pscan_len;		/* size of parallel heap scan descriptor */
+	struct SharedSeqScanInstrumentation *sinstrument;
 } SeqScanState;
 
 /* ----------------
@@ -1720,7 +1760,7 @@ typedef struct IndexScanState
 	ExprContext *iss_RuntimeContext;
 	Relation	iss_RelationDesc;
 	struct IndexScanDescData *iss_ScanDesc;
-	IndexScanInstrumentation iss_Instrument;
+	IndexScanInstrumentation *iss_Instrument;
 	SharedIndexScanInstrumentation *iss_SharedInfo;
 
 	/* These are needed for re-checking ORDER BY expr ordering */
@@ -1771,7 +1811,7 @@ typedef struct IndexOnlyScanState
 	ExprContext *ioss_RuntimeContext;
 	Relation	ioss_RelationDesc;
 	struct IndexScanDescData *ioss_ScanDesc;
-	IndexScanInstrumentation ioss_Instrument;
+	IndexScanInstrumentation *ioss_Instrument;
 	SharedIndexScanInstrumentation *ioss_SharedInfo;
 	TupleTableSlot *ioss_TableSlot;
 	Buffer		ioss_VMBuffer;
@@ -1812,72 +1852,10 @@ typedef struct BitmapIndexScanState
 	ExprContext *biss_RuntimeContext;
 	Relation	biss_RelationDesc;
 	struct IndexScanDescData *biss_ScanDesc;
-	IndexScanInstrumentation biss_Instrument;
+	IndexScanInstrumentation *biss_Instrument;
 	SharedIndexScanInstrumentation *biss_SharedInfo;
 } BitmapIndexScanState;
 
-/* ----------------
- *	 BitmapHeapScanInstrumentation information
- *
- *		exact_pages		   total number of exact pages retrieved
- *		lossy_pages		   total number of lossy pages retrieved
- * ----------------
- */
-typedef struct BitmapHeapScanInstrumentation
-{
-	uint64		exact_pages;
-	uint64		lossy_pages;
-} BitmapHeapScanInstrumentation;
-
-/* ----------------
- *	 SharedBitmapState information
- *
- *		BM_INITIAL		TIDBitmap creation is not yet started, so first worker
- *						to see this state will set the state to BM_INPROGRESS
- *						and that process will be responsible for creating
- *						TIDBitmap.
- *		BM_INPROGRESS	TIDBitmap creation is in progress; workers need to
- *						sleep until it's finished.
- *		BM_FINISHED		TIDBitmap creation is done, so now all workers can
- *						proceed to iterate over TIDBitmap.
- * ----------------
- */
-typedef enum
-{
-	BM_INITIAL,
-	BM_INPROGRESS,
-	BM_FINISHED,
-} SharedBitmapState;
-
-/* ----------------
- *	 ParallelBitmapHeapState information
- *		tbmiterator				iterator for scanning current pages
- *		mutex					mutual exclusion for state
- *		state					current state of the TIDBitmap
- *		cv						conditional wait variable
- * ----------------
- */
-typedef struct ParallelBitmapHeapState
-{
-	dsa_pointer tbmiterator;
-	slock_t		mutex;
-	SharedBitmapState state;
-	ConditionVariable cv;
-} ParallelBitmapHeapState;
-
-/* ----------------
- *	 Instrumentation data for a parallel bitmap heap scan.
- *
- * A shared memory struct that each parallel worker copies its
- * BitmapHeapScanInstrumentation information into at executor shutdown to
- * allow the leader to display the information in EXPLAIN ANALYZE.
- * ----------------
- */
-typedef struct SharedBitmapHeapInstrumentation
-{
-	int			num_workers;
-	BitmapHeapScanInstrumentation sinstrument[FLEXIBLE_ARRAY_MEMBER];
-} SharedBitmapHeapInstrumentation;
 
 /* ----------------
  *	 BitmapHeapScanState information
@@ -1891,6 +1869,10 @@ typedef struct SharedBitmapHeapInstrumentation
  *		recheck			   do current page's tuples need recheck
  * ----------------
  */
+
+/* this struct is defined in nodeBitmapHeapscan.c */
+typedef struct ParallelBitmapHeapState ParallelBitmapHeapState;
+
 typedef struct BitmapHeapScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
@@ -1941,6 +1923,7 @@ typedef struct TidRangeScanState
 	ItemPointerData trss_maxtid;
 	bool		trss_inScan;
 	Size		trss_pscanlen;
+	struct SharedTidRangeScanInstrumentation *trss_sinstrument;
 } TidRangeScanState;
 
 /* ----------------
@@ -2247,8 +2230,11 @@ typedef struct MergeJoinState
  *		hj_NullOuterTupleSlot	prepared null tuple for right/right-anti/full
  *								outer joins
  *		hj_NullInnerTupleSlot	prepared null tuple for left/full outer joins
+ *		hj_NullOuterTupleStore	tuplestore holding outer tuples that have
+ *								null join keys (but must be emitted anyway)
  *		hj_FirstOuterTupleSlot	first tuple retrieved from outer plan
  *		hj_JoinState			current state of ExecHashJoin state machine
+ *		hj_KeepNullTuples		true to keep outer tuples with null join keys
  *		hj_MatchedOuter			true if found a join match for current outer
  *		hj_OuterNotEmpty		true if outer relation known not empty
  * ----------------
@@ -2272,8 +2258,10 @@ typedef struct HashJoinState
 	TupleTableSlot *hj_HashTupleSlot;
 	TupleTableSlot *hj_NullOuterTupleSlot;
 	TupleTableSlot *hj_NullInnerTupleSlot;
+	Tuplestorestate *hj_NullOuterTupleStore;
 	TupleTableSlot *hj_FirstOuterTupleSlot;
 	int			hj_JoinState;
+	bool		hj_KeepNullTuples;
 	bool		hj_MatchedOuter;
 	bool		hj_OuterNotEmpty;
 } HashJoinState;
@@ -2304,31 +2292,6 @@ typedef struct MaterialState
 struct MemoizeEntry;
 struct MemoizeTuple;
 struct MemoizeKey;
-
-typedef struct MemoizeInstrumentation
-{
-	uint64		cache_hits;		/* number of rescans where we've found the
-								 * scan parameter values to be cached */
-	uint64		cache_misses;	/* number of rescans where we've not found the
-								 * scan parameter values to be cached. */
-	uint64		cache_evictions;	/* number of cache entries removed due to
-									 * the need to free memory */
-	uint64		cache_overflows;	/* number of times we've had to bypass the
-									 * cache when filling it due to not being
-									 * able to free enough space to store the
-									 * current scan's tuples. */
-	uint64		mem_peak;		/* peak memory usage in bytes */
-} MemoizeInstrumentation;
-
-/* ----------------
- *	 Shared memory container for per-worker memoize information
- * ----------------
- */
-typedef struct SharedMemoizeInfo
-{
-	int			num_workers;
-	MemoizeInstrumentation sinstrument[FLEXIBLE_ARRAY_MEMBER];
-} SharedMemoizeInfo;
 
 /* ----------------
  *	 MemoizeState information
@@ -2386,16 +2349,6 @@ typedef struct PresortedKeyData
 } PresortedKeyData;
 
 /* ----------------
- *	 Shared memory container for per-worker sort information
- * ----------------
- */
-typedef struct SharedSortInfo
-{
-	int			num_workers;
-	TuplesortInstrumentation sinstrument[FLEXIBLE_ARRAY_MEMBER];
-} SharedSortInfo;
-
-/* ----------------
  *	 SortState information
  * ----------------
  */
@@ -2414,40 +2367,6 @@ typedef struct SortState
 	SharedSortInfo *shared_info;	/* one entry per worker */
 } SortState;
 
-/* ----------------
- *	 Instrumentation information for IncrementalSort
- * ----------------
- */
-typedef struct IncrementalSortGroupInfo
-{
-	int64		groupCount;
-	int64		maxDiskSpaceUsed;
-	int64		totalDiskSpaceUsed;
-	int64		maxMemorySpaceUsed;
-	int64		totalMemorySpaceUsed;
-	bits32		sortMethods;	/* bitmask of TuplesortMethod */
-} IncrementalSortGroupInfo;
-
-typedef struct IncrementalSortInfo
-{
-	IncrementalSortGroupInfo fullsortGroupInfo;
-	IncrementalSortGroupInfo prefixsortGroupInfo;
-} IncrementalSortInfo;
-
-/* ----------------
- *	 Shared memory container for per-worker incremental sort information
- * ----------------
- */
-typedef struct SharedIncrementalSortInfo
-{
-	int			num_workers;
-	IncrementalSortInfo sinfo[FLEXIBLE_ARRAY_MEMBER];
-} SharedIncrementalSortInfo;
-
-/* ----------------
- *	 IncrementalSortState information
- * ----------------
- */
 typedef enum
 {
 	INCSORT_LOADFULLSORT,
@@ -2489,27 +2408,6 @@ typedef struct GroupState
 	ExprState  *eqfunction;		/* equality function */
 	bool		grp_done;		/* indicates completion of Group scan */
 } GroupState;
-
-/* ---------------------
- *	per-worker aggregate information
- * ---------------------
- */
-typedef struct AggregateInstrumentation
-{
-	Size		hash_mem_peak;	/* peak hash table memory usage */
-	uint64		hash_disk_used; /* kB of disk space used */
-	int			hash_batches_used;	/* batches used during entire execution */
-} AggregateInstrumentation;
-
-/* ----------------
- *	 Shared memory container for per-worker aggregate information
- * ----------------
- */
-typedef struct SharedAggInfo
-{
-	int			num_workers;
-	AggregateInstrumentation sinstrument[FLEXIBLE_ARRAY_MEMBER];
-} SharedAggInfo;
 
 /* ---------------------
  *	AggState information
@@ -2788,29 +2686,6 @@ typedef struct GatherMergeState
 } GatherMergeState;
 
 /* ----------------
- *	 Values displayed by EXPLAIN ANALYZE
- * ----------------
- */
-typedef struct HashInstrumentation
-{
-	int			nbuckets;		/* number of buckets at end of execution */
-	int			nbuckets_original;	/* planned number of buckets */
-	int			nbatch;			/* number of batches at end of execution */
-	int			nbatch_original;	/* planned number of batches */
-	Size		space_peak;		/* peak memory usage in bytes */
-} HashInstrumentation;
-
-/* ----------------
- *	 Shared memory container for per-worker hash information
- * ----------------
- */
-typedef struct SharedHashInfo
-{
-	int			num_workers;
-	HashInstrumentation hinstrument[FLEXIBLE_ARRAY_MEMBER];
-} SharedHashInfo;
-
-/* ----------------
  *	 HashState information
  * ----------------
  */
@@ -2822,6 +2697,9 @@ typedef struct HashState
 
 	FmgrInfo   *skew_hashfunction;	/* lookup data for skew hash function */
 	Oid			skew_collation; /* collation to call skew_hashfunction with */
+
+	Tuplestorestate *null_tuple_store;	/* where to put null-keyed tuples */
+	bool		keep_null_tuples;	/* do we need to save such tuples? */
 
 	/*
 	 * In a parallelized hash join, the leader retains a pointer to the

@@ -175,9 +175,9 @@ $old_sub->safe_psql('postgres',
 );
 my $sub_oid = $old_sub->safe_psql('postgres',
 	"SELECT oid FROM pg_subscription WHERE subname = 'regress_sub3'");
-my $reporigin = 'pg_' . qq($sub_oid);
+my $replorigin = 'pg_' . qq($sub_oid);
 $old_sub->safe_psql('postgres',
-	"SELECT pg_replication_origin_drop('$reporigin')");
+	"SELECT pg_replication_origin_drop('$replorigin')");
 
 $old_sub->stop;
 
@@ -390,7 +390,8 @@ is($result, qq($remote_lsn), "remote_lsn should have been preserved");
 
 # The conflict detection slot should be created
 $result = $new_sub->safe_psql('postgres',
-	"SELECT xmin IS NOT NULL from pg_replication_slots WHERE slot_name = 'pg_conflict_detection'");
+	"SELECT xmin IS NOT NULL from pg_replication_slots WHERE slot_name = 'pg_conflict_detection'"
+);
 is($result, qq(t), "conflict detection slot exists");
 
 # Resume the initial sync and wait until all tables of subscription

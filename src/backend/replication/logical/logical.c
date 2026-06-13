@@ -108,9 +108,9 @@ static void LoadOutputPlugin(OutputPluginCallbacks *callbacks, const char *plugi
  * decoding.
  */
 void
-CheckLogicalDecodingRequirements(void)
+CheckLogicalDecodingRequirements(bool repack)
 {
-	CheckSlotRequirements();
+	CheckSlotRequirements(repack);
 
 	/*
 	 * NB: Adding a new requirement likely means that RestoreSlotFromDisk()
@@ -301,6 +301,7 @@ StartupDecodingContext(List *output_plugin_options,
  * output_plugin_options -- contains options passed to the output plugin
  * need_full_snapshot -- if true, must obtain a snapshot able to read all
  *		tables; if false, one that can read only catalogs is acceptable.
+ * for_repack -- if true, we're going to be decoding for REPACK.
  * restart_lsn -- if given as invalid, it's this routine's responsibility to
  *		mark WAL as reserved by setting a convenient restart_lsn for the slot.
  *		Otherwise, we set for decoding to start from the given LSN without
@@ -321,6 +322,7 @@ LogicalDecodingContext *
 CreateInitDecodingContext(const char *plugin,
 						  List *output_plugin_options,
 						  bool need_full_snapshot,
+						  bool for_repack,
 						  XLogRecPtr restart_lsn,
 						  XLogReaderRoutine *xl_routine,
 						  LogicalOutputPluginWriterPrepareWrite prepare_write,
@@ -337,7 +339,7 @@ CreateInitDecodingContext(const char *plugin,
 	 * On a standby, this check is also required while creating the slot.
 	 * Check the comments in the function.
 	 */
-	CheckLogicalDecodingRequirements();
+	CheckLogicalDecodingRequirements(for_repack);
 
 	/* shorter lines... */
 	slot = MyReplicationSlot;
@@ -598,7 +600,7 @@ CreateDecodingContext(XLogRecPtr start_lsn,
 
 	ctx->reorder->output_rewrites = ctx->options.receive_rewrites;
 
-	ereport(LOG,
+	ereport(LogicalDecodingLogLevel(),
 			(errmsg("starting logical decoding for slot \"%s\"",
 					NameStr(slot->data.name)),
 			 errdetail("Streaming transactions committing after %X/%08X, reading WAL from %X/%08X.",
@@ -1187,7 +1189,7 @@ filter_prepare_cb_wrapper(LogicalDecodingContext *ctx, TransactionId xid,
 }
 
 bool
-filter_by_origin_cb_wrapper(LogicalDecodingContext *ctx, RepOriginId origin_id)
+filter_by_origin_cb_wrapper(LogicalDecodingContext *ctx, ReplOriginId origin_id)
 {
 	LogicalErrorCallbackState state;
 	ErrorContextCallback errcallback;
@@ -1908,8 +1910,14 @@ LogicalConfirmReceivedLocation(XLogRecPtr lsn)
 			SpinLockRelease(&MyReplicationSlot->mutex);
 
 			ReplicationSlotsComputeRequiredXmin(false);
-			ReplicationSlotsComputeRequiredLSN();
 		}
+
+		/*
+		 * Now that the new restart_lsn is safely on disk, recompute the
+		 * global WAL retention requirement.
+		 */
+		if (updated_restart)
+			ReplicationSlotsComputeRequiredLSN();
 	}
 	else
 	{
@@ -1986,16 +1994,22 @@ UpdateDecodingStats(LogicalDecodingContext *ctx)
 }
 
 /*
- * Read up to the end of WAL starting from the decoding slot's restart_lsn.
- * Return true if any meaningful/decodable WAL records are encountered,
- * otherwise false.
+ * Read up to the end of WAL starting from the decoding slot's restart_lsn
+ * to end_of_wal in order to check if any meaningful/decodable WAL records
+ * are encountered. scan_cutoff_lsn is the LSN, where we can terminate the
+ * WAL scan early if we find a decodable WAL record after this LSN.
+ *
+ * Returns the last LSN decodable WAL record's LSN if found, otherwise
+ * returns InvalidXLogRecPtr.
  */
-bool
-LogicalReplicationSlotHasPendingWal(XLogRecPtr end_of_wal)
+XLogRecPtr
+LogicalReplicationSlotCheckPendingWal(XLogRecPtr end_of_wal,
+									  XLogRecPtr scan_cutoff_lsn)
 {
-	bool		has_pending_wal = false;
+	XLogRecPtr	last_pending_wal = InvalidXLogRecPtr;
 
 	Assert(MyReplicationSlot);
+	Assert(end_of_wal >= scan_cutoff_lsn);
 
 	PG_TRY();
 	{
@@ -2023,8 +2037,7 @@ LogicalReplicationSlotHasPendingWal(XLogRecPtr end_of_wal)
 		/* Invalidate non-timetravel entries */
 		InvalidateSystemCaches();
 
-		/* Loop until the end of WAL or some changes are processed */
-		while (!has_pending_wal && ctx->reader->EndRecPtr < end_of_wal)
+		while (ctx->reader->EndRecPtr < end_of_wal)
 		{
 			XLogRecord *record;
 			char	   *errm = NULL;
@@ -2037,7 +2050,20 @@ LogicalReplicationSlotHasPendingWal(XLogRecPtr end_of_wal)
 			if (record != NULL)
 				LogicalDecodingProcessRecord(ctx, ctx->reader);
 
-			has_pending_wal = ctx->processing_required;
+			if (ctx->processing_required)
+			{
+				last_pending_wal = ctx->reader->ReadRecPtr;
+
+				/*
+				 * If we find a decodable WAL after the scan_cutoff_lsn point,
+				 * we can terminate the scan early.
+				 */
+				if (last_pending_wal >= scan_cutoff_lsn)
+					break;
+
+				/* Reset the flag and continue checking */
+				ctx->processing_required = false;
+			}
 
 			CHECK_FOR_INTERRUPTS();
 		}
@@ -2055,7 +2081,7 @@ LogicalReplicationSlotHasPendingWal(XLogRecPtr end_of_wal)
 	}
 	PG_END_TRY();
 
-	return has_pending_wal;
+	return last_pending_wal;
 }
 
 /*

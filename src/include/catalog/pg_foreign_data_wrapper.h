@@ -26,6 +26,8 @@
  *		typedef struct FormData_pg_foreign_data_wrapper
  * ----------------
  */
+BEGIN_CATALOG_STRUCT
+
 CATALOG(pg_foreign_data_wrapper,2328,ForeignDataWrapperRelationId)
 {
 	Oid			oid;			/* oid */
@@ -36,12 +38,17 @@ CATALOG(pg_foreign_data_wrapper,2328,ForeignDataWrapperRelationId)
 	Oid			fdwvalidator BKI_LOOKUP_OPT(pg_proc);	/* option validation
 														 * function, or 0 if
 														 * none */
+	Oid			fdwconnection BKI_LOOKUP_OPT(pg_proc);	/* connection string
+														 * function, or 0 if
+														 * none */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	aclitem		fdwacl[1];		/* access permissions */
 	text		fdwoptions[1];	/* FDW options */
 #endif
 } FormData_pg_foreign_data_wrapper;
+
+END_CATALOG_STRUCT
 
 /* ----------------
  *		Form_pg_foreign_data_wrapper corresponds to a pointer to a tuple with

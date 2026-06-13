@@ -9,6 +9,7 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/gist.h"
 #include "access/htup.h"
 #include "access/htup_details.h"
@@ -24,6 +25,7 @@
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
+#include "utils/tuplestore.h"
 
 PG_FUNCTION_INFO_V1(gist_page_opaque_info);
 PG_FUNCTION_INFO_V1(gist_page_items);
@@ -201,7 +203,7 @@ gist_page_items(PG_FUNCTION_ARGS)
 	TupleDesc	tupdesc;
 	Page		page;
 	uint16		flagbits;
-	bits16		printflags = 0;
+	uint16		printflags = 0;
 	OffsetNumber offset;
 	OffsetNumber maxoff = InvalidOffsetNumber;
 	char	   *index_columns;

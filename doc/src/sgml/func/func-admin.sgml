@@ -1495,7 +1495,9 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         Synchronize the logical failover replication slots from the primary
         server to the standby server. This function can only be executed on the
         standby server. Temporary synced slots, if any, cannot be used for
-        logical decoding and must be dropped after promotion. See
+        logical decoding and must be dropped after promotion. This function
+        retries cyclically until all the failover slots that existed on
+        primary at the start of the function call are synchronized. See
         <xref linkend="logicaldecoding-replication-slots-synchronization"/> for details.
         Note that this function cannot be executed if
         <link linkend="guc-sync-replication-slots"><varname>
@@ -2158,6 +2160,150 @@ SELECT pg_restore_attribute_stats(
         <para>
          Clears column-level statistics for the given relation and
          attribute, as though the table was newly created.
+        </para>
+        <para>
+         The caller must have the <literal>MAINTAIN</literal> privilege on
+         the table or be the owner of the database.
+        </para>
+       </entry>
+      </row>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_restore_extended_stats</primary>
+        </indexterm>
+        <function>pg_restore_extended_stats</function> (
+        <literal>VARIADIC</literal> <parameter>kwargs</parameter> <type>"any"</type> )
+        <returnvalue>boolean</returnvalue>
+        </para>
+        <para>
+         Creates or updates statistics for statistics objects.  Ordinarily,
+         these statistics are collected automatically or updated as a part of
+         <xref linkend="sql-vacuum"/> or <xref linkend="sql-analyze"/>, so
+         it's not necessary to call this function.  However, it is useful
+         after a restore to enable the optimizer to choose better plans if
+         <command>ANALYZE</command> has not been run yet.
+        </para>
+        <para>
+         The tracked statistics may change from version to version, so
+         arguments are passed as pairs of <replaceable>argname</replaceable>
+         and <replaceable>argvalue</replaceable> in the form:
+<programlisting>
+SELECT pg_restore_extended_stats(
+    '<replaceable>arg1name</replaceable>', '<replaceable>arg1value</replaceable>'::<replaceable>arg1type</replaceable>,
+    '<replaceable>arg2name</replaceable>', '<replaceable>arg2value</replaceable>'::<replaceable>arg2type</replaceable>,
+    '<replaceable>arg3name</replaceable>', '<replaceable>arg3value</replaceable>'::<replaceable>arg3type</replaceable>);
+</programlisting>
+        </para>
+        <para>
+         For example, to set some values for the statistics object
+         <structname>myschema.mystatsobj</structname>:
+<programlisting>
+SELECT pg_restore_extended_stats(
+    'schemaname',            'tab_schema',
+    'relname',               'tab_name',
+    'statistics_schemaname', 'stats_schema',
+    'statistics_name',       'stats_name',
+    'inherited',             false,
+    'n_distinct',            '[{"attributes" : [2,3], "ndistinct" : 4}]'::pg_ndistinct,
+    'dependencies',          '{"2 => 1": 1.000000, "2 => -1": 1.000000, "2 => -2": 1.000000}'::pg_dependencies,
+    'exprs',                 '[
+                               {
+                                   "avg_width": "4",
+                                   "null_frac": "0.5",
+                                   "n_distinct": "-0.75",
+                                   "correlation": "-0.6",
+                                   "histogram_bounds": "{-1,0}",
+                                   "most_common_vals": "{1}",
+                                   "most_common_elems": null,
+                                   "most_common_freqs": "{0.5}",
+                                   "elem_count_histogram": null,
+                                   "most_common_elem_freqs": null
+                               },
+                               {
+                                   "avg_width": "4",
+                                   "null_frac": "0.25",
+                                   "n_distinct": "-0.5",
+                                   "correlation": "1",
+                                   "histogram_bounds": null,
+                                   "most_common_vals": "{2}",
+                                   "most_common_elems": null,
+                                   "most_common_freqs": "{0.5}",
+                                   "elem_count_histogram": null,
+                                   "most_common_elem_freqs": null
+                               }
+                              ]'::jsonb);
+</programlisting>
+        </para>
+        <para>
+         The required arguments are <literal>schemaname</literal> with a value
+         of type <type>name</type>, for the schema of the table to which the
+         statistics are related to, <literal>relname</literal> with a value
+         of type <type>name</type>, for the table to which the statistics are
+         related to, <literal>statistics_schemaname</literal>
+         with a value of type <type>name</type>, which specifies the statistics
+         object's schema, <literal>statistics_name</literal> with a value of
+         type <type>name</type>, which specifies the name of the statistics
+         object and <literal>inherited</literal>, which specifies whether
+         the statistics include values from child tables.
+        </para>
+        <para>
+         Other arguments are the names and values of statistics corresponding
+         to columns in <link linkend="view-pg-stats-ext"><structname>pg_stats_ext</structname>
+         </link>.
+         This function currently supports <literal>n_distinct</literal>,
+         <literal>dependencies</literal>, <literal>most_common_vals</literal>,
+         <literal>most_common_freqs</literal>,
+         and <literal>most_common_base_freqs</literal>.
+         To accept statistics for any expressions in the extended
+         statistics object, the parameter <literal>exprs</literal> with a type
+         <type>jsonb</type> is available. This should be an one-dimension array
+         with a number of expressions matching the definition of the extended
+         statistics object, made of json elements for each of the statistical
+         columns in
+         <link linkend="view-pg-stats-ext-exprs"><structname>pg_stats_ext_exprs</structname></link>.
+        </para>
+        <para>
+         Additionally, this function accepts argument name
+         <literal>version</literal> of type <type>integer</type>, which
+         specifies the server version from which the statistics originated.
+         This is anticipated to be helpful in porting statistics from older
+         versions of <productname>PostgreSQL</productname>.
+        </para>
+        <para>
+         Minor errors are reported as a <literal>WARNING</literal> and
+         ignored, and remaining statistics will still be restored. If all
+         specified statistics are successfully restored, returns
+         <literal>true</literal>, otherwise <literal>false</literal>.
+        </para>
+        <para>
+         The caller must have the <literal>MAINTAIN</literal> privilege on the
+         table or be the owner of the database.
+        </para>
+       </entry>
+      </row>
+      <row>
+       <entry role="func_table_entry">
+        <para role="func_signature">
+         <indexterm>
+          <primary>pg_clear_extended_stats</primary>
+         </indexterm>
+         <function>pg_clear_extended_stats</function> (
+         <parameter>schemaname</parameter> <type>name</type>,
+         <parameter>relname</parameter> <type>name</type>,
+         <parameter>statistics_schemaname</parameter> <type>name</type>,
+         <parameter>statistics_name</parameter> <type>name</type>,
+         <parameter>inherited</parameter> <type>boolean</type> )
+         <returnvalue>void</returnvalue>
+        </para>
+        <para>
+         Clears data of an extended statistics object, as though the object
+         was newly-created. The required arguments are
+         <literal>schemaname</literal> and <literal>relname</literal> to
+         specify the schema and table name of the relation whose statistics
+         are cleared, as well as <literal>statistics_schemaname</literal>
+         and <literal>statistics_name</literal> to specify the schema and
+         extended statistics name of the extended statistics object to clear.
         </para>
         <para>
          The caller must have the <literal>MAINTAIN</literal> privilege on
@@ -2970,6 +3116,84 @@ SELECT convert_from(pg_read_binary_file('file_in_utf8.txt'), 'UTF8');
         return <literal>true</literal>, or return <literal>false</literal>
         without waiting if the lock cannot be acquired immediately.
        </para></entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </table>
+
+  </sect2>
+
+  <sect2 id="functions-admin-checksum">
+   <title>Data Checksum Functions</title>
+
+   <para>
+    The functions shown in <xref linkend="functions-checksums-table" /> can
+    be used to enable or disable data checksums in a running cluster.
+   </para>
+   <para>
+    Changing data checksums can be done in a cluster with concurrent activity
+    without blocking queries, but overall system performance will be affected.
+    See <xref linkend="checksums" /> for further details on how changing the
+    data checksums state can affect a system and possible mitigations for how
+    to reduce the impact.
+   </para>
+
+   <table id="functions-checksums-table">
+    <title>Data Checksum Functions</title>
+    <tgroup cols="1">
+     <thead>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        Function
+       </para>
+       <para>
+        Description
+       </para></entry>
+      </row>
+     </thead>
+
+     <tbody>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_enable_data_checksums</primary>
+        </indexterm>
+        <function>pg_enable_data_checksums</function> ( <optional><parameter>cost_delay</parameter> <type>int</type>, <parameter>cost_limit</parameter> <type>int</type></optional> )
+        <returnvalue>void</returnvalue>
+       </para>
+       <para>
+        Initiates the process of enabling data checksums for the cluster. This
+        will set the data checksums state to <literal>inprogress-on</literal>
+        as well as start a background worker that will process all pages in all
+        databases and enable data checksums on them.  When all pages have
+        been processed, the cluster will automatically set data checksums state
+        to <literal>on</literal>.  This operation is WAL logged and replicated
+        to all standby nodes.
+       </para>
+       <para>
+        If <parameter>cost_delay</parameter> and <parameter>cost_limit</parameter> are
+        specified, the process is throttled using the same principles as
+        <link linkend="runtime-config-resource-vacuum-cost">Cost-based Vacuum Delay</link>.
+       </para>
+       </entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_disable_data_checksums</primary>
+        </indexterm>
+        <function>pg_disable_data_checksums</function> ()
+        <returnvalue>void</returnvalue>
+       </para>
+       <para>
+        Disables data checksum calculation and validation for the cluster. This
+        will set the data checksum state to <literal>inprogress-off</literal>
+        while data checksums are being disabled.  When all active backends have
+        stopped validating data checksums, the data checksum state will be
+        set to <literal>off</literal>.
+       </para>
+       </entry>
       </row>
      </tbody>
     </tgroup>

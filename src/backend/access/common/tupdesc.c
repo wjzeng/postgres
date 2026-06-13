@@ -86,25 +86,8 @@ populate_compact_attribute_internal(Form_pg_attribute src,
 		IsCatalogRelationOid(src->attrelid) ? ATTNULLABLE_VALID :
 		ATTNULLABLE_UNKNOWN;
 
-	switch (src->attalign)
-	{
-		case TYPALIGN_INT:
-			dst->attalignby = ALIGNOF_INT;
-			break;
-		case TYPALIGN_CHAR:
-			dst->attalignby = sizeof(char);
-			break;
-		case TYPALIGN_DOUBLE:
-			dst->attalignby = ALIGNOF_DOUBLE;
-			break;
-		case TYPALIGN_SHORT:
-			dst->attalignby = ALIGNOF_SHORT;
-			break;
-		default:
-			dst->attalignby = 0;
-			elog(ERROR, "invalid attalign value: %c", src->attalign);
-			break;
-	}
+	/* Compute numeric alignment requirement, too */
+	dst->attalignby = typalign_to_alignby(src->attalign);
 }
 
 /*
@@ -214,6 +197,10 @@ CreateTemplateTupleDesc(int natts)
 	desc->tdtypmod = -1;
 	desc->tdrefcount = -1;		/* assume not reference-counted */
 
+	/* This will be set to the correct value by TupleDescFinalize() */
+	desc->firstNonCachedOffsetAttr = -1;
+	desc->firstNonGuaranteedAttr = -1;
+
 	return desc;
 }
 
@@ -238,6 +225,9 @@ CreateTupleDesc(int natts, Form_pg_attribute *attrs)
 		memcpy(TupleDescAttr(desc, i), attrs[i], ATTRIBUTE_FIXED_PART_SIZE);
 		populate_compact_attribute(desc, i);
 	}
+
+	TupleDescFinalize(desc);
+
 	return desc;
 }
 
@@ -256,10 +246,11 @@ CreateTupleDescCopy(TupleDesc tupdesc)
 
 	desc = CreateTemplateTupleDesc(tupdesc->natts);
 
-	/* Flat-copy the attribute array */
-	memcpy(TupleDescAttr(desc, 0),
-		   TupleDescAttr(tupdesc, 0),
-		   desc->natts * sizeof(FormData_pg_attribute));
+	/* Flat-copy the attribute array (unless there are no attributes) */
+	if (desc->natts > 0)
+		memcpy(TupleDescAttr(desc, 0),
+			   TupleDescAttr(tupdesc, 0),
+			   desc->natts * sizeof(FormData_pg_attribute));
 
 	/*
 	 * Since we're not copying constraints and defaults, clear fields
@@ -281,6 +272,8 @@ CreateTupleDescCopy(TupleDesc tupdesc)
 	/* We can copy the tuple type identification, too */
 	desc->tdtypeid = tupdesc->tdtypeid;
 	desc->tdtypmod = tupdesc->tdtypmod;
+
+	TupleDescFinalize(desc);
 
 	return desc;
 }
@@ -302,10 +295,11 @@ CreateTupleDescTruncatedCopy(TupleDesc tupdesc, int natts)
 
 	desc = CreateTemplateTupleDesc(natts);
 
-	/* Flat-copy the attribute array */
-	memcpy(TupleDescAttr(desc, 0),
-		   TupleDescAttr(tupdesc, 0),
-		   desc->natts * sizeof(FormData_pg_attribute));
+	/* Flat-copy the attribute array (unless there are no attributes) */
+	if (desc->natts > 0)
+		memcpy(TupleDescAttr(desc, 0),
+			   TupleDescAttr(tupdesc, 0),
+			   desc->natts * sizeof(FormData_pg_attribute));
 
 	/*
 	 * Since we're not copying constraints and defaults, clear fields
@@ -328,6 +322,8 @@ CreateTupleDescTruncatedCopy(TupleDesc tupdesc, int natts)
 	desc->tdtypeid = tupdesc->tdtypeid;
 	desc->tdtypmod = tupdesc->tdtypmod;
 
+	TupleDescFinalize(desc);
+
 	return desc;
 }
 
@@ -345,10 +341,11 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 
 	desc = CreateTemplateTupleDesc(tupdesc->natts);
 
-	/* Flat-copy the attribute array */
-	memcpy(TupleDescAttr(desc, 0),
-		   TupleDescAttr(tupdesc, 0),
-		   desc->natts * sizeof(FormData_pg_attribute));
+	/* Flat-copy the attribute array (unless there are no attributes) */
+	if (desc->natts > 0)
+		memcpy(TupleDescAttr(desc, 0),
+			   TupleDescAttr(tupdesc, 0),
+			   desc->natts * sizeof(FormData_pg_attribute));
 
 	for (i = 0; i < desc->natts; i++)
 	{
@@ -413,6 +410,8 @@ CreateTupleDescCopyConstr(TupleDesc tupdesc)
 	desc->tdtypeid = tupdesc->tdtypeid;
 	desc->tdtypmod = tupdesc->tdtypmod;
 
+	TupleDescFinalize(desc);
+
 	return desc;
 }
 
@@ -455,6 +454,8 @@ TupleDescCopy(TupleDesc dst, TupleDesc src)
 	 * source's refcount would be wrong in any case.)
 	 */
 	dst->tdrefcount = -1;
+
+	TupleDescFinalize(dst);
 }
 
 /*
@@ -463,6 +464,9 @@ TupleDescCopy(TupleDesc dst, TupleDesc src)
  *		descriptor to another.
  *
  * !!! Constraints and defaults are not copied !!!
+ *
+ * The caller must take care of calling TupleDescFinalize() on 'dst' once all
+ * TupleDesc changes have been made.
  */
 void
 TupleDescCopyEntry(TupleDesc dst, AttrNumber dstAttno,
@@ -493,6 +497,69 @@ TupleDescCopyEntry(TupleDesc dst, AttrNumber dstAttno,
 	dstAtt->attgenerated = '\0';
 
 	populate_compact_attribute(dst, dstAttno - 1);
+}
+
+/*
+ * TupleDescFinalize
+ *		Finalize the given TupleDesc.  This must be called after the
+ *		attributes arrays have been populated or adjusted by any code.
+ *
+ * Must be called after populate_compact_attribute() and before
+ * BlessTupleDesc().
+ */
+void
+TupleDescFinalize(TupleDesc tupdesc)
+{
+	int			firstNonCachedOffsetAttr = 0;
+	int			firstNonGuaranteedAttr = tupdesc->natts;
+	int			off = 0;
+
+	for (int i = 0; i < tupdesc->natts; i++)
+	{
+		CompactAttribute *cattr = TupleDescCompactAttr(tupdesc, i);
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+
+		/*
+		 * Find the highest attnum which is guaranteed to exist in all tuples
+		 * in the table.  We currently only pay attention to byval attributes
+		 * to allow additional optimizations during tuple deformation.
+		 */
+		if (firstNonGuaranteedAttr == tupdesc->natts &&
+			(cattr->attnullability != ATTNULLABLE_VALID || !cattr->attbyval ||
+			 cattr->atthasmissing || cattr->attisdropped ||
+			 cattr->attlen <= 0 ||
+			 attr->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL))
+			firstNonGuaranteedAttr = i;
+
+		/*
+		 * Don't cache offsets beyond fixed-width attributes.  Virtual
+		 * generated attributes are stored as NULLs in the tuple, so we don't
+		 * cache offsets beyond these.
+		 */
+		if (cattr->attlen <= 0 ||
+			attr->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+			break;
+
+		off = att_nominal_alignby(off, cattr->attalignby);
+
+		/*
+		 * attcacheoff is an int16, so don't try to cache any offsets larger
+		 * than will fit in that type.  Any attributes which are offset more
+		 * than 2^15 are likely due to variable-length attributes.  Since we
+		 * don't cache offsets for or beyond variable-length attributes, using
+		 * an int16 rather than an int32 here is unlikely to cost us anything.
+		 */
+		if (off > PG_INT16_MAX)
+			break;
+
+		cattr->attcacheoff = (int16) off;
+
+		off += cattr->attlen;
+		firstNonCachedOffsetAttr = i + 1;
+	}
+
+	tupdesc->firstNonCachedOffsetAttr = firstNonCachedOffsetAttr;
+	tupdesc->firstNonGuaranteedAttr = firstNonGuaranteedAttr;
 }
 
 /*
@@ -1081,6 +1148,8 @@ BuildDescFromLists(const List *names, const List *types, const List *typmods, co
 		TupleDescInitEntry(desc, attnum, attname, atttypid, atttypmod, 0);
 		TupleDescInitEntryCollation(desc, attnum, attcollation);
 	}
+
+	TupleDescFinalize(desc);
 
 	return desc;
 }

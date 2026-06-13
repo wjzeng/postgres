@@ -87,6 +87,10 @@
 #define ALLOC_CHUNK_FRACTION	4
 /* We allow chunks to be at most 1/4 of maxBlockSize (less overhead) */
 
+/* ALLOC_CHUNK_LIMIT must be equal to ALLOCSET_SEPARATE_THRESHOLD */
+StaticAssertDecl(ALLOC_CHUNK_LIMIT == ALLOCSET_SEPARATE_THRESHOLD,
+				 "ALLOC_CHUNK_LIMIT != ALLOCSET_SEPARATE_THRESHOLD");
+
 /*--------------------
  * The first block allocated for an allocset has size initBlockSize.
  * Each time we have to allocate another block, we double the block size
@@ -501,12 +505,6 @@ AllocSetContextCreateInternal(MemoryContext parent,
 	 * requests that are all the maximum chunk size we will waste at most
 	 * 1/8th of the allocated space.
 	 *
-	 * Also, allocChunkLimit must not exceed ALLOCSET_SEPARATE_THRESHOLD.
-	 */
-	StaticAssertStmt(ALLOC_CHUNK_LIMIT == ALLOCSET_SEPARATE_THRESHOLD,
-					 "ALLOC_CHUNK_LIMIT != ALLOCSET_SEPARATE_THRESHOLD");
-
-	/*
 	 * Determine the maximum size that a chunk can be before we allocate an
 	 * entire AllocBlock dedicated for that chunk.  We set the absolute limit
 	 * of that size as ALLOC_CHUNK_LIMIT but we reduce it further so that we
@@ -1176,7 +1174,26 @@ AllocSetFree(void *pointer)
 		Assert(FreeListIdxIsValid(fidx));
 		link = GetFreeListLink(chunk);
 
+		/*
+		 * It might seem odd that we use elevel ERROR for double-pfree but
+		 * only WARNING for write-past-chunk-end.  But the two conditions are
+		 * not very comparable.  In the double-pfree case we can prevent
+		 * corruption before it happens; while if we let it go through, the
+		 * result would be a corrupted freelist that allows this chunk to get
+		 * re-allocated twice.  Thus the original bug could cascade into
+		 * hard-to-understand misbehavior that might manifest far away from
+		 * the actual source of the problem.  On the other hand, a write past
+		 * chunk end can be relatively benign if just a few bytes too many
+		 * were written: often, only padding or unused space gets affected.
+		 * Moreover, whatever damage was done is already done, and we're just
+		 * reporting after the fact with no ability to clean it up.  So just
+		 * warn, like AllocSetCheck would do if the chunk didn't get freed.
+		 */
 #ifdef MEMORY_CONTEXT_CHECKING
+		/* Test for previously-freed chunk */
+		if (unlikely(chunk->requested_size == InvalidAllocSize))
+			elog(ERROR, "detected double pfree in %s %p",
+				 set->header.name, chunk);
 		/* Test for someone scribbling on unused space in chunk */
 		if (chunk->requested_size < GetChunkSizeFromFreeListIdx(fidx))
 			if (!sentinel_ok(pointer, chunk->requested_size))
@@ -1375,6 +1392,11 @@ AllocSetRealloc(void *pointer, Size size, int flags)
 	oldchksize = GetChunkSizeFromFreeListIdx(fidx);
 
 #ifdef MEMORY_CONTEXT_CHECKING
+	/* See comments in AllocSetFree about uses of ERROR and WARNING here */
+	/* Test for previously-freed chunk */
+	if (unlikely(chunk->requested_size == InvalidAllocSize))
+		elog(ERROR, "detected realloc of freed chunk in %s %p",
+			 set->header.name, chunk);
 	/* Test for someone scribbling on unused space in chunk */
 	if (chunk->requested_size < oldchksize)
 		if (!sentinel_ok(pointer, chunk->requested_size))

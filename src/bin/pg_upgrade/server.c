@@ -71,6 +71,8 @@ get_db_conn(ClusterInfo *cluster, const char *db_name)
 		appendPQExpBufferStr(&conn_opts, " host=");
 		appendConnStrVal(&conn_opts, cluster->sockdir);
 	}
+	if (!protocol_negotiation_supported(cluster))
+		appendPQExpBufferStr(&conn_opts, " max_protocol_version=3.0");
 
 	conn = PQconnectdb(conn_opts.data);
 	termPQExpBuffer(&conn_opts);
@@ -119,7 +121,7 @@ cluster_conn_opts(ClusterInfo *cluster)
  *	message and calls exit() to kill the program.
  */
 PGresult *
-executeQueryOrDie(PGconn *conn, const char *fmt,...)
+executeQueryOrDie(PGconn *conn, const char *fmt, ...)
 {
 	static char query[QUERY_ALLOC];
 	va_list		args;

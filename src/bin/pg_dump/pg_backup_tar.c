@@ -102,7 +102,7 @@ static void tarClose(ArchiveHandle *AH, TAR_MEMBER *th);
 #ifdef __NOT_USED__
 static char *tarGets(char *buf, size_t len, TAR_MEMBER *th);
 #endif
-static int	tarPrintf(TAR_MEMBER *th, const char *fmt,...) pg_attribute_printf(2, 3);
+static int	tarPrintf(TAR_MEMBER *th, const char *fmt, ...) pg_attribute_printf(2, 3);
 
 static void _tarAddFile(ArchiveHandle *AH, TAR_MEMBER *th);
 static TAR_MEMBER *_tarPositionTo(ArchiveHandle *AH, const char *filename);
@@ -584,7 +584,7 @@ _PrintFileData(ArchiveHandle *AH, char *filename)
 
 /*
  * Print data for a given TOC entry
-*/
+ */
 static void
 _PrintTocData(ArchiveHandle *AH, TocEntry *te)
 {
@@ -826,7 +826,7 @@ _CloseArchive(ArchiveHandle *AH)
 		savVerbose = AH->public.verbose;
 		AH->public.verbose = 0;
 
-		RestoreArchive((Archive *) AH);
+		RestoreArchive((Archive *) AH, false);
 
 		SetArchiveOptions((Archive *) AH, savDopt, savRopt);
 
@@ -951,7 +951,7 @@ _EndLOs(ArchiveHandle *AH, TocEntry *te)
  */
 
 static int
-tarPrintf(TAR_MEMBER *th, const char *fmt,...)
+tarPrintf(TAR_MEMBER *th, const char *fmt, ...)
 {
 	int			save_errno = errno;
 	char	   *p;
@@ -982,31 +982,6 @@ tarPrintf(TAR_MEMBER *th, const char *fmt,...)
 	cnt = tarWrite(p, cnt, th);
 	free(p);
 	return (int) cnt;
-}
-
-bool
-isValidTarHeader(char *header)
-{
-	int			sum;
-	int			chk = tarChecksum(header);
-
-	sum = read_tar_number(&header[TAR_OFFSET_CHECKSUM], 8);
-
-	if (sum != chk)
-		return false;
-
-	/* POSIX tar format */
-	if (memcmp(&header[TAR_OFFSET_MAGIC], "ustar\0", 6) == 0 &&
-		memcmp(&header[TAR_OFFSET_VERSION], "00", 2) == 0)
-		return true;
-	/* GNU tar format */
-	if (memcmp(&header[TAR_OFFSET_MAGIC], "ustar  \0", 8) == 0)
-		return true;
-	/* not-quite-POSIX format written by pre-9.3 pg_dump */
-	if (memcmp(&header[TAR_OFFSET_MAGIC], "ustar00\0", 8) == 0)
-		return true;
-
-	return false;
 }
 
 /* Given the member, write the TAR header & copy the file */

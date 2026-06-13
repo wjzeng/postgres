@@ -307,7 +307,7 @@ bpchar(PG_FUNCTION_ARGS)
 		{
 			for (i = maxmblen; i < len; i++)
 				if (s[i] != ' ')
-					ereport(ERROR,
+					ereturn(fcinfo->context, (Datum) 0,
 							(errcode(ERRCODE_STRING_DATA_RIGHT_TRUNCATION),
 							 errmsg("value too long for type character(%d)",
 									maxlen)));
@@ -346,7 +346,8 @@ bpchar(PG_FUNCTION_ARGS)
 }
 
 
-/* char_bpchar()
+/*
+ * char_bpchar()
  * Convert char to bpchar(1).
  */
 Datum
@@ -364,7 +365,8 @@ char_bpchar(PG_FUNCTION_ARGS)
 }
 
 
-/* bpchar_name()
+/*
+ * bpchar_name()
  * Converts a bpchar() type to a NameData type.
  */
 Datum
@@ -397,7 +399,8 @@ bpchar_name(PG_FUNCTION_ARGS)
 	PG_RETURN_NAME(result);
 }
 
-/* name_bpchar()
+/*
+ * name_bpchar()
  * Converts a NameData type to a bpchar type.
  *
  * Uses the text conversion functions, which is only appropriate if BpChar
@@ -634,7 +637,7 @@ varchar(PG_FUNCTION_ARGS)
 	{
 		for (i = maxmblen; i < len; i++)
 			if (s_data[i] != ' ')
-				ereport(ERROR,
+				ereturn(fcinfo->context, (Datum) 0,
 						(errcode(ERRCODE_STRING_DATA_RIGHT_TRUNCATION),
 						 errmsg("value too long for type character varying(%d)",
 								maxlen)));

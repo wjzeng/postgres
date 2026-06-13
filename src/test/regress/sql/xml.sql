@@ -244,6 +244,7 @@ SELECT xpath('count(//*)=3', '<root><sub/><sub/></root>');
 SELECT xpath('name(/*)', '<root><sub/><sub/></root>');
 SELECT xpath('/nosuchtag', '<root/>');
 SELECT xpath('root', '<root/>');
+SELECT xpath('//namespace::foo', '<root xmlns:foo="http://127.0.0.1"/>');
 
 -- Round-trip non-ASCII data through xpath().
 DO $$
@@ -272,9 +273,7 @@ BEGIN
   END IF;
 EXCEPTION
   -- character with byte sequence 0xc2 0xb0 in encoding "UTF8" has no equivalent in encoding "LATIN8"
-  WHEN untranslatable_character
-  -- default conversion function for encoding "UTF8" to "MULE_INTERNAL" does not exist
-  OR undefined_function
+  WHEN undefined_function
   -- unsupported XML feature
   OR feature_not_supported THEN
     RAISE LOG 'skip: %', SQLERRM;

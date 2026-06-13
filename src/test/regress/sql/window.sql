@@ -330,6 +330,32 @@ CREATE TEMP VIEW v_window AS
 
 SELECT pg_get_viewdef('v_window');
 
+-- test overflow frame specifications
+SELECT sum(unique1) over (rows between current row and 9223372036854775807 following exclude current row),
+	unique1, four
+FROM tenk1 WHERE unique1 < 10;
+
+SELECT sum(unique1) over (rows between 9223372036854775807 following and 1 following),
+	unique1, four
+FROM tenk1 WHERE unique1 < 10;
+
+SELECT last_value(unique1) over (ORDER BY four rows between current row and 9223372036854775807 following exclude current row),
+	unique1, four
+FROM tenk1 WHERE unique1 < 10;
+
+-- These test GROUPS mode with an offset large enough to cause overflow when
+-- added to currentgroup.  Although the overflow doesn't produce visibly wrong
+-- results (due to the incremental nature of group pointer advancement), we
+-- still need to protect against it as signed integer overflow is undefined
+-- behavior in C.
+SELECT sum(unique1) over (ORDER BY four groups between current row and 9223372036854775807 following),
+	unique1, four
+FROM tenk1 WHERE unique1 < 10;
+
+SELECT sum(unique1) over (ORDER BY four groups between 9223372036854775807 following and unbounded following),
+	unique1, four
+FROM tenk1 WHERE unique1 < 10;
+
 -- RANGE offset PRECEDING/FOLLOWING tests
 
 SELECT sum(unique1) over (order by four range between 2::int8 preceding and 1::int2 preceding),
@@ -2130,6 +2156,34 @@ SELECT x,
        nth_value(x,2) IGNORE NULLS OVER w
 FROM generate_series(1,5) g(x)
 WINDOW w AS (ORDER BY x ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING);
+
+-- volatile arguments cannot use the IGNORE NULLS nullness cache
+CREATE TEMPORARY SEQUENCE null_treatment_seq;
+CREATE FUNCTION pg_temp.volatile_null(i int) RETURNS int
+LANGUAGE sql VOLATILE AS
+$$
+  SELECT CASE WHEN nextval('null_treatment_seq') % 2 = 0 THEN i ELSE NULL END;
+$$;
+
+SELECT x,
+       first_value(pg_temp.volatile_null(x)) IGNORE NULLS
+         OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+FROM generate_series(1,5) g(x);
+SELECT last_value FROM null_treatment_seq;
+
+ALTER SEQUENCE null_treatment_seq RESTART WITH 1;
+SELECT x,
+       lead(pg_temp.volatile_null(x), 1) IGNORE NULLS OVER (ORDER BY x)
+FROM generate_series(1,5) g(x);
+SELECT last_value FROM null_treatment_seq;
+
+ALTER SEQUENCE null_treatment_seq RESTART WITH 1;
+SELECT x,
+       first_value((SELECT CASE WHEN nextval('null_treatment_seq') % 2 = 0
+                                THEN x ELSE NULL END)) IGNORE NULLS
+         OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+FROM generate_series(1,5) g(x);
+SELECT last_value FROM null_treatment_seq;
 
 --cleanup
 DROP TABLE planets CASCADE;

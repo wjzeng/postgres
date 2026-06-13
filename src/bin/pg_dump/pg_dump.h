@@ -448,6 +448,7 @@ typedef struct _indexAttachInfo
 typedef struct _relStatsInfo
 {
 	DumpableObject dobj;
+	Oid			relid;
 	int32		relpages;
 	char	   *reltuples;
 	int32		relallvisible;
@@ -604,6 +605,7 @@ typedef struct _fdwInfo
 	const char *rolname;
 	char	   *fdwhandler;
 	char	   *fdwvalidator;
+	char	   *fdwconnection;
 	char	   *fdwoptions;
 } FdwInfo;
 
@@ -676,6 +678,7 @@ typedef struct _PublicationInfo
 	bool		pubtruncate;
 	bool		pubviaroot;
 	PublishGencolsType pubgencols_type;
+	SimplePtrList except_tables;
 } PublicationInfo;
 
 /*
@@ -719,9 +722,11 @@ typedef struct _SubscriptionInfo
 	bool		subfailover;
 	bool		subretaindeadtuples;
 	int			submaxretention;
+	char	   *subservername;
 	char	   *subconninfo;
 	char	   *subslotname;
 	char	   *subsynccommit;
+	char	   *subwalrcvtimeout;
 	char	   *subpublications;
 	char	   *suborigin;
 	char	   *suboriginremotelsn;

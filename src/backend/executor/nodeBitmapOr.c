@@ -12,7 +12,8 @@
  *
  *-------------------------------------------------------------------------
  */
-/* INTERFACE ROUTINES
+/*
+ * INTERFACE ROUTINES
  *		ExecInitBitmapOr	- initialize the BitmapOr node
  *		MultiExecBitmapOr	- retrieve the result bitmap from the node
  *		ExecEndBitmapOr		- shut down the BitmapOr node
@@ -29,7 +30,9 @@
 #include "postgres.h"
 
 #include "executor/executor.h"
+#include "executor/instrument.h"
 #include "executor/nodeBitmapOr.h"
+#include "nodes/tidbitmap.h"
 #include "miscadmin.h"
 
 

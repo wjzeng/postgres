@@ -228,7 +228,7 @@ sub read_multixid_fields
 
 # Reset a cluster's next multixid and mxoffset to given values.
 #
-# Note: This is used on the old insallation, so the command arguments
+# Note: This is used on the old installation, so the command arguments
 # and the output parsing used here must work with all pre-v19
 # PostgreSQL versions supported by the test.
 sub reset_mxid_mxoffset_pre_v19
@@ -356,6 +356,11 @@ sub upgrade_and_compare
 	compare_files($old_multixacts, $new_multixacts,
 		'multixact members from original and upgraded clusters match');
 }
+
+# In a VPATH build, we'll be started in the source directory, but we want
+# to run pg_upgrade in the build directory so that any files generated finish
+# in it, like delete_old_cluster.{sh,bat}.
+chdir ${PostgreSQL::Test::Utils::tmp_check};
 
 my $old_version;
 

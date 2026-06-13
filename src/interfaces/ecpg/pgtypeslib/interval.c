@@ -6,17 +6,14 @@
 #include <math.h>
 #include <limits.h>
 
-#ifdef __FAST_MATH__
-#error -ffast-math is known to break this code
-#endif
-
 #include "common/string.h"
 #include "dt.h"
 #include "pgtypes_error.h"
 #include "pgtypes_interval.h"
 #include "pgtypeslib_extern.h"
 
-/* copy&pasted from .../src/backend/utils/adt/datetime.c
+/*
+ * copy&pasted from .../src/backend/utils/adt/datetime.c
  * and changed struct pg_tm to struct tm
  */
 static void
@@ -34,7 +31,8 @@ AdjustFractSeconds(double frac, struct /* pg_ */ tm *tm, fsec_t *fsec, int scale
 }
 
 
-/* copy&pasted from .../src/backend/utils/adt/datetime.c
+/*
+ * copy&pasted from .../src/backend/utils/adt/datetime.c
  * and changed struct pg_tm to struct tm
  */
 static void
@@ -87,7 +85,8 @@ ISO8601IntegerWidth(const char *fieldstart)
 }
 
 
-/* copy&pasted from .../src/backend/utils/adt/datetime.c
+/*
+ * copy&pasted from .../src/backend/utils/adt/datetime.c
  * and changed struct pg_tm to struct tm
  */
 static inline void
@@ -102,7 +101,8 @@ ClearPgTm(struct /* pg_ */ tm *tm, fsec_t *fsec)
 	*fsec = 0;
 }
 
-/* copy&pasted from .../src/backend/utils/adt/datetime.c
+/*
+ * copy&pasted from .../src/backend/utils/adt/datetime.c
  *
  * * changed struct pg_tm to struct tm
  *
@@ -184,7 +184,7 @@ DecodeISO8601Interval(char *str,
 						continue;
 					}
 					/* Else fall through to extended alternative format */
-					/* FALLTHROUGH */
+					pg_fallthrough;
 				case '-':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)
@@ -263,7 +263,7 @@ DecodeISO8601Interval(char *str,
 						return 0;
 					}
 					/* Else fall through to extended alternative format */
-					/* FALLTHROUGH */
+					pg_fallthrough;
 				case ':':		/* ISO 8601 4.4.3.3 Alternative Format,
 								 * Extended */
 					if (havefield)
@@ -308,7 +308,8 @@ DecodeISO8601Interval(char *str,
 
 
 
-/* copy&pasted from .../src/backend/utils/adt/datetime.c
+/*
+ * copy&pasted from .../src/backend/utils/adt/datetime.c
  * with 3 exceptions
  *
  *	* changed struct pg_tm to struct tm
@@ -391,7 +392,7 @@ DecodeInterval(char **field, int *ftype, int nf,	/* int range, */
 					tmask = DTK_M(TZ);
 					break;
 				}
-				/* FALL THROUGH */
+				pg_fallthrough;
 
 			case DTK_DATE:
 			case DTK_NUMBER:
@@ -750,7 +751,8 @@ AppendSeconds(char *cp, int sec, fsec_t fsec, int precision, bool fillzeros)
 }
 
 
-/* copy&pasted from .../src/backend/utils/adt/datetime.c
+/*
+ * copy&pasted from .../src/backend/utils/adt/datetime.c
  *
  * Change pg_tm to tm
  */
@@ -935,7 +937,8 @@ EncodeInterval(struct /* pg_ */ tm *tm, fsec_t fsec, int style, char *str)
 }
 
 
-/* interval2tm()
+/*
+ * interval2tm()
  * Convert an interval data type to a tm structure.
  */
 static int

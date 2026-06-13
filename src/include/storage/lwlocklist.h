@@ -32,7 +32,7 @@
  */
 
 /* 0 is available; was formerly BufFreelistLock */
-PG_LWLOCK(1, ShmemIndex)
+/* 1 was ShmemIndex */
 PG_LWLOCK(2, OidGen)
 PG_LWLOCK(3, XidGen)
 PG_LWLOCK(4, ProcArray)
@@ -87,6 +87,8 @@ PG_LWLOCK(52, SerialControl)
 PG_LWLOCK(53, AioWorkerSubmissionQueue)
 PG_LWLOCK(54, WaitLSN)
 PG_LWLOCK(55, LogicalDecodingControl)
+PG_LWLOCK(56, DataChecksumsWorker)
+PG_LWLOCK(57, AioWorkerControl)
 
 /*
  * There also exist several built-in LWLock tranches.  As with the predefined
@@ -102,9 +104,9 @@ PG_LWLOCKTRANCHE(SUBTRANS_BUFFER, SubtransBuffer)
 PG_LWLOCKTRANCHE(MULTIXACTOFFSET_BUFFER, MultiXactOffsetBuffer)
 PG_LWLOCKTRANCHE(MULTIXACTMEMBER_BUFFER, MultiXactMemberBuffer)
 PG_LWLOCKTRANCHE(NOTIFY_BUFFER, NotifyBuffer)
+PG_LWLOCKTRANCHE(NOTIFY_CHANNEL_HASH, NotifyChannelHash)
 PG_LWLOCKTRANCHE(SERIAL_BUFFER, SerialBuffer)
 PG_LWLOCKTRANCHE(WAL_INSERT, WALInsert)
-PG_LWLOCKTRANCHE(BUFFER_CONTENT, BufferContent)
 PG_LWLOCKTRANCHE(REPLICATION_ORIGIN_STATE, ReplicationOriginState)
 PG_LWLOCKTRANCHE(REPLICATION_SLOT_IO, ReplicationSlotIO)
 PG_LWLOCKTRANCHE(LOCK_FASTPATH, LockFastPath)
@@ -137,3 +139,4 @@ PG_LWLOCKTRANCHE(SUBTRANS_SLRU, SubtransSLRU)
 PG_LWLOCKTRANCHE(XACT_SLRU, XactSLRU)
 PG_LWLOCKTRANCHE(PARALLEL_VACUUM_DSA, ParallelVacuumDSA)
 PG_LWLOCKTRANCHE(AIO_URING_COMPLETION, AioUringCompletion)
+PG_LWLOCKTRANCHE(SHMEM_INDEX, ShmemIndex)

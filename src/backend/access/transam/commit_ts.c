@@ -30,6 +30,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/shmem.h"
+#include "storage/subsystems.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc_hooks.h"
 #include "utils/timestamp.h"
@@ -54,11 +55,11 @@
 typedef struct CommitTimestampEntry
 {
 	TimestampTz time;
-	RepOriginId nodeid;
+	ReplOriginId nodeid;
 } CommitTimestampEntry;
 
 #define SizeOfCommitTimestampEntry (offsetof(CommitTimestampEntry, nodeid) + \
-									sizeof(RepOriginId))
+									sizeof(ReplOriginId))
 
 #define COMMIT_TS_XACTS_PER_PAGE \
 	(BLCKSZ / SizeOfCommitTimestampEntry)
@@ -80,9 +81,19 @@ TransactionIdToCTsPage(TransactionId xid)
 /*
  * Link to shared-memory data structures for CommitTs control
  */
-static SlruCtlData CommitTsCtlData;
+static void CommitTsShmemRequest(void *arg);
+static void CommitTsShmemInit(void *arg);
+static bool CommitTsPagePrecedes(int64 page1, int64 page2);
+static int	commit_ts_errdetail_for_io_error(const void *opaque_data);
 
-#define CommitTsCtl (&CommitTsCtlData)
+const ShmemCallbacks CommitTsShmemCallbacks = {
+	.request_fn = CommitTsShmemRequest,
+	.init_fn = CommitTsShmemInit,
+};
+
+static SlruDesc CommitTsSlruDesc;
+
+#define CommitTsCtl (&CommitTsSlruDesc)
 
 /*
  * We keep a cache of the last value set in shared memory.
@@ -104,17 +115,17 @@ typedef struct CommitTimestampShared
 
 static CommitTimestampShared *commitTsShared;
 
+static void CommitTsShmemInit(void *arg);
 
 /* GUC variable */
 bool		track_commit_timestamp;
 
 static void SetXidCommitTsInPage(TransactionId xid, int nsubxids,
 								 TransactionId *subxids, TimestampTz ts,
-								 RepOriginId nodeid, int64 pageno);
+								 ReplOriginId nodeid, int64 pageno);
 static void TransactionIdSetCommitTs(TransactionId xid, TimestampTz ts,
-									 RepOriginId nodeid, int slotno);
+									 ReplOriginId nodeid, int slotno);
 static void error_commit_ts_disabled(void);
-static bool CommitTsPagePrecedes(int64 page1, int64 page2);
 static void ActivateCommitTs(void);
 static void DeactivateCommitTs(void);
 static void WriteTruncateXlogRec(int64 pageno, TransactionId oldestXid);
@@ -138,7 +149,7 @@ static void WriteTruncateXlogRec(int64 pageno, TransactionId oldestXid);
 void
 TransactionTreeSetCommitTsData(TransactionId xid, int nsubxids,
 							   TransactionId *subxids, TimestampTz timestamp,
-							   RepOriginId nodeid)
+							   ReplOriginId nodeid)
 {
 	int			i;
 	TransactionId headxid;
@@ -219,7 +230,7 @@ TransactionTreeSetCommitTsData(TransactionId xid, int nsubxids,
 static void
 SetXidCommitTsInPage(TransactionId xid, int nsubxids,
 					 TransactionId *subxids, TimestampTz ts,
-					 RepOriginId nodeid, int64 pageno)
+					 ReplOriginId nodeid, int64 pageno)
 {
 	LWLock	   *lock = SimpleLruGetBankLock(CommitTsCtl, pageno);
 	int			slotno;
@@ -227,7 +238,7 @@ SetXidCommitTsInPage(TransactionId xid, int nsubxids,
 
 	LWLockAcquire(lock, LW_EXCLUSIVE);
 
-	slotno = SimpleLruReadPage(CommitTsCtl, pageno, true, xid);
+	slotno = SimpleLruReadPage(CommitTsCtl, pageno, true, &xid);
 
 	TransactionIdSetCommitTs(xid, ts, nodeid, slotno);
 	for (i = 0; i < nsubxids; i++)
@@ -245,7 +256,7 @@ SetXidCommitTsInPage(TransactionId xid, int nsubxids,
  */
 static void
 TransactionIdSetCommitTs(TransactionId xid, TimestampTz ts,
-						 RepOriginId nodeid, int slotno)
+						 ReplOriginId nodeid, int slotno)
 {
 	int			entryno = TransactionIdToCTsEntry(xid);
 	CommitTimestampEntry entry;
@@ -270,7 +281,7 @@ TransactionIdSetCommitTs(TransactionId xid, TimestampTz ts,
  */
 bool
 TransactionIdGetCommitTsData(TransactionId xid, TimestampTz *ts,
-							 RepOriginId *nodeid)
+							 ReplOriginId *nodeid)
 {
 	int64		pageno = TransactionIdToCTsPage(xid);
 	int			entryno = TransactionIdToCTsEntry(xid);
@@ -288,7 +299,7 @@ TransactionIdGetCommitTsData(TransactionId xid, TimestampTz *ts,
 		/* frozen and bootstrap xids are always committed far in the past */
 		*ts = 0;
 		if (nodeid)
-			*nodeid = 0;
+			*nodeid = InvalidReplOriginId;
 		return false;
 	}
 
@@ -327,12 +338,12 @@ TransactionIdGetCommitTsData(TransactionId xid, TimestampTz *ts,
 	{
 		*ts = 0;
 		if (nodeid)
-			*nodeid = InvalidRepOriginId;
+			*nodeid = InvalidReplOriginId;
 		return false;
 	}
 
 	/* lock is acquired by SimpleLruReadPage_ReadOnly */
-	slotno = SimpleLruReadPage_ReadOnly(CommitTsCtl, pageno, xid);
+	slotno = SimpleLruReadPage_ReadOnly(CommitTsCtl, pageno, &xid);
 	memcpy(&entry,
 		   CommitTsCtl->shared->page_buffer[slotno] +
 		   SizeOfCommitTimestampEntry * entryno,
@@ -355,7 +366,7 @@ TransactionIdGetCommitTsData(TransactionId xid, TimestampTz *ts,
  * as NULL if not wanted.
  */
 TransactionId
-GetLatestCommitTsData(TimestampTz *ts, RepOriginId *nodeid)
+GetLatestCommitTsData(TimestampTz *ts, ReplOriginId *nodeid)
 {
 	TransactionId xid;
 
@@ -418,7 +429,7 @@ Datum
 pg_last_committed_xact(PG_FUNCTION_ARGS)
 {
 	TransactionId xid;
-	RepOriginId nodeid;
+	ReplOriginId nodeid;
 	TimestampTz ts;
 	Datum		values[3];
 	bool		nulls[3];
@@ -462,7 +473,7 @@ Datum
 pg_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
 {
 	TransactionId xid = PG_GETARG_TRANSACTIONID(0);
-	RepOriginId nodeid;
+	ReplOriginId nodeid;
 	TimestampTz ts;
 	Datum		values[2];
 	bool		nulls[2];
@@ -511,24 +522,12 @@ CommitTsShmemBuffers(void)
 }
 
 /*
- * Shared memory sizing for CommitTs
+ * Register CommitTs shared memory needs at system startup (postmaster start
+ * or standalone backend)
  */
-Size
-CommitTsShmemSize(void)
+static void
+CommitTsShmemRequest(void *arg)
 {
-	return SimpleLruShmemSize(CommitTsShmemBuffers(), 0) +
-		sizeof(CommitTimestampShared);
-}
-
-/*
- * Initialize CommitTs at system startup (postmaster start or standalone
- * backend)
- */
-void
-CommitTsShmemInit(void)
-{
-	bool		found;
-
 	/* If auto-tuning is requested, now is the time to do it */
 	if (commit_timestamp_buffers == 0)
 	{
@@ -549,30 +548,36 @@ CommitTsShmemInit(void)
 							PGC_S_OVERRIDE);
 	}
 	Assert(commit_timestamp_buffers != 0);
+	SimpleLruRequest(.desc = &CommitTsSlruDesc,
+					 .name = "commit_timestamp",
+					 .Dir = "pg_commit_ts",
+					 .long_segment_names = false,
 
-	CommitTsCtl->PagePrecedes = CommitTsPagePrecedes;
-	SimpleLruInit(CommitTsCtl, "commit_timestamp", CommitTsShmemBuffers(), 0,
-				  "pg_commit_ts", LWTRANCHE_COMMITTS_BUFFER,
-				  LWTRANCHE_COMMITTS_SLRU,
-				  SYNC_HANDLER_COMMIT_TS,
-				  false);
+					 .nslots = CommitTsShmemBuffers(),
+
+					 .PagePrecedes = CommitTsPagePrecedes,
+					 .errdetail_for_io_error = commit_ts_errdetail_for_io_error,
+
+					 .sync_handler = SYNC_HANDLER_COMMIT_TS,
+					 .buffer_tranche_id = LWTRANCHE_COMMITTS_BUFFER,
+					 .bank_tranche_id = LWTRANCHE_COMMITTS_SLRU,
+		);
+
+	ShmemRequestStruct(.name = "CommitTs shared",
+					   .size = sizeof(CommitTimestampShared),
+					   .ptr = (void **) &commitTsShared,
+		);
+}
+
+static void
+CommitTsShmemInit(void *arg)
+{
+	commitTsShared->xidLastCommit = InvalidTransactionId;
+	TIMESTAMP_NOBEGIN(commitTsShared->dataLastCommit.time);
+	commitTsShared->dataLastCommit.nodeid = InvalidReplOriginId;
+	commitTsShared->commitTsActive = false;
+
 	SlruPagePrecedesUnitTests(CommitTsCtl, COMMIT_TS_XACTS_PER_PAGE);
-
-	commitTsShared = ShmemInitStruct("CommitTs shared",
-									 sizeof(CommitTimestampShared),
-									 &found);
-
-	if (!IsUnderPostmaster)
-	{
-		Assert(!found);
-
-		commitTsShared->xidLastCommit = InvalidTransactionId;
-		TIMESTAMP_NOBEGIN(commitTsShared->dataLastCommit.time);
-		commitTsShared->dataLastCommit.nodeid = InvalidRepOriginId;
-		commitTsShared->commitTsActive = false;
-	}
-	else
-		Assert(found);
 }
 
 /*
@@ -763,7 +768,7 @@ DeactivateCommitTs(void)
 	commitTsShared->commitTsActive = false;
 	commitTsShared->xidLastCommit = InvalidTransactionId;
 	TIMESTAMP_NOBEGIN(commitTsShared->dataLastCommit.time);
-	commitTsShared->dataLastCommit.nodeid = InvalidRepOriginId;
+	commitTsShared->dataLastCommit.nodeid = InvalidReplOriginId;
 
 	TransamVariables->oldestCommitTsXid = InvalidTransactionId;
 	TransamVariables->newestCommitTsXid = InvalidTransactionId;
@@ -959,6 +964,13 @@ CommitTsPagePrecedes(int64 page1, int64 page2)
 			TransactionIdPrecedes(xid1, xid2 + COMMIT_TS_XACTS_PER_PAGE - 1));
 }
 
+static int
+commit_ts_errdetail_for_io_error(const void *opaque_data)
+{
+	TransactionId xid = *(const TransactionId *) opaque_data;
+
+	return errdetail("Could not access commit timestamp of transaction %u.", xid);
+}
 
 /*
  * Write a TRUNCATE xlog record

@@ -280,6 +280,8 @@ PERMIT_DECLARATION_AFTER_STATEMENT = @PERMIT_DECLARATION_AFTER_STATEMENT@
 PERMIT_MISSING_VARIABLE_DECLARATIONS = @PERMIT_MISSING_VARIABLE_DECLARATIONS@
 CXXFLAGS = @CXXFLAGS@
 
+have_cxx = @have_cxx@
+
 LLVM_CPPFLAGS = @LLVM_CPPFLAGS@
 LLVM_CFLAGS = @LLVM_CFLAGS@
 LLVM_CXXFLAGS = @LLVM_CXXFLAGS@
@@ -374,10 +376,10 @@ DOWNLOAD = wget -O $@ --no-use-server-timestamps
 # Pick a release from here: <https://www.unicode.org/Public/>.  Note
 # that the most recent release listed there is often a pre-release;
 # don't pick that one, except for testing.
-UNICODE_VERSION = 16.0.0
+UNICODE_VERSION = 17.0.0
 
 # Pick a release from here: <http://cldr.unicode.org/index/downloads>
-CLDR_VERSION = 47
+CLDR_VERSION = 48.2
 
 
 # Tree-wide build support

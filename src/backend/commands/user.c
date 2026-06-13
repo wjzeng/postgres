@@ -32,6 +32,7 @@
 #include "commands/user.h"
 #include "libpq/crypt.h"
 #include "miscadmin.h"
+#include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -169,6 +170,12 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 	DefElem    *dvalidUntil = NULL;
 	DefElem    *dbypassRLS = NULL;
 	GrantRoleOptions popt;
+
+	/* Report error if name has \n or \r character. */
+	if (strpbrk(stmt->role, "\n\r"))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("role name \"%s\" contains a newline or carriage return character", stmt->role)));
 
 	/* The defaults can vary depending on the original statement type */
 	switch (stmt->stmt_type)
@@ -1346,6 +1353,12 @@ RenameRole(const char *oldname, const char *newname)
 	Oid			roleid;
 	ObjectAddress address;
 	Form_pg_authid authform;
+
+	/* Report error if name has \n or \r character. */
+	if (strpbrk(newname, "\n\r"))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("role name \"%s\" contains a newline or carriage return character", newname)));
 
 	rel = table_open(AuthIdRelationId, RowExclusiveLock);
 	dsc = RelationGetDescr(rel);

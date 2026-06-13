@@ -30,6 +30,23 @@
 
 
 /*
+ * Reject building with gcc's -ffast-math switch.  It breaks our handling of
+ * float Infinity and NaN values (via -ffinite-math-only), causes results to
+ * be less accurate than expected (via -funsafe-math-optimizations and
+ * -fexcess-precision=fast), and causes some math error reports to be missed
+ * (via -fno-math-errno).  Unfortunately we can't easily detect cases where
+ * those options were given individually, but this at least catches the most
+ * obvious case.
+ *
+ * We test this only here, not in any header file, to allow extensions to use
+ * -ffast-math if they need to.  But the inline functions in float.h will
+ * misbehave in such an extension, so its authors had better be careful.
+ */
+#ifdef __FAST_MATH__
+#error -ffast-math is known to break this code
+#endif
+
+/*
  * Configurable GUC parameter
  *
  * If >0, use shortest-decimal format for output; this is both the default and
@@ -102,6 +119,30 @@ pg_noinline void
 float_zero_divide_error(void)
 {
 	ereport(ERROR,
+			(errcode(ERRCODE_DIVISION_BY_ZERO),
+			 errmsg("division by zero")));
+}
+
+float8
+float_overflow_error_ext(struct Node *escontext)
+{
+	ereturn(escontext, 0.0,
+			errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+			errmsg("value out of range: overflow"));
+}
+
+float8
+float_underflow_error_ext(struct Node *escontext)
+{
+	ereturn(escontext, 0.0,
+			errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+			errmsg("value out of range: underflow"));
+}
+
+float8
+float_zero_divide_error_ext(struct Node *escontext)
+{
+	ereturn(escontext, 0.0,
 			(errcode(ERRCODE_DIVISION_BY_ZERO),
 			 errmsg("division by zero")));
 }
@@ -1199,9 +1240,9 @@ dtof(PG_FUNCTION_ARGS)
 
 	result = (float4) num;
 	if (unlikely(isinf(result)) && !isinf(num))
-		float_overflow_error();
+		float_overflow_error_ext(fcinfo->context);
 	if (unlikely(result == 0.0f) && num != 0.0)
-		float_underflow_error();
+		float_underflow_error_ext(fcinfo->context);
 
 	PG_RETURN_FLOAT4(result);
 }
@@ -1224,7 +1265,7 @@ dtoi4(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT8_FITS_IN_INT32(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("integer out of range")));
 
@@ -1249,7 +1290,7 @@ dtoi2(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT8_FITS_IN_INT16(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("smallint out of range")));
 
@@ -1298,7 +1339,7 @@ ftoi4(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT4_FITS_IN_INT32(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("integer out of range")));
 
@@ -1323,7 +1364,7 @@ ftoi2(PG_FUNCTION_ARGS)
 
 	/* Range check */
 	if (unlikely(isnan(num) || !FLOAT4_FITS_IN_INT16(num)))
-		ereport(ERROR,
+		ereturn(fcinfo->context, (Datum) 0,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("smallint out of range")));
 
@@ -2852,6 +2893,12 @@ dlgamma(PG_FUNCTION_ARGS)
 	float8		arg1 = PG_GETARG_FLOAT8(0);
 	float8		result;
 
+	/* On some versions of AIX, lgamma(NaN) fails with ERANGE */
+#if defined(_AIX)
+	if (isnan(arg1))
+		PG_RETURN_FLOAT8(arg1);
+#endif
+
 	/*
 	 * Note: lgamma may not be thread-safe because it may write to a global
 	 * variable signgam, which may not be thread-local. However, this doesn't
@@ -3869,7 +3916,12 @@ float8_regr_r2(PG_FUNCTION_ARGS)
 	float8		N,
 				Sxx,
 				Syy,
-				Sxy;
+				Sxy,
+				numerator,
+				denominator,
+				sqrtdenominator,
+				sqrtresult,
+				result;
 
 	transvalues = check_float8_array(transarray, "float8_regr_r2", 8);
 	N = transvalues[0];
@@ -3891,7 +3943,35 @@ float8_regr_r2(PG_FUNCTION_ARGS)
 	if (Syy == 0)
 		PG_RETURN_FLOAT8(1.0);
 
-	PG_RETURN_FLOAT8((Sxy * Sxy) / (Sxx * Syy));
+	/*
+	 * The products Sxy * Sxy and/or Sxx * Syy might underflow or overflow. If
+	 * so, we can recover by computing Sxy / (sqrt(Sxx) * sqrt(Syy)) and
+	 * squaring it instead.  However, the double sqrt() calculation is a bit
+	 * slower and less accurate, so don't do it if we don't have to.
+	 */
+	numerator = Sxy * Sxy;
+	denominator = Sxx * Syy;
+	if (numerator == 0 || isinf(numerator) ||
+		denominator == 0 || isinf(denominator))
+	{
+		sqrtdenominator = sqrt(Sxx) * sqrt(Syy);
+		sqrtresult = Sxy / sqrtdenominator;
+		result = sqrtresult * sqrtresult;
+	}
+	else
+		result = numerator / denominator;
+
+	/*
+	 * Despite all these precautions, this formula can yield results outside
+	 * [0, 1] due to roundoff error.  Clamp it to the expected range.
+	 *
+	 * Note that result is guaranteed to be non-negative becase Sxx and Syy
+	 * are non-negative, so we only need to clamp the upper end of the range.
+	 */
+	if (result > 1)
+		result = 1;
+
+	PG_RETURN_FLOAT8(result);
 }
 
 Datum
@@ -3930,7 +4010,8 @@ float8_regr_intercept(PG_FUNCTION_ARGS)
 				Sx,
 				Sxx,
 				Sy,
-				Sxy;
+				Sxy,
+				dy;
 
 	transvalues = check_float8_array(transarray, "float8_regr_intercept", 8);
 	N = transvalues[0];
@@ -3949,7 +4030,41 @@ float8_regr_intercept(PG_FUNCTION_ARGS)
 	if (Sxx == 0)
 		PG_RETURN_NULL();
 
-	PG_RETURN_FLOAT8((Sy - Sx * Sxy / Sxx) / N);
+	/*
+	 * The intercept is given by (Sy - dy) / N, where dy = Sx * Sxy / Sxx.
+	 * However, when computing dy, the intermediate product Sx * Sxy might
+	 * underflow or overflow.  If so, we can recover by decomposing Sx, Sxy,
+	 * and Sxx into normalized mantissa and integer power-of-two components,
+	 * computing the corresponding components of dy, and then recomposing dy.
+	 * We avoid doing this if Sx, Sxy, or Sxx are infinite or NaN, since the
+	 * exponent returned by frexp() is unspecified in those cases (and the
+	 * final result would be the same in any case).
+	 */
+	dy = Sx * Sxy / Sxx;
+	if ((dy == 0 || isinf(dy)) &&
+		!(isinf(Sx) || isinf(Sxy) || isinf(Sxx) ||
+		  isnan(Sx) || isnan(Sxy) || isnan(Sxx)))
+	{
+		float8		m_Sx,
+					m_Sxy,
+					m_Sxx,
+					m_dy;
+		int			n_Sx,
+					n_Sxy,
+					n_Sxx,
+					n_dy;
+
+		m_Sx = frexp(Sx, &n_Sx);
+		m_Sxy = frexp(Sxy, &n_Sxy);
+		m_Sxx = frexp(Sxx, &n_Sxx);
+
+		m_dy = m_Sx * m_Sxy / m_Sxx;
+		n_dy = n_Sx + n_Sxy - n_Sxx;
+
+		dy = ldexp(m_dy, n_dy);
+	}
+
+	PG_RETURN_FLOAT8((Sy - dy) / N);
 }
 
 

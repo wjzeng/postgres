@@ -17,8 +17,6 @@ SELECT 'first line'
 	AS "Illegal comment within continuation";
 
 -- Unicode escapes
-SET standard_conforming_strings TO on;
-
 SELECT U&'d\0061t\+000061' AS U&"d\0061t\+000061";
 SELECT U&'d!0061t\+000061' UESCAPE '!' AS U&"d*0061t\+000061" UESCAPE '*';
 SELECT U&'a\\b' AS "a\b";
@@ -50,18 +48,11 @@ SELECT E'wrong: \udb99\u0061';
 SELECT E'wrong: \U0000db99\U00000061';
 SELECT E'wrong: \U002FFFFF';
 
+-- this is no longer allowed:
 SET standard_conforming_strings TO off;
-
-SELECT U&'d\0061t\+000061' AS U&"d\0061t\+000061";
-SELECT U&'d!0061t\+000061' UESCAPE '!' AS U&"d*0061t\+000061" UESCAPE '*';
-
-SELECT U&' \' UESCAPE '!' AS "tricky";
-SELECT 'tricky' AS U&"\" UESCAPE '!';
-
-SELECT U&'wrong: \061';
-SELECT U&'wrong: \+0061';
-SELECT U&'wrong: +0061' UESCAPE '+';
-
+-- but this should be acceptable:
+SET standard_conforming_strings TO on;
+-- or this:
 RESET standard_conforming_strings;
 
 -- bytea
@@ -687,6 +678,30 @@ SELECT substr(f1, 5, 10) AS f1_data, substr(f2, 5, 10) AS f2_data
   FROM toasttest;
 SELECT pg_column_compression(f1) AS f1_comp, pg_column_compression(f2) AS f2_comp
   FROM toasttest;
+TRUNCATE toasttest;
+-- test with inline compressible varlenas.
+SET default_toast_compression = 'pglz';
+ALTER TABLE toasttest ALTER COLUMN f1 SET STORAGE MAIN;
+ALTER TABLE toasttest ALTER COLUMN f2 SET STORAGE MAIN;
+INSERT INTO toasttest values(repeat('1234', 1024), repeat('5678', 1024));
+-- There should be no values in the toast relation.
+SELECT substr(f1, 5, 10) AS f1_data, substr(f2, 5, 10) AS f2_data
+  FROM toasttest;
+SELECT pg_column_compression(f1) AS f1_comp, pg_column_compression(f2) AS f2_comp
+  FROM toasttest;
+SELECT count(*) FROM :reltoastname;
+TRUNCATE toasttest;
+-- test with external compressed data (default).
+ALTER TABLE toasttest ALTER COLUMN f1 SET STORAGE EXTENDED;
+ALTER TABLE toasttest ALTER COLUMN f2 SET STORAGE EXTENDED;
+INSERT INTO toasttest values(repeat('1234', 10240), NULL);
+-- There should be one value in the toast relation.
+SELECT substr(f1, 5, 10) AS f1_data, substr(f2, 5, 10) AS f2_data
+  FROM toasttest;
+SELECT pg_column_compression(f1) AS f1_comp, pg_column_compression(f2) AS f2_comp
+  FROM toasttest;
+SELECT count(*) FROM :reltoastname WHERE chunk_seq = 0;
+RESET default_toast_compression;
 DROP TABLE toasttest;
 
 --
@@ -820,9 +835,64 @@ SELECT encode('\x01'::bytea, 'invalid');  -- error
 SELECT decode('00', 'invalid');           -- error
 
 --
--- base64url encoding/decoding
+-- base32hex encoding/decoding
 --
 SET bytea_output TO hex;
+
+SELECT encode('', 'base32hex');  -- ''
+SELECT encode('\x11', 'base32hex');  -- '24======'
+SELECT encode('\x1122', 'base32hex');  -- '24H0===='
+SELECT encode('\x112233', 'base32hex');  -- '24H36==='
+SELECT encode('\x11223344', 'base32hex');  -- '24H36H0='
+SELECT encode('\x1122334455', 'base32hex');  -- '24H36H2L'
+SELECT encode('\x112233445566', 'base32hex');  -- '24H36H2LCO======'
+
+SELECT decode('', 'base32hex');  -- ''
+SELECT decode('24======', 'base32hex');  -- \x11
+SELECT decode('24H0====', 'base32hex');  -- \x1122
+SELECT decode('24H36===', 'base32hex');  -- \x112233
+SELECT decode('24H36H0=', 'base32hex');  -- \x11223344
+SELECT decode('24H36H2L', 'base32hex');  -- \x1122334455
+SELECT decode('24H36H2LCO======', 'base32hex');  -- \x112233445566
+
+SELECT decode('24h36h2lco', 'base32hex');  -- OK, the encoding is case-insensitive
+
+-- Tests for decoding unpadded base32hex strings. Padding '=' are optional.
+SELECT decode('24', 'base32hex');
+SELECT decode('24H', 'base32hex');
+SELECT decode('24H36', 'base32hex');
+SELECT decode('24H36H0', 'base32hex');
+
+SELECT decode('2', 'base32hex'); -- \x, 5 bits isn't enough for a byte, so nothing is emitted
+SELECT decode('11=', 'base32hex');  -- OK, non-zero padding bits are accepted (consistent with base64)
+
+SELECT decode('2=', 'base32hex'); -- error
+SELECT decode('=', 'base32hex');  -- error
+SELECT decode('W', 'base32hex');  -- error
+SELECT decode('24H36H0=24', 'base32hex'); -- error
+
+-- Check round-trip capability of base32hex encoding for multiple random UUIDs.
+DO $$
+DECLARE
+  v1 uuid;
+  v2 uuid;
+BEGIN
+  FOR i IN 1..10 LOOP
+    v1 := gen_random_uuid();
+    v2 := decode(encode(v1::bytea, 'base32hex'), 'base32hex')::uuid;
+
+    IF v1 != v2 THEN
+      RAISE EXCEPTION 'base32hex encoding round-trip failed, expected % got %', v1, v2;
+    END IF;
+  END LOOP;
+  RAISE NOTICE 'OK';
+END;
+$$;
+
+
+--
+-- base64url encoding/decoding
+--
 
 -- Simple encoding/decoding
 SELECT encode('\x69b73eff', 'base64url');  -- abc-_w
@@ -913,39 +983,6 @@ SELECT '\x8000'::bytea::int2 AS "-32768", '\x7FFF'::bytea::int2 AS "32767";
 SELECT '\x80000000'::bytea::int4 AS "-2147483648", '\x7FFFFFFF'::bytea::int4 AS "2147483647";
 SELECT '\x8000000000000000'::bytea::int8 AS "-9223372036854775808",
        '\x7FFFFFFFFFFFFFFF'::bytea::int8 AS "9223372036854775807";
-
---
--- test behavior of escape_string_warning and standard_conforming_strings options
---
-set escape_string_warning = off;
-set standard_conforming_strings = off;
-
-show escape_string_warning;
-show standard_conforming_strings;
-
-set escape_string_warning = on;
-set standard_conforming_strings = on;
-
-show escape_string_warning;
-show standard_conforming_strings;
-
-select 'a\bcd' as f1, 'a\b''cd' as f2, 'a\b''''cd' as f3, 'abcd\'   as f4, 'ab\''cd' as f5, '\\' as f6;
-
-set standard_conforming_strings = off;
-
-select 'a\\bcd' as f1, 'a\\b\'cd' as f2, 'a\\b\'''cd' as f3, 'abcd\\'   as f4, 'ab\\\'cd' as f5, '\\\\' as f6;
-
-set escape_string_warning = off;
-set standard_conforming_strings = on;
-
-select 'a\bcd' as f1, 'a\b''cd' as f2, 'a\b''''cd' as f3, 'abcd\'   as f4, 'ab\''cd' as f5, '\\' as f6;
-
-set standard_conforming_strings = off;
-
-select 'a\\bcd' as f1, 'a\\b\'cd' as f2, 'a\\b\'''cd' as f3, 'abcd\\'   as f4, 'ab\\\'cd' as f5, '\\\\' as f6;
-
-reset standard_conforming_strings;
-
 
 --
 -- Additional string functions

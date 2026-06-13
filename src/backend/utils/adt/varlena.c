@@ -19,6 +19,7 @@
 
 #include "access/detoast.h"
 #include "access/toast_compression.h"
+#include "access/tupmacs.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "common/hashfn.h"
@@ -40,9 +41,10 @@
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/sortsupport.h"
+#include "utils/tuplestore.h"
 #include "utils/varlena.h"
 
-typedef struct varlena VarString;
+typedef varlena VarString;
 
 /*
  * State for text_position_* functions.
@@ -133,6 +135,7 @@ static text *text_substring(Datum str,
 							int32 start,
 							int32 length,
 							bool length_not_specified);
+static int	pg_mbcharcliplen_chars(const char *mbstr, int len, int limit);
 static text *text_overlay(text *t1, text *t2, int sp, int sl);
 static int	text_position(text *t1, text *t2, Oid collid);
 static void text_position_setup(text *t1, text *t2, Oid collid, TextPositionState *state);
@@ -494,8 +497,11 @@ text_catenate(text *t1, text *t2)
  * charlen_to_bytelen()
  *	Compute the number of bytes occupied by n characters starting at *p
  *
- * It is caller's responsibility that there actually are n characters;
- * the string need not be null-terminated.
+ * The caller shall ensure there are n complete characters.  Callers achieve
+ * this by deriving "n" from regmatch_t findings from searching a wchar array.
+ * pg_mb2wchar_with_len() skips any trailing incomplete character, so regex
+ * matches will end no later than the last complete character.  (The string
+ * need not be null-terminated.)
  */
 static int
 charlen_to_bytelen(const char *p, int n)
@@ -510,7 +516,7 @@ charlen_to_bytelen(const char *p, int n)
 		const char *s;
 
 		for (s = p; n > 0; n--)
-			s += pg_mblen(s);
+			s += pg_mblen_unbounded(s); /* caller verified encoding */
 
 		return s - p;
 	}
@@ -583,7 +589,7 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 	int32		S = start;		/* start position */
 	int32		S1;				/* adjusted start position */
 	int32		L1;				/* adjusted substring length */
-	int32		E;				/* end position */
+	int32		E;				/* end position, exclusive */
 
 	/*
 	 * SQL99 says S can be zero or negative (which we don't document), but we
@@ -644,6 +650,7 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 		int32		slice_start;
 		int32		slice_size;
 		int32		slice_strlen;
+		int32		slice_len;
 		text	   *slice;
 		int32		E1;
 		int32		i;
@@ -660,14 +667,14 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 
 		if (length_not_specified)	/* special case - get length to end of
 									 * string */
-			slice_size = L1 = -1;
+			E = slice_size = L1 = -1;
 		else if (length < 0)
 		{
 			/* SQL99 says to throw an error for E < S, i.e., negative length */
 			ereport(ERROR,
 					(errcode(ERRCODE_SUBSTRING_ERROR),
 					 errmsg("negative substring length not allowed")));
-			slice_size = L1 = -1;	/* silence stupider compilers */
+			E = slice_size = L1 = -1;	/* silence stupider compilers */
 		}
 		else if (pg_add_s32_overflow(S, length, &E))
 		{
@@ -680,11 +687,11 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 		else
 		{
 			/*
-			 * A zero or negative value for the end position can happen if the
-			 * start was negative or one. SQL99 says to return a zero-length
-			 * string.
+			 * Ending at position 1, exclusive, obviously yields an empty
+			 * string.  A zero or negative value can happen if the start was
+			 * negative or one. SQL99 says to return a zero-length string.
 			 */
-			if (E < 1)
+			if (E <= 1)
 				return cstring_to_text("");
 
 			/*
@@ -694,11 +701,11 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 			L1 = E - S1;
 
 			/*
-			 * Total slice size in bytes can't be any longer than the start
-			 * position plus substring length times the encoding max length.
-			 * If that overflows, we can just use -1.
+			 * Total slice size in bytes can't be any longer than the
+			 * inclusive end position times the encoding max length.  If that
+			 * overflows, we can just use -1.
 			 */
-			if (pg_mul_s32_overflow(E, eml, &slice_size))
+			if (pg_mul_s32_overflow(E - 1, eml, &slice_size))
 				slice_size = -1;
 		}
 
@@ -713,16 +720,25 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 			slice = (text *) DatumGetPointer(str);
 
 		/* see if we got back an empty string */
-		if (VARSIZE_ANY_EXHDR(slice) == 0)
+		slice_len = VARSIZE_ANY_EXHDR(slice);
+		if (slice_len == 0)
 		{
 			if (slice != (text *) DatumGetPointer(str))
 				pfree(slice);
 			return cstring_to_text("");
 		}
 
-		/* Now we can get the actual length of the slice in MB characters */
-		slice_strlen = pg_mbstrlen_with_len(VARDATA_ANY(slice),
-											VARSIZE_ANY_EXHDR(slice));
+		/*
+		 * Now we can get the actual length of the slice in MB characters,
+		 * stopping at the end of the substring.  Continuing beyond the
+		 * substring end could find an incomplete character attributable
+		 * solely to DatumGetTextPSlice() chopping in the middle of a
+		 * character, and it would be superfluous work at best.
+		 */
+		slice_strlen =
+			(slice_size == -1 ?
+			 pg_mbstrlen_with_len(VARDATA_ANY(slice), slice_len) :
+			 pg_mbcharcliplen_chars(VARDATA_ANY(slice), slice_len, E - 1));
 
 		/*
 		 * Check that the start position wasn't > slice_strlen. If so, SQL99
@@ -749,7 +765,7 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 		 */
 		p = VARDATA_ANY(slice);
 		for (i = 0; i < S1 - 1; i++)
-			p += pg_mblen(p);
+			p += pg_mblen_unbounded(p);
 
 		/* hang onto a pointer to our start position */
 		s = p;
@@ -759,7 +775,7 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 		 * length.
 		 */
 		for (i = S1; i < E1; i++)
-			p += pg_mblen(p);
+			p += pg_mblen_unbounded(p);
 
 		ret = (text *) palloc(VARHDRSZ + (p - s));
 		SET_VARSIZE(ret, VARHDRSZ + (p - s));
@@ -775,6 +791,35 @@ text_substring(Datum str, int32 start, int32 length, bool length_not_specified)
 
 	/* not reached: suppress compiler warning */
 	return NULL;
+}
+
+/*
+ * pg_mbcharcliplen_chars -
+ *	Mirror pg_mbcharcliplen(), except return value unit is chars, not bytes.
+ *
+ *	This mirrors all the dubious historical behavior, so it's static to
+ *	discourage proliferation.  The assertions are specific to the one caller.
+ */
+static int
+pg_mbcharcliplen_chars(const char *mbstr, int len, int limit)
+{
+	int			nch = 0;
+	int			l;
+
+	Assert(len > 0);
+	Assert(limit > 0);
+	Assert(pg_database_encoding_max_length() > 1);
+
+	while (len > 0 && *mbstr)
+	{
+		l = pg_mblen_with_len(mbstr, len);
+		nch++;
+		if (nch == limit)
+			break;
+		len -= l;
+		mbstr += l;
+	}
+	return nch;
 }
 
 /*
@@ -1064,6 +1109,8 @@ retry:
 	 */
 	if (state->is_multibyte_char_in_char && state->locale->deterministic)
 	{
+		const char *haystack_end = state->str1 + state->len1;
+
 		/* Walk one character at a time, until we reach the match. */
 
 		/* the search should never move backwards. */
@@ -1072,7 +1119,7 @@ retry:
 		while (state->refpoint < matchptr)
 		{
 			/* step to next character. */
-			state->refpoint += pg_mblen(state->refpoint);
+			state->refpoint += pg_mblen_range(state->refpoint, haystack_end);
 			state->refpos++;
 
 			/*
@@ -1160,7 +1207,7 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 			test_end = hptr;
 			do
 			{
-				test_end += pg_mblen(test_end);
+				test_end += pg_mblen_range(test_end, haystack_end);
 				if (pg_strncoll(hptr, (test_end - hptr), needle, needle_len, state->locale) == 0)
 				{
 					state->last_match_len_tmp = (test_end - hptr);
@@ -1173,7 +1220,7 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 			if (result_hptr)
 				break;
 
-			hptr += pg_mblen(hptr);
+			hptr += pg_mblen_range(hptr, haystack_end);
 		}
 
 		return (char *) result_hptr;
@@ -1348,7 +1395,8 @@ varstr_cmp(const char *arg1, int len1, const char *arg2, int len2, Oid collid)
 	return result;
 }
 
-/* text_cmp()
+/*
+ * text_cmp()
  * Internal comparison function for text strings.
  * Returns -1, 0 or 1
  */
@@ -2267,7 +2315,9 @@ varstr_abbrev_abort(int memtupcount, SortSupport ssup)
 Datum
 btvarstrequalimage(PG_FUNCTION_ARGS)
 {
-	/* Oid		opcintype = PG_GETARG_OID(0); */
+#ifdef NOT_USED
+	Oid			opcintype = PG_GETARG_OID(0);
+#endif
 	Oid			collid = PG_GET_COLLATION();
 	pg_locale_t locale;
 
@@ -2623,7 +2673,8 @@ bttext_pattern_sortsupport(PG_FUNCTION_ARGS)
 }
 
 
-/* text_name()
+/*
+ * text_name()
  * Converts a text type to a Name type.
  */
 Datum
@@ -2646,7 +2697,8 @@ text_name(PG_FUNCTION_ARGS)
 	PG_RETURN_NAME(result);
 }
 
-/* name_text()
+/*
+ * name_text()
  * Converts a Name type to a text type.
  */
 Datum
@@ -2702,6 +2754,96 @@ textToQualifiedNameList(text *textval)
 }
 
 /*
+ * scan_quoted_identifier - In-place scanner for quoted identifiers.
+ *
+ * *nextp should point to the opening double-quote character, and will be
+ * updated to point just past the end.  *endp is set to the position of
+ * the closing quote. The return value is the identifier, or NULL if the
+ * matching close-quote cannot be found.
+ *
+ * If we find two consecutive double quote characters, that doesn't end the
+ * identifier: instead, we collapse them into a double quote and include them
+ * in the resulting token. Note that this requires overwriting the rest of the
+ * string in place, including the portion beyond the final value of *nextp.
+ */
+char *
+scan_quoted_identifier(char **endp, char **nextp)
+{
+	char	   *token = *nextp + 1;
+
+	for (;;)
+	{
+		*endp = strchr(*nextp + 1, '"');
+		if (*endp == NULL)
+			return NULL;		/* mismatched quotes */
+		if ((*endp)[1] != '"')
+			break;				/* found end of quoted identifier */
+		/* Collapse adjacent quotes into one quote, and look again */
+		memmove(*endp, *endp + 1, strlen(*endp));
+		*nextp = *endp;
+	}
+	/* *endp now points at the terminating quote */
+	*nextp = *endp + 1;
+
+	return token;
+}
+
+/*
+ * scan_identifier - In-place scanner for quoted or unquoted identifiers.
+ *
+ * On success, *endp is set to the position where the caller should write '\0'
+ * to null-terminate the token, and *nextp is advanced past the token (and past
+ * the closing quote, if any).  The return value is the token content, or NULL
+ * if there is a syntax error (mismatched quotes or empty unquoted token).
+ *
+ * Unquoted identifiers are terminated by whitespace or the first occurrence
+ * of the separator character. Additionally, if downcase_unquoted = true,
+ * unquoted identifiers are downcased in place. See scan_quoted_identifier for
+ * an additional way in which we modify the string in place.
+ */
+char *
+scan_identifier(char **endp, char **nextp, char separator, bool downcase_unquoted)
+{
+	char	   *token;
+
+	if (**nextp == '"')
+		return scan_quoted_identifier(endp, nextp);
+
+	/* Unquoted identifier --- extends to separator or whitespace */
+	token = *nextp;
+
+	while (**nextp && **nextp != separator && !scanner_isspace(**nextp))
+		(*nextp)++;
+
+	if (*nextp == token)
+		return NULL;			/* empty token */
+
+	*endp = *nextp;
+
+	if (downcase_unquoted)
+	{
+		/*
+		 * Downcase the identifier, using same code as main lexer does.
+		 *
+		 * XXX because we want to overwrite the input in-place, we cannot
+		 * support a downcasing transformation that increases the string
+		 * length.  This is not a problem given the current implementation of
+		 * downcase_truncate_identifier, but we'll probably have to do
+		 * something about this someday.
+		 */
+		int			len = *endp - token;
+		char	   *downname = downcase_truncate_identifier(token, len, false);
+
+		Assert(strlen(downname) <= len);
+		strncpy(token, downname, len);	/* strncpy is required here */
+		pfree(downname);
+	}
+
+	return token;
+}
+
+
+/*
  * SplitIdentifierString --- parse a string containing identifiers
  *
  * This is the guts of textToQualifiedNameList, and is exported for use in
@@ -2745,53 +2887,9 @@ SplitIdentifierString(char *rawstring, char separator,
 		char	   *curname;
 		char	   *endp;
 
-		if (*nextp == '"')
-		{
-			/* Quoted name --- collapse quote-quote pairs, no downcasing */
-			curname = nextp + 1;
-			for (;;)
-			{
-				endp = strchr(nextp + 1, '"');
-				if (endp == NULL)
-					return false;	/* mismatched quotes */
-				if (endp[1] != '"')
-					break;		/* found end of quoted name */
-				/* Collapse adjacent quotes into one quote, and look again */
-				memmove(endp, endp + 1, strlen(endp));
-				nextp = endp;
-			}
-			/* endp now points at the terminating quote */
-			nextp = endp + 1;
-		}
-		else
-		{
-			/* Unquoted name --- extends to separator or whitespace */
-			char	   *downname;
-			int			len;
-
-			curname = nextp;
-			while (*nextp && *nextp != separator &&
-				   !scanner_isspace(*nextp))
-				nextp++;
-			endp = nextp;
-			if (curname == nextp)
-				return false;	/* empty unquoted name not allowed */
-
-			/*
-			 * Downcase the identifier, using same code as main lexer does.
-			 *
-			 * XXX because we want to overwrite the input in-place, we cannot
-			 * support a downcasing transformation that increases the string
-			 * length.  This is not a problem given the current implementation
-			 * of downcase_truncate_identifier, but we'll probably have to do
-			 * something about this someday.
-			 */
-			len = endp - curname;
-			downname = downcase_truncate_identifier(curname, len, false);
-			Assert(strlen(downname) <= len);
-			strncpy(curname, downname, len);	/* strncpy is required here */
-			pfree(downname);
-		}
+		curname = scan_identifier(&endp, &nextp, separator, true);
+		if (curname == NULL)
+			return false;		/* mismatched quotes or empty name */
 
 		while (scanner_isspace(*nextp))
 			nextp++;			/* skip trailing whitespace */
@@ -2875,20 +2973,9 @@ SplitDirectoriesString(char *rawstring, char separator,
 		if (*nextp == '"')
 		{
 			/* Quoted name --- collapse quote-quote pairs */
-			curname = nextp + 1;
-			for (;;)
-			{
-				endp = strchr(nextp + 1, '"');
-				if (endp == NULL)
-					return false;	/* mismatched quotes */
-				if (endp[1] != '"')
-					break;		/* found end of quoted name */
-				/* Collapse adjacent quotes into one quote, and look again */
-				memmove(endp, endp + 1, strlen(endp));
-				nextp = endp;
-			}
-			/* endp now points at the terminating quote */
-			nextp = endp + 1;
+			curname = scan_quoted_identifier(&endp, &nextp);
+			if (curname == NULL)
+				return false;	/* mismatched quotes */
 		}
 		else
 		{
@@ -2993,35 +3080,9 @@ SplitGUCList(char *rawstring, char separator,
 		char	   *curname;
 		char	   *endp;
 
-		if (*nextp == '"')
-		{
-			/* Quoted name --- collapse quote-quote pairs */
-			curname = nextp + 1;
-			for (;;)
-			{
-				endp = strchr(nextp + 1, '"');
-				if (endp == NULL)
-					return false;	/* mismatched quotes */
-				if (endp[1] != '"')
-					break;		/* found end of quoted name */
-				/* Collapse adjacent quotes into one quote, and look again */
-				memmove(endp, endp + 1, strlen(endp));
-				nextp = endp;
-			}
-			/* endp now points at the terminating quote */
-			nextp = endp + 1;
-		}
-		else
-		{
-			/* Unquoted name --- extends to separator or whitespace */
-			curname = nextp;
-			while (*nextp && *nextp != separator &&
-				   !scanner_isspace(*nextp))
-				nextp++;
-			endp = nextp;
-			if (curname == nextp)
-				return false;	/* empty unquoted name not allowed */
-		}
+		curname = scan_identifier(&endp, &nextp, separator, false);
+		if (curname == NULL)
+			return false;		/* mismatched quotes or empty name */
 
 		while (scanner_isspace(*nextp))
 			nextp++;			/* skip trailing whitespace */
@@ -3765,6 +3826,8 @@ split_text(FunctionCallInfo fcinfo, SplitTextOutputData *tstate)
 	}
 	else
 	{
+		const char *end_ptr;
+
 		/*
 		 * When fldsep is NULL, each character in the input string becomes a
 		 * separate element in the result set.  The separator is effectively
@@ -3773,10 +3836,11 @@ split_text(FunctionCallInfo fcinfo, SplitTextOutputData *tstate)
 		inputstring_len = VARSIZE_ANY_EXHDR(inputstring);
 
 		start_ptr = VARDATA_ANY(inputstring);
+		end_ptr = start_ptr + inputstring_len;
 
 		while (inputstring_len > 0)
 		{
-			int			chunk_len = pg_mblen(start_ptr);
+			int			chunk_len = pg_mblen_range(start_ptr, end_ptr);
 
 			CHECK_FOR_INTERRUPTS();
 
@@ -3896,10 +3960,11 @@ array_to_text_internal(FunctionCallInfo fcinfo, ArrayType *v,
 	int			typlen;
 	bool		typbyval;
 	char		typalign;
+	uint8		typalignby;
 	StringInfoData buf;
 	bool		printed = false;
 	char	   *p;
-	bits8	   *bitmap;
+	uint8	   *bitmap;
 	int			bitmask;
 	int			i;
 	ArrayMetaState *my_extra;
@@ -3945,6 +4010,7 @@ array_to_text_internal(FunctionCallInfo fcinfo, ArrayType *v,
 	typlen = my_extra->typlen;
 	typbyval = my_extra->typbyval;
 	typalign = my_extra->typalign;
+	typalignby = typalign_to_alignby(typalign);
 
 	p = ARR_DATA_PTR(v);
 	bitmap = ARR_NULLBITMAP(v);
@@ -3981,7 +4047,7 @@ array_to_text_internal(FunctionCallInfo fcinfo, ArrayType *v,
 			printed = true;
 
 			p = att_addlength_pointer(p, typlen, p);
-			p = (char *) att_align_nominal(p, typalign);
+			p = (char *) att_nominal_alignby(p, typalignby);
 		}
 
 		/* advance bitmap pointer if any */
@@ -4165,7 +4231,7 @@ pg_column_compression(PG_FUNCTION_ARGS)
 		PG_RETURN_NULL();
 
 	/* get the compression method id stored in the compressed varlena */
-	cmid = toast_get_compression_id((struct varlena *)
+	cmid = toast_get_compression_id((varlena *)
 									DatumGetPointer(PG_GETARG_DATUM(0)));
 	if (cmid == TOAST_INVALID_COMPRESSION_ID)
 		PG_RETURN_NULL();
@@ -4194,8 +4260,8 @@ Datum
 pg_column_toast_chunk_id(PG_FUNCTION_ARGS)
 {
 	int			typlen;
-	struct varlena *attr;
-	struct varatt_external toast_pointer;
+	varlena    *attr;
+	varatt_external toast_pointer;
 
 	/* On first call, get the input type's typlen, and save at *fn_extra */
 	if (fcinfo->flinfo->fn_extra == NULL)
@@ -4217,7 +4283,7 @@ pg_column_toast_chunk_id(PG_FUNCTION_ARGS)
 	if (typlen != -1)
 		PG_RETURN_NULL();
 
-	attr = (struct varlena *) DatumGetPointer(PG_GETARG_DATUM(0));
+	attr = (varlena *) DatumGetPointer(PG_GETARG_DATUM(0));
 
 	if (!VARATT_IS_EXTERNAL_ONDISK(attr))
 		PG_RETURN_NULL();
@@ -4680,7 +4746,7 @@ text_reverse(PG_FUNCTION_ARGS)
 		{
 			int			sz;
 
-			sz = pg_mblen(p);
+			sz = pg_mblen_range(p, endp);
 			dst -= sz;
 			memcpy(dst, p, sz);
 			p += sz;
@@ -4841,7 +4907,7 @@ text_format(PG_FUNCTION_ARGS)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("unrecognized format() type specifier \"%.*s\"",
-							pg_mblen(cp), cp),
+							pg_mblen_range(cp, end_ptr), cp),
 					 errhint("For a single \"%%\" use \"%%%%\".")));
 
 		/* If indirect width was specified, get its value */
@@ -4962,7 +5028,7 @@ text_format(PG_FUNCTION_ARGS)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("unrecognized format() type specifier \"%.*s\"",
-								pg_mblen(cp), cp),
+								pg_mblen_range(cp, end_ptr), cp),
 						 errhint("For a single \"%%\" use \"%%%%\".")));
 				break;
 		}
@@ -5381,11 +5447,12 @@ unicode_version(PG_FUNCTION_ARGS)
 Datum
 icu_unicode_version(PG_FUNCTION_ARGS)
 {
-#ifdef USE_ICU
-	PG_RETURN_TEXT_P(cstring_to_text(U_UNICODE_VERSION));
-#else
-	PG_RETURN_NULL();
-#endif
+	const char *version = pg_icu_unicode_version();
+
+	if (version)
+		PG_RETURN_TEXT_P(cstring_to_text(version));
+	else
+		PG_RETURN_NULL();
 }
 
 /*
@@ -5426,18 +5493,18 @@ unicode_normalize_func(PG_FUNCTION_ARGS)
 	text	   *input = PG_GETARG_TEXT_PP(0);
 	char	   *formstr = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	UnicodeNormalizationForm form;
-	int			size;
+	size_t		size;
 	char32_t   *input_chars;
 	char32_t   *output_chars;
 	unsigned char *p;
 	text	   *result;
-	int			i;
+	size_t		i;
 
 	form = unicode_norm_form_from_string(formstr);
 
 	/* convert to char32_t */
 	size = pg_mbstrlen_with_len(VARDATA_ANY(input), VARSIZE_ANY_EXHDR(input));
-	input_chars = palloc((size + 1) * sizeof(char32_t));
+	input_chars = palloc_array(char32_t, size + 1);
 	p = (unsigned char *) VARDATA_ANY(input);
 	for (i = 0; i < size; i++)
 	{
@@ -5492,20 +5559,20 @@ unicode_is_normalized(PG_FUNCTION_ARGS)
 	text	   *input = PG_GETARG_TEXT_PP(0);
 	char	   *formstr = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	UnicodeNormalizationForm form;
-	int			size;
+	size_t		size;
 	char32_t   *input_chars;
 	char32_t   *output_chars;
 	unsigned char *p;
-	int			i;
+	size_t		i;
 	UnicodeNormalizationQC quickcheck;
-	int			output_size;
+	size_t		output_size;
 	bool		result;
 
 	form = unicode_norm_form_from_string(formstr);
 
 	/* convert to char32_t */
 	size = pg_mbstrlen_with_len(VARDATA_ANY(input), VARSIZE_ANY_EXHDR(input));
-	input_chars = palloc((size + 1) * sizeof(char32_t));
+	input_chars = palloc_array(char32_t, size + 1);
 	p = (unsigned char *) VARDATA_ANY(input);
 	for (i = 0; i < size; i++)
 	{

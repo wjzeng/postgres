@@ -43,7 +43,7 @@ static void help(const char *progname);
 static int	compare_block_numbers(const void *a, const void *b);
 static int	walsummary_read_callback(void *callback_arg, void *data,
 									 int length);
-static void walsummary_error_callback(void *callback_arg, char *fmt,...) pg_attribute_printf(2, 3);
+static void walsummary_error_callback(void *callback_arg, char *fmt, ...) pg_attribute_printf(2, 3);
 
 /*
  * Main program.
@@ -217,8 +217,8 @@ dump_one_relation(ws_options *opt, RelFileLocator *rlocator,
 static int
 compare_block_numbers(const void *a, const void *b)
 {
-	BlockNumber aa = *(BlockNumber *) a;
-	BlockNumber bb = *(BlockNumber *) b;
+	BlockNumber aa = *(const BlockNumber *) a;
+	BlockNumber bb = *(const BlockNumber *) b;
 
 	return pg_cmp_u32(aa, bb);
 }
@@ -227,7 +227,7 @@ compare_block_numbers(const void *a, const void *b)
  * Error callback.
  */
 void
-walsummary_error_callback(void *callback_arg, char *fmt,...)
+walsummary_error_callback(void *callback_arg, char *fmt, ...)
 {
 	va_list		ap;
 

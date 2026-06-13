@@ -59,7 +59,9 @@ static int	adjacent_cmp_bounds(TypeCacheEntry *typcache, const RangeBound *arg,
 Datum
 spg_range_quad_config(PG_FUNCTION_ARGS)
 {
-	/* spgConfigIn *cfgin = (spgConfigIn *) PG_GETARG_POINTER(0); */
+#ifdef NOT_USED
+	spgConfigIn *cfgin = (spgConfigIn *) PG_GETARG_POINTER(0);
+#endif
 	spgConfigOut *cfg = (spgConfigOut *) PG_GETARG_POINTER(1);
 
 	cfg->prefixType = ANYRANGEOID;
@@ -185,9 +187,9 @@ spg_range_quad_choose(PG_FUNCTION_ARGS)
 static int
 bound_cmp(const void *a, const void *b, void *arg)
 {
-	RangeBound *ba = (RangeBound *) a;
-	RangeBound *bb = (RangeBound *) b;
-	TypeCacheEntry *typcache = (TypeCacheEntry *) arg;
+	const RangeBound *ba = a;
+	const RangeBound *bb = b;
+	TypeCacheEntry *typcache = arg;
 
 	return range_cmp_bounds(typcache, ba, bb);
 }

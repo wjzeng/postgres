@@ -12,7 +12,8 @@
  *
  *-------------------------------------------------------------------------
  */
-/* INTERFACE ROUTINES
+/*
+ * INTERFACE ROUTINES
  *		ExecInitAppend	- initialize the append node
  *		ExecAppend		- retrieve the next tuple from the node
  *		ExecEndAppend	- shut down the append node
@@ -64,6 +65,8 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/latch.h"
+#include "storage/lwlock.h"
+#include "utils/wait_event.h"
 
 /* Shared state for parallel-aware Append. */
 struct ParallelAppendState

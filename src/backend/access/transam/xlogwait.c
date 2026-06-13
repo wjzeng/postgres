@@ -12,25 +12,30 @@
  *		This file implements waiting for WAL operations to reach specific LSNs
  *		on both physical standby and primary servers. The core idea is simple:
  *		every process that wants to wait publishes the LSN it needs to the
- *		shared memory, and the appropriate process (startup on standby, or
- *		WAL writer/backend on primary) wakes it once that LSN has been reached.
+ *		shared memory, and the appropriate process (startup on standby,
+ *		walreceiver on standby, or WAL writer/backend on primary) wakes it
+ *		once that LSN has been reached.
  *
  *		The shared memory used by this module comprises a procInfos
  *		per-backend array with the information of the awaited LSN for each
  *		of the backend processes.  The elements of that array are organized
- *		into a pairing heap waitersHeap, which allows for very fast finding
- *		of the least awaited LSN.
+ *		into pairing heaps (waitersHeap), one for each WaitLSNType, which
+ *		allows for very fast finding of the least awaited LSN for each type.
  *
- *		In addition, the least-awaited LSN is cached as minWaitedLSN.  The
- *		waiter process publishes information about itself to the shared
- *		memory and waits on the latch until it is woken up by the appropriate
- *		process, standby is promoted, or the postmaster	dies.  Then, it cleans
- *		information about itself in the shared memory.
+ *		In addition, the least-awaited LSN for each type is cached in the
+ *		minWaitedLSN array.  The waiter process publishes information about
+ *		itself to the shared memory and waits on the latch until it is woken
+ *		up by the appropriate process, standby is promoted, or the postmaster
+ *		dies.  Then, it cleans information about itself in the shared memory.
  *
- *		On standby servers: After replaying a WAL record, the startup process
- *		first performs a fast path check minWaitedLSN > replayLSN.  If this
- *		check is negative, it checks waitersHeap and wakes up the backend
- *		whose awaited LSNs are reached.
+ *		On standby servers:
+ *		- After replaying a WAL record, the startup process performs a fast
+ *		  path check minWaitedLSN[REPLAY] > replayLSN.  If this check is
+ *		  negative, it checks waitersHeap[REPLAY] and wakes up the backends
+ *		  whose awaited LSNs are reached.
+ *		- After receiving WAL, the walreceiver process performs similar checks
+ *		  against the flush and write LSNs, waking up waiters in the FLUSH
+ *		  and WRITE heaps, respectively.
  *
  *		On primary servers: After flushing WAL, the WAL writer or backend
  *		process performs a similar check against the flush LSN and wakes up
@@ -42,19 +47,21 @@
 #include "postgres.h"
 
 #include <float.h>
-#include <math.h>
 
 #include "access/xlog.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogwait.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "replication/walreceiver.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
+#include "storage/subsystems.h"
 #include "utils/fmgrprotos.h"
 #include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
+#include "utils/wait_event.h"
 
 
 static int	waitlsn_cmp(const pairingheap_node *a, const pairingheap_node *b,
@@ -62,41 +69,106 @@ static int	waitlsn_cmp(const pairingheap_node *a, const pairingheap_node *b,
 
 struct WaitLSNState *waitLSNState = NULL;
 
-/* Report the amount of shared memory space needed for WaitLSNState. */
-Size
-WaitLSNShmemSize(void)
+static void WaitLSNShmemRequest(void *arg);
+static void WaitLSNShmemInit(void *arg);
+
+const ShmemCallbacks WaitLSNShmemCallbacks = {
+	.request_fn = WaitLSNShmemRequest,
+	.init_fn = WaitLSNShmemInit,
+};
+
+/*
+ * Wait event for each WaitLSNType, used with WaitLatch() to report
+ * the wait in pg_stat_activity.
+ */
+static const uint32 WaitLSNWaitEvents[] = {
+	[WAIT_LSN_TYPE_STANDBY_REPLAY] = WAIT_EVENT_WAIT_FOR_WAL_REPLAY,
+	[WAIT_LSN_TYPE_STANDBY_WRITE] = WAIT_EVENT_WAIT_FOR_WAL_WRITE,
+	[WAIT_LSN_TYPE_STANDBY_FLUSH] = WAIT_EVENT_WAIT_FOR_WAL_FLUSH,
+	[WAIT_LSN_TYPE_PRIMARY_FLUSH] = WAIT_EVENT_WAIT_FOR_WAL_FLUSH,
+};
+
+StaticAssertDecl(lengthof(WaitLSNWaitEvents) == WAIT_LSN_TYPE_COUNT,
+				 "WaitLSNWaitEvents must match WaitLSNType enum");
+
+/*
+ * Get the current LSN for the specified wait type.  Provide memory
+ * barrier semantics before getting the value.
+ */
+XLogRecPtr
+GetCurrentLSNForWaitType(WaitLSNType lsnType)
+{
+	Assert(lsnType >= 0 && lsnType < WAIT_LSN_TYPE_COUNT);
+
+	/*
+	 * All of the cases below provide memory barrier semantics:
+	 * GetWalRcvWriteRecPtr() and GetFlushRecPtr() have explicit barriers,
+	 * while GetXLogReplayRecPtr() and GetWalRcvFlushRecPtr() use spinlocks.
+	 */
+	switch (lsnType)
+	{
+		case WAIT_LSN_TYPE_STANDBY_REPLAY:
+			return GetXLogReplayRecPtr(NULL);
+
+		case WAIT_LSN_TYPE_STANDBY_WRITE:
+			{
+				XLogRecPtr	recptr = GetWalRcvWriteRecPtr();
+				XLogRecPtr	replay = GetXLogReplayRecPtr(NULL);
+
+				/*
+				 * Use the replay position as a floor.  WAL up to the replay
+				 * point is already on disk from a base backup, archive
+				 * restore, or prior streaming, so there is no reason to wait
+				 * for the walreceiver to re-receive it.
+				 */
+				return Max(recptr, replay);
+			}
+
+		case WAIT_LSN_TYPE_STANDBY_FLUSH:
+			{
+				XLogRecPtr	recptr = GetWalRcvFlushRecPtr(NULL, NULL);
+				XLogRecPtr	replay = GetXLogReplayRecPtr(NULL);
+
+				/* Same floor as standby_write; see comment above. */
+				return Max(recptr, replay);
+			}
+
+		case WAIT_LSN_TYPE_PRIMARY_FLUSH:
+			return GetFlushRecPtr(NULL);
+	}
+
+	elog(ERROR, "invalid LSN wait type: %d", lsnType);
+	pg_unreachable();
+}
+
+/* Register the shared memory space needed for WaitLSNState. */
+static void
+WaitLSNShmemRequest(void *arg)
 {
 	Size		size;
 
 	size = offsetof(WaitLSNState, procInfos);
 	size = add_size(size, mul_size(MaxBackends + NUM_AUXILIARY_PROCS, sizeof(WaitLSNProcInfo)));
-	return size;
+	ShmemRequestStruct(.name = "WaitLSNState",
+					   .size = size,
+					   .ptr = (void **) &waitLSNState,
+		);
 }
 
 /* Initialize the WaitLSNState in the shared memory. */
-void
-WaitLSNShmemInit(void)
+static void
+WaitLSNShmemInit(void *arg)
 {
-	bool		found;
-
-	waitLSNState = (WaitLSNState *) ShmemInitStruct("WaitLSNState",
-													WaitLSNShmemSize(),
-													&found);
-	if (!found)
+	/* Initialize heaps and tracking */
+	for (int i = 0; i < WAIT_LSN_TYPE_COUNT; i++)
 	{
-		int			i;
-
-		/* Initialize heaps and tracking */
-		for (i = 0; i < WAIT_LSN_TYPE_COUNT; i++)
-		{
-			pg_atomic_init_u64(&waitLSNState->minWaitedLSN[i], PG_UINT64_MAX);
-			pairingheap_initialize(&waitLSNState->waitersHeap[i], waitlsn_cmp, NULL);
-		}
-
-		/* Initialize process info array */
-		memset(&waitLSNState->procInfos, 0,
-			   (MaxBackends + NUM_AUXILIARY_PROCS) * sizeof(WaitLSNProcInfo));
+		pg_atomic_init_u64(&waitLSNState->minWaitedLSN[i], PG_UINT64_MAX);
+		pairingheap_initialize(&waitLSNState->waitersHeap[i], waitlsn_cmp, NULL);
 	}
+
+	/* Initialize process info array */
+	memset(&waitLSNState->procInfos, 0,
+		   (MaxBackends + NUM_AUXILIARY_PROCS) * sizeof(WaitLSNProcInfo));
 }
 
 /*
@@ -135,7 +207,8 @@ updateMinWaitedLSN(WaitLSNType lsnType)
 
 		minWaitedLSN = procInfo->waitLSN;
 	}
-	pg_atomic_write_u64(&waitLSNState->minWaitedLSN[i], minWaitedLSN);
+	/* Pairs with pg_atomic_read_membarrier_u64() in WaitLSNWakeup(). */
+	pg_atomic_write_membarrier_u64(&waitLSNState->minWaitedLSN[i], minWaitedLSN);
 }
 
 /*
@@ -217,6 +290,8 @@ wakeupWaiters(WaitLSNType lsnType, XLogRecPtr currentLSN)
 
 	do
 	{
+		int			j;
+
 		numWakeUpProcs = 0;
 		LWLockAcquire(WaitLSNLock, LW_EXCLUSIVE);
 
@@ -256,8 +331,8 @@ wakeupWaiters(WaitLSNType lsnType, XLogRecPtr currentLSN)
 		 * at worst we may set a latch for the wrong process or for no process
 		 * at all, which is harmless.
 		 */
-		for (i = 0; i < numWakeUpProcs; i++)
-			SetLatch(&GetPGProcByNumber(wakeUpProcs[i])->procLatch);
+		for (j = 0; j < numWakeUpProcs; j++)
+			SetLatch(&GetPGProcByNumber(wakeUpProcs[j])->procLatch);
 
 	} while (numWakeUpProcs == WAKEUP_PROC_STATIC_ARRAY_SIZE);
 }
@@ -274,17 +349,18 @@ WaitLSNWakeup(WaitLSNType lsnType, XLogRecPtr currentLSN)
 
 	/*
 	 * Fast path check.  Skip if currentLSN is InvalidXLogRecPtr, which means
-	 * "wake all waiters" (e.g., during promotion when recovery ends).
+	 * "wake all waiters" (e.g., during promotion when recovery ends). Pairs
+	 * with pg_atomic_write_membarrier_u64() in updateMinWaitedLSN().
 	 */
 	if (XLogRecPtrIsValid(currentLSN) &&
-		pg_atomic_read_u64(&waitLSNState->minWaitedLSN[i]) > currentLSN)
+		pg_atomic_read_membarrier_u64(&waitLSNState->minWaitedLSN[i]) > currentLSN)
 		return;
 
 	wakeupWaiters(lsnType, currentLSN);
 }
 
 /*
- * Clean up LSN waiters for exiting process
+ * Clean up any LSN wait state for the current process.
  */
 void
 WaitLSNCleanup(void)
@@ -300,6 +376,19 @@ WaitLSNCleanup(void)
 		if (waitLSNState->procInfos[MyProcNumber].inHeap)
 			deleteLSNWaiter(waitLSNState->procInfos[MyProcNumber].lsnType);
 	}
+}
+
+/*
+ * Check if the given LSN type requires recovery to be in progress.
+ * Standby wait types (replay, write, flush) require recovery;
+ * primary wait types (flush) do not.
+ */
+static inline bool
+WaitLSNTypeRequiresRecovery(WaitLSNType t)
+{
+	return t == WAIT_LSN_TYPE_STANDBY_REPLAY ||
+		t == WAIT_LSN_TYPE_STANDBY_WRITE ||
+		t == WAIT_LSN_TYPE_STANDBY_FLUSH;
 }
 
 /*
@@ -341,13 +430,11 @@ WaitForLSN(WaitLSNType lsnType, XLogRecPtr targetLSN, int64 timeout)
 		int			rc;
 		long		delay_ms = -1;
 
-		if (lsnType == WAIT_LSN_TYPE_REPLAY)
-			currentLSN = GetXLogReplayRecPtr(NULL);
-		else
-			currentLSN = GetFlushRecPtr(NULL);
+		/* Get current LSN for the wait type */
+		currentLSN = GetCurrentLSNForWaitType(lsnType);
 
 		/* Check that recovery is still in-progress */
-		if (lsnType == WAIT_LSN_TYPE_REPLAY && !RecoveryInProgress())
+		if (WaitLSNTypeRequiresRecovery(lsnType) && !RecoveryInProgress())
 		{
 			/*
 			 * Recovery was ended, but check if target LSN was already
@@ -376,7 +463,7 @@ WaitForLSN(WaitLSNType lsnType, XLogRecPtr targetLSN, int64 timeout)
 		CHECK_FOR_INTERRUPTS();
 
 		rc = WaitLatch(MyLatch, wake_events, delay_ms,
-					   (lsnType == WAIT_LSN_TYPE_REPLAY) ? WAIT_EVENT_WAIT_FOR_WAL_REPLAY : WAIT_EVENT_WAIT_FOR_WAL_FLUSH);
+					   WaitLSNWaitEvents[lsnType]);
 
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the
@@ -388,8 +475,7 @@ WaitForLSN(WaitLSNType lsnType, XLogRecPtr targetLSN, int64 timeout)
 					errmsg("terminating connection due to unexpected postmaster exit"),
 					errcontext("while waiting for LSN"));
 
-		if (rc & WL_LATCH_SET)
-			ResetLatch(MyLatch);
+		ResetLatch(MyLatch);
 	}
 
 	/*

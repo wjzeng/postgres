@@ -33,6 +33,7 @@
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
 #include "catalog/pg_control.h"
+#include "commands/repack.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
 #include "replication/message.h"
@@ -66,7 +67,7 @@ static inline bool FilterPrepare(LogicalDecodingContext *ctx,
 								 TransactionId xid, const char *gid);
 static bool DecodeTXNNeedSkip(LogicalDecodingContext *ctx,
 							  XLogRecordBuffer *buf, Oid txn_dbid,
-							  RepOriginId origin_id);
+							  ReplOriginId origin_id);
 
 /*
  * Take every XLogReadRecord()ed record and perform the actions required to
@@ -186,6 +187,22 @@ xlog_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			break;
 		default:
 			elog(ERROR, "unexpected RM_XLOG_ID record type: %u", info);
+	}
+}
+
+void
+xlog2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	uint8		info = XLogRecGetInfo(buf->record) & ~XLR_INFO_MASK;
+
+	ReorderBufferProcessXid(ctx->reorder, XLogRecGetXid(buf->record), buf->origptr);
+
+	switch (info)
+	{
+		case XLOG2_CHECKSUMS:
+			break;
+		default:
+			elog(ERROR, "unexpected RM_XLOG2_ID record type: %u", info);
 	}
 }
 
@@ -365,6 +382,11 @@ standby_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			{
 				xl_running_xacts *running = (xl_running_xacts *) XLogRecGetData(r);
 
+				/*
+				 * Update this decoder's idea of transactions currently
+				 * running.  In doing so we will determine whether we have
+				 * reached consistent status.
+				 */
 				SnapBuildProcessRunningXacts(builder, buf->origptr, running);
 
 				/*
@@ -420,7 +442,8 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	{
 		case XLOG_HEAP2_MULTI_INSERT:
 			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
-				!ctx->fast_forward)
+				!ctx->fast_forward &&
+				!change_useless_for_repack(buf))
 				DecodeMultiInsert(ctx, buf);
 			break;
 		case XLOG_HEAP2_NEW_CID:
@@ -430,9 +453,8 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 				xlrec = (xl_heap_new_cid *) XLogRecGetData(buf->record);
 				SnapBuildProcessNewCid(builder, xid, buf->origptr, xlrec);
-
-				break;
 			}
+			break;
 		case XLOG_HEAP2_REWRITE:
 
 			/*
@@ -449,7 +471,6 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_HEAP2_PRUNE_ON_ACCESS:
 		case XLOG_HEAP2_PRUNE_VACUUM_SCAN:
 		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
-		case XLOG_HEAP2_VISIBLE:
 		case XLOG_HEAP2_LOCK_UPDATED:
 			break;
 		default:
@@ -484,7 +505,8 @@ heap_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	{
 		case XLOG_HEAP_INSERT:
 			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
-				!ctx->fast_forward)
+				!ctx->fast_forward &&
+				!change_useless_for_repack(buf))
 				DecodeInsert(ctx, buf);
 			break;
 
@@ -496,19 +518,22 @@ heap_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_HEAP_HOT_UPDATE:
 		case XLOG_HEAP_UPDATE:
 			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
-				!ctx->fast_forward)
+				!ctx->fast_forward &&
+				!change_useless_for_repack(buf))
 				DecodeUpdate(ctx, buf);
 			break;
 
 		case XLOG_HEAP_DELETE:
 			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
-				!ctx->fast_forward)
+				!ctx->fast_forward &&
+				!change_useless_for_repack(buf))
 				DecodeDelete(ctx, buf);
 			break;
 
 		case XLOG_HEAP_TRUNCATE:
 			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
-				!ctx->fast_forward)
+				!ctx->fast_forward &&
+				!change_useless_for_repack(buf))
 				DecodeTruncate(ctx, buf);
 			break;
 
@@ -524,7 +549,8 @@ heap_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 		case XLOG_HEAP_CONFIRM:
 			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
-				!ctx->fast_forward)
+				!ctx->fast_forward &&
+				!change_useless_for_repack(buf))
 				DecodeSpecConfirm(ctx, buf);
 			break;
 
@@ -566,7 +592,7 @@ FilterPrepare(LogicalDecodingContext *ctx, TransactionId xid,
 }
 
 static inline bool
-FilterByOrigin(LogicalDecodingContext *ctx, RepOriginId origin_id)
+FilterByOrigin(LogicalDecodingContext *ctx, ReplOriginId origin_id)
 {
 	if (ctx->callbacks.filter_by_origin_cb == NULL)
 		return false;
@@ -584,7 +610,7 @@ logicalmsg_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	XLogReaderState *r = buf->record;
 	TransactionId xid = XLogRecGetXid(r);
 	uint8		info = XLogRecGetInfo(r) & ~XLR_INFO_MASK;
-	RepOriginId origin_id = XLogRecGetOrigin(r);
+	ReplOriginId origin_id = XLogRecGetOrigin(r);
 	Snapshot	snapshot = NULL;
 	xl_logical_message *message;
 
@@ -665,7 +691,7 @@ DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 {
 	XLogRecPtr	origin_lsn = InvalidXLogRecPtr;
 	TimestampTz commit_time = parsed->xact_time;
-	RepOriginId origin_id = XLogRecGetOrigin(buf->record);
+	ReplOriginId origin_id = XLogRecGetOrigin(buf->record);
 	int			i;
 
 	if (parsed->xinfo & XACT_XINFO_HAS_ORIGIN)
@@ -761,7 +787,7 @@ DecodePrepare(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	SnapBuild  *builder = ctx->snapshot_builder;
 	XLogRecPtr	origin_lsn = parsed->origin_lsn;
 	TimestampTz prepare_time = parsed->xact_time;
-	RepOriginId origin_id = XLogRecGetOrigin(buf->record);
+	ReplOriginId origin_id = XLogRecGetOrigin(buf->record);
 	int			i;
 	TransactionId xid = parsed->twophase_xid;
 
@@ -837,7 +863,7 @@ DecodeAbort(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	int			i;
 	XLogRecPtr	origin_lsn = InvalidXLogRecPtr;
 	TimestampTz abort_time = parsed->xact_time;
-	RepOriginId origin_id = XLogRecGetOrigin(buf->record);
+	ReplOriginId origin_id = XLogRecGetOrigin(buf->record);
 	bool		skip_xact;
 
 	if (parsed->xinfo & XACT_XINFO_HAS_ORIGIN)
@@ -1020,6 +1046,15 @@ DecodeDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	RelFileLocator target_locator;
 
 	xlrec = (xl_heap_delete *) XLogRecGetData(r);
+
+	/*
+	 * Skip changes that were marked as ignorable at origin.
+	 *
+	 * (This is used for changes that affect relations not visible to other
+	 * transactions, such as the transient table during concurrent repack.)
+	 */
+	if (xlrec->flags & XLH_DELETE_NO_LOGICAL)
+		return;
 
 	/* only interested in our database */
 	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
@@ -1289,7 +1324,7 @@ DecodeXLogTuple(char *data, Size len, HeapTuple tuple)
  */
 static bool
 DecodeTXNNeedSkip(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
-				  Oid txn_dbid, RepOriginId origin_id)
+				  Oid txn_dbid, ReplOriginId origin_id)
 {
 	if (SnapBuildXactNeedsSkip(ctx->snapshot_builder, buf->origptr) ||
 		(txn_dbid != InvalidOid && txn_dbid != ctx->slot->data.database) ||

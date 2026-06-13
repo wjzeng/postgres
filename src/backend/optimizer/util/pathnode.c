@@ -14,8 +14,6 @@
  */
 #include "postgres.h"
 
-#include <math.h>
-
 #include "access/htup_details.h"
 #include "executor/nodeSetOp.h"
 #include "foreign/fdwapi.h"
@@ -760,9 +758,10 @@ add_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
  *	  parallel such that each worker will generate a subset of the path's
  *	  overall result.
  *
- *	  As in add_path, the partial_pathlist is kept sorted with the cheapest
- *	  total path in front.  This is depended on by multiple places, which
- *	  just take the front entry as the cheapest path without searching.
+ *	  As in add_path, the partial_pathlist is kept sorted first by smallest
+ *    number of disabled nodes and then by lowest total cost. This is depended
+ *    on by multiple places, which just take the front entry as the cheapest
+ *    path without searching.
  *
  *	  We don't generate parameterized partial paths for several reasons.  Most
  *	  importantly, they're not safe to execute, because there's nothing to
@@ -779,10 +778,9 @@ add_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
  *
  *	  Because we don't consider parameterized paths here, we also don't
  *	  need to consider the row counts as a measure of quality: every path will
- *	  produce the same number of rows.  Neither do we need to consider startup
- *	  costs: parallelism is only used for plans that will be run to completion.
- *	  Therefore, this routine is much simpler than add_path: it needs to
- *	  consider only disabled nodes, pathkeys and total cost.
+ *	  produce the same number of rows.  However, we do need to consider the
+ *	  startup costs: this partial path could be used beneath a Limit node,
+ *	  so a fast-start plan could be correct.
  *
  *	  As with add_path, we pfree paths that are found to be dominated by
  *	  another partial path; this requires that there be no other references to
@@ -820,52 +818,41 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 		/* Compare pathkeys. */
 		keyscmp = compare_pathkeys(new_path->pathkeys, old_path->pathkeys);
 
-		/* Unless pathkeys are incompatible, keep just one of the two paths. */
+		/*
+		 * Unless pathkeys are incompatible, see if one of the paths dominates
+		 * the other (both in startup and total cost). It may happen that one
+		 * path has lower startup cost, the other has lower total cost.
+		 */
 		if (keyscmp != PATHKEYS_DIFFERENT)
 		{
-			if (unlikely(new_path->disabled_nodes != old_path->disabled_nodes))
+			PathCostComparison costcmp;
+
+			/*
+			 * Do a fuzzy cost comparison with standard fuzziness limit.
+			 */
+			costcmp = compare_path_costs_fuzzily(new_path, old_path,
+												 STD_FUZZ_FACTOR);
+			if (costcmp == COSTS_BETTER1)
 			{
-				if (new_path->disabled_nodes > old_path->disabled_nodes)
-					accept_new = false;
-				else
-					remove_old = true;
-			}
-			else if (new_path->total_cost > old_path->total_cost
-					 * STD_FUZZ_FACTOR)
-			{
-				/* New path costs more; keep it only if pathkeys are better. */
-				if (keyscmp != PATHKEYS_BETTER1)
-					accept_new = false;
-			}
-			else if (old_path->total_cost > new_path->total_cost
-					 * STD_FUZZ_FACTOR)
-			{
-				/* Old path costs more; keep it only if pathkeys are better. */
 				if (keyscmp != PATHKEYS_BETTER2)
 					remove_old = true;
 			}
-			else if (keyscmp == PATHKEYS_BETTER1)
+			else if (costcmp == COSTS_BETTER2)
 			{
-				/* Costs are about the same, new path has better pathkeys. */
-				remove_old = true;
+				if (keyscmp != PATHKEYS_BETTER1)
+					accept_new = false;
 			}
-			else if (keyscmp == PATHKEYS_BETTER2)
+			else if (costcmp == COSTS_EQUAL)
 			{
-				/* Costs are about the same, old path has better pathkeys. */
-				accept_new = false;
-			}
-			else if (old_path->total_cost > new_path->total_cost * 1.0000000001)
-			{
-				/* Pathkeys are the same, and the old path costs more. */
-				remove_old = true;
-			}
-			else
-			{
-				/*
-				 * Pathkeys are the same, and new path isn't materially
-				 * cheaper.
-				 */
-				accept_new = false;
+				if (keyscmp == PATHKEYS_BETTER1)
+					remove_old = true;
+				else if (keyscmp == PATHKEYS_BETTER2)
+					accept_new = false;
+				else if (compare_path_costs_fuzzily(new_path, old_path,
+													1.0000000001) == COSTS_BETTER1)
+					remove_old = true;
+				else
+					accept_new = false;
 			}
 		}
 
@@ -880,8 +867,13 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
 		}
 		else
 		{
-			/* new belongs after this old path if it has cost >= old's */
-			if (new_path->total_cost >= old_path->total_cost)
+			/*
+			 * new belongs after this old path if it has more disabled nodes
+			 * or if it has the same number of nodes but a greater total cost
+			 */
+			if (new_path->disabled_nodes > old_path->disabled_nodes ||
+				(new_path->disabled_nodes == old_path->disabled_nodes &&
+				 new_path->total_cost >= old_path->total_cost))
 				insert_at = foreach_current_index(p1) + 1;
 		}
 
@@ -911,16 +903,16 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path)
  * add_partial_path_precheck
  *	  Check whether a proposed new partial path could possibly get accepted.
  *
- * Unlike add_path_precheck, we can ignore startup cost and parameterization,
- * since they don't matter for partial paths (see add_partial_path).  But
- * we do want to make sure we don't add a partial path if there's already
- * a complete path that dominates it, since in that case the proposed path
- * is surely a loser.
+ * Unlike add_path_precheck, we can ignore parameterization, since it doesn't
+ * matter for partial paths (see add_partial_path).  But we do want to make
+ * sure we don't add a partial path if there's already a complete path that
+ * dominates it, since in that case the proposed path is surely a loser.
  */
 bool
 add_partial_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
-						  Cost total_cost, List *pathkeys)
+						  Cost startup_cost, Cost total_cost, List *pathkeys)
 {
+	bool		consider_startup = parent_rel->consider_startup;
 	ListCell   *p1;
 
 	/*
@@ -930,25 +922,81 @@ add_partial_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
 	 * is clearly superior to some existing partial path -- at least, modulo
 	 * final cost computations.  If so, we definitely want to consider it.
 	 *
-	 * Unlike add_path(), we always compare pathkeys here.  This is because we
-	 * expect partial_pathlist to be very short, and getting a definitive
-	 * answer at this stage avoids the need to call add_path_precheck.
+	 * Unlike add_path(), we never try to exit this loop early. This is
+	 * because we expect partial_pathlist to be very short, and getting a
+	 * definitive answer at this stage avoids the need to call
+	 * add_path_precheck.
 	 */
 	foreach(p1, parent_rel->partial_pathlist)
 	{
 		Path	   *old_path = (Path *) lfirst(p1);
+		PathCostComparison costcmp;
 		PathKeysComparison keyscmp;
 
-		keyscmp = compare_pathkeys(pathkeys, old_path->pathkeys);
-		if (keyscmp != PATHKEYS_DIFFERENT)
+		/*
+		 * First, compare costs and disabled nodes. This logic should be
+		 * identical to compare_path_costs_fuzzily, except that one of the
+		 * paths hasn't been created yet, and the fuzz factor is always
+		 * STD_FUZZ_FACTOR.
+		 */
+		if (unlikely(old_path->disabled_nodes != disabled_nodes))
 		{
-			if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR &&
-				keyscmp != PATHKEYS_BETTER1)
-				return false;
-			if (old_path->total_cost > total_cost * STD_FUZZ_FACTOR &&
-				keyscmp != PATHKEYS_BETTER2)
-				return true;
+			if (disabled_nodes < old_path->disabled_nodes)
+				costcmp = COSTS_BETTER1;
+			else
+				costcmp = COSTS_BETTER2;
 		}
+		else if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR)
+		{
+			if (consider_startup &&
+				old_path->startup_cost > startup_cost * STD_FUZZ_FACTOR)
+				costcmp = COSTS_DIFFERENT;
+			else
+				costcmp = COSTS_BETTER2;
+		}
+		else if (old_path->total_cost > total_cost * STD_FUZZ_FACTOR)
+		{
+			if (consider_startup &&
+				startup_cost > old_path->startup_cost * STD_FUZZ_FACTOR)
+				costcmp = COSTS_DIFFERENT;
+			else
+				costcmp = COSTS_BETTER1;
+		}
+		else if (startup_cost > old_path->startup_cost * STD_FUZZ_FACTOR)
+			costcmp = COSTS_BETTER2;
+		else if (old_path->startup_cost > startup_cost * STD_FUZZ_FACTOR)
+			costcmp = COSTS_BETTER1;
+		else
+			costcmp = COSTS_EQUAL;
+
+		/*
+		 * If one path wins on startup cost and the other on total cost, we
+		 * can't say for sure which is better.
+		 */
+		if (costcmp == COSTS_DIFFERENT)
+			continue;
+
+		/*
+		 * If the two paths have different pathkeys, we can't say for sure
+		 * which is better.
+		 */
+		keyscmp = compare_pathkeys(pathkeys, old_path->pathkeys);
+		if (keyscmp == PATHKEYS_DIFFERENT)
+			continue;
+
+		/*
+		 * If the existing path is cheaper and the pathkeys are equal or
+		 * worse, the new path is not interesting.
+		 */
+		if (costcmp == COSTS_BETTER2 && keyscmp != PATHKEYS_BETTER1)
+			return false;
+
+		/*
+		 * If the new path is cheaper and the pathkeys are equal or better, it
+		 * is definitely interesting.
+		 */
+		if (costcmp == COSTS_BETTER1 && keyscmp != PATHKEYS_BETTER2)
+			return true;
 	}
 
 	/*
@@ -956,14 +1004,9 @@ add_partial_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
 	 * clearly good enough that it might replace one.  Compare it to
 	 * non-parallel plans.  If it loses even before accounting for the cost of
 	 * the Gather node, we should definitely reject it.
-	 *
-	 * Note that we pass the total_cost to add_path_precheck twice.  This is
-	 * because it's never advantageous to consider the startup cost of a
-	 * partial path; the resulting plans, if run in parallel, will be run to
-	 * completion.
 	 */
-	if (!add_path_precheck(parent_rel, disabled_nodes, total_cost, total_cost,
-						   pathkeys, NULL))
+	if (!add_path_precheck(parent_rel, disabled_nodes, startup_cost,
+						   total_cost, pathkeys, NULL))
 		return false;
 
 	return true;
@@ -1078,6 +1121,14 @@ create_index_path(PlannerInfo *root,
 	pathnode->indexscandir = indexscandir;
 
 	cost_index(pathnode, root, loop_count, partial_path);
+
+	/*
+	 * cost_index will set disabled_nodes to 1 if this rel is not allowed to
+	 * use index scans in general, but it doesn't have the IndexOptInfo to
+	 * know whether this specific index has been disabled.
+	 */
+	if (index->disabled)
+		pathnode->path.disabled_nodes = 1;
 
 	return pathnode;
 }
@@ -1300,7 +1351,7 @@ create_tidrangescan_path(PlannerInfo *root, RelOptInfo *rel,
 AppendPath *
 create_append_path(PlannerInfo *root,
 				   RelOptInfo *rel,
-				   List *subpaths, List *partial_subpaths,
+				   AppendPathInput input,
 				   List *pathkeys, Relids required_outer,
 				   int parallel_workers, bool parallel_aware,
 				   double rows)
@@ -1310,6 +1361,7 @@ create_append_path(PlannerInfo *root,
 
 	Assert(!parallel_aware || parallel_workers > 0);
 
+	pathnode->child_append_relid_sets = input.child_append_relid_sets;
 	pathnode->path.pathtype = T_Append;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
@@ -1325,7 +1377,7 @@ create_append_path(PlannerInfo *root,
 	 * on the simpler get_appendrel_parampathinfo.  There's no point in doing
 	 * the more expensive thing for a dummy path, either.
 	 */
-	if (rel->reloptkind == RELOPT_BASEREL && root && subpaths != NIL)
+	if (rel->reloptkind == RELOPT_BASEREL && root && input.subpaths != NIL)
 		pathnode->path.param_info = get_baserel_parampathinfo(root,
 															  rel,
 															  required_outer);
@@ -1356,11 +1408,11 @@ create_append_path(PlannerInfo *root,
 		 */
 		Assert(pathkeys == NIL);
 
-		list_sort(subpaths, append_total_cost_compare);
-		list_sort(partial_subpaths, append_startup_cost_compare);
+		list_sort(input.subpaths, append_total_cost_compare);
+		list_sort(input.partial_subpaths, append_startup_cost_compare);
 	}
-	pathnode->first_partial_path = list_length(subpaths);
-	pathnode->subpaths = list_concat(subpaths, partial_subpaths);
+	pathnode->first_partial_path = list_length(input.subpaths);
+	pathnode->subpaths = list_concat(input.subpaths, input.partial_subpaths);
 
 	/*
 	 * Apply query-wide LIMIT if known and path is for sole base relation.
@@ -1472,6 +1524,7 @@ MergeAppendPath *
 create_merge_append_path(PlannerInfo *root,
 						 RelOptInfo *rel,
 						 List *subpaths,
+						 List *child_append_relid_sets,
 						 List *pathkeys,
 						 Relids required_outer)
 {
@@ -1487,6 +1540,7 @@ create_merge_append_path(PlannerInfo *root,
 	 */
 	Assert(bms_is_empty(rel->lateral_relids) && bms_is_empty(required_outer));
 
+	pathnode->child_append_relid_sets = child_append_relid_sets;
 	pathnode->path.pathtype = T_MergeAppend;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
@@ -1655,7 +1709,7 @@ create_group_result_path(PlannerInfo *root, RelOptInfo *rel,
  *	  pathnode.
  */
 MaterialPath *
-create_material_path(RelOptInfo *rel, Path *subpath)
+create_material_path(RelOptInfo *rel, Path *subpath, bool enabled)
 {
 	MaterialPath *pathnode = makeNode(MaterialPath);
 
@@ -1674,6 +1728,7 @@ create_material_path(RelOptInfo *rel, Path *subpath)
 	pathnode->subpath = subpath;
 
 	cost_material(&pathnode->path,
+				  enabled,
 				  subpath->disabled_nodes,
 				  subpath->startup_cost,
 				  subpath->total_cost,
@@ -1726,8 +1781,15 @@ create_memoize_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	pathnode->est_unique_keys = 0.0;
 	pathnode->est_hit_ratio = 0.0;
 
-	/* we should not generate this path type when enable_memoize=false */
-	Assert(enable_memoize);
+	/*
+	 * We should not be asked to generate this path type when memoization is
+	 * disabled, so set our count of disabled nodes equal to the subpath's
+	 * count.
+	 *
+	 * It would be nice to also Assert that memoization is enabled, but the
+	 * value of enable_memoize is not controlling: what we would need to check
+	 * is that the JoinPathExtraData's pgs_mask included PGS_NESTLOOP_MEMOIZE.
+	 */
 	pathnode->path.disabled_nodes = subpath->disabled_nodes;
 
 	/*
@@ -3636,7 +3698,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 						List *withCheckOptionLists, List *returningLists,
 						List *rowMarks, OnConflictExpr *onconflict,
 						List *mergeActionLists, List *mergeJoinConditions,
-						int epqParam)
+						ForPortionOfExpr *forPortionOf, int epqParam)
 {
 	ModifyTablePath *pathnode = makeNode(ModifyTablePath);
 
@@ -3702,6 +3764,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->returningLists = returningLists;
 	pathnode->rowMarks = rowMarks;
 	pathnode->onconflict = onconflict;
+	pathnode->forPortionOf = forPortionOf;
 	pathnode->epqParam = epqParam;
 	pathnode->mergeActionLists = mergeActionLists;
 	pathnode->mergeJoinConditions = mergeJoinConditions;
@@ -3926,10 +3989,11 @@ reparameterize_path(PlannerInfo *root, Path *path,
 		case T_Append:
 			{
 				AppendPath *apath = (AppendPath *) path;
-				List	   *childpaths = NIL;
-				List	   *partialpaths = NIL;
+				AppendPathInput new_append = {0};
 				int			i;
 				ListCell   *lc;
+
+				new_append.child_append_relid_sets = apath->child_append_relid_sets;
 
 				/* Reparameterize the children */
 				i = 0;
@@ -3944,13 +4008,13 @@ reparameterize_path(PlannerInfo *root, Path *path,
 						return NULL;
 					/* We have to re-split the regular and partial paths */
 					if (i < apath->first_partial_path)
-						childpaths = lappend(childpaths, spath);
+						new_append.subpaths = lappend(new_append.subpaths, spath);
 					else
-						partialpaths = lappend(partialpaths, spath);
+						new_append.partial_subpaths = lappend(new_append.partial_subpaths, spath);
 					i++;
 				}
 				return (Path *)
-					create_append_path(root, rel, childpaths, partialpaths,
+					create_append_path(root, rel, new_append,
 									   apath->path.pathkeys, required_outer,
 									   apath->path.parallel_workers,
 									   apath->path.parallel_aware,
@@ -3960,13 +4024,16 @@ reparameterize_path(PlannerInfo *root, Path *path,
 			{
 				MaterialPath *mpath = (MaterialPath *) path;
 				Path	   *spath = mpath->subpath;
+				bool		enabled;
 
 				spath = reparameterize_path(root, spath,
 											required_outer,
 											loop_count);
 				if (spath == NULL)
 					return NULL;
-				return (Path *) create_material_path(rel, spath);
+				enabled =
+					(mpath->path.disabled_nodes <= spath->disabled_nodes);
+				return (Path *) create_material_path(rel, spath, enabled);
 			}
 		case T_Memoize:
 			{
