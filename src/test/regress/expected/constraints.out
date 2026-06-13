@@ -846,8 +846,12 @@ CREATE TABLE notnull_tbl1 (a INTEGER NOT NULL NOT NULL);
 Not-null constraints:
     "notnull_tbl1_a_not_null" NOT NULL "a"
 
--- no-op
+-- specifying an existing constraint is a no-op
+ALTER TABLE notnull_tbl1 ADD CONSTRAINT notnull_tbl1_a_not_null NOT NULL a;
+-- but using a different constraint name is not allowed
 ALTER TABLE notnull_tbl1 ADD CONSTRAINT nn NOT NULL a;
+ERROR:  cannot create not-null constraint "nn" on column "a" of table "notnull_tbl1"
+DETAIL:  A not-null constraint named "notnull_tbl1_a_not_null" already exists for this column.
 \d+ notnull_tbl1
                                Table "public.notnull_tbl1"
  Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
@@ -1038,6 +1042,10 @@ CREATE TABLE ATACC1 (a int NOT NULL NO INHERIT) PARTITION BY LIST (a);
 ERROR:  not-null constraints on partitioned tables cannot be NO INHERIT
 CREATE TABLE ATACC1 (a int, NOT NULL a NO INHERIT) PARTITION BY LIST (a);
 ERROR:  not-null constraints on partitioned tables cannot be NO INHERIT
+CREATE TABLE ATACC1 (a int, CONSTRAINT a_is_not_null NOT NULL a) PARTITION BY LIST (a);
+ALTER TABLE ATACC1 ALTER CONSTRAINT a_is_not_null NO INHERIT;
+ERROR:  not-null constraint "a_is_not_null" on partitioned table "atacc1" cannot be NO INHERIT
+DROP TABLE ATACC1;
 -- it's not possible to override a no-inherit constraint with an inheritable one
 CREATE TABLE ATACC2 (a int, CONSTRAINT a_is_not_null NOT NULL a NO INHERIT);
 CREATE TABLE ATACC1 (a int);

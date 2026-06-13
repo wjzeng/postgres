@@ -776,6 +776,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	List	   *rawDefaults;
 	List	   *cookedDefaults;
 	List	   *nncols;
+	List	   *connames = NIL;
 	Datum		reloptions;
 	ListCell   *listptr;
 	AttrNumber	attnum;
@@ -1329,11 +1330,20 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	/*
 	 * Now add any newly specified CHECK constraints to the new relation. Same
 	 * as for defaults above, but these need to come after partitioning is set
-	 * up.
+	 * up.  We save the constraint names that were used, to avoid dupes below.
 	 */
 	if (stmt->constraints)
-		AddRelationNewConstraints(rel, NIL, stmt->constraints,
-								  true, true, false, queryString);
+	{
+		List	   *conlist;
+
+		conlist = AddRelationNewConstraints(rel, NIL, stmt->constraints,
+											true, true, false, queryString);
+		foreach_ptr(CookedConstraint, cons, conlist)
+		{
+			if (cons->name != NULL)
+				connames = lappend(connames, cons->name);
+		}
+	}
 
 	/*
 	 * Finally, merge the not-null constraints that are declared directly with
@@ -1342,7 +1352,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	 * columns that don't yet have it.
 	 */
 	nncols = AddRelationNotNullConstraints(rel, stmt->nnconstraints,
-										   old_notnulls);
+										   old_notnulls, connames);
 	foreach_int(attrnum, nncols)
 		set_attnotnull(NULL, rel, attrnum, true, false);
 
@@ -8040,11 +8050,11 @@ ATExecSetNotNull(List **wqueue, Relation rel, char *conName, char *colName,
 	ccon = linitial(cooked);
 	ObjectAddressSet(address, ConstraintRelationId, ccon->conoid);
 
-	InvokeObjectPostAlterHook(RelationRelationId,
-							  RelationGetRelid(rel), attnum);
-
 	/* Mark pg_attribute.attnotnull for the column and queue validation */
 	set_attnotnull(wqueue, rel, attnum, true, true);
+
+	InvokeObjectPostAlterHook(RelationRelationId,
+							  RelationGetRelid(rel), attnum);
 
 	/*
 	 * Recurse to propagate the constraint to children that don't have one.
@@ -12252,6 +12262,12 @@ ATExecAlterConstraint(List **wqueue, Relation rel, ATAlterConstraint *cmdcon,
 				errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				errmsg("constraint \"%s\" of relation \"%s\" is not a not-null constraint",
 					   cmdcon->conname, RelationGetRelationName(rel)));
+	if (cmdcon->alterInheritability &&
+		cmdcon->noinherit && rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		ereport(ERROR,
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("not-null constraint \"%s\" on partitioned table \"%s\" cannot be NO INHERIT",
+					   cmdcon->conname, RelationGetRelationName(rel)));
 
 	/* Refuse to modify inheritability of inherited constraints */
 	if (cmdcon->alterInheritability &&
@@ -12464,6 +12480,8 @@ ATExecAlterConstrEnforceability(List **wqueue, ATAlterConstraint *cmdcon,
 		fkconstraint->fk_matchtype = currcon->confmatchtype;
 		fkconstraint->fk_upd_action = currcon->confupdtype;
 		fkconstraint->fk_del_action = currcon->confdeltype;
+		fkconstraint->deferrable = currcon->condeferrable;
+		fkconstraint->initdeferred = currcon->condeferred;
 
 		/* Create referenced triggers */
 		if (currcon->conrelid == fkrelid)
@@ -12992,6 +13010,9 @@ QueueFKConstraintValidation(List **wqueue, Relation conrel, Relation fkrel,
 	AlteredTableInfo *tab;
 	HeapTuple	copyTuple;
 	Form_pg_constraint copy_con;
+
+	/* since this function recurses, it could be driven to stack overflow */
+	check_stack_depth();
 
 	con = (Form_pg_constraint) GETSTRUCT(contuple);
 	Assert(con->contype == CONSTRAINT_FOREIGN);
@@ -21659,7 +21680,10 @@ ATExecAttachPartitionIdx(List **wqueue, Relation parentIdx, RangeVar *name)
 
 	ObjectAddressSet(address, RelationRelationId, RelationGetRelid(partIdx));
 
-	/* Silently do nothing if already in the right state */
+	/*
+	 * Check if the index is already attached to the correct parent,
+	 * ultimately attempting one round of validation if already the case.
+	 */
 	currParent = partIdx->rd_rel->relispartition ?
 		get_partition_parent(partIdxId, false) : InvalidOid;
 	if (currParent != RelationGetRelid(parentIdx))
@@ -21766,6 +21790,14 @@ ATExecAttachPartitionIdx(List **wqueue, Relation parentIdx, RangeVar *name)
 
 		free_attrmap(attmap);
 
+		validatePartitionedIndex(parentIdx, parentTbl);
+	}
+	else if (!parentIdx->rd_index->indisvalid)
+	{
+		/*
+		 * The index is attached, but the parent is still invalid; see if it
+		 * can be validated now.
+		 */
 		validatePartitionedIndex(parentIdx, parentTbl);
 	}
 

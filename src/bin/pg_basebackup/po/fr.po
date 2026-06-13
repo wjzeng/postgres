@@ -10,8 +10,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PostgreSQL 17\n"
 "Report-Msgid-Bugs-To: pgsql-bugs@lists.postgresql.org\n"
-"POT-Creation-Date: 2025-11-08 09:19+0000\n"
-"PO-Revision-Date: 2025-11-08 11:46+0100\n"
+"POT-Creation-Date: 2026-05-08 18:50+0000\n"
+"PO-Revision-Date: 2026-05-08 21:48+0200\n"
 "Last-Translator: Guillaume Lelarge <guillaume@lelarge.info>\n"
 "Language-Team: French <guillaume@lelarge.info>\n"
 "Language: fr\n"
@@ -19,7 +19,7 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n > 1);\n"
-"X-Generator: Poedit 3.8\n"
+"X-Generator: Poedit 3.9\n"
 
 #: ../../../src/common/logging.c:279
 #, c-format
@@ -44,8 +44,8 @@ msgstr "astuce :  "
 #: ../../common/compression.c:132 ../../common/compression.c:141
 #: ../../common/compression.c:150 ../../fe_utils/astreamer_gzip.c:140
 #: ../../fe_utils/astreamer_gzip.c:273 ../../fe_utils/astreamer_lz4.c:102
-#: ../../fe_utils/astreamer_lz4.c:300 ../../fe_utils/astreamer_zstd.c:133
-#: ../../fe_utils/astreamer_zstd.c:288
+#: ../../fe_utils/astreamer_lz4.c:300 ../../fe_utils/astreamer_zstd.c:130
+#: ../../fe_utils/astreamer_zstd.c:285
 #, c-format
 msgid "this build does not support compression with %s"
 msgstr "cette construction ne supporte pas la compression avec %s"
@@ -111,7 +111,8 @@ msgid "could not read file \"%s\": read %d of %zu"
 msgstr "n'a pas pu lire le fichier « %s » : a lu %d sur %zu"
 
 #: ../../common/controldata_utils.c:132 ../../common/controldata_utils.c:280
-#: ../../fe_utils/astreamer_file.c:141 pg_recvlogical.c:653
+#: ../../fe_utils/astreamer_file.c:141 ../../fe_utils/astreamer_file.c:270
+#: pg_recvlogical.c:653
 #, c-format
 msgid "could not close file \"%s\": %m"
 msgstr "n'a pas pu fermer le fichier « %s » : %m"
@@ -228,7 +229,7 @@ msgstr "n'a pas pu ré-exécuter le jeton restreint : code d'erreur %lu"
 msgid "could not get exit code from subprocess: error code %lu"
 msgstr "n'a pas pu récupérer le code de statut du sous-processus : code d'erreur %lu"
 
-#: ../../fe_utils/astreamer_file.c:96 ../../fe_utils/astreamer_file.c:364
+#: ../../fe_utils/astreamer_file.c:96 ../../fe_utils/astreamer_file.c:366
 #: ../../fe_utils/recovery_gen.c:153 pg_basebackup.c:1498 pg_basebackup.c:1707
 #, c-format
 msgid "could not create file \"%s\": %m"
@@ -240,28 +241,28 @@ msgstr "n'a pas pu créer le fichier « %s » : %m"
 msgid "could not write to file \"%s\": %m"
 msgstr "n'a pas pu écrire dans le fichier « %s » : %m"
 
-#: ../../fe_utils/astreamer_file.c:278
+#: ../../fe_utils/astreamer_file.c:280
 #, c-format
 msgid "unexpected state while extracting archive"
 msgstr "état inattendu lors de l'extraction de l'archive"
 
-#: ../../fe_utils/astreamer_file.c:324 pg_basebackup.c:699 pg_basebackup.c:713
+#: ../../fe_utils/astreamer_file.c:326 pg_basebackup.c:699 pg_basebackup.c:713
 #: pg_basebackup.c:758
 #, c-format
 msgid "could not create directory \"%s\": %m"
 msgstr "n'a pas pu créer le répertoire « %s » : %m"
 
-#: ../../fe_utils/astreamer_file.c:329
+#: ../../fe_utils/astreamer_file.c:331
 #, c-format
 msgid "could not set permissions on directory \"%s\": %m"
 msgstr "n'a pas pu configurer les droits du répertoire « %s » : %m"
 
-#: ../../fe_utils/astreamer_file.c:348
+#: ../../fe_utils/astreamer_file.c:350
 #, c-format
 msgid "could not create symbolic link from \"%s\" to \"%s\": %m"
 msgstr "n'a pas pu créer le lien symbolique de « %s » vers « %s » : %m"
 
-#: ../../fe_utils/astreamer_file.c:368
+#: ../../fe_utils/astreamer_file.c:370
 #, c-format
 msgid "could not set permissions on file \"%s\": %m"
 msgstr "n'a pas pu initialiser les droits du fichier « %s » : %m"
@@ -302,7 +303,7 @@ msgid "could not initialize compression library"
 msgstr "n'a pas pu initialiser la bibliothèque de compression"
 
 #: ../../fe_utils/astreamer_gzip.c:320 ../../fe_utils/astreamer_lz4.c:356
-#: ../../fe_utils/astreamer_zstd.c:333
+#: ../../fe_utils/astreamer_zstd.c:330
 #, c-format
 msgid "could not decompress data: %s"
 msgstr "n'a pas pu décompresser les données : %s"
@@ -317,8 +318,8 @@ msgstr "n'a pas pu créer le contexte de compression lz4 : %s"
 msgid "could not write lz4 header: %s"
 msgstr "n'a pas pu écrire l'entête lz4 : %s"
 
-#: ../../fe_utils/astreamer_lz4.c:191 ../../fe_utils/astreamer_zstd.c:185
-#: ../../fe_utils/astreamer_zstd.c:227
+#: ../../fe_utils/astreamer_lz4.c:191 ../../fe_utils/astreamer_zstd.c:182
+#: ../../fe_utils/astreamer_zstd.c:224
 #, c-format
 msgid "could not compress data: %s"
 msgstr "n'a pas pu compresser les données : %s"
@@ -333,22 +334,27 @@ msgstr "n'a pas pu terminer la compression lz4 : %s"
 msgid "could not initialize compression library: %s"
 msgstr "n'a pas pu initialiser la bibliothèque de compression : %s"
 
-#: ../../fe_utils/astreamer_tar.c:244
-#, c-format
-msgid "tar file trailer exceeds 2 blocks"
-msgstr "la fin du fichier tar fait plus de 2 blocs"
-
-#: ../../fe_utils/astreamer_tar.c:249
+#: ../../fe_utils/astreamer_tar.c:254
 #, c-format
 msgid "unexpected state while parsing tar archive"
 msgstr "état inattendu lors de l'analyse de l'archive tar"
 
-#: ../../fe_utils/astreamer_tar.c:292
+#: ../../fe_utils/astreamer_tar.c:300
+#, c-format
+msgid "input file does not appear to be a valid tar archive"
+msgstr "le fichier en entrée ne semble pas être une archive tar valide"
+
+#: ../../fe_utils/astreamer_tar.c:307
 #, c-format
 msgid "tar member has empty name"
 msgstr "le membre de tar a un nom vide"
 
-#: ../../fe_utils/astreamer_tar.c:326
+#: ../../fe_utils/astreamer_tar.c:328
+#, c-format
+msgid "pax extensions to tar format are not supported"
+msgstr "les extensions pax au format tar ne sont pas supportés"
+
+#: ../../fe_utils/astreamer_tar.c:357
 #, c-format
 msgid "COPY stream ended before last file was finished"
 msgstr "le flux COPY s'est terminé avant que le dernier fichier soit terminé"
@@ -368,12 +374,12 @@ msgstr "n'a pas pu configurer le niveau de compression zstd à %d : %s"
 msgid "could not set compression worker count to %d: %s"
 msgstr "n'a pas pu configurer le nombre de workers de compression à %d : %s"
 
-#: ../../fe_utils/astreamer_zstd.c:120
+#: ../../fe_utils/astreamer_zstd.c:119
 #, c-format
 msgid "could not enable long-distance mode: %s"
 msgstr "n'a pas pu activer le mode distance longue : %s"
 
-#: ../../fe_utils/astreamer_zstd.c:279
+#: ../../fe_utils/astreamer_zstd.c:276
 #, c-format
 msgid "could not create zstd decompression context"
 msgstr "n'a pas pu créer le contexte de décompression zstd"
@@ -942,7 +948,7 @@ msgstr "n'a pas pu analyser l'archive « %s »"
 #: pg_basebackup.c:1133
 #, c-format
 msgid "Only tar archives can be parsed."
-msgstr "Seules les archives tar peuvent être analysées"
+msgstr "Seules les archives tar peuvent être analysées."
 
 #: pg_basebackup.c:1135
 #, c-format
@@ -1192,9 +1198,9 @@ msgstr "option wal-method « %s » invalide, doit être soit « fetch » soit «
 #: pg_basebackup.c:2713 pg_basebackup.c:2725 pg_basebackup.c:2737
 #: pg_basebackup.c:2745 pg_basebackup.c:2758 pg_basebackup.c:2764
 #: pg_basebackup.c:2773 pg_basebackup.c:2785 pg_basebackup.c:2796
-#: pg_basebackup.c:2804 pg_createsubscriber.c:2238 pg_createsubscriber.c:2260
-#: pg_createsubscriber.c:2270 pg_createsubscriber.c:2278
-#: pg_createsubscriber.c:2306 pg_createsubscriber.c:2349 pg_receivewal.c:748
+#: pg_basebackup.c:2804 pg_createsubscriber.c:2238 pg_createsubscriber.c:2261
+#: pg_createsubscriber.c:2271 pg_createsubscriber.c:2279
+#: pg_createsubscriber.c:2307 pg_createsubscriber.c:2350 pg_receivewal.c:748
 #: pg_receivewal.c:760 pg_receivewal.c:767 pg_receivewal.c:776
 #: pg_receivewal.c:783 pg_receivewal.c:793 pg_recvlogical.c:861
 #: pg_recvlogical.c:873 pg_recvlogical.c:883 pg_recvlogical.c:890
@@ -1205,7 +1211,7 @@ msgstr "option wal-method « %s » invalide, doit être soit « fetch » soit «
 msgid "Try \"%s --help\" for more information."
 msgstr "Essayez « %s --help » pour plus d'informations."
 
-#: pg_basebackup.c:2585 pg_createsubscriber.c:2268 pg_receivewal.c:758
+#: pg_basebackup.c:2585 pg_createsubscriber.c:2269 pg_receivewal.c:758
 #: pg_recvlogical.c:871
 #, c-format
 msgid "too many command-line arguments (first is \"%s\")"
@@ -1239,7 +1245,7 @@ msgstr "spécification de compression invalide : %s"
 #: pg_basebackup.c:2678
 #, c-format
 msgid "client-side compression is not possible when a backup target is specified"
-msgstr "la compression client n'est pas possible quand une cible de restauration est indiquée."
+msgstr "la compression client n'est pas possible quand une cible de restauration est indiquée"
 
 #: pg_basebackup.c:2689
 #, c-format
@@ -1249,7 +1255,7 @@ msgstr "seules les sauvegardes en mode tar peuvent être compressées"
 #: pg_basebackup.c:2699
 #, c-format
 msgid "WAL cannot be streamed when a backup target is specified"
-msgstr "Les journaux de transactions ne peuvent pas être envoyés en flux quand une cible de sauvegarde est indiquée."
+msgstr "les journaux de transactions ne peuvent pas être envoyés en flux quand une cible de sauvegarde est indiquée"
 
 #: pg_basebackup.c:2705
 #, c-format
@@ -1957,120 +1963,120 @@ msgstr "le type d'objet « %s » est spécifié plus d'une fois pour --clean"
 
 #: pg_createsubscriber.c:2259
 #, c-format
-msgid "options %s and -a/--all cannot be used together"
-msgstr "les options « %s » et « -a/--all » ne peuvent pas être utilisées ensemble"
+msgid "options %s and %s cannot be used together"
+msgstr "les options « %s » et « %s » ne peuvent pas être utilisées ensemble"
 
-#: pg_createsubscriber.c:2277
+#: pg_createsubscriber.c:2278
 #, c-format
 msgid "no subscriber data directory specified"
 msgstr "aucune chaîne de connexion de l'abonné indiquée"
 
-#: pg_createsubscriber.c:2288
+#: pg_createsubscriber.c:2289
 #, c-format
 msgid "could not determine current directory"
 msgstr "n'a pas pu déterminer le répertoire courant"
 
-#: pg_createsubscriber.c:2305
+#: pg_createsubscriber.c:2306
 #, c-format
 msgid "no publisher connection string specified"
 msgstr "aucune chaîne de connexion du publieur indiquée"
 
-#: pg_createsubscriber.c:2309
+#: pg_createsubscriber.c:2310
 #, c-format
 msgid "validating publisher connection string"
 msgstr "validation de la chaîne de connexion du publieur"
 
-#: pg_createsubscriber.c:2315
+#: pg_createsubscriber.c:2316
 #, c-format
 msgid "validating subscriber connection string"
 msgstr "validation de la chaîne de connexion de l'abonné"
 
-#: pg_createsubscriber.c:2332
+#: pg_createsubscriber.c:2333
 #, c-format
 msgid "no database was specified"
 msgstr "aucune base de données n'a été indiquée"
 
-#: pg_createsubscriber.c:2343
+#: pg_createsubscriber.c:2344
 #, c-format
 msgid "database name \"%s\" was extracted from the publisher connection string"
 msgstr "le nom de la base de données « %s » a été extrait de la chaîne de connexion du publieur"
 
-#: pg_createsubscriber.c:2348
+#: pg_createsubscriber.c:2349
 #, c-format
 msgid "no database name specified"
 msgstr "aucun nom de base de données indiqué"
 
-#: pg_createsubscriber.c:2358
+#: pg_createsubscriber.c:2359
 #, c-format
 msgid "wrong number of publication names specified"
 msgstr "mauvais nombre de noms de publication indiqués"
 
-#: pg_createsubscriber.c:2359
+#: pg_createsubscriber.c:2360
 #, c-format
 msgid "The number of specified publication names (%d) must match the number of specified database names (%d)."
 msgstr "Le nombre de noms de publication indiqués (%d) doit correspondre au nombre de noms de bases de données indiqués (%d)"
 
-#: pg_createsubscriber.c:2365
+#: pg_createsubscriber.c:2366
 #, c-format
 msgid "wrong number of subscription names specified"
 msgstr "mauvais nombre de noms de souscription indiqués"
 
-#: pg_createsubscriber.c:2366
+#: pg_createsubscriber.c:2367
 #, c-format
 msgid "The number of specified subscription names (%d) must match the number of specified database names (%d)."
 msgstr "Le nombre de noms de souscriptions indiqués (%d) doit correspondre au nombre de noms de bases de données indiqués (%d)"
 
-#: pg_createsubscriber.c:2372
+#: pg_createsubscriber.c:2373
 #, c-format
 msgid "wrong number of replication slot names specified"
 msgstr "mauvais nombre de noms de slots de réplication indiqués"
 
-#: pg_createsubscriber.c:2373
+#: pg_createsubscriber.c:2374
 #, c-format
 msgid "The number of specified replication slot names (%d) must match the number of specified database names (%d)."
 msgstr "Le nombre de noms de slots de réplication indiqués (%d) doit correspondre au nombre de noms de bases de données indiqués (%d)"
 
-#: pg_createsubscriber.c:2385
-#, c-format
-msgid "invalid object type \"%s\" specified for --clean"
-msgstr "type d'objet « %s » invalide indiqué pour --clean"
-
 #: pg_createsubscriber.c:2386
+#, c-format
+msgid "invalid object type \"%s\" specified for %s"
+msgstr "type d'objet « %s » invalide indiqué pour %s"
+
+#: pg_createsubscriber.c:2388
 #, c-format
 msgid "The valid value is: \"%s\""
 msgstr "La valeur valide est « %s »"
 
-#: pg_createsubscriber.c:2417
+#: pg_createsubscriber.c:2419
 #, c-format
 msgid "subscriber data directory is not a copy of the source database cluster"
 msgstr "le répertoire de données de l'abonné n'est pas une copie de l'instance source"
 
-#: pg_createsubscriber.c:2430
+#: pg_createsubscriber.c:2432
 #, c-format
 msgid "standby server is running"
 msgstr "le serveur secondaire est en cours d'exécution"
 
-#: pg_createsubscriber.c:2431
+#: pg_createsubscriber.c:2433
 #, c-format
 msgid "Stop the standby server and try again."
 msgstr "Arrêtez le secondaire et tentez de nouveau."
 
-#: pg_createsubscriber.c:2440
+#: pg_createsubscriber.c:2442
 #, c-format
 msgid "starting the standby server with command-line options"
 msgstr "lancement du serveur secondaire avec les options en ligne de commande"
 
-#: pg_createsubscriber.c:2456 pg_createsubscriber.c:2491
+#: pg_createsubscriber.c:2458 pg_createsubscriber.c:2493
 #, c-format
 msgid "stopping the subscriber"
 msgstr "arrêt de l'abonné"
 
-#: pg_createsubscriber.c:2470
+#: pg_createsubscriber.c:2472
 #, c-format
 msgid "starting the subscriber"
 msgstr "lancement de l'abonné"
 
-#: pg_createsubscriber.c:2499
+#: pg_createsubscriber.c:2501
 #, c-format
 msgid "Done!"
 msgstr "Terminé !"
@@ -2705,7 +2711,7 @@ msgstr "l'option d'accès du groupe n'a pas pu être analysé : %s"
 #: streamutil.c:430 streamutil.c:467
 #, c-format
 msgid "could not identify system: got %d rows and %d fields, expected %d rows and %d or more fields"
-msgstr "n'a pas pu identifier le système : a récupéré %d lignes et %d champs, attendait %d lignes et %d champs (ou plus)."
+msgstr "n'a pas pu identifier le système : a récupéré %d lignes et %d champs, attendait %d lignes et %d champs (ou plus)"
 
 #: streamutil.c:519
 #, c-format
@@ -2774,5 +2780,13 @@ msgstr "n'a pas pu fermer le flux de compression"
 #~ msgstr "n'a pas pu effacer search_path : %s"
 
 #, c-format
+#~ msgid "options %s and -a/--all cannot be used together"
+#~ msgstr "les options « %s » et « -a/--all » ne peuvent pas être utilisées ensemble"
+
+#, c-format
 #~ msgid "subscriber successfully changed the system identifier"
 #~ msgstr "l'abonné a modifié avec succès l'identifieur système"
+
+#, c-format
+#~ msgid "tar file trailer exceeds 2 blocks"
+#~ msgstr "la fin du fichier tar fait plus de 2 blocs"

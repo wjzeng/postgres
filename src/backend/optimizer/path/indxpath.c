@@ -31,6 +31,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
+#include "optimizer/placeholder.h"
 #include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
 #include "utils/lsyscache.h"
@@ -4250,16 +4251,19 @@ relation_has_unique_index_ext(PlannerInfo *root, RelOptInfo *rel,
 				 * The condition's equality operator must be a member of the
 				 * index opfamily, else it is not asserting the right kind of
 				 * equality behavior for this index.  We check this first
-				 * since it's probably cheaper than match_index_to_operand().
+				 * since it's probably the cheapest test.
 				 */
 				if (!list_member_oid(rinfo->mergeopfamilies, ind->opfamily[c]))
 					continue;
 
 				/*
-				 * XXX at some point we may need to check collations here too.
-				 * For the moment we assume all collations reduce to the same
-				 * notion of equality.
+				 * The index's collation must agree with the clause's input
+				 * collation on equality, else the index's uniqueness does not
+				 * imply uniqueness under the clause's equality semantics.
 				 */
+				if (!collations_agree_on_equality(ind->indexcollations[c],
+												  exprInputCollation((Node *) rinfo->clause)))
+					continue;
 
 				/* OK, see if the condition operand matches the index key */
 				if (rinfo->outer_is_left)
@@ -4315,10 +4319,13 @@ relation_has_unique_index_ext(PlannerInfo *root, RelOptInfo *rel,
 					continue;
 
 				/*
-				 * XXX at some point we may need to check collations here too.
-				 * For the moment we assume all collations reduce to the same
-				 * notion of equality.
+				 * The index's collation must agree with the operand's
+				 * collation on equality, else the index's uniqueness does not
+				 * imply uniqueness under the operator's equality semantics.
 				 */
+				if (!collations_agree_on_equality(ind->indexcollations[c],
+												  exprCollation(expr)))
+					continue;
 
 				matched = true; /* column is unique */
 				break;
@@ -4415,12 +4422,23 @@ match_index_to_operand(Node *operand,
 	int			indkey;
 
 	/*
-	 * Ignore any RelabelType node above the operand.   This is needed to be
-	 * able to apply indexscanning in binary-compatible-operator cases. Note:
-	 * we can assume there is at most one RelabelType node;
-	 * eval_const_expressions() will have simplified if more than one.
+	 * Ignore any PlaceHolderVar node contained in the operand.  This is
+	 * needed to be able to apply indexscanning in cases where the operand (or
+	 * a subtree) has been wrapped in PlaceHolderVars to enforce separate
+	 * identity or as a result of outer joins.
 	 */
-	if (operand && IsA(operand, RelabelType))
+	operand = strip_noop_phvs(operand);
+
+	/*
+	 * Ignore any RelabelType node above the operand.  This is needed to be
+	 * able to apply indexscanning in binary-compatible-operator cases.
+	 *
+	 * Note: we must handle nested RelabelType nodes here.  While
+	 * eval_const_expressions() will have simplified them to at most one
+	 * layer, our prior stripping of PlaceHolderVars may have brought separate
+	 * RelabelTypes into adjacency.
+	 */
+	while (operand && IsA(operand, RelabelType))
 		operand = (Node *) ((RelabelType *) operand)->arg;
 
 	indkey = index->indexkeys[indexcol];
@@ -4471,6 +4489,19 @@ match_index_to_operand(Node *operand,
 	}
 
 	return false;
+}
+
+/*
+ * strip_phvs_in_index_operand
+ *
+ * Retained as a backward-compatibility wrapper around strip_noop_phvs() to
+ * avoid breaking third-party extensions that may reference this function.  New
+ * code should call strip_noop_phvs() directly.
+ */
+Node *
+strip_phvs_in_index_operand(Node *operand)
+{
+	return strip_noop_phvs(operand);
 }
 
 /*

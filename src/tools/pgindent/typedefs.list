@@ -648,6 +648,7 @@ DiscardMode
 DiscardStmt
 DispatchOption
 DistanceValue
+DistinctColInfo
 DistinctExpr
 DoState
 DoStmt
@@ -787,6 +788,7 @@ ExtensibleNodeEntry
 ExtensibleNodeMethods
 ExtensionControlFile
 ExtensionInfo
+ExtensionSiblingCache
 ExtensionVersionInfo
 FDWCollateState
 FD_SET
@@ -1101,6 +1103,7 @@ GrantRoleStmt
 GrantStmt
 GrantTargetType
 Group
+GroupByColInfo
 GroupByOrdering
 GroupClause
 GroupPath
@@ -3665,6 +3668,7 @@ gistxlogPageReuse
 gistxlogPageSplit
 gistxlogPageUpdate
 grouping_sets_data
+growable_trgm_array
 gseg_picksplit_item
 gss_OID_set
 gss_buffer_desc
@@ -3676,6 +3680,7 @@ gss_key_value_set_desc
 gss_name_t
 gtrgm_consistent_cache
 gzFile
+having_collation_ctx
 hbaPort
 heap_page_items_state
 help_handler

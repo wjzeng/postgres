@@ -982,7 +982,7 @@ get_iso_localename(const char *winlocname)
 	wchar_t		wc_locale_name[LOCALE_NAME_MAX_LENGTH];
 	wchar_t		buffer[LOCALE_NAME_MAX_LENGTH];
 	static char iso_lc_messages[LOCALE_NAME_MAX_LENGTH];
-	char	   *period;
+	const char *period;
 	int			len;
 	int			ret_val;
 
@@ -1199,7 +1199,13 @@ pg_newlocale_from_collation(Oid collid)
 	bool		found;
 
 	if (collid == DEFAULT_COLLATION_OID)
+	{
+		/* should not happen: init_database_collation() not yet run */
+		if (default_locale == NULL)
+			elog(ERROR, "default locale not initialized");
+
 		return default_locale;
+	}
 
 	/*
 	 * Some callers expect C_COLLATION_OID to succeed even without catalog
