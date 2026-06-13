@@ -669,7 +669,6 @@ static XLogRecPtr CreateOverwriteContrecordRecord(XLogRecPtr aborted_lsn,
 static void CheckPointGuts(XLogRecPtr checkPointRedo, int flags);
 static void KeepLogSeg(XLogRecPtr recptr, XLogRecPtr slotsMinLSN,
 					   XLogSegNo *logSegNo);
-static XLogRecPtr XLogGetReplicationSlotMinimumLSN(void);
 
 static void AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli,
 								  bool opportunistic);
@@ -2216,25 +2215,6 @@ check_wal_segment_size(int *newval, void **extra, GucSource source)
 }
 
 /*
- * GUC check_hook for max_slot_wal_keep_size
- *
- * We don't allow the value of max_slot_wal_keep_size other than -1 during the
- * binary upgrade. See start_postmaster() in pg_upgrade for more details.
- */
-bool
-check_max_slot_wal_keep_size(int *newval, void **extra, GucSource source)
-{
-	if (IsBinaryUpgrade && *newval != -1)
-	{
-		GUC_check_errdetail("\"%s\" must be set to -1 during binary upgrade mode.",
-							"max_slot_wal_keep_size");
-		return false;
-	}
-
-	return true;
-}
-
-/*
  * At a checkpoint, how many WAL segments to recycle as preallocated future
  * XLOG segments? Returns the highest segment that should be preallocated.
  */
@@ -2693,7 +2673,7 @@ XLogSetReplicationSlotMinimumLSN(XLogRecPtr lsn)
  * Return the oldest LSN we must retain to satisfy the needs of some
  * replication slot.
  */
-static XLogRecPtr
+XLogRecPtr
 XLogGetReplicationSlotMinimumLSN(void)
 {
 	XLogRecPtr	retval;
@@ -7127,8 +7107,18 @@ CreateCheckPoint(int flags)
 	 * according to synchronized LSNs of replication slots.  The slot's LSN
 	 * might be advanced concurrently, so we call this before
 	 * CheckPointReplicationSlots() synchronizes replication slots.
+	 *
+	 * We acquire the Allocation lock to serialize the minimum LSN calculation
+	 * with concurrent slot WAL reservation. This ensures that the WAL
+	 * position being reserved is either included in the miminum LSN or is
+	 * beyond or equal to the redo pointer of the current checkpoint (See
+	 * ReplicationSlotReserveWal for details), thus preventing its removal by
+	 * checkpoints. Note that this lock is required only during checkpoints
+	 * where WAL removal is dictated by the slot's minimum LSN.
 	 */
+	LWLockAcquire(ReplicationSlotAllocationLock, LW_SHARED);
 	slotsMinReqLSN = XLogGetReplicationSlotMinimumLSN();
+	LWLockRelease(ReplicationSlotAllocationLock);
 
 	/*
 	 * In some cases there are groups of actions that must all occur on one
@@ -7313,9 +7303,7 @@ CreateCheckPoint(int flags)
 	if (PriorRedoPtr != InvalidXLogRecPtr)
 		UpdateCheckPointDistanceEstimate(RedoRecPtr - PriorRedoPtr);
 
-#ifdef USE_INJECTION_POINTS
 	INJECTION_POINT("checkpoint-before-old-wal-removal");
-#endif
 
 	/*
 	 * Delete old log files, those no longer needed for last checkpoint to
@@ -7330,7 +7318,10 @@ CreateCheckPoint(int flags)
 		/*
 		 * Recalculate the current minimum LSN to be used in the WAL segment
 		 * cleanup.  Then, we must synchronize the replication slots again in
-		 * order to make this LSN safe to use.
+		 * order to make this LSN safe to use.  Here, we don't need to acquire
+		 * the ReplicationSlotAllocationLock to serialize the minimum LSN
+		 * computation with slot reservation as the RedoRecPtr is not updated
+		 * after the previous computation of minimum LSN.
 		 */
 		slotsMinReqLSN = XLogGetReplicationSlotMinimumLSN();
 		CheckPointReplicationSlots(shutdown);
@@ -7702,8 +7693,16 @@ CreateRestartPoint(int flags)
 	 * according to synchronized LSNs of replication slots.  The slot's LSN
 	 * might be advanced concurrently, so we call this before
 	 * CheckPointReplicationSlots() synchronizes replication slots.
+	 *
+	 * We acquire the Allocation lock to serialize the minimum LSN calculation
+	 * with concurrent slot WAL reservation. This ensures that the WAL
+	 * position being reserved is either included in the miminum LSN or is
+	 * beyond or equal to the redo pointer of the current checkpoint (See
+	 * ReplicationSlotReserveWal for details).
 	 */
+	LWLockAcquire(ReplicationSlotAllocationLock, LW_SHARED);
 	slotsMinReqLSN = XLogGetReplicationSlotMinimumLSN();
+	LWLockRelease(ReplicationSlotAllocationLock);
 
 	if (log_checkpoints)
 		LogCheckpointStart(flags, true);
@@ -7794,6 +7793,9 @@ CreateRestartPoint(int flags)
 	replayPtr = GetXLogReplayRecPtr(&replayTLI);
 	endptr = (receivePtr < replayPtr) ? replayPtr : receivePtr;
 	KeepLogSeg(endptr, slotsMinReqLSN, &_logSegNo);
+
+	INJECTION_POINT("restartpoint-before-slot-invalidation");
+
 	if (InvalidateObsoleteReplicationSlots(RS_INVAL_WAL_REMOVED,
 										   _logSegNo, InvalidOid,
 										   InvalidTransactionId))
@@ -7801,7 +7803,10 @@ CreateRestartPoint(int flags)
 		/*
 		 * Recalculate the current minimum LSN to be used in the WAL segment
 		 * cleanup.  Then, we must synchronize the replication slots again in
-		 * order to make this LSN safe to use.
+		 * order to make this LSN safe to use.  Here, we don't need to acquire
+		 * the ReplicationSlotAllocationLock to serialize the minimum LSN
+		 * computation with slot reservation as the RedoRecPtr is not updated
+		 * after the previous computation of minimum LSN.
 		 */
 		slotsMinReqLSN = XLogGetReplicationSlotMinimumLSN();
 		CheckPointReplicationSlots(flags & CHECKPOINT_IS_SHUTDOWN);
@@ -7992,17 +7997,19 @@ KeepLogSeg(XLogRecPtr recptr, XLogRecPtr slotsMinReqLSN, XLogSegNo *logSegNo)
 	XLByteToSeg(recptr, currSegNo, wal_segment_size);
 	segno = currSegNo;
 
-	/*
-	 * Calculate how many segments are kept by slots first, adjusting for
-	 * max_slot_wal_keep_size.
-	 */
+	/* Calculate how many segments are kept by slots. */
 	keep = slotsMinReqLSN;
 	if (keep != InvalidXLogRecPtr && keep < recptr)
 	{
 		XLByteToSeg(keep, segno, wal_segment_size);
 
-		/* Cap by max_slot_wal_keep_size ... */
-		if (max_slot_wal_keep_size_mb >= 0)
+		/*
+		 * Account for max_slot_wal_keep_size to avoid keeping more than
+		 * configured.  However, don't do that during a binary upgrade: if
+		 * slots were to be invalidated because of this, it would not be
+		 * possible to preserve logical ones during the upgrade.
+		 */
+		if (max_slot_wal_keep_size_mb >= 0 && !IsBinaryUpgrade)
 		{
 			uint64		slot_keep_segs;
 
@@ -8391,6 +8398,14 @@ xlog_redo(XLogReaderState *record)
 							checkPoint.ThisTimeLineID, replayTLI)));
 
 		RecoveryRestartPoint(&checkPoint, record);
+
+		/*
+		 * After replaying a checkpoint record, free all smgr objects.
+		 * Otherwise we would never do so for dropped relations, as the
+		 * startup does not process shared invalidation messages or call
+		 * AtEOXact_SMgr().
+		 */
+		smgrdestroyall();
 	}
 	else if (info == XLOG_CHECKPOINT_ONLINE)
 	{
@@ -8449,6 +8464,14 @@ xlog_redo(XLogReaderState *record)
 							checkPoint.ThisTimeLineID, replayTLI)));
 
 		RecoveryRestartPoint(&checkPoint, record);
+
+		/*
+		 * After replaying a checkpoint record, free all smgr objects.
+		 * Otherwise we would never do so for dropped relations, as the
+		 * startup does not process shared invalidation messages or call
+		 * AtEOXact_SMgr().
+		 */
+		smgrdestroyall();
 	}
 	else if (info == XLOG_OVERWRITE_CONTRECORD)
 	{
@@ -9478,6 +9501,22 @@ GetXLogInsertRecPtr(void)
 }
 
 /*
+ * Get latest WAL record end pointer
+ */
+XLogRecPtr
+GetXLogInsertEndRecPtr(void)
+{
+	XLogCtlInsert *Insert = &XLogCtl->Insert;
+	uint64		current_bytepos;
+
+	SpinLockAcquire(&Insert->insertpos_lck);
+	current_bytepos = Insert->CurrBytePos;
+	SpinLockRelease(&Insert->insertpos_lck);
+
+	return XLogBytePosToEndRecPtr(current_bytepos);
+}
+
+/*
  * Get latest WAL write pointer
  */
 XLogRecPtr
@@ -9506,10 +9545,7 @@ void
 XLogShutdownWalRcv(void)
 {
 	ShutdownWalRcv();
-
-	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
-	XLogCtl->InstallXLogFileSegmentActive = false;
-	LWLockRelease(ControlFileLock);
+	ResetInstallXLogFileSegmentActive();
 }
 
 /* Enable WAL file recycling and preallocation. */
@@ -9518,6 +9554,15 @@ SetInstallXLogFileSegmentActive(void)
 {
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 	XLogCtl->InstallXLogFileSegmentActive = true;
+	LWLockRelease(ControlFileLock);
+}
+
+/* Disable WAL file recycling and preallocation. */
+void
+ResetInstallXLogFileSegmentActive(void)
+{
+	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
+	XLogCtl->InstallXLogFileSegmentActive = false;
 	LWLockRelease(ControlFileLock);
 }
 

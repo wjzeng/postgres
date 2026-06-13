@@ -58,6 +58,7 @@
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "partitioning/partdesc.h"
+#include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
@@ -811,6 +812,38 @@ subquery_planner(PlannerGlobal *glob, Query *parse, PlannerInfo *parent_root,
 		if (!rte->inh)
 			root->leaf_result_relids =
 				bms_make_singleton(parse->resultRelation);
+	}
+
+	/*
+	 * This would be a convenient time to check access permissions for all
+	 * relations mentioned in the query, since it would be better to fail now,
+	 * before doing any detailed planning.  However, for historical reasons,
+	 * we leave this to be done at executor startup.
+	 *
+	 * Note, however, that we do need to check access permissions for any view
+	 * relations mentioned in the query, in order to prevent information being
+	 * leaked by selectivity estimation functions, which only check view owner
+	 * permissions on underlying tables (see all_rows_selectable() and its
+	 * callers).  This is a little ugly, because it means that access
+	 * permissions for views will be checked twice, which is another reason
+	 * why it would be better to do all the ACL checks here.
+	 */
+	foreach(l, parse->rtable)
+	{
+		RangeTblEntry *rte = lfirst_node(RangeTblEntry, l);
+
+		if (rte->perminfoindex != 0 &&
+			rte->relkind == RELKIND_VIEW)
+		{
+			RTEPermissionInfo *perminfo;
+			bool		result;
+
+			perminfo = getRTEPermissionInfo(parse->rteperminfos, rte);
+			result = ExecCheckOneRelPerms(perminfo);
+			if (!result)
+				aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_VIEW,
+							   get_rel_name(perminfo->relid));
+		}
 	}
 
 	/*
@@ -5879,6 +5912,41 @@ optimize_window_clauses(PlannerInfo *root, WindowFuncLists *wflists)
 				}
 			}
 		}
+	}
+
+	/*
+	 * XXX remove any duplicate WindowFuncs from each WindowClause.  This has
+	 * been done only in the back branches.  Previously, the deduplication was
+	 * done in find_window_functions(), but that caused issues with the code
+	 * above when moving a WindowFunc to another WindowClause as any duplicate
+	 * WindowFuncs won't receive the adjusted winref when merging
+	 * WindowClauses.  The deduplication below has been done only so that we
+	 * maintain the same cost calculations.  As it turns out, the previous
+	 * deduplication code thought it was saving effort during execution by
+	 * getting rid of duplicates, but that was not true as the expression
+	 * evaluation code will evaluate each WindowFunc mentioned in the
+	 * targetlist.
+	 */
+	foreach(lc, windowClause)
+	{
+		WindowClause *wc = lfirst_node(WindowClause, lc);
+		ListCell   *lc2;
+		List	   *list = wflists->windowFuncs[wc->winref];
+		List	   *newlist = NIL;
+
+		if (list == NIL)
+			continue;
+
+		foreach(lc2, list)
+		{
+			if (!list_member(newlist, lfirst(lc2)))
+				newlist = lappend(newlist, lfirst(lc2));
+			else
+				wflists->numWindowFuncs--;
+		}
+		list_free(list);
+
+		wflists->windowFuncs[wc->winref] = newlist;
 	}
 }
 

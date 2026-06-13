@@ -8,7 +8,7 @@
 
 project('postgresql',
   ['c'],
-  version: '17.5',
+  version: '17.10',
   license: 'PostgreSQL',
 
   # We want < 0.56 for python 3.5 compatibility on old platforms. EPEL for
@@ -438,6 +438,14 @@ if get_option('segsize_blocks') != 0
   segsize = get_option('segsize_blocks')
 else
   segsize = (get_option('segsize') * 1024 * 1024 * 1024) / blocksize
+endif
+
+# If we don't have largefile support, can't handle segment size >= 2GB.
+if cc.sizeof('off_t', args: test_c_args) < 8
+  segsize_bytes = segsize * blocksize
+  if segsize_bytes >= (2 * 1024 * 1024 * 1024)
+    error('Large file support is not enabled. Segment size cannot be larger than 1GB.')
+  endif
 endif
 
 cdata.set('BLCKSZ', blocksize, description:
@@ -1458,7 +1466,10 @@ if uuidopt != 'none'
   elif uuidopt == 'ossp'
     # In upstream, the package and library is called just 'uuid', but many
     # distros change it to 'ossp-uuid'.
-    uuid = dependency('ossp-uuid', 'uuid', required: false)
+    uuid = dependency('ossp-uuid', required: false)
+    if not uuid.found()
+      uuid = dependency('uuid', required: false)
+    endif
     uuidfunc = 'uuid_export'
     uuidheader = 'uuid.h'
 
@@ -1795,6 +1806,8 @@ if cc.sizeof('bool', prefix: '#include <stdbool.h>', args: test_c_args) == 1
 endif
 
 
+# Select the format archetype to be used to check printf-type functions.
+#
 # Need to check a call with %m because netbsd supports gnu_printf but emits a
 # warning for each use of %m.
 printf_attributes = ['gnu_printf', '__syslog__', 'printf']
@@ -1809,10 +1822,23 @@ attrib_error_args = cc.get_supported_arguments('-Werror=format', '-Werror=ignore
 foreach a : printf_attributes
   if cc.compiles(testsrc.format(a),
       args: test_c_args + attrib_error_args, name: 'format ' + a)
-    cdata.set('PG_PRINTF_ATTRIBUTE', a)
+    cdata.set('PG_C_PRINTF_ATTRIBUTE', a)
     break
   endif
 endforeach
+
+# We need to repeat the test for C++ because gcc and clang prefer different
+# format archetypes.
+if llvm.found()
+  attrib_error_args = cpp.get_supported_arguments('-Werror=format', '-Werror=ignored-attributes')
+  foreach a : printf_attributes
+    if cpp.compiles(testsrc.format(a),
+        args: attrib_error_args, name: 'cppformat ' + a)
+      cdata.set('PG_CXX_PRINTF_ATTRIBUTE', a)
+      break
+    endif
+  endforeach
+endif
 
 
 if cc.has_function_attribute('visibility:default') and \
@@ -1888,10 +1914,7 @@ if cc.links('''
   cdata.set('HAVE__BUILTIN_OP_OVERFLOW', 1)
 endif
 
-
-# XXX: The configure.ac check for __cpuid() is broken, we don't copy that
-# here. To prevent problems due to two detection methods working, stop
-# checking after one.
+# Check for __get_cpuid() and __cpuid().
 if cc.links('''
     #include <cpuid.h>
     int main(int arg, char **argv)
@@ -2461,6 +2484,7 @@ decl_checks = [
   ['strlcat', 'string.h'],
   ['strlcpy', 'string.h'],
   ['strnlen', 'string.h'],
+  ['timingsafe_bcmp',  'string.h'],
 ]
 
 # Need to check for function declarations for these functions, because
@@ -2689,7 +2713,7 @@ gnugetopt_dep = cc.find_library('gnugetopt', required: false)
 #   (i.e., allow '-' as a flag character), so use our version on those platforms
 # - We want to use system's getopt_long() only if the system provides struct
 #   option
-always_replace_getopt = host_system in ['windows', 'cygwin', 'openbsd', 'solaris']
+always_replace_getopt = host_system in ['windows', 'cygwin', 'openbsd', 'sunos']
 always_replace_getopt_long = host_system in ['windows', 'cygwin'] or not cdata.has('HAVE_STRUCT_OPTION')
 
 # Required on BSDs
@@ -2749,6 +2773,7 @@ func_checks = [
   ['strsignal'],
   ['sync_file_range'],
   ['syncfs'],
+  ['timingsafe_bcmp'],
   ['uselocale'],
   ['wcstombs_l'],
 ]

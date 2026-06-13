@@ -207,6 +207,14 @@ SELECT xslt_process('<employee><name>cim</name><age>30</age><pay>400</pay></empl
  
 (1 row)
 
+-- xpath_nodeset() with namespace node
+SELECT xpath_nodeset('<root xmlns:foo="http://icl.com/saxon"/>',
+                     '//namespace::foo');
+    xpath_nodeset     
+----------------------
+ http://icl.com/saxon
+(1 row)
+
 -- possible security exploit
 SELECT xslt_process('<xml><foo>Hello from XML</foo></xml>',
 $$<xsl:stylesheet version="1.0"
@@ -222,3 +230,13 @@ $$<xsl:stylesheet version="1.0"
   </xsl:template>
 </xsl:stylesheet>$$);
 ERROR:  failed to apply stylesheet
+-- empty output
+select xslt_process('<aaa/>',
+$$<xsl:stylesheet version="1.0"
+      xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+</xsl:stylesheet>$$);
+ xslt_process 
+--------------
+ 
+(1 row)
+

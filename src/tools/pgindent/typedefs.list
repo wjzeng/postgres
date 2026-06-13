@@ -617,6 +617,7 @@ DisableTimeoutParams
 DiscardMode
 DiscardStmt
 DistanceValue
+DistinctColInfo
 DistinctExpr
 DoState
 DoStmt
@@ -752,6 +753,7 @@ ExtensibleNodeEntry
 ExtensibleNodeMethods
 ExtensionControlFile
 ExtensionInfo
+ExtensionSiblingCache
 ExtensionVersionInfo
 FDWCollateState
 FD_SET
@@ -1254,6 +1256,7 @@ Interval
 IntervalAggState
 IntoClause
 InvalMessageArray
+InvalidationInfo
 InvalidationMsgsGroup
 IpcMemoryId
 IpcMemoryKey

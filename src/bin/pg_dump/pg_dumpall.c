@@ -121,6 +121,8 @@ static char *filename = NULL;
 static SimpleStringList database_exclude_patterns = {NULL, NULL};
 static SimpleStringList database_exclude_names = {NULL, NULL};
 
+static char *restrict_key;
+
 #define exit_nicely(code) exit(code)
 
 int
@@ -178,6 +180,7 @@ main(int argc, char *argv[])
 		{"on-conflict-do-nothing", no_argument, &on_conflict_do_nothing, 1},
 		{"rows-per-insert", required_argument, NULL, 7},
 		{"filter", required_argument, NULL, 8},
+		{"restrict-key", required_argument, NULL, 9},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -365,6 +368,12 @@ main(int argc, char *argv[])
 				read_dumpall_filters(optarg, &database_exclude_patterns);
 				break;
 
+			case 9:
+				restrict_key = pg_strdup(optarg);
+				appendPQExpBufferStr(pgdumpopts, " --restrict-key ");
+				appendShellString(pgdumpopts, optarg);
+				break;
+
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -461,6 +470,16 @@ main(int argc, char *argv[])
 		appendPQExpBufferStr(pgdumpopts, " --on-conflict-do-nothing");
 
 	/*
+	 * If you don't provide a restrict key, one will be appointed for you.
+	 */
+	if (!restrict_key)
+		restrict_key = generate_restrict_key();
+	if (!restrict_key)
+		pg_fatal("could not generate restrict key");
+	if (!valid_restrict_key(restrict_key))
+		pg_fatal("invalid restrict key");
+
+	/*
 	 * If there was a database specified on the command line, use that,
 	 * otherwise try to connect to database "postgres", and failing that
 	 * "template1".
@@ -548,6 +567,16 @@ main(int argc, char *argv[])
 		dumpTimestamp("Started on");
 
 	/*
+	 * Enter restricted mode to block any unexpected psql meta-commands.  A
+	 * malicious source might try to inject a variety of things via bogus
+	 * responses to queries.  While we cannot prevent such sources from
+	 * affecting the destination at restore time, we can block psql
+	 * meta-commands so that the client machine that runs psql with the dump
+	 * output remains unaffected.
+	 */
+	fprintf(OPF, "\\restrict %s\n\n", restrict_key);
+
+	/*
 	 * We used to emit \connect postgres here, but that served no purpose
 	 * other than to break things for installations without a postgres
 	 * database.  Everything we're restoring here is a global, so whichever
@@ -606,6 +635,12 @@ main(int argc, char *argv[])
 		if (!roles_only && !no_tablespaces)
 			dumpTablespaces(conn);
 	}
+
+	/*
+	 * Exit restricted mode just before dumping the databases.  pg_dump will
+	 * handle entering restricted mode again as appropriate.
+	 */
+	fprintf(OPF, "\\unrestrict %s\n\n", restrict_key);
 
 	if (!globals_only && !roles_only && !tablespaces_only)
 		dumpDatabases(conn);
@@ -675,6 +710,7 @@ help(void)
 	printf(_("  --no-unlogged-table-data     do not dump unlogged table data\n"));
 	printf(_("  --on-conflict-do-nothing     add ON CONFLICT DO NOTHING to INSERT commands\n"));
 	printf(_("  --quote-all-identifiers      quote all identifiers, even if not key words\n"));
+	printf(_("  --restrict-key=RESTRICT_KEY  use provided string as psql \\restrict key\n"));
 	printf(_("  --rows-per-insert=NROWS      number of rows per INSERT; implies --inserts\n"));
 	printf(_("  --use-set-session-authorization\n"
 			 "                               use SET SESSION AUTHORIZATION commands instead of\n"
@@ -987,7 +1023,7 @@ dumpRoleMembership(PGconn *conn)
 	 * that no longer exist.  If we find such cases, print a warning and skip
 	 * the entry.
 	 */
-	dump_grantors = (PQserverVersion(conn) >= 160000);
+	dump_grantors = (server_version >= 160000);
 
 	/*
 	 * Previous versions of PostgreSQL also did not have grant-level options.
@@ -1052,7 +1088,7 @@ dumpRoleMembership(PGconn *conn)
 		if (PQgetisnull(res, start, i_role))
 		{
 			/* translator: %s represents a numeric role OID */
-			pg_log_warning("found orphaned pg_auth_members entry for role %s",
+			pg_log_warning("ignoring role grant for missing role with OID %s",
 						   PQgetvalue(res, start, i_roleid));
 			break;
 		}
@@ -1069,6 +1105,11 @@ dumpRoleMembership(PGconn *conn)
 
 		remaining = end - start;
 		done = pg_malloc0(remaining * sizeof(bool));
+
+		/*
+		 * We use a hashtable to track the member names that have been granted
+		 * admin option.  Usually a hashtable is overkill, but sometimes not.
+		 */
 		ht = rolename_create(remaining, NULL);
 
 		/*
@@ -1096,50 +1137,56 @@ dumpRoleMembership(PGconn *conn)
 			for (i = start; i < end; ++i)
 			{
 				char	   *member;
-				char	   *admin_option;
 				char	   *grantorid;
-				char	   *grantor;
+				char	   *grantor = NULL;
+				bool		dump_this_grantor = dump_grantors;
 				char	   *set_option = "true";
+				char	   *admin_option;
 				bool		found;
 
 				/* If we already did this grant, don't do it again. */
 				if (done[i - start])
 					continue;
 
-				/* Complain about, then ignore, entries with orphaned OIDs. */
+				/* Complain about, then ignore, entries for unknown members. */
 				if (PQgetisnull(res, i, i_member))
 				{
 					/* translator: %s represents a numeric role OID */
-					pg_log_warning("found orphaned pg_auth_members entry for role %s",
+					pg_log_warning("ignoring role grant to missing role with OID %s",
 								   PQgetvalue(res, i, i_memberid));
 					done[i - start] = true;
 					--remaining;
 					continue;
 				}
-				if (PQgetisnull(res, i, i_grantor))
+				member = PQgetvalue(res, i, i_member);
+
+				/* If the grantor is unknown, complain and dump without it. */
+				grantorid = PQgetvalue(res, i, i_grantorid);
+				if (dump_this_grantor)
 				{
-					/* translator: %s represents a numeric role OID */
-					pg_log_warning("found orphaned pg_auth_members entry for role %s",
-								   PQgetvalue(res, i, i_grantorid));
-					done[i - start] = true;
-					--remaining;
-					continue;
+					if (PQgetisnull(res, i, i_grantor))
+					{
+						/* translator: %s represents a numeric role OID */
+						pg_log_warning("grant of role \"%s\" to \"%s\" has invalid grantor OID %s",
+									   role, member, grantorid);
+						pg_log_warning_detail("This grant will be dumped without GRANTED BY.");
+						dump_this_grantor = false;
+					}
+					else
+						grantor = PQgetvalue(res, i, i_grantor);
 				}
 
-				member = PQgetvalue(res, i, i_member);
-				grantor = PQgetvalue(res, i, i_grantor);
-				grantorid = PQgetvalue(res, i, i_grantorid);
 				admin_option = PQgetvalue(res, i, i_admin_option);
 				if (dump_grant_options)
 					set_option = PQgetvalue(res, i, i_set_option);
 
 				/*
-				 * If we're not dumping grantors or if the grantor is the
+				 * If we're not dumping the grantor or if the grantor is the
 				 * bootstrap superuser, it's fine to dump this now. Otherwise,
 				 * it's got to be someone who has already been granted ADMIN
 				 * OPTION.
 				 */
-				if (dump_grantors &&
+				if (dump_this_grantor &&
 					atooid(grantorid) != BOOTSTRAP_SUPERUSERID &&
 					rolename_lookup(ht, grantor) == NULL)
 					continue;
@@ -1180,7 +1227,7 @@ dumpRoleMembership(PGconn *conn)
 				}
 				if (optbuf->data[0] != '\0')
 					fprintf(OPF, " WITH %s", optbuf->data);
-				if (dump_grantors)
+				if (dump_this_grantor)
 					fprintf(OPF, " GRANTED BY %s", fmtId(grantor));
 				fprintf(OPF, ";\n");
 			}
@@ -1462,7 +1509,13 @@ dumpUserConfig(PGconn *conn, const char *username)
 	res = executeQuery(conn, buf->data);
 
 	if (PQntuples(res) > 0)
-		fprintf(OPF, "\n--\n-- User Config \"%s\"\n--\n\n", username);
+	{
+		char	   *sanitized;
+
+		sanitized = sanitize_line(username, true);
+		fprintf(OPF, "\n--\n-- User Config \"%s\"\n--\n\n", sanitized);
+		free(sanitized);
+	}
 
 	for (int i = 0; i < PQntuples(res); i++)
 	{
@@ -1564,6 +1617,7 @@ dumpDatabases(PGconn *conn)
 	for (i = 0; i < PQntuples(res); i++)
 	{
 		char	   *dbname = PQgetvalue(res, i, 0);
+		char	   *sanitized;
 		const char *create_opts;
 		int			ret;
 
@@ -1580,7 +1634,9 @@ dumpDatabases(PGconn *conn)
 
 		pg_log_info("dumping database \"%s\"", dbname);
 
-		fprintf(OPF, "--\n-- Database \"%s\" dump\n--\n\n", dbname);
+		sanitized = sanitize_line(dbname, true);
+		fprintf(OPF, "--\n-- Database \"%s\" dump\n--\n\n", sanitized);
+		free(sanitized);
 
 		/*
 		 * We assume that "template1" and "postgres" already exist in the
