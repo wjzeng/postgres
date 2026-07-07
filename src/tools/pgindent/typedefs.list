@@ -386,6 +386,7 @@ CFuncHashTabEntry
 CHAR
 CHECKPOINT
 CHKVAL
+CIEN_context
 CIRCLE
 CMPDAffix
 CONTEXT
@@ -515,6 +516,8 @@ ConditionalStack
 ConditionalStackData
 ConfigData
 ConfigVariable
+ConflictLogColumnDef
+ConflictLogDest
 ConflictTupleInfo
 ConflictType
 ConnCacheEntry
@@ -525,6 +528,7 @@ ConnType
 ConnectionStateEnum
 ConnectionTiming
 ConnectionWarning
+ConnectionWarningFilter
 ConsiderSplitContext
 Const
 ConstrCheck
@@ -648,7 +652,6 @@ DatumTupleFields
 DbInfo
 DbInfoArr
 DbLocaleInfo
-DbOidName
 DdlOptType
 DdlOption
 DeClonePtrType
@@ -724,7 +727,6 @@ ENGINE
 EOM_flatten_into_method
 EOM_get_flat_size_method
 EPQState
-EPlan
 EState
 EStatus
 EVP_CIPHER
@@ -2075,8 +2077,7 @@ PLyObToTuple
 PLyObject_AsString_t
 PLyPlanObject
 PLyProcedure
-PLyProcedureEntry
-PLyProcedureKey
+PLyProcedureCache
 PLyResultObject
 PLySRFState
 PLySavedArgs
@@ -3112,7 +3113,6 @@ TParserStateActionItem
 TQueueDestReceiver
 TRGM
 TSAnyCacheEntry
-TscClockSourceInfo
 TSConfigCacheEntry
 TSConfigInfo
 TSDictInfo
@@ -3263,6 +3263,7 @@ TriggerInfo
 TriggerInstrumentation
 TriggerTransition
 TruncateStmt
+TscClockSourceInfo
 TsmRoutine
 TupOutputState
 TupSortStatus
@@ -3722,6 +3723,7 @@ deparse_context
 deparse_expr_cxt
 deparse_namespace
 derives_hash
+desigidx_type
 dev_t
 disassembledLeaf
 dlist_head
@@ -3843,7 +3845,9 @@ gistxlogPageDelete
 gistxlogPageReuse
 gistxlogPageSplit
 gistxlogPageUpdate
+grouping_eqop_callback
 grouping_sets_data
+grouping_walker_ctx
 growable_trgm_array
 gseg_picksplit_item
 gss_OID_set
@@ -3856,7 +3860,7 @@ gss_key_value_set_desc
 gss_name_t
 gtrgm_consistent_cache
 gzFile
-having_collation_ctx
+having_grouping_ctx
 heap_page_items_state
 help_handler
 hlCheck
@@ -3894,6 +3898,7 @@ int64_t
 int8
 int8_t
 int8x16_t
+int_fast32_2s
 int_fast32_t
 int_fast64_t
 internalPQconninfoOption

@@ -1180,21 +1180,21 @@ cleanup:
 	/* clean up */
 	for (i = 0; i < col_count; i++)
 	{
-		free(col_lineptrs[i]);
-		free(format_buf[i]);
+		pg_free(col_lineptrs[i]);
+		pg_free(format_buf[i]);
 	}
-	free(width_header);
-	free(width_average);
-	free(max_width);
-	free(width_wrap);
-	free(max_nl_lines);
-	free(curr_nl_line);
-	free(col_lineptrs);
-	free(max_bytes);
-	free(format_buf);
-	free(header_done);
-	free(bytes_output);
-	free(wrap);
+	pg_free(width_header);
+	pg_free(width_average);
+	pg_free(max_width);
+	pg_free(width_wrap);
+	pg_free(max_nl_lines);
+	pg_free(curr_nl_line);
+	pg_free(col_lineptrs);
+	pg_free(max_bytes);
+	pg_free(format_buf);
+	pg_free(header_done);
+	pg_free(bytes_output);
+	pg_free(wrap);
 
 	if (is_local_pager)
 		ClosePager(fout);
@@ -1354,17 +1354,6 @@ print_aligned_vertical(const printTableContent *cont,
 		return;
 	}
 
-	/*
-	 * Deal with the pager here instead of in printTable(), because we could
-	 * get here via print_aligned_text() in expanded auto mode, and so we have
-	 * to recalculate the pager requirement based on vertical output.
-	 */
-	if (!is_pager)
-	{
-		IsPagerNeeded(cont, NULL, true, &fout, &is_pager);
-		is_local_pager = is_pager;
-	}
-
 	/* Find the maximum dimensions for the headers */
 	for (i = 0; i < cont->ncolumns; i++)
 	{
@@ -1414,13 +1403,6 @@ print_aligned_vertical(const printTableContent *cont,
 
 	dlineptr->ptr = pg_malloc(dformatsize);
 	hlineptr->ptr = pg_malloc(hformatsize);
-
-	if (cont->opt->start_table)
-	{
-		/* print title */
-		if (!opt_tuples_only && cont->title)
-			fprintf(fout, "%s\n", cont->title);
-	}
 
 	/*
 	 * Choose target output width: \pset columns, or $COLUMNS, or ioctl
@@ -1567,6 +1549,41 @@ print_aligned_vertical(const printTableContent *cont,
 		}
 
 		dwidth = newdwidth;
+	}
+
+	/*
+	 * Deal with the pager here instead of in printTable(), because we could
+	 * get here via print_aligned_text() in expanded auto mode, and so we have
+	 * to recalculate the pager requirement based on vertical output.
+	 */
+	if (!is_pager)
+	{
+		unsigned int *width_wrap = NULL;
+
+		/*
+		 * Wrapping can add extra output lines, which count_table_lines() can
+		 * only account for if it has wrap widths.  But vertical output uses
+		 * the same data width for every field, so that's easy: use dwidth for
+		 * every column.
+		 */
+		if (cont->opt->format == PRINT_WRAPPED && cont->ncolumns > 0)
+		{
+			width_wrap = pg_malloc_array(unsigned int, cont->ncolumns);
+			for (i = 0; i < cont->ncolumns; i++)
+				width_wrap[i] = dwidth;
+		}
+
+		IsPagerNeeded(cont, width_wrap, true, &fout, &is_pager);
+		is_local_pager = is_pager;
+
+		free(width_wrap);
+	}
+
+	if (cont->opt->start_table)
+	{
+		/* print title */
+		if (!opt_tuples_only && cont->title)
+			fprintf(fout, "%s\n", cont->title);
 	}
 
 	/* print records */
@@ -1807,10 +1824,10 @@ print_aligned_vertical(const printTableContent *cont,
 		fputc('\n', fout);
 	}
 
-	free(hlineptr->ptr);
-	free(dlineptr->ptr);
-	free(hlineptr);
-	free(dlineptr);
+	pg_free(hlineptr->ptr);
+	pg_free(dlineptr->ptr);
+	pg_free(hlineptr);
+	pg_free(dlineptr);
 
 	if (is_local_pager)
 		ClosePager(fout);
@@ -3619,7 +3636,7 @@ count_table_lines(const printTableContent *cont,
 		}
 	}
 
-	free(header_height);
+	pg_free(header_height);
 
 	return lines;
 }
