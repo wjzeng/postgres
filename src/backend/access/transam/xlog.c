@@ -1143,9 +1143,9 @@ XLogInsertRecord(XLogRecData *rdata,
  *
  * NB: Testing shows that XLogInsertRecord runs faster if this code is inlined;
  * however, because there are two call sites, the compiler is reluctant to
- * inline. We use pg_attribute_always_inline here to try to convince it.
+ * inline. We use pg_always_inline here to try to convince it.
  */
-static pg_attribute_always_inline void
+static pg_always_inline void
 ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 						  XLogRecPtr *PrevPtr)
 {
@@ -2671,8 +2671,7 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 
 	if (wakeup)
 	{
-		volatile PROC_HDR *procglobal = ProcGlobal;
-		ProcNumber	walwriterProc = procglobal->walwriterProc;
+		ProcNumber	walwriterProc = pg_atomic_read_u32(&ProcGlobal->walwriterProc);
 
 		if (walwriterProc != INVALID_PROC_NUMBER)
 			SetLatch(&GetPGProcByNumber(walwriterProc)->procLatch);
@@ -9668,7 +9667,7 @@ do_pg_backup_start(const char *backupidstr, bool fast, List **tablespaces,
 			if (de_type == PGFILETYPE_LNK)
 			{
 				StringInfoData escapedpath;
-				int			rllen;
+				ssize_t		rllen;
 
 				rllen = readlink(fullpath, linkpath, sizeof(linkpath));
 				if (rllen < 0)

@@ -5863,6 +5863,20 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-enable-groupagg" xreflabel="enable_groupagg">
+      <term><varname>enable_groupagg</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_groupagg</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of sort-based grouping
+        and aggregation plan types. The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-enable-hashagg" xreflabel="enable_hashagg">
       <term><varname>enable_hashagg</varname> (<type>boolean</type>)
       <indexterm>
@@ -8525,8 +8539,10 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         <xref linkend="guc-log-min-duration-statement"/>,
         <xref linkend="guc-log-min-duration-sample"/>, or
         <xref linkend="guc-log-transaction-sample-rate"/>
-        is truncated to at most this many bytes.
-        A value of zero causes statements to be logged with an empty body.
+        has its statement text truncated to at most this many bytes.
+        When a statement is truncated, an ellipsis (<literal>...</literal>)
+        is appended to indicate that truncation has occurred.
+        A value of zero causes statements to be logged as only an ellipsis.
         <literal>-1</literal> (the default) logs statements in full.
         If this value is specified without units, it is taken as bytes.
         This setting does not affect statements logged because of

@@ -1896,46 +1896,51 @@ ahwrite(const void *ptr, size_t size, size_t nmemb, ArchiveHandle *AH)
 void
 warn_or_exit_horribly(ArchiveHandle *AH, const char *fmt, ...)
 {
-	va_list		ap;
-
-	switch (AH->stage)
+	/* Stay quiet if this is a result of our own cancellation. */
+	if (!is_cancel_in_progress())
 	{
+		va_list		ap;
 
-		case STAGE_NONE:
-			/* Do nothing special */
-			break;
+		switch (AH->stage)
+		{
 
-		case STAGE_INITIALIZING:
-			if (AH->stage != AH->lastErrorStage)
-				pg_log_info("while INITIALIZING:");
-			break;
+			case STAGE_NONE:
+				/* Do nothing special */
+				break;
 
-		case STAGE_PROCESSING:
-			if (AH->stage != AH->lastErrorStage)
-				pg_log_info("while PROCESSING TOC:");
-			break;
+			case STAGE_INITIALIZING:
+				if (AH->stage != AH->lastErrorStage)
+					pg_log_info("while INITIALIZING:");
+				break;
 
-		case STAGE_FINALIZING:
-			if (AH->stage != AH->lastErrorStage)
-				pg_log_info("while FINALIZING:");
-			break;
+			case STAGE_PROCESSING:
+				if (AH->stage != AH->lastErrorStage)
+					pg_log_info("while PROCESSING TOC:");
+				break;
+
+			case STAGE_FINALIZING:
+				if (AH->stage != AH->lastErrorStage)
+					pg_log_info("while FINALIZING:");
+				break;
+		}
+		if (AH->currentTE != NULL && AH->currentTE != AH->lastErrorTE)
+		{
+			pg_log_info("from TOC entry %d; %u %u %s %s %s",
+						AH->currentTE->dumpId,
+						AH->currentTE->catalogId.tableoid,
+						AH->currentTE->catalogId.oid,
+						AH->currentTE->desc ? AH->currentTE->desc : "(no desc)",
+						AH->currentTE->tag ? AH->currentTE->tag : "(no tag)",
+						AH->currentTE->owner ? AH->currentTE->owner : "(no owner)");
+		}
+
+		va_start(ap, fmt);
+		pg_log_generic_v(PG_LOG_ERROR, PG_LOG_PRIMARY, fmt, ap);
+		va_end(ap);
 	}
-	if (AH->currentTE != NULL && AH->currentTE != AH->lastErrorTE)
-	{
-		pg_log_info("from TOC entry %d; %u %u %s %s %s",
-					AH->currentTE->dumpId,
-					AH->currentTE->catalogId.tableoid,
-					AH->currentTE->catalogId.oid,
-					AH->currentTE->desc ? AH->currentTE->desc : "(no desc)",
-					AH->currentTE->tag ? AH->currentTE->tag : "(no tag)",
-					AH->currentTE->owner ? AH->currentTE->owner : "(no owner)");
-	}
+
 	AH->lastErrorStage = AH->stage;
 	AH->lastErrorTE = AH->currentTE;
-
-	va_start(ap, fmt);
-	pg_log_generic_v(PG_LOG_ERROR, PG_LOG_PRIMARY, fmt, ap);
-	va_end(ap);
 
 	if (AH->public.exit_on_error)
 		exit_nicely(1);
@@ -2053,13 +2058,11 @@ TocIDRequired(ArchiveHandle *AH, DumpId id)
 size_t
 WriteOffset(ArchiveHandle *AH, pgoff_t o, int wasSet)
 {
-	int			off;
-
 	/* Save the flag */
 	AH->WriteBytePtr(AH, wasSet);
 
 	/* Write out pgoff_t smallest byte first, prevents endian mismatch */
-	for (off = 0; off < sizeof(pgoff_t); off++)
+	for (size_t off = 0; off < sizeof(pgoff_t); off++)
 	{
 		AH->WriteBytePtr(AH, o & 0xFF);
 		o >>= 8;
@@ -2071,7 +2074,6 @@ int
 ReadOffset(ArchiveHandle *AH, pgoff_t *o)
 {
 	int			i;
-	int			off;
 	int			offsetFlg;
 
 	/* Initialize to zero */
@@ -2117,7 +2119,7 @@ ReadOffset(ArchiveHandle *AH, pgoff_t *o)
 	/*
 	 * Read the bytes
 	 */
-	for (off = 0; off < AH->offSize; off++)
+	for (size_t off = 0; off < AH->offSize; off++)
 	{
 		if (off < sizeof(pgoff_t))
 			*o |= ((pgoff_t) (AH->ReadBytePtr(AH))) << (off * 8);
@@ -2134,8 +2136,6 @@ ReadOffset(ArchiveHandle *AH, pgoff_t *o)
 size_t
 WriteInt(ArchiveHandle *AH, int i)
 {
-	int			b;
-
 	/*
 	 * This is a bit yucky, but I don't want to make the binary format very
 	 * dependent on representation, and not knowing much about it, I write out
@@ -2153,7 +2153,7 @@ WriteInt(ArchiveHandle *AH, int i)
 	else
 		AH->WriteBytePtr(AH, 0);
 
-	for (b = 0; b < AH->intSize; b++)
+	for (size_t b = 0; b < AH->intSize; b++)
 	{
 		AH->WriteBytePtr(AH, i & 0xFF);
 		i >>= 8;
@@ -2166,8 +2166,7 @@ int
 ReadInt(ArchiveHandle *AH)
 {
 	int			res = 0;
-	int			bv,
-				b;
+	int			bv;
 	int			sign = 0;		/* Default positive */
 	int			bitShift = 0;
 
@@ -2175,7 +2174,7 @@ ReadInt(ArchiveHandle *AH)
 		/* Read a sign byte */
 		sign = AH->ReadBytePtr(AH);
 
-	for (b = 0; b < AH->intSize; b++)
+	for (size_t b = 0; b < AH->intSize; b++)
 	{
 		bv = AH->ReadBytePtr(AH) & 0xFF;
 		if (bv != 0)

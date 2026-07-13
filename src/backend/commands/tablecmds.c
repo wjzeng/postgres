@@ -693,6 +693,7 @@ static ObjectAddress ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 										   AlterTableCmd *cmd, LOCKMODE lockmode);
 static void RememberAllDependentForRebuilding(AlteredTableInfo *tab, AlterTableType subtype,
 											  Relation rel, AttrNumber attnum, const char *colName);
+static void RememberWholeRowDependentForRebuilding(AlteredTableInfo *tab, AlterTableType subtype, Relation rel);
 static void RememberConstraintForRebuilding(Oid conoid, AlteredTableInfo *tab);
 static void RememberIndexForRebuilding(Oid indoid, AlteredTableInfo *tab);
 static void RememberStatisticsForRebuilding(Oid stxoid, AlteredTableInfo *tab);
@@ -8817,6 +8818,13 @@ ATExecSetExpression(AlteredTableInfo *tab, Relation rel, const char *colName,
 	RememberAllDependentForRebuilding(tab, AT_SetExpression, rel, attnum, colName);
 
 	/*
+	 * Find whole-row referenced objects that depend on the column
+	 * (constraints, indexes, etc.), and record enough information to let us
+	 * recreate the objects.
+	 */
+	RememberWholeRowDependentForRebuilding(tab, AT_SetExpression, rel);
+
+	/*
 	 * Drop the dependency records of the GENERATED expression, in particular
 	 * its INTERNAL dependency on the column, which would otherwise cause
 	 * dependency.c to refuse to perform the deletion.
@@ -15788,6 +15796,174 @@ RememberAllDependentForRebuilding(AlteredTableInfo *tab, AlterTableType subtype,
 
 	systable_endscan(scan);
 	table_close(depRel, NoLock);
+}
+
+/*
+ * Record information about dependencies between objects with whole-row Var
+ * references (indexes, check constraints, etc.) and the relation.
+ *
+ * See also RememberAllDependentForRebuilding, which handles non-whole-row Var
+ * references.
+ *
+ * This function currently applies only to ALTER COLUMN SET EXPRESSION.
+ */
+static void
+RememberWholeRowDependentForRebuilding(AlteredTableInfo *tab, AlterTableType subtype, Relation rel)
+{
+	ScanKeyData skey;
+	Relation	pg_constraint;
+	Relation	pg_index;
+	SysScanDesc conscan;
+	SysScanDesc indscan;
+	HeapTuple	constrTuple;
+	HeapTuple	indexTuple;
+	bool		isnull;
+
+	Assert(subtype == AT_SetExpression);
+
+	/*
+	 * Check CHECK constraints with whole-row references first.
+	 */
+	if (RelationGetDescr(rel)->constr &&
+		RelationGetDescr(rel)->constr->num_check > 0)
+	{
+		pg_constraint = table_open(ConstraintRelationId, AccessShareLock);
+
+		ScanKeyInit(&skey,
+					Anum_pg_constraint_conrelid,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(RelationGetRelid(rel)));
+
+		conscan = systable_beginscan(pg_constraint,
+									 ConstraintRelidTypidNameIndexId,
+									 true,
+									 NULL,
+									 1,
+									 &skey);
+
+		while (HeapTupleIsValid(constrTuple = systable_getnext(conscan)))
+		{
+			Form_pg_constraint conform = (Form_pg_constraint) GETSTRUCT(constrTuple);
+			Datum		exprDatum;
+
+			if (conform->contype != CONSTRAINT_CHECK)
+				continue;
+
+			exprDatum = heap_getattr(constrTuple,
+									 Anum_pg_constraint_conbin,
+									 RelationGetDescr(pg_constraint),
+									 &isnull);
+			if (isnull)
+				elog(ERROR, "null conbin for relation \"%s\"",
+					 RelationGetRelationName(rel));
+			else
+			{
+				char	   *exprString;
+				Node	   *expr;
+				Bitmapset  *expr_attrs = NULL;
+
+				exprString = TextDatumGetCString(exprDatum);
+				expr = stringToNode(exprString);
+				pfree(exprString);
+
+				/* Find all attributes referenced */
+				pull_varattnos(expr, 1, &expr_attrs);
+
+				/*
+				 * If the CHECK constraint contains whole-row reference then
+				 * remember it.
+				 */
+				if (bms_is_member(InvalidAttrNumber - FirstLowInvalidHeapAttributeNumber, expr_attrs))
+				{
+					RememberConstraintForRebuilding(conform->oid, tab);
+				}
+			}
+		}
+		systable_endscan(conscan);
+		table_close(pg_constraint, AccessShareLock);
+	}
+
+	/*
+	 * Now check indexes with whole-row references. Prepare to scan pg_index
+	 * for entries having indrelid matching this relation.
+	 */
+	ScanKeyInit(&skey,
+				Anum_pg_index_indrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(rel)));
+
+	pg_index = table_open(IndexRelationId, AccessShareLock);
+
+	indscan = systable_beginscan(pg_index,
+								 IndexIndrelidIndexId,
+								 true,
+								 NULL,
+								 1,
+								 &skey);
+
+	while (HeapTupleIsValid(indexTuple = systable_getnext(indscan)))
+	{
+		Form_pg_index index = (Form_pg_index) GETSTRUCT(indexTuple);
+		Datum		exprDatum;
+
+		exprDatum = heap_getattr(indexTuple,
+								 Anum_pg_index_indexprs,
+								 RelationGetDescr(pg_index),
+								 &isnull);
+		if (!isnull)
+		{
+			char	   *exprString;
+			Node	   *expr;
+			Bitmapset  *expr_attrs = NULL;
+
+			exprString = TextDatumGetCString(exprDatum);
+			expr = stringToNode(exprString);
+			pfree(exprString);
+
+			/* Find all attributes referenced */
+			pull_varattnos(expr, 1, &expr_attrs);
+
+			/*
+			 * If the index expression contains a whole-row reference then
+			 * remember it.
+			 */
+			if (bms_is_member(InvalidAttrNumber - FirstLowInvalidHeapAttributeNumber, expr_attrs))
+			{
+				RememberIndexForRebuilding(index->indexrelid, tab);
+				continue;
+			}
+		}
+
+		exprDatum = heap_getattr(indexTuple,
+								 Anum_pg_index_indpred,
+								 RelationGetDescr(pg_index),
+								 &isnull);
+		if (!isnull)
+		{
+			char	   *exprString;
+			Node	   *expr;
+			Bitmapset  *expr_attrs = NULL;
+
+			exprString = TextDatumGetCString(exprDatum);
+			expr = stringToNode(exprString);
+			pfree(exprString);
+
+			/* Find all attributes referenced */
+			pull_varattnos(expr, 1, &expr_attrs);
+
+			/*
+			 * If the index predicate expression contains a whole-row
+			 * reference then remember it.
+			 */
+			if (bms_is_member(InvalidAttrNumber - FirstLowInvalidHeapAttributeNumber, expr_attrs))
+			{
+				RememberIndexForRebuilding(index->indexrelid, tab);
+			}
+		}
+	}
+
+	systable_endscan(indscan);
+	table_close(pg_index, AccessShareLock);
 }
 
 /*
@@ -22887,7 +23063,7 @@ createTableConstraints(List **wqueue, AlteredTableInfo *tab,
 				elog(ERROR, "cannot convert whole-row table reference");
 
 			/* Add a pre-cooked default expression. */
-			StoreAttrDefault(newRel, num, def, true);
+			StoreAttrDefault(newRel, num, def, false);
 
 			/*
 			 * Stored generated column expressions in parent_rel might
@@ -22955,7 +23131,7 @@ createTableConstraints(List **wqueue, AlteredTableInfo *tab,
 
 	/* Install all CHECK constraints. */
 	cookedConstraints = AddRelationNewConstraints(newRel, NIL, constraints,
-												  false, true, true, NULL);
+												  false, true, false, NULL);
 
 	/* Make the additional catalog changes visible. */
 	CommandCounterIncrement();
@@ -23017,7 +23193,7 @@ createTableConstraints(List **wqueue, AlteredTableInfo *tab,
 		 * We already set pg_attribute.attnotnull in createPartitionTable. No
 		 * need call set_attnotnull again.
 		 */
-		AddRelationNewConstraints(newRel, NIL, nnconstraints, false, true, true, NULL);
+		AddRelationNewConstraints(newRel, NIL, nnconstraints, false, true, false, NULL);
 	}
 }
 
@@ -23137,7 +23313,7 @@ createPartitionTable(List **wqueue, RangeVar *newPartName,
 										(Datum) 0,
 										true,
 										allowSystemTableMods,
-										true,
+										false,	/* is_internal */
 										InvalidOid,
 										NULL);
 
@@ -23709,7 +23885,7 @@ ATExecMergePartitions(List **wqueue, AlteredTableInfo *tab, Relation rel,
 		object.classId = RelationRelationId;
 		object.objectSubId = 0;
 
-		performDeletionCheck(&object, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+		performDeletionCheck(&object, DROP_RESTRICT, 0);
 	}
 
 	/*
@@ -24123,7 +24299,7 @@ ATExecSplitPartition(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	object.objectId = splitRelOid;
 	object.classId = RelationRelationId;
 	object.objectSubId = 0;
-	performDeletionCheck(&object, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+	performDeletionCheck(&object, DROP_RESTRICT, 0);
 
 	/*
 	 * If a new partition has the same name as the split partition, then we
