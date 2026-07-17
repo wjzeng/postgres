@@ -947,9 +947,11 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 
 	if (do_clear_vm)
 	{
-		visibilitymap_clear(prstate->relation, prstate->block,
+		LockBuffer(prstate->vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+		visibilitymap_clear(prstate->relation->rd_locator, prstate->block,
 							prstate->vmbuffer,
 							VISIBILITYMAP_VALID_BITS);
+		LockBuffer(prstate->vmbuffer, BUFFER_LOCK_UNLOCK);
 		prstate->old_vmbits = 0;
 	}
 }
@@ -2372,14 +2374,14 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 		for (;;)
 		{
 			/* Sanity check (pure paranoia) */
-			if (offnum < FirstOffsetNumber)
+			if (nextoffnum < FirstOffsetNumber)
 				break;
 
 			/*
 			 * An offset past the end of page's line pointer array is possible
 			 * when the array was truncated
 			 */
-			if (offnum > maxoff)
+			if (nextoffnum > maxoff)
 				break;
 
 			lp = PageGetItemId(page, nextoffnum);

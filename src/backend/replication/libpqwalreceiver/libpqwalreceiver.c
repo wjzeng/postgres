@@ -70,7 +70,7 @@ static char *libpqrcv_get_option_from_conninfo(const char *connInfo,
 static int	libpqrcv_server_version(WalReceiverConn *conn);
 static void libpqrcv_readtimelinehistoryfile(WalReceiverConn *conn,
 											 TimeLineID tli, char **filename,
-											 char **content, int *len);
+											 char **content, size_t *len);
 static bool libpqrcv_startstreaming(WalReceiverConn *conn,
 									const WalRcvStreamOptions *options);
 static void libpqrcv_endstreaming(WalReceiverConn *conn,
@@ -738,7 +738,7 @@ libpqrcv_endstreaming(WalReceiverConn *conn, TimeLineID *next_tli)
 static void
 libpqrcv_readtimelinehistoryfile(WalReceiverConn *conn,
 								 TimeLineID tli, char **filename,
-								 char **content, int *len)
+								 char **content, size_t *len)
 {
 	PGresult   *res;
 	char		cmd[64];
@@ -999,6 +999,14 @@ libpqrcv_create_slot(WalReceiverConn *conn, const char *slotname,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("could not create replication slot \"%s\": %s",
 						slotname, pchomp(PQerrorMessage(conn->streamConn)))));
+
+	/* CREATE_REPLICATION_SLOT returns a single row with four columns */
+	if (PQnfields(res) != 4 || PQntuples(res) != 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("invalid response from primary server"),
+				 errdetail("Could not create replication slot \"%s\": got %d rows and %d fields, expected %d rows and %d fields.",
+						   slotname, PQntuples(res), PQnfields(res), 1, 4)));
 
 	if (lsn)
 		*lsn = DatumGetLSN(DirectFunctionCall1Coll(pg_lsn_in, InvalidOid,
